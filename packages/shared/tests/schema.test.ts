@@ -18,6 +18,7 @@ interface ColumnLike {
   readonly hasDefault: boolean;
   readonly default: unknown;
   readonly primary: boolean;
+  readonly isUnique: boolean;
   readonly getSQLType: () => string;
 }
 
@@ -41,7 +42,12 @@ function columnByName(
 }
 
 function uniqueColumnNames(cfg: ReturnType<typeof getTableConfig>): string[] {
-  return cfg.uniqueConstraints.flatMap((u) => u.columns.map((c) => c.name));
+  return [
+    ...cfg.uniqueConstraints.flatMap((u) => u.columns.map((c) => c.name)),
+    ...cfg.columns
+      .filter((c) => (c as unknown as ColumnLike).isUnique)
+      .map((c) => c.name),
+  ];
 }
 
 function primaryKeyColumnNames(
