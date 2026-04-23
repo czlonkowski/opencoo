@@ -100,16 +100,13 @@ describe("GiteaScopeChecker — cache", () => {
   it("caches per token — cross-PAT does NOT leak a decision", async () => {
     // tok1 sees 200 (allowed); tok2 sees 404 (denied). Two distinct cache
     // entries even though repo is identical.
-    const fetchImpl = vi.fn(async (input) => {
-      const url = typeof input === "string" ? input : (input as URL).toString();
-      const auth = (arguments as unknown as { [k: number]: unknown })[1] as
-        | { headers?: Record<string, string> }
-        | undefined;
-      const header = auth?.headers?.["Authorization"] ?? "";
-      const status = header.includes("tok1") ? 200 : 404;
-      return new Response(status === 200 ? "{}" : "", { status });
-      void url;
-    }) as unknown as typeof fetch;
+    const fetchImpl = vi.fn(
+      async (_input: unknown, init?: { headers?: Record<string, string> }) => {
+        const header = init?.headers?.["Authorization"] ?? "";
+        const status = header.includes("tok1") ? 200 : 404;
+        return new Response(status === 200 ? "{}" : "", { status });
+      },
+    ) as unknown as typeof fetch;
     const checker = createGiteaScopeChecker({
       giteaBaseUrl: "http://gitea.local",
       fetchImpl,
