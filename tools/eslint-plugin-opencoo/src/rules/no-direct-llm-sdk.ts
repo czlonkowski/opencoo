@@ -1,6 +1,5 @@
-import type { TSESTree } from "@typescript-eslint/utils";
-
 import { createRule } from "../utils/create-rule.js";
+import { importSourceVisitor } from "../utils/import-source-visitor.js";
 import { pathMatchesAny } from "../utils/path-matcher.js";
 
 export interface NoDirectLlmSdkOptions {
@@ -66,7 +65,7 @@ export const noDirectLlmSdk = createRule<
       return {};
     }
 
-    function check(node: TSESTree.Node, source: string): void {
+    return importSourceVisitor((node, source) => {
       if (isForbiddenSource(source)) {
         context.report({
           node,
@@ -74,28 +73,6 @@ export const noDirectLlmSdk = createRule<
           data: { source },
         });
       }
-    }
-
-    return {
-      ImportDeclaration(node): void {
-        check(node.source, node.source.value);
-      },
-      ExportAllDeclaration(node): void {
-        check(node.source, node.source.value);
-      },
-      ExportNamedDeclaration(node): void {
-        if (node.source !== null && node.source !== undefined) {
-          check(node.source, node.source.value);
-        }
-      },
-      ImportExpression(node): void {
-        if (
-          node.source.type === "Literal" &&
-          typeof node.source.value === "string"
-        ) {
-          check(node.source, node.source.value);
-        }
-      },
-    };
+    });
   },
 });

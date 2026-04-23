@@ -1,6 +1,5 @@
-import type { TSESTree } from "@typescript-eslint/utils";
-
 import { createRule } from "../utils/create-rule.js";
+import { importSourceVisitor } from "../utils/import-source-visitor.js";
 
 type AppliesTo = "ingestion" | "self-operating" | "auto";
 type Engine = "ingestion" | "self-operating";
@@ -102,8 +101,7 @@ export const noCrossEngineImport = createRule<
 
     const peer = peerOf(current);
 
-    function check(node: TSESTree.Node, source: string | null): void {
-      if (source === null) return;
+    return importSourceVisitor((node, source) => {
       if (importTargetsEngine(source, peer)) {
         context.report({
           node,
@@ -111,28 +109,6 @@ export const noCrossEngineImport = createRule<
           data: { current, peer },
         });
       }
-    }
-
-    return {
-      ImportDeclaration(node): void {
-        check(node.source, node.source.value);
-      },
-      ExportAllDeclaration(node): void {
-        check(node.source, node.source.value);
-      },
-      ExportNamedDeclaration(node): void {
-        if (node.source !== null && node.source !== undefined) {
-          check(node.source, node.source.value);
-        }
-      },
-      ImportExpression(node): void {
-        if (
-          node.source.type === "Literal" &&
-          typeof node.source.value === "string"
-        ) {
-          check(node.source, node.source.value);
-        }
-      },
-    };
+    });
   },
 });
