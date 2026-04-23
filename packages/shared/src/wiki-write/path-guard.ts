@@ -24,7 +24,6 @@ export function validatePath(path: string): void {
   // Any ASCII control character (incl. NUL, tab, LF) is forbidden —
   // these never belong in a repo path and catch a class of smuggling
   // attacks where a path is reconstructed across stores.
-  // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1F\x7F]/.test(path)) {
     throw new WikiPathError(
       `wiki path must not contain control characters: ${JSON.stringify(path)}`,
