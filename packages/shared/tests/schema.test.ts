@@ -139,6 +139,25 @@ function expectNoFkOn(
   expect(fkCols).not.toContain(column);
 }
 
+// Assert that `cfg` has an `ON DELETE SET NULL` foreign key pointing
+// at `target`. Used for the PR 04 backfilled FKs on
+// page_citations.compiled_by_run_id and llm_usage.run_id — audit
+// history survives Cleanup pruning even after the agent_runs row is
+// purged.
+function expectSetNullFkTo(
+  cfg: ReturnType<typeof getTableConfig>,
+  target: PgTable,
+  fromColumn?: string,
+): void {
+  const fk = cfg.foreignKeys.find((f) => {
+    if (f.reference().foreignTable !== target) return false;
+    if (fromColumn === undefined) return true;
+    return f.reference().columns.some((c) => c.name === fromColumn);
+  });
+  expect(fk).toBeDefined();
+  expect(fk?.onDelete).toBe("set null");
+}
+
 describe("pg enums", () => {
   it("domain_class has three values: knowledge, catalog-workflows, catalog-skills", () => {
     expect(domainClass.enumName).toBe("domain_class");
