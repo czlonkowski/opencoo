@@ -813,12 +813,12 @@ describe("page_citations table (APPEND-ONLY)", () => {
     expect(col.notNull).toBe(true);
   });
 
-  it("has nullable compiled_by_run_id uuid (FK to agent_runs deferred to PR 04)", () => {
+  it("has nullable compiled_by_run_id uuid with FK to agent_runs(id) ON DELETE SET NULL", () => {
     const cfg = tableCfg(pageCitations);
     const col = columnByName(cfg, "compiled_by_run_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(false);
-    expectNoFkOn(cfg, "compiled_by_run_id");
+    expectSetNullFkTo(cfg, agentRuns, "compiled_by_run_id");
   });
 
   it("has nullable prompt_version text", () => {
@@ -898,12 +898,12 @@ describe("llm_usage table", () => {
     expect(col.notNull).toBe(false);
   });
 
-  it("has nullable run_id uuid (FK to agent_runs deferred to PR 04)", () => {
+  it("has nullable run_id uuid with FK to agent_runs(id) ON DELETE SET NULL", () => {
     const cfg = tableCfg(llmUsage);
     const col = columnByName(cfg, "run_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(false);
-    expectNoFkOn(cfg, "run_id");
+    expectSetNullFkTo(cfg, agentRuns, "run_id");
   });
 
   it("has tokens_in / tokens_out integer NOT NULL", () => {

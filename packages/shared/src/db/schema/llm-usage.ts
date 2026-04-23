@@ -8,6 +8,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
+import { agentRuns } from "./agent-runs.js";
 import { createdAt, primaryKeyId } from "./columns.js";
 import { llmEngine, llmTier } from "./enums.js";
 
@@ -28,8 +29,13 @@ export const llmUsage = pgTable(
     model: text("model").notNull(),
     pipelineOrAgent: text("pipeline_or_agent").notNull(),
     documentId: text("document_id"),
-    // FK to agent_runs(id) deferred to PR 04 (same pattern as page_citations).
-    runId: uuid("run_id"),
+    // FK to agent_runs(id) is ON DELETE SET NULL — cost attribution
+    // history outlives the agent_runs row after Cleanup prunes it.
+    // Per-pipeline rollups must still sum correctly even when the
+    // referencing run is gone.
+    runId: uuid("run_id").references(() => agentRuns.id, {
+      onDelete: "set null",
+    }),
     tokensIn: integer("tokens_in").notNull(),
     tokensOut: integer("tokens_out").notNull(),
     costUsd: numeric("cost_usd", { precision: 10, scale: 6 }).notNull(),
