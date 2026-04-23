@@ -3,6 +3,7 @@ export * from "./agent-definitions.js";
 export * from "./agent-instances.js";
 export * from "./agent-runs.js";
 export * from "./automation-candidates.js";
+export * from "./automation-deployments.js";
 export * from "./catalog-candidate.js";
 export * from "./credentials.js";
 export * from "./domains.js";
