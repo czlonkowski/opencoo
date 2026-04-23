@@ -2,6 +2,7 @@
   "name": "opencoo",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "description": "opencoo monorepo — Strategic COO OSS engine (pre-coding gate scaffolding).",
   "license": "Apache-2.0",
   "packageManager": "pnpm@9.15.4",
@@ -13,8 +14,8 @@
     "typecheck": "turbo run typecheck",
     "test": "vitest run",
     "lint": "pnpm run lint:root",
-    "lint:root": "eslint .",
-    "lint:fixtures": "eslint --no-error-on-unmatched-pattern 'tests/eslint-fixtures/**/*.{ts,tsx}'",
+    "lint:root": "eslint . --ignore-pattern 'tests/eslint-fixtures/**'",
+    "lint:fixtures": "eslint --no-warn-ignored --no-error-on-unmatched-pattern 'tests/eslint-fixtures/**/*.{ts,tsx}'",
     "format": "prettier --write ."
   },
   "devDependencies": {
