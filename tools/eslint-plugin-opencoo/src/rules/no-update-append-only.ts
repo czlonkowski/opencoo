@@ -21,6 +21,7 @@ const APPEND_ONLY_TABLES = new Set([
   "erasureLog",
   "minerSuppressions",
   "agentRuns",
+  "llmUsageDebug",
 ]);
 
 type MessageIds = "updateAppendOnly" | "deleteAppendOnly";
