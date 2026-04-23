@@ -3,6 +3,7 @@ export * from "./credentials.js";
 export * from "./domains.js";
 export * from "./ingestion-intake.js";
 export * from "./llm-usage.js";
+export * from "./miner-runs.js";
 export * from "./page-citations.js";
 export * from "./sources-bindings.js";
 export * from "./users.js";
