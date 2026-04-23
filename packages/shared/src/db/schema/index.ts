@@ -10,6 +10,7 @@ export * from "./domains.js";
 export * from "./erasure-log.js";
 export * from "./ingestion-intake.js";
 export * from "./llm-usage.js";
+export * from "./marketplace-updates.js";
 export * from "./miner-runs.js";
 export * from "./miner-suppressions.js";
 export * from "./page-citations.js";
