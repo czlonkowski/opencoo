@@ -11,20 +11,11 @@ import {
   LlmRouter,
   MockLlmClient,
 } from "../src/llm-router/index.js";
-import { ConsoleLogger, type LoggerWriteStream } from "../src/logger.js";
+import { nullLogger } from "./helpers/null-logger.js";
 
 type Db = PgliteDatabase<typeof schema>;
 
 const domainId = "11111111-1111-1111-1111-111111111111" as DomainId;
-
-function nullLogger(): ConsoleLogger {
-  const stream: LoggerWriteStream = {
-    write(): boolean {
-      return true;
-    },
-  };
-  return new ConsoleLogger({ stream });
-}
 
 async function freshDb(capUsd: string | null): Promise<Db> {
   const pg = new PGlite();

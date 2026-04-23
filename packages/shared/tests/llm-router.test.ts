@@ -13,18 +13,9 @@ import {
   LlmRouter,
   MockLlmClient,
 } from "../src/llm-router/index.js";
-import { ConsoleLogger, type LoggerWriteStream } from "../src/logger.js";
+import { nullLogger } from "./helpers/null-logger.js";
 
 type Db = PgliteDatabase<typeof schema>;
-
-function nullLogger(): ConsoleLogger {
-  const nullStream: LoggerWriteStream = {
-    write(): boolean {
-      return true;
-    },
-  };
-  return new ConsoleLogger({ stream: nullStream });
-}
 
 async function freshDb(): Promise<Db> {
   const pg = new PGlite();
