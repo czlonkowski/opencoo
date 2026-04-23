@@ -51,6 +51,27 @@ await db.insert(domains).values(stripUndefined({ slug, name, retentionDays }));
 
 `updated_at` is wired with `.$onUpdate(() => new Date())`. This is a **Drizzle-side hook** — a raw `UPDATE domains SET …` via `sql\`\`` or psql does **not** trigger it. v0.1 relies on the invariant that every write goes through the typed Drizzle query builder. If a future feature needs DB-side enforcement, add a trigger in a new migration — don't expect the `$onUpdate` hook to fire for SQL that bypasses the builder.
 
+## Append-only invariant (THREAT-MODEL §2 invariant 8)
+
+Certain tables must never grow an `updated_at` column because their *purpose* is the permanent audit trail — rewriting a past row would falsify the record. The current set:
+
+- `page_citations` — per-page provenance ledger (which source compiled which page, when).
+- `redaction_events` — one row per guard-triggered redaction, metadata only (§3.3).
+- `erasure_log` — one row per admin-triggered erasure verb (§15).
+- `miner_suppressions` — operator "don't propose this again" decisions.
+
+`agent_runs` joins this list in PR 04.
+
+These tables have no `updated_at`, no `$onUpdate`, and no mutation-path writes from engine code. The only DELETE source is retention pruning in the Cleanup pipeline.
+
+`packages/shared/tests/append-only-invariant.test.ts` is the mechanical enforcement — it introspects each table via `getTableConfig()` and fails CI if any sneaks in an `updated_at`, `modified_at`, `edited_at`, or other `*_at` column that isn't `created_at`. Adding to the invariant set means adding a row to `APPEND_ONLY_TABLES` there plus the §2 invariant-8 list in `THREAT-MODEL.md`.
+
+## Mutation-adjacent tables
+
+Some tables carry a state machine we *do* update in place — notably `catalog_candidate`, whose `status` transitions `detected` → `drafted` → `reviewing` → `approved`/`rejected` → `promoted` as reviewers move it through the Review Dashboard. `reviewed_by` + `reviewed_at` populate alongside. This is a sanctioned UPDATE path and is explicitly carved out of §2 invariant 8 in THREAT-MODEL.md.
+
+Mutation-adjacent tables keep `updated_at` (via the shared `updatedAt()` helper) and behave like normal CRUD rows. They do NOT appear in the append-only invariant test.
+
 ## Migrations
 
 `drizzle-kit generate` is idempotent — `tests/generate-idempotent.test.ts` asserts this by running it twice into temp dirs and byte-diffing the outputs (with volatile `when`/`id` fields normalized). A regression means the schema code has picked up nondeterminism — investigate and fix, do not delete the test.

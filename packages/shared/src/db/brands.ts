@@ -8,3 +8,15 @@ export type DomainId = Branded<string, "DomainId">;
 export type SourceBindingId = Branded<string, "SourceBindingId">;
 export type UserId = Branded<string, "UserId">;
 export type CredentialId = Branded<string, "CredentialId">;
+
+// --- ingestion-side branded IDs (PR 03) ---
+
+export type IngestionIntakeId = Branded<string, "IngestionIntakeId">;
+export type WebhookEventId = Branded<string, "WebhookEventId">;
+export type PageCitationId = Branded<string, "PageCitationId">;
+export type LlmUsageId = Branded<string, "LlmUsageId">;
+export type MinerRunId = Branded<string, "MinerRunId">;
+export type CatalogCandidateId = Branded<string, "CatalogCandidateId">;
+export type MinerSuppressionId = Branded<string, "MinerSuppressionId">;
+export type RedactionEventId = Branded<string, "RedactionEventId">;
+export type ErasureLogId = Branded<string, "ErasureLogId">;

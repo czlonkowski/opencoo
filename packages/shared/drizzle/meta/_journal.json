@@ -8,6 +8,13 @@
       "when": 1776972467446,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1776974532328,
+      "tag": "0001_ingestion_tables",
+      "breakpoints": true
     }
   ]
 }

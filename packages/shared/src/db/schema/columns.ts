@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
 import { timestamp, uuid } from "drizzle-orm/pg-core";
 
 /**
@@ -22,3 +23,15 @@ export const updatedAt = () =>
     .notNull()
     .defaultNow()
     .$onUpdate(() => new Date());
+
+/**
+ * Nullable `ON DELETE RESTRICT` foreign-key column. The `target` thunk
+ * preserves lazy resolution so table modules can FK into each other
+ * regardless of ES-module evaluation order.
+ */
+export const restrictFk = (name: string, target: () => PgColumn) =>
+  uuid(name).references(target, { onDelete: "restrict" });
+
+/** `NOT NULL` variant of `restrictFk`. */
+export const requiredRestrictFk = (name: string, target: () => PgColumn) =>
+  uuid(name).notNull().references(target, { onDelete: "restrict" });
