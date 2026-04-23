@@ -33,8 +33,10 @@ const THREE_OR_MORE_NEWLINES = /\n{3,}/g;
 // blocks (documented restriction; converters must emit fenced).
 const FENCE_OPEN = /^( {0,3})(`{3,}|~{3,})/;
 
+type FenceChar = "`" | "~";
+
 interface FenceState {
-  readonly char: string;
+  readonly char: FenceChar;
   readonly minLen: number;
 }
 
@@ -48,9 +50,9 @@ function fenceOpenerOf(line: string): FenceState | null {
 }
 
 function isFenceCloser(line: string, state: FenceState): boolean {
-  const re = new RegExp(
-    `^ {0,3}${state.char === "`" ? "`" : "~"}{${state.minLen},}\\s*$`,
-  );
+  // `state.char` is a literal `` ` `` or `~` by type — safe to
+  // interpolate into the regex without further quoting.
+  const re = new RegExp(`^ {0,3}${state.char}{${state.minLen},}\\s*$`);
   return re.test(line);
 }
 
