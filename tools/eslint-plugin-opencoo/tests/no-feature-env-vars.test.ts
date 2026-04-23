@@ -40,6 +40,18 @@ ruleTester.run("no-feature-env-vars", noFeatureEnvVars, {
       code: `const g = process.env.GITEA_URL;`,
       options: [{ allowList: ["GITEA_URL", "DATABASE_URL", "NODE_ENV"] }],
     },
+    {
+      name: "destructured allow-listed key is fine",
+      code: `const { DATABASE_URL } = process.env;`,
+    },
+    {
+      name: "destructured allow-listed keys with alias is fine",
+      code: `const { DATABASE_URL: dbUrl, ENCRYPTION_KEY: key } = process.env;`,
+    },
+    {
+      name: "destructuring from an unrelated object is untouched",
+      code: `const source = { GITEA_URL: 'x' }; const { GITEA_URL } = source;`,
+    },
   ],
   invalid: [
     {
@@ -79,6 +91,33 @@ ruleTester.run("no-feature-env-vars", noFeatureEnvVars, {
         { messageId: "featureEnvVar", data: { name: "GITEA_URL" } },
         { messageId: "featureEnvVar", data: { name: "LLM_TIER" } },
       ],
+    },
+    {
+      name: "destructured non-allow-listed key flags",
+      code: `const { SOMETHING_ELSE } = process.env;`,
+      errors: [
+        { messageId: "featureEnvVar", data: { name: "SOMETHING_ELSE" } },
+      ],
+    },
+    {
+      name: "destructuring flags only the disallowed key, not the allow-listed one",
+      code: `const { DATABASE_URL, BAD_VAR } = process.env;`,
+      errors: [{ messageId: "featureEnvVar", data: { name: "BAD_VAR" } }],
+    },
+    {
+      name: "aliasing disallowed key to a local still flags the source key",
+      code: `const { BAD_VAR: renamed } = process.env;`,
+      errors: [{ messageId: "featureEnvVar", data: { name: "BAD_VAR" } }],
+    },
+    {
+      name: "rest element in process.env destructure is dynamic access",
+      code: `const { DATABASE_URL, ...rest } = process.env;`,
+      errors: [{ messageId: "dynamicAccess" }],
+    },
+    {
+      name: "computed property in process.env destructure is dynamic access",
+      code: `const key = 'X'; const { [key]: v } = process.env;`,
+      errors: [{ messageId: "dynamicAccess" }],
     },
   ],
 });
