@@ -7,19 +7,16 @@ import {
   numeric,
   pgTable,
   text,
-  timestamp,
-  uuid,
 } from "drizzle-orm/pg-core";
 
+import { createdAt, primaryKeyId, updatedAt } from "./columns.js";
 import { domainClass, governanceCadence } from "./enums.js";
 import type { LlmPolicy } from "../types/llm-policy.js";
 
 export const domains = pgTable(
   "domains",
   {
-    id: uuid("id")
-      .primaryKey()
-      .default(sql`gen_random_uuid()`),
+    id: primaryKeyId(),
     slug: text("slug").notNull().unique(),
     name: text("name").notNull(),
     class: domainClass("class").notNull().default("knowledge"),
@@ -38,13 +35,8 @@ export const domains = pgTable(
     }),
     retentionDays: integer("retention_days"),
     worldviewEnabled: boolean("worldview_enabled").notNull().default(true),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true })
-      .notNull()
-      .defaultNow()
-      .$onUpdate(() => new Date()),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
   },
   (t) => [
     check(
