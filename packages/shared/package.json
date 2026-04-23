@@ -25,6 +25,10 @@
     "./text-normalize": {
       "types": "./dist/text-normalize.d.ts",
       "default": "./dist/text-normalize.js"
+    },
+    "./credential-store": {
+      "types": "./dist/credential-store/index.d.ts",
+      "default": "./dist/credential-store/index.js"
     }
   },
   "files": [
