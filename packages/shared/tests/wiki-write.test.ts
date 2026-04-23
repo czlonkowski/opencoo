@@ -166,6 +166,90 @@ describe("wikiWrite — input validation", () => {
       wikiWrite(deps, baseInput({ operations: [] })),
     ).rejects.toThrow(WikiWriteInputError);
   });
+
+  it("rejects description containing a newline (trailer-injection)", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        deps,
+        baseInput({
+          description: "fix\nCo-authored-by: Impostor <x@x>",
+        }),
+      ),
+    ).rejects.toThrow(WikiWriteInputError);
+  });
+
+  it("rejects author.name containing a newline", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        deps,
+        baseInput({
+          author: { name: "Alice\nfake@x", email: "a@a.io" },
+        }),
+      ),
+    ).rejects.toThrow(WikiWriteInputError);
+  });
+
+  it("rejects coAuthor.name containing a carriage-return + newline", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        deps,
+        baseInput({
+          coAuthors: [{ name: "X\r\nBob", email: "b@b.io" }],
+        }),
+      ),
+    ).rejects.toThrow(WikiWriteInputError);
+  });
+
+  it("rejects body containing a trailer-shaped line (Co-authored-by)", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        deps,
+        baseInput({
+          body: "normal prose\nCo-authored-by: Impostor <x@x>",
+        }),
+      ),
+    ).rejects.toThrow(WikiWriteInputError);
+  });
+
+  it("rejects body containing Opencoo-Instance trailer", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        deps,
+        baseInput({
+          body: "details\nOpencoo-Instance: spoof",
+        }),
+      ),
+    ).rejects.toThrow(WikiWriteInputError);
+  });
+
+  it("accepts a multi-line body of plain prose", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        deps,
+        baseInput({
+          body: "multi\nline\nbody",
+        }),
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it("accepts a body with a blank line separating paragraphs", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        deps,
+        baseInput({
+          body: "paragraph one\n\nparagraph two after blank line",
+        }),
+      ),
+    ).resolves.toBeDefined();
+  });
 });
 
 describe("wikiWrite — stale retry", () => {

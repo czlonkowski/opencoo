@@ -49,22 +49,48 @@ export const WikiWriteCallerSchema = z.discriminatedUnion("kind", [
 ]);
 export type WikiWriteCaller = z.infer<typeof WikiWriteCallerSchema>;
 
+// Single-line string — rejects `\n`, `\r`, and any mix. Used for all
+// commit-message fields that land on a SINGLE line (tag, description,
+// author.name, coAuthor.name). Blocks newline-injection attacks where
+// a caller-supplied value would forge a trailer like
+// `"fix\nCo-authored-by: Impostor <x>"`.
+const singleLineString = z
+  .string()
+  .min(1)
+  .refine((s) => !/[\n\r]/.test(s), "must not contain newline or carriage-return");
+
+// Trailer-shaped line detector. Case-insensitive match on the two
+// trailer prefixes opencoo emits (`Co-authored-by:` and
+// `Opencoo-Instance:`). Body prose legitimately spans multiple lines
+// and blank-line paragraph breaks, so we don't ban `\n`; we only ban
+// lines that look like trailers.
+const TRAILER_LINE = /^(Co-authored-by|Opencoo-Instance):\s/i;
+
 export const WikiAuthorSchema = z.object({
-  name: z.string().min(1),
+  name: singleLineString,
   email: z.string().email(),
 });
 export type WikiAuthor = z.infer<typeof WikiAuthorSchema>;
 
-// Full entrypoint input. Two refinements beyond the field Zod:
+// Full entrypoint input. Three refinements beyond the field Zod:
 //   1. `operations.length >= 1` — empty batch is a caller bug.
 //   2. No duplicate `path` across operations — ambiguity is a caller
 //      bug; fail loud rather than adopt silent last-write-wins.
+//   3. `description` single-line (covered by `singleLineString`);
+//      `body` may be multi-line but cannot contain a trailer-shaped
+//      line (`Co-authored-by:` / `Opencoo-Instance:`).
 export const WikiWriteInputSchema = z
   .object({
     domainSlug: z.string().min(1).max(64),
     tag: WikiWriteTagSchema,
-    description: z.string().min(1).max(200),
-    body: z.string().optional(),
+    description: singleLineString.max(200),
+    body: z
+      .string()
+      .refine(
+        (s) => !s.split("\n").some((line) => TRAILER_LINE.test(line)),
+        "body must not contain trailer-shaped lines (Co-authored-by: / Opencoo-Instance:)",
+      )
+      .optional(),
     author: WikiAuthorSchema,
     coAuthors: z.array(WikiAuthorSchema).optional(),
     caller: WikiWriteCallerSchema,
