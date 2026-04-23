@@ -109,12 +109,16 @@ function hasIndexOn(
   );
 }
 
-// Assert that `cfg` has an `ON DELETE RESTRICT` foreign key pointing at
-// `target`. When a table has two FKs to the same target, pass the
-// source column name to disambiguate.
-function expectRestrictFkTo(
+// Shared FK-find helper. Matches the foreign key on `cfg` whose
+// foreign table is `target` (optionally disambiguated by the source
+// column name when a table has multiple FKs to the same target), then
+// asserts its `onDelete` action. The two thin wrappers below are the
+// public API so call sites read as "this FK drops refs on delete" or
+// "this FK refuses deletes" rather than "this FK has onDelete='set null'".
+function expectFkTo(
   cfg: ReturnType<typeof getTableConfig>,
   target: PgTable,
+  onDelete: "restrict" | "set null",
   fromColumn?: string,
 ): void {
   const fk = cfg.foreignKeys.find((f) => {
@@ -123,12 +127,33 @@ function expectRestrictFkTo(
     return f.reference().columns.some((c) => c.name === fromColumn);
   });
   expect(fk).toBeDefined();
-  expect(fk?.onDelete).toBe("restrict");
+  expect(fk?.onDelete).toBe(onDelete);
 }
 
-// Assert that `column` carries no foreign-key constraint (used for the
-// compiled_by_run_id / run_id columns whose FK to agent_runs is
-// deferred to PR 04).
+// Assert an `ON DELETE RESTRICT` FK on `cfg` pointing at `target`.
+function expectRestrictFkTo(
+  cfg: ReturnType<typeof getTableConfig>,
+  target: PgTable,
+  fromColumn?: string,
+): void {
+  expectFkTo(cfg, target, "restrict", fromColumn);
+}
+
+// Assert an `ON DELETE SET NULL` FK on `cfg` pointing at `target`.
+// Used on the two columns backfilled by migration 0002
+// (page_citations.compiled_by_run_id and llm_usage.run_id) — audit
+// history survives Cleanup pruning of the referenced agent_runs row.
+function expectSetNullFkTo(
+  cfg: ReturnType<typeof getTableConfig>,
+  target: PgTable,
+  fromColumn?: string,
+): void {
+  expectFkTo(cfg, target, "set null", fromColumn);
+}
+
+// Assert that `column` carries no foreign-key constraint. Used for
+// logical-reference columns like `agent_instances.definition_slug`
+// that name a TypeScript-defined agent rather than a DB row.
 function expectNoFkOn(
   cfg: ReturnType<typeof getTableConfig>,
   column: string,
@@ -137,25 +162,6 @@ function expectNoFkOn(
     f.reference().columns.map((c) => c.name),
   );
   expect(fkCols).not.toContain(column);
-}
-
-// Assert that `cfg` has an `ON DELETE SET NULL` foreign key pointing
-// at `target`. Used for the PR 04 backfilled FKs on
-// page_citations.compiled_by_run_id and llm_usage.run_id — audit
-// history survives Cleanup pruning even after the agent_runs row is
-// purged.
-function expectSetNullFkTo(
-  cfg: ReturnType<typeof getTableConfig>,
-  target: PgTable,
-  fromColumn?: string,
-): void {
-  const fk = cfg.foreignKeys.find((f) => {
-    if (f.reference().foreignTable !== target) return false;
-    if (fromColumn === undefined) return true;
-    return f.reference().columns.some((c) => c.name === fromColumn);
-  });
-  expect(fk).toBeDefined();
-  expect(fk?.onDelete).toBe("set null");
 }
 
 describe("pg enums", () => {
