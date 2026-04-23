@@ -13,18 +13,9 @@ import {
   type WikiWriteInput,
 } from "../src/wiki-write/index.js";
 import { InMemoryWikiAdapter } from "../src/wiki-write/testing/in-memory-adapter.js";
-import { ConsoleLogger, type LoggerWriteStream } from "../src/logger.js";
+import { nullLogger } from "./helpers/null-logger.js";
 
 const DOMAIN = "wiki-executive" as DomainSlug;
-
-function nullLogger(): ConsoleLogger {
-  const stream: LoggerWriteStream = {
-    write(): boolean {
-      return true;
-    },
-  };
-  return new ConsoleLogger({ stream });
-}
 
 interface HarnessOpts {
   readonly adapter?: InMemoryWikiAdapter;
