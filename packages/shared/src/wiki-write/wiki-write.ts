@@ -7,9 +7,8 @@ import { WikiWriteInputError, WikiWriteStaleError } from "./errors.js";
 import type { DeleteCap } from "./daily-cap.js";
 import type {
   WikiAdapter,
-  WikiAuthor,
-  WikiOperation,
   WikiWriteInput,
+  WriteAtomicArgs,
 } from "./interface.js";
 import { WikiWriteInputSchema } from "./interface.js";
 import { validatePath } from "./path-guard.js";
@@ -109,23 +108,19 @@ async function runWithRetries(
     const parentSha = await deps.adapter.getHeadSha(
       input.domainSlug as DomainSlug,
     );
-    const writeArgs: {
-      domainSlug: DomainSlug;
-      operations: ReadonlyArray<WikiOperation>;
-      commitMessage: string;
-      author: WikiAuthor;
-      coAuthors?: ReadonlyArray<WikiAuthor>;
-      parentSha: string;
-    } = {
+    const writeArgs: WriteAtomicArgs = {
       domainSlug: input.domainSlug as DomainSlug,
       operations: input.operations,
       commitMessage: message,
       author: input.author,
       parentSha,
+      // Conditional spread keeps `coAuthors` absent (not `undefined`)
+      // when the caller omitted it — required under
+      // `exactOptionalPropertyTypes`.
+      ...(input.coAuthors !== undefined
+        ? { coAuthors: input.coAuthors }
+        : {}),
     };
-    if (input.coAuthors !== undefined) {
-      writeArgs.coAuthors = input.coAuthors;
-    }
     const result = await deps.adapter.writeAtomic(writeArgs);
     if (result.status === "ok") {
       deps.logger.info("wiki.write", {
