@@ -25,11 +25,66 @@ const HORIZONTAL_WS_RUN = /[ \t]+/g;
 const TRAILING_HORIZONTAL_WS = /[ \t]+$/;
 const THREE_OR_MORE_NEWLINES = /\n{3,}/g;
 
+// CommonMark fenced code block rule: a line with 0-3 leading spaces
+// followed by ≥3 consecutive backticks or tildes opens a fence. A
+// close is a same-char-type fence with count ≥ the opener, again
+// with 0-3 leading spaces. 4+ leading spaces makes the line an
+// indented code block, not a fence — we do NOT preserve indented
+// blocks (documented restriction; converters must emit fenced).
+const FENCE_OPEN = /^( {0,3})(`{3,}|~{3,})/;
+
+interface FenceState {
+  readonly char: string;
+  readonly minLen: number;
+}
+
+function fenceOpenerOf(line: string): FenceState | null {
+  const m = FENCE_OPEN.exec(line);
+  if (m === null) return null;
+  const run = m[2] ?? "";
+  const char = run.charAt(0);
+  if (char !== "`" && char !== "~") return null;
+  return { char, minLen: run.length };
+}
+
+function isFenceCloser(line: string, state: FenceState): boolean {
+  const re = new RegExp(
+    `^ {0,3}${state.char === "`" ? "`" : "~"}{${state.minLen},}\\s*$`,
+  );
+  return re.test(line);
+}
+
 function collapseLine(line: string): string {
   const m = LEADING.exec(line);
   const lead = m?.[1] ?? "";
   const body = (m?.[2] ?? "").replace(HORIZONTAL_WS_RUN, " ");
   return (lead + body).replace(TRAILING_HORIZONTAL_WS, "");
+}
+
+function collapseWithFences(input: string): string {
+  const lines = input.split("\n");
+  let state: FenceState | null = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (state === null) {
+      const opener = fenceOpenerOf(line);
+      if (opener !== null) {
+        // Fence-opener lines are passed through verbatim — leading
+        // indentation (0-3 spaces) and the fence run matter to
+        // downstream Markdown renderers.
+        state = opener;
+        continue;
+      }
+      lines[i] = collapseLine(line);
+    } else if (isFenceCloser(line, state)) {
+      // Closer line survives verbatim; exit fence state.
+      state = null;
+    }
+    // else: inside a fence, line is passed through verbatim.
+  }
+
+  return lines.join("\n");
 }
 
 export function normalize(input: string): string {
@@ -39,12 +94,7 @@ export function normalize(input: string): string {
   out = out.normalize("NFC");
   out = out.replace(CONTROL_CHARS, "");
 
-  const lines = out.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? "";
-    lines[i] = collapseLine(line);
-  }
-  out = lines.join("\n");
+  out = collapseWithFences(out);
 
   out = out.replace(THREE_OR_MORE_NEWLINES, "\n\n");
   return out;
