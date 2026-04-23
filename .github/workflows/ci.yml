@@ -42,6 +42,16 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: "Schema drift check"
+        shell: bash
+        run: |
+          pnpm --filter @opencoo/shared db:check
+          pnpm --filter @opencoo/shared db:generate
+          if ! git diff --exit-code packages/shared/drizzle/; then
+            echo "::error::schema drift: packages/shared/src/db/schema/** changed without running db:generate. Run 'pnpm --filter @opencoo/shared db:generate' and commit the result."
+            exit 1
+          fi
+
       - name: "Fixtures must fail the expected rules"
         shell: bash
         run: |

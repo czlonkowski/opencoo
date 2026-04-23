@@ -1,0 +1,40 @@
+{
+  "name": "@opencoo/shared",
+  "version": "0.0.0",
+  "private": true,
+  "description": "opencoo shared kernel — DB schema, branded IDs, domain types. Single source of truth for every pgTable in the monorepo (CLAUDE.md schema-ownership rule).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    "./db": {
+      "types": "./dist/db/index.d.ts",
+      "default": "./dist/db/index.js"
+    },
+    "./db/schema": {
+      "types": "./dist/db/schema/index.d.ts",
+      "default": "./dist/db/schema/index.js"
+    }
+  },
+  "files": [
+    "dist/**",
+    "drizzle/**"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:check": "drizzle-kit check"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2",
+    "drizzle-zod": "0.8.3",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "drizzle-kit": "0.31.10",
+    "typescript": "~5.7.2",
+    "vitest": "^3.0.5"
+  }
+}
