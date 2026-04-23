@@ -25,13 +25,14 @@ export async function computeMonthToDateCost(
   db: CostTrackerDb,
   domainId: DomainId,
 ): Promise<number> {
-  const rows = await db.execute<{ total: string }>(sql`
+  const result = (await db.execute(sql`
     SELECT COALESCE(SUM(cost_usd), 0)::text AS total
     FROM llm_usage
     WHERE domain_id = ${domainId}
       AND timestamp >= date_trunc('month', now())
-  `);
-  const first = Array.isArray(rows) ? rows[0] : rows.rows[0];
+  `)) as { rows: Array<{ total: string }> } | Array<{ total: string }>;
+  const list = Array.isArray(result) ? result : result.rows;
+  const first = list[0];
   const totalStr = first?.total ?? "0";
   return Number.parseFloat(totalStr);
 }
