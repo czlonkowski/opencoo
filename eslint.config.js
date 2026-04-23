@@ -21,6 +21,25 @@ const opencooScope = [
 
 const fixturesScope = ["tests/eslint-fixtures/**/*.{ts,tsx}"];
 
+const tsLanguageOptions = {
+  parser: tseslint.parser,
+  parserOptions: {
+    ecmaVersion: 2022,
+    sourceType: "module",
+  },
+};
+
+// Boundary rules shared by the main opencoo scope and the fixture scope.
+// Fixtures override no-cross-engine-import with appliesTo:"ingestion"
+// because the fixture path is NOT under packages/engine-*/ so the
+// auto-detect would miss it (see §4 below).
+const boundaryRules = {
+  "opencoo/no-cross-engine-import": "error",
+  "opencoo/no-direct-gitea-write": "error",
+  "opencoo/no-direct-llm-sdk": "error",
+  "opencoo/no-feature-env-vars": "error",
+};
+
 export default tseslint.config(
   // 1. Global ignores — subpackage, build artefacts, dependency tree.
   {
@@ -40,53 +59,29 @@ export default tseslint.config(
   {
     files: opencooScope,
     extends: [...tseslint.configs.recommended],
-    languageOptions: {
-      parser: tseslint.parser,
-      parserOptions: {
-        ecmaVersion: 2022,
-        sourceType: "module",
-      },
-    },
+    languageOptions: tsLanguageOptions,
   },
 
   // 3. Custom boundary rules over opencoo scope + import-x cycle guard.
   {
     files: opencooScope,
-    plugins: {
-      opencoo,
-      "import-x": importX,
-    },
+    plugins: { opencoo, "import-x": importX },
     rules: {
-      "opencoo/no-cross-engine-import": "error",
-      "opencoo/no-direct-gitea-write": "error",
-      "opencoo/no-direct-llm-sdk": "error",
-      "opencoo/no-feature-env-vars": "error",
+      ...boundaryRules,
       "import-x/no-cycle": ["error", { maxDepth: 10, ignoreExternal: true }],
     },
   },
 
-  // 4. Fixtures block — parametrises rules so they fire on the fixture path
-  //    (which is NOT under packages/engine-*/ so the auto-detect would miss).
+  // 4. Fixtures block — parametrises no-cross-engine-import so it fires on
+  //    the fixture path (which is NOT under packages/engine-*/ so the
+  //    auto-detect would miss).
   {
     files: fixturesScope,
-    plugins: {
-      opencoo,
-    },
-    languageOptions: {
-      parser: tseslint.parser,
-      parserOptions: {
-        ecmaVersion: 2022,
-        sourceType: "module",
-      },
-    },
+    plugins: { opencoo },
+    languageOptions: tsLanguageOptions,
     rules: {
-      "opencoo/no-cross-engine-import": [
-        "error",
-        { appliesTo: "ingestion" },
-      ],
-      "opencoo/no-direct-gitea-write": "error",
-      "opencoo/no-direct-llm-sdk": "error",
-      "opencoo/no-feature-env-vars": "error",
+      ...boundaryRules,
+      "opencoo/no-cross-engine-import": ["error", { appliesTo: "ingestion" }],
     },
   },
 );
