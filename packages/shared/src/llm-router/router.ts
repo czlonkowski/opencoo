@@ -79,8 +79,8 @@ export class LlmRouter {
   }
 
   async generateText(opts: GenerateOpts): Promise<GenerateTextResult> {
-    const { policy, model } = await this.resolvePolicy(opts);
-    await this.enforceBudget(opts, model);
+    const { policy, model, row } = await this.resolvePolicy(opts);
+    await this.enforceBudget(opts, model, row);
 
     const startedAt = this.now().getTime();
     let tokensIn = 0;
@@ -210,8 +210,8 @@ export class LlmRouter {
   private async enforceBudget(
     opts: GenerateOpts,
     model: string,
+    row: DomainRow,
   ): Promise<void> {
-    const row = await this.loadDomain(opts.domainId);
     if (row.llmBudgetMonthlyCapUsd === null) return; // unlimited
 
     const cap = Number.parseFloat(row.llmBudgetMonthlyCapUsd);
