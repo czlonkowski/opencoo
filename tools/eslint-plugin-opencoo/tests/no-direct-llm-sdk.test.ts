@@ -35,6 +35,24 @@ ruleTester.run("no-direct-llm-sdk", noDirectLlmSdk, {
       filename: "/repo/packages/engine-ingestion/src/index.ts",
       code: `import { logger } from '@opencoo/shared-logger';`,
     },
+    {
+      name: "llm-router providers directory may import the AI SDK (PR 08 path)",
+      filename:
+        "/repo/packages/shared/src/llm-router/providers/openai.ts",
+      code: `import { generateText } from 'ai';`,
+    },
+    {
+      name: "llm-router providers directory may import @ai-sdk/openai (PR 08 path)",
+      filename:
+        "/repo/packages/shared/src/llm-router/providers/openai.ts",
+      code: `import { createOpenAI } from '@ai-sdk/openai';`,
+    },
+    {
+      name: "llm-router providers directory may import @ai-sdk/openai-compatible (Ollama)",
+      filename:
+        "/repo/packages/shared/src/llm-router/providers/ollama.ts",
+      code: `import { createOpenAICompatible } from '@ai-sdk/openai-compatible';`,
+    },
   ],
   invalid: [
     {
