@@ -1,7 +1,13 @@
-import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import { agentRuns } from "./agent-runs.js";
-import { createdAt, primaryKeyId, updatedAt } from "./columns.js";
+import {
+  createdAt,
+  primaryKeyId,
+  requiredRestrictFk,
+  restrictFk,
+  updatedAt,
+} from "./columns.js";
 import { automationCandidateStatus } from "./enums.js";
 import { users } from "./users.js";
 import type { PageRef, Proposal } from "../types/index.js";
@@ -18,9 +24,7 @@ export const automationCandidates = pgTable(
   "automation_candidates",
   {
     id: primaryKeyId(),
-    surfacerRunId: uuid("surfacer_run_id")
-      .notNull()
-      .references(() => agentRuns.id, { onDelete: "restrict" }),
+    surfacerRunId: requiredRestrictFk("surfacer_run_id", () => agentRuns.id),
     sourcePageRefs: jsonb("source_page_refs")
       .$type<PageRef[]>()
       .notNull(),
@@ -29,9 +33,7 @@ export const automationCandidates = pgTable(
       .notNull()
       .default("proposed"),
     rationale: text("rationale"),
-    reviewedBy: uuid("reviewed_by").references(() => users.id, {
-      onDelete: "restrict",
-    }),
+    reviewedBy: restrictFk("reviewed_by", () => users.id),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

@@ -5,11 +5,10 @@ import {
   pgTable,
   text,
   timestamp,
-  uuid,
 } from "drizzle-orm/pg-core";
 
 import { agentRuns } from "./agent-runs.js";
-import { createdAt, primaryKeyId } from "./columns.js";
+import { createdAt, primaryKeyId, setNullFk } from "./columns.js";
 import { llmEngine, llmTier } from "./enums.js";
 
 // The cost+latency audit for every LLM call routed through `llm-router`
@@ -33,9 +32,7 @@ export const llmUsage = pgTable(
     // history outlives the agent_runs row after Cleanup prunes it.
     // Per-pipeline rollups must still sum correctly even when the
     // referencing run is gone.
-    runId: uuid("run_id").references(() => agentRuns.id, {
-      onDelete: "set null",
-    }),
+    runId: setNullFk("run_id", () => agentRuns.id),
     tokensIn: integer("tokens_in").notNull(),
     tokensOut: integer("tokens_out").notNull(),
     costUsd: numeric("cost_usd", { precision: 10, scale: 6 }).notNull(),

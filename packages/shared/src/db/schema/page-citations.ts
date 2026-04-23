@@ -1,7 +1,12 @@
-import { index, pgTable, text, uuid } from "drizzle-orm/pg-core";
+import { index, pgTable, text } from "drizzle-orm/pg-core";
 
 import { agentRuns } from "./agent-runs.js";
-import { createdAt, primaryKeyId, requiredRestrictFk } from "./columns.js";
+import {
+  createdAt,
+  primaryKeyId,
+  requiredRestrictFk,
+  setNullFk,
+} from "./columns.js";
 import { sourcesBindings } from "./sources-bindings.js";
 
 // APPEND-ONLY per THREAT-MODEL §2 invariant 8: no updated_at, no $onUpdate,
@@ -22,10 +27,7 @@ export const pageCitations = pgTable(
     // (which page got compiled when + from which source) outlives the
     // run row after Cleanup prunes `agent_runs` per retention policy.
     // Nulling the ref is safe; losing the citation would not be.
-    compiledByRunId: uuid("compiled_by_run_id").references(
-      () => agentRuns.id,
-      { onDelete: "set null" },
-    ),
+    compiledByRunId: setNullFk("compiled_by_run_id", () => agentRuns.id),
     promptVersion: text("prompt_version"),
     createdAt: createdAt(),
   },

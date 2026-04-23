@@ -7,11 +7,10 @@ import {
   pgTable,
   text,
   timestamp,
-  uuid,
 } from "drizzle-orm/pg-core";
 
 import { agentInstances } from "./agent-instances.js";
-import { createdAt, primaryKeyId } from "./columns.js";
+import { createdAt, primaryKeyId, requiredRestrictFk } from "./columns.js";
 import {
   agentRunStatus,
   agentTrigger,
@@ -33,9 +32,7 @@ export const agentRuns = pgTable(
   {
     id: primaryKeyId(),
     definitionSlug: text("definition_slug").notNull(),
-    instanceId: uuid("instance_id")
-      .notNull()
-      .references(() => agentInstances.id, { onDelete: "restrict" }),
+    instanceId: requiredRestrictFk("instance_id", () => agentInstances.id),
     trigger: agentTrigger("trigger").notNull(),
     inputs: jsonb("inputs").notNull().default(sql`'{}'::jsonb`),
     toolCalls: jsonb("tool_calls")

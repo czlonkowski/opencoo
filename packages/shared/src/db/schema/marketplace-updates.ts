@@ -1,14 +1,6 @@
-import {
-  index,
-  jsonb,
-  pgTable,
-  text,
-  timestamp,
-  unique,
-  uuid,
-} from "drizzle-orm/pg-core";
+import { index, jsonb, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
 
-import { createdAt, primaryKeyId, updatedAt } from "./columns.js";
+import { createdAt, primaryKeyId, restrictFk, updatedAt } from "./columns.js";
 import { marketplaceUpdateStatus } from "./enums.js";
 import { users } from "./users.js";
 import type { SkillsDiff } from "../types/index.js";
@@ -32,9 +24,7 @@ export const marketplaceUpdates = pgTable(
     treeSha: text("tree_sha").notNull(),
     skillsDiff: jsonb("skills_diff").$type<SkillsDiff>().notNull(),
     status: marketplaceUpdateStatus("status").notNull().default("pending"),
-    reviewedBy: uuid("reviewed_by").references(() => users.id, {
-      onDelete: "restrict",
-    }),
+    reviewedBy: restrictFk("reviewed_by", () => users.id),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

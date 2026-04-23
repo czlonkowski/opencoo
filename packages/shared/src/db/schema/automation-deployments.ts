@@ -1,8 +1,13 @@
-import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import { agentRuns } from "./agent-runs.js";
 import { automationCandidates } from "./automation-candidates.js";
-import { createdAt, primaryKeyId, updatedAt } from "./columns.js";
+import {
+  createdAt,
+  primaryKeyId,
+  requiredRestrictFk,
+  updatedAt,
+} from "./columns.js";
 import { automationDeploymentStatus } from "./enums.js";
 import type { SkillsUsed } from "../types/index.js";
 
@@ -27,12 +32,11 @@ export const automationDeployments = pgTable(
   "automation_deployments",
   {
     id: primaryKeyId(),
-    candidateId: uuid("candidate_id")
-      .notNull()
-      .references(() => automationCandidates.id, { onDelete: "restrict" }),
-    builderRunId: uuid("builder_run_id")
-      .notNull()
-      .references(() => agentRuns.id, { onDelete: "restrict" }),
+    candidateId: requiredRestrictFk(
+      "candidate_id",
+      () => automationCandidates.id,
+    ),
+    builderRunId: requiredRestrictFk("builder_run_id", () => agentRuns.id),
     n8nWorkflowId: text("n8n_workflow_id").notNull().unique(),
     skillsUsedSnapshot: jsonb("skills_used_snapshot")
       .$type<SkillsUsed>()
