@@ -1,4 +1,7 @@
+import type { TSESTree } from "@typescript-eslint/utils";
+
 import { createRule } from "../utils/create-rule.js";
+import { pathMatchesAny } from "../utils/path-matcher.js";
 
 export interface NoDirectLlmSdkOptions {
   allowedPaths?: string[];
@@ -7,6 +10,26 @@ export interface NoDirectLlmSdkOptions {
 type MessageIds = "directLlmSdk";
 
 const DEFAULT_ALLOWED_PATHS = ["packages/shared/llm-router/**"];
+
+// Exact package names that are forbidden outside the router.
+const FORBIDDEN_EXACT = new Set([
+  "ai",
+  "openai",
+  "@anthropic-ai/sdk",
+  "@google/generative-ai",
+  "@google/genai",
+]);
+
+// Scoped-package prefixes that are forbidden (any subpath under them).
+const FORBIDDEN_SCOPE_PREFIXES = ["@ai-sdk/", "@openai/"];
+
+function isForbiddenSource(source: string): boolean {
+  if (FORBIDDEN_EXACT.has(source)) return true;
+  for (const exact of FORBIDDEN_EXACT) {
+    if (source.startsWith(`${exact}/`)) return true;
+  }
+  return FORBIDDEN_SCOPE_PREFIXES.some((p) => source.startsWith(p));
+}
 
 export const noDirectLlmSdk = createRule<
   [NoDirectLlmSdkOptions],
@@ -37,5 +60,42 @@ export const noDirectLlmSdk = createRule<
     },
   },
   defaultOptions: [{ allowedPaths: DEFAULT_ALLOWED_PATHS }],
-  create: () => ({}),
+  create(context, [options]) {
+    const allowedPaths = options.allowedPaths ?? DEFAULT_ALLOWED_PATHS;
+    if (pathMatchesAny(context.filename, allowedPaths)) {
+      return {};
+    }
+
+    function check(node: TSESTree.Node, source: string): void {
+      if (isForbiddenSource(source)) {
+        context.report({
+          node,
+          messageId: "directLlmSdk",
+          data: { source },
+        });
+      }
+    }
+
+    return {
+      ImportDeclaration(node): void {
+        check(node.source, node.source.value);
+      },
+      ExportAllDeclaration(node): void {
+        check(node.source, node.source.value);
+      },
+      ExportNamedDeclaration(node): void {
+        if (node.source !== null && node.source !== undefined) {
+          check(node.source, node.source.value);
+        }
+      },
+      ImportExpression(node): void {
+        if (
+          node.source.type === "Literal" &&
+          typeof node.source.value === "string"
+        ) {
+          check(node.source, node.source.value);
+        }
+      },
+    };
+  },
 });
