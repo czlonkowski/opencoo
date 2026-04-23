@@ -7,6 +7,7 @@ export * from "./llm-usage.js";
 export * from "./miner-runs.js";
 export * from "./miner-suppressions.js";
 export * from "./page-citations.js";
+export * from "./redaction-events.js";
 export * from "./sources-bindings.js";
 export * from "./users.js";
 export * from "./webhook-events.js";
