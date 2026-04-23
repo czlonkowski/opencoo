@@ -19,10 +19,45 @@ const RepoEntrySchema = z
     name: z.string().min(1),
     default: z.boolean().optional().default(false),
     access_tag: z.string().optional(),
+    // `aggregator: true` marks ONE repo as the source for the reserved
+    // `worldview://company` MCP resource (company.md at repo root).
+    // At most one entry may set this; the `validateRepos` refinement
+    // enforces it.
+    aggregator: z.boolean().optional().default(false),
   })
   .strict();
 
 export type RepoEntry = z.infer<typeof RepoEntrySchema>;
+
+// Slug reserved for the aggregator's `worldview://company` URI. Config
+// that binds a real repo to this slug would create an ambiguous
+// routing rule; reject at boot.
+export const RESERVED_SLUGS: ReadonlySet<string> = new Set(["company"]);
+
+/**
+ * Exit-free validator for the REPOS array. Throws on violations so
+ * callers (loadConfig + tests) can translate to user-friendly error
+ * messages without coupling to process.exit.
+ */
+export function validateRepos(repos: ReadonlyArray<unknown>): RepoEntry[] {
+  const parsed = z.array(RepoEntrySchema).parse(repos);
+  const aggregators = parsed.filter((r) => r.aggregator);
+  if (aggregators.length > 1) {
+    throw new Error(
+      `REPOS may declare at most one aggregator; found ${aggregators.length}: ${aggregators
+        .map((r) => r.slug)
+        .join(", ")}`,
+    );
+  }
+  for (const r of parsed) {
+    if (RESERVED_SLUGS.has(r.slug)) {
+      throw new Error(
+        `REPOS slug "${r.slug}" is reserved (reserved slugs: ${[...RESERVED_SLUGS].join(", ")})`,
+      );
+    }
+  }
+  return parsed;
+}
 
 const ConfigSchema = z
   .object({
@@ -130,6 +165,16 @@ export function loadConfig(): Config {
       process.exit(1);
     }
     slugs.add(r.slug);
+  }
+
+  // Aggregator (≤1) + reserved-slug refinement. Handled by the shared
+  // validator so the same rules surface in tests.
+  try {
+    validateRepos(parsed.data.repos);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`ERROR: ${msg}`);
+    process.exit(1);
   }
 
   // Normalize dataDir to absolute.
