@@ -2,14 +2,32 @@ import { describe, expect, it } from "vitest";
 import { getTableConfig, type PgTable } from "drizzle-orm/pg-core";
 
 import {
+  catalogCandidate,
+  catalogCandidateStatus,
+  catalogClass,
   credentials,
   domains,
   domainClass,
+  erasureAction,
+  erasureLog,
+  errorClass,
   governanceCadence,
+  guardFailMode,
+  ingestionIntake,
+  intakeStatus,
+  llmEngine,
+  llmTier,
+  llmUsage,
+  minerRuns,
+  minerSuppressions,
+  pageCitations,
+  redactionEvents,
   reviewMode,
   sourcesBindings,
   userRole,
   users,
+  webhookEvents,
+  webhookStatus,
 } from "../src/db/schema/index.js";
 
 interface ColumnLike {
@@ -59,6 +77,25 @@ function primaryKeyColumnNames(
       .filter((c) => (c as unknown as ColumnLike).primary)
       .map((c) => c.name),
   ];
+}
+
+function indexedColumnTuples(
+  cfg: ReturnType<typeof getTableConfig>,
+): string[][] {
+  return cfg.indexes.map((i) =>
+    (i.config.columns as ReadonlyArray<{ name: string }>).map((c) => c.name),
+  );
+}
+
+function hasIndexOn(
+  cfg: ReturnType<typeof getTableConfig>,
+  columns: readonly string[],
+): boolean {
+  return indexedColumnTuples(cfg).some(
+    (cols) =>
+      cols.length === columns.length &&
+      cols.every((name, i) => name === columns[i]),
+  );
 }
 
 describe("pg enums", () => {
@@ -422,5 +459,888 @@ describe("sources_bindings table", () => {
         cols[1] === "adapter_slug",
     );
     expect(match).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR 03 — ingestion-side schema (9 tables)
+// ---------------------------------------------------------------------------
+
+describe("pg enums (ingestion-side)", () => {
+  it("intake_status has three values", () => {
+    expect(intakeStatus.enumName).toBe("intake_status");
+    expect([...intakeStatus.enumValues]).toEqual([
+      "pending",
+      "classified",
+      "skipped",
+    ]);
+  });
+
+  it("webhook_status has four values", () => {
+    expect(webhookStatus.enumName).toBe("webhook_status");
+    expect([...webhookStatus.enumValues]).toEqual([
+      "pending",
+      "classified",
+      "skipped",
+      "invalid",
+    ]);
+  });
+
+  it("error_class has three values matching the ErrorClass taxonomy", () => {
+    expect(errorClass.enumName).toBe("error_class");
+    expect([...errorClass.enumValues]).toEqual([
+      "transient",
+      "upstream-quota",
+      "validation",
+    ]);
+  });
+
+  it("llm_engine has two values", () => {
+    expect(llmEngine.enumName).toBe("llm_engine");
+    expect([...llmEngine.enumValues]).toEqual(["ingestion", "self-op"]);
+  });
+
+  it("llm_tier has three values", () => {
+    expect(llmTier.enumName).toBe("llm_tier");
+    expect([...llmTier.enumValues]).toEqual(["thinker", "worker", "light"]);
+  });
+
+  it("catalog_class has two values", () => {
+    expect(catalogClass.enumName).toBe("catalog_class");
+    expect([...catalogClass.enumValues]).toEqual(["skill", "workflow-pattern"]);
+  });
+
+  it("catalog_candidate_status has six values (state machine)", () => {
+    expect(catalogCandidateStatus.enumName).toBe("catalog_candidate_status");
+    expect([...catalogCandidateStatus.enumValues]).toEqual([
+      "detected",
+      "drafted",
+      "reviewing",
+      "approved",
+      "rejected",
+      "promoted",
+    ]);
+  });
+
+  it("guard_fail_mode has three values", () => {
+    expect(guardFailMode.enumName).toBe("guard_fail_mode");
+    expect([...guardFailMode.enumValues]).toEqual([
+      "block",
+      "transform",
+      "review",
+    ]);
+  });
+
+  it("erasure_action has five values", () => {
+    expect(erasureAction.enumName).toBe("erasure_action");
+    expect([...erasureAction.enumValues]).toEqual([
+      "purge_intake",
+      "purge_webhooks",
+      "purge_llm_debug",
+      "recompile_page",
+      "delete_page",
+    ]);
+  });
+});
+
+describe("ingestion_intake table", () => {
+  it("is named 'ingestion_intake'", () => {
+    expect(tableCfg(ingestionIntake).name).toBe("ingestion_intake");
+  });
+
+  it("has uuid PK id with gen_random_uuid() default", () => {
+    const cfg = tableCfg(ingestionIntake);
+    const id = columnByName(cfg, "id");
+    expect(id.getSQLType()).toBe("uuid");
+    expect(id.notNull).toBe(true);
+    expect(id.hasDefault).toBe(true);
+    expect(primaryKeyColumnNames(cfg)).toContain("id");
+  });
+
+  it("has binding_id uuid NOT NULL with FK to sources_bindings(id) ON DELETE RESTRICT", () => {
+    const cfg = tableCfg(ingestionIntake);
+    const col = columnByName(cfg, "binding_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(true);
+    const fk = cfg.foreignKeys.find(
+      (f) => f.reference().foreignTable === sourcesBindings,
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe("restrict");
+  });
+
+  it("has source_doc_id text NOT NULL", () => {
+    const col = columnByName(tableCfg(ingestionIntake), "source_doc_id");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has source_revision text NOT NULL", () => {
+    const col = columnByName(tableCfg(ingestionIntake), "source_revision");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has content_hash text NOT NULL", () => {
+    const col = columnByName(tableCfg(ingestionIntake), "content_hash");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has status intake_status NOT NULL DEFAULT 'pending'", () => {
+    const col = columnByName(tableCfg(ingestionIntake), "status");
+    expect(col.getSQLType()).toBe("intake_status");
+    expect(col.notNull).toBe(true);
+    expect(col.default).toBe("pending");
+  });
+
+  it("has nullable last_classifier_run_id text", () => {
+    const col = columnByName(
+      tableCfg(ingestionIntake),
+      "last_classifier_run_id",
+    );
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(false);
+  });
+
+  it("has nullable error_class enum", () => {
+    const col = columnByName(tableCfg(ingestionIntake), "error_class");
+    expect(col.getSQLType()).toBe("error_class");
+    expect(col.notNull).toBe(false);
+  });
+
+  it("has created_at timestamptz NOT NULL DEFAULT now()", () => {
+    const col = columnByName(tableCfg(ingestionIntake), "created_at");
+    expect(col.getSQLType()).toBe("timestamp with time zone");
+    expect(col.notNull).toBe(true);
+    expect(col.hasDefault).toBe(true);
+  });
+
+  it("has UNIQUE (binding_id, source_doc_id, source_revision) idempotency key", () => {
+    const cfg = tableCfg(ingestionIntake);
+    const match = cfg.uniqueConstraints.find((u) => {
+      const names = u.columns.map((c) => c.name);
+      return (
+        names.length === 3 &&
+        names[0] === "binding_id" &&
+        names[1] === "source_doc_id" &&
+        names[2] === "source_revision"
+      );
+    });
+    expect(match).toBeDefined();
+  });
+});
+
+describe("webhook_events table", () => {
+  it("is named 'webhook_events'", () => {
+    expect(tableCfg(webhookEvents).name).toBe("webhook_events");
+  });
+
+  it("has uuid PK id with default", () => {
+    const id = columnByName(tableCfg(webhookEvents), "id");
+    expect(id.getSQLType()).toBe("uuid");
+    expect(id.hasDefault).toBe(true);
+  });
+
+  it("has provider text NOT NULL", () => {
+    const col = columnByName(tableCfg(webhookEvents), "provider");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has nullable event_id text", () => {
+    const col = columnByName(tableCfg(webhookEvents), "event_id");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(false);
+  });
+
+  it("has payload_hash text NOT NULL", () => {
+    const col = columnByName(tableCfg(webhookEvents), "payload_hash");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has nullable payload jsonb (untyped, provider-specific)", () => {
+    const col = columnByName(tableCfg(webhookEvents), "payload");
+    expect(col.getSQLType()).toBe("jsonb");
+    expect(col.notNull).toBe(false);
+  });
+
+  it("has signature_ok boolean NOT NULL", () => {
+    const col = columnByName(tableCfg(webhookEvents), "signature_ok");
+    expect(col.getSQLType()).toBe("boolean");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has nullable binding_id uuid with FK to sources_bindings(id) ON DELETE RESTRICT", () => {
+    const cfg = tableCfg(webhookEvents);
+    const col = columnByName(cfg, "binding_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(false);
+    const fk = cfg.foreignKeys.find(
+      (f) => f.reference().foreignTable === sourcesBindings,
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe("restrict");
+  });
+
+  it("has delivery_count integer NOT NULL DEFAULT 1", () => {
+    const col = columnByName(tableCfg(webhookEvents), "delivery_count");
+    expect(col.getSQLType()).toBe("integer");
+    expect(col.notNull).toBe(true);
+    expect(col.default).toBe(1);
+  });
+
+  it("has status webhook_status NOT NULL DEFAULT 'pending'", () => {
+    const col = columnByName(tableCfg(webhookEvents), "status");
+    expect(col.getSQLType()).toBe("webhook_status");
+    expect(col.notNull).toBe(true);
+    expect(col.default).toBe("pending");
+  });
+
+  it("has received_at timestamptz NOT NULL DEFAULT now()", () => {
+    const col = columnByName(tableCfg(webhookEvents), "received_at");
+    expect(col.getSQLType()).toBe("timestamp with time zone");
+    expect(col.notNull).toBe(true);
+    expect(col.hasDefault).toBe(true);
+  });
+
+  it("has created_at timestamptz NOT NULL DEFAULT now()", () => {
+    const col = columnByName(tableCfg(webhookEvents), "created_at");
+    expect(col.notNull).toBe(true);
+    expect(col.hasDefault).toBe(true);
+  });
+
+  it("has a partial UNIQUE index on (provider, event_id) WHERE event_id IS NOT NULL", () => {
+    const cfg = tableCfg(webhookEvents);
+    const partial = cfg.indexes.find((i) => {
+      const names = (
+        i.config.columns as ReadonlyArray<{ name: string }>
+      ).map((c) => c.name);
+      return (
+        i.config.unique === true &&
+        names.length === 2 &&
+        names[0] === "provider" &&
+        names[1] === "event_id" &&
+        i.config.where !== undefined
+      );
+    });
+    expect(partial).toBeDefined();
+  });
+
+  it("has an index on received_at", () => {
+    const cfg = tableCfg(webhookEvents);
+    expect(hasIndexOn(cfg, ["received_at"])).toBe(true);
+  });
+});
+
+describe("page_citations table (APPEND-ONLY)", () => {
+  it("is named 'page_citations'", () => {
+    expect(tableCfg(pageCitations).name).toBe("page_citations");
+  });
+
+  it("has uuid PK id", () => {
+    const id = columnByName(tableCfg(pageCitations), "id");
+    expect(id.getSQLType()).toBe("uuid");
+    expect(id.hasDefault).toBe(true);
+  });
+
+  it("has domain_slug text NOT NULL", () => {
+    const col = columnByName(tableCfg(pageCitations), "domain_slug");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has page_path text NOT NULL", () => {
+    const col = columnByName(tableCfg(pageCitations), "page_path");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has source_binding_id uuid NOT NULL with FK to sources_bindings(id) ON DELETE RESTRICT", () => {
+    const cfg = tableCfg(pageCitations);
+    const col = columnByName(cfg, "source_binding_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(true);
+    const fk = cfg.foreignKeys.find(
+      (f) => f.reference().foreignTable === sourcesBindings,
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe("restrict");
+  });
+
+  it("has source_ref text NOT NULL", () => {
+    const col = columnByName(tableCfg(pageCitations), "source_ref");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has nullable compiled_by_run_id uuid (FK to agent_runs deferred to PR 04)", () => {
+    const col = columnByName(tableCfg(pageCitations), "compiled_by_run_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(false);
+    const cfg = tableCfg(pageCitations);
+    const fkCols = cfg.foreignKeys.flatMap((f) =>
+      f.reference().columns.map((c) => c.name),
+    );
+    expect(fkCols).not.toContain("compiled_by_run_id");
+  });
+
+  it("has nullable prompt_version text", () => {
+    const col = columnByName(tableCfg(pageCitations), "prompt_version");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(false);
+  });
+
+  it("has created_at timestamptz NOT NULL DEFAULT now()", () => {
+    const col = columnByName(tableCfg(pageCitations), "created_at");
+    expect(col.notNull).toBe(true);
+    expect(col.hasDefault).toBe(true);
+  });
+
+  it("has an index on (domain_slug, page_path)", () => {
+    expect(hasIndexOn(tableCfg(pageCitations), ["domain_slug", "page_path"]))
+      .toBe(true);
+  });
+
+  it("has an index on (source_binding_id)", () => {
+    expect(hasIndexOn(tableCfg(pageCitations), ["source_binding_id"])).toBe(
+      true,
+    );
+  });
+
+  it("has NO updated_at column (append-only)", () => {
+    const cfg = tableCfg(pageCitations);
+    expect(cfg.columns.map((c) => c.name)).not.toContain("updated_at");
+  });
+});
+
+describe("llm_usage table", () => {
+  it("is named 'llm_usage'", () => {
+    expect(tableCfg(llmUsage).name).toBe("llm_usage");
+  });
+
+  it("has uuid PK id", () => {
+    const id = columnByName(tableCfg(llmUsage), "id");
+    expect(id.getSQLType()).toBe("uuid");
+    expect(id.hasDefault).toBe(true);
+  });
+
+  it("has timestamp timestamptz NOT NULL DEFAULT now()", () => {
+    const col = columnByName(tableCfg(llmUsage), "timestamp");
+    expect(col.getSQLType()).toBe("timestamp with time zone");
+    expect(col.notNull).toBe(true);
+    expect(col.hasDefault).toBe(true);
+  });
+
+  it("has engine llm_engine NOT NULL", () => {
+    const col = columnByName(tableCfg(llmUsage), "engine");
+    expect(col.getSQLType()).toBe("llm_engine");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has tier llm_tier NOT NULL", () => {
+    const col = columnByName(tableCfg(llmUsage), "tier");
+    expect(col.getSQLType()).toBe("llm_tier");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has model text NOT NULL", () => {
+    const col = columnByName(tableCfg(llmUsage), "model");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has pipeline_or_agent text NOT NULL", () => {
+    const col = columnByName(tableCfg(llmUsage), "pipeline_or_agent");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has nullable document_id text", () => {
+    const col = columnByName(tableCfg(llmUsage), "document_id");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(false);
+  });
+
+  it("has nullable run_id uuid (FK to agent_runs deferred to PR 04)", () => {
+    const col = columnByName(tableCfg(llmUsage), "run_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(false);
+    const cfg = tableCfg(llmUsage);
+    const fkCols = cfg.foreignKeys.flatMap((f) =>
+      f.reference().columns.map((c) => c.name),
+    );
+    expect(fkCols).not.toContain("run_id");
+  });
+
+  it("has tokens_in / tokens_out integer NOT NULL", () => {
+    const cfg = tableCfg(llmUsage);
+    const tIn = columnByName(cfg, "tokens_in");
+    const tOut = columnByName(cfg, "tokens_out");
+    expect(tIn.getSQLType()).toBe("integer");
+    expect(tIn.notNull).toBe(true);
+    expect(tOut.getSQLType()).toBe("integer");
+    expect(tOut.notNull).toBe(true);
+  });
+
+  it("has cost_usd numeric(10, 6) NOT NULL", () => {
+    const col = columnByName(tableCfg(llmUsage), "cost_usd");
+    expect(col.getSQLType()).toBe("numeric(10, 6)");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has latency_ms integer NOT NULL", () => {
+    const col = columnByName(tableCfg(llmUsage), "latency_ms");
+    expect(col.getSQLType()).toBe("integer");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has nullable prompt_version text", () => {
+    const col = columnByName(tableCfg(llmUsage), "prompt_version");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(false);
+  });
+
+  it("has created_at timestamptz NOT NULL", () => {
+    const col = columnByName(tableCfg(llmUsage), "created_at");
+    expect(col.notNull).toBe(true);
+    expect(col.hasDefault).toBe(true);
+  });
+
+  it("has an index on timestamp", () => {
+    expect(hasIndexOn(tableCfg(llmUsage), ["timestamp"])).toBe(true);
+  });
+
+  it("has an index on (pipeline_or_agent, timestamp)", () => {
+    expect(
+      hasIndexOn(tableCfg(llmUsage), ["pipeline_or_agent", "timestamp"]),
+    ).toBe(true);
+  });
+});
+
+describe("miner_runs table", () => {
+  it("is named 'miner_runs'", () => {
+    expect(tableCfg(minerRuns).name).toBe("miner_runs");
+  });
+
+  it("has uuid PK id", () => {
+    const id = columnByName(tableCfg(minerRuns), "id");
+    expect(id.getSQLType()).toBe("uuid");
+    expect(id.hasDefault).toBe(true);
+  });
+
+  it("has miner_binding_id uuid NOT NULL with FK to sources_bindings(id) ON DELETE RESTRICT", () => {
+    const cfg = tableCfg(minerRuns);
+    const col = columnByName(cfg, "miner_binding_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(true);
+    const fk = cfg.foreignKeys.find(
+      (f) => f.reference().foreignTable === sourcesBindings,
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe("restrict");
+  });
+
+  it("has class catalog_class NOT NULL", () => {
+    const col = columnByName(tableCfg(minerRuns), "class");
+    expect(col.getSQLType()).toBe("catalog_class");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has window_start and window_end timestamptz NOT NULL", () => {
+    const cfg = tableCfg(minerRuns);
+    const s = columnByName(cfg, "window_start");
+    const e = columnByName(cfg, "window_end");
+    expect(s.getSQLType()).toBe("timestamp with time zone");
+    expect(s.notNull).toBe(true);
+    expect(e.getSQLType()).toBe("timestamp with time zone");
+    expect(e.notNull).toBe(true);
+  });
+
+  it("has candidate_count integer NOT NULL DEFAULT 0", () => {
+    const col = columnByName(tableCfg(minerRuns), "candidate_count");
+    expect(col.getSQLType()).toBe("integer");
+    expect(col.notNull).toBe(true);
+    expect(col.default).toBe(0);
+  });
+
+  it("has suppressed_count integer NOT NULL DEFAULT 0", () => {
+    const col = columnByName(tableCfg(minerRuns), "suppressed_count");
+    expect(col.default).toBe(0);
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has tokens_total integer NOT NULL DEFAULT 0", () => {
+    const col = columnByName(tableCfg(minerRuns), "tokens_total");
+    expect(col.default).toBe(0);
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has cost_usd numeric(10, 6) NOT NULL DEFAULT 0", () => {
+    const col = columnByName(tableCfg(minerRuns), "cost_usd");
+    expect(col.getSQLType()).toBe("numeric(10, 6)");
+    expect(col.notNull).toBe(true);
+    expect(col.hasDefault).toBe(true);
+  });
+
+  it("has latency_ms integer NOT NULL DEFAULT 0", () => {
+    const col = columnByName(tableCfg(minerRuns), "latency_ms");
+    expect(col.default).toBe(0);
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has created_at timestamptz NOT NULL", () => {
+    const col = columnByName(tableCfg(minerRuns), "created_at");
+    expect(col.notNull).toBe(true);
+    expect(col.hasDefault).toBe(true);
+  });
+
+  it("has an index on (miner_binding_id, created_at)", () => {
+    expect(
+      hasIndexOn(tableCfg(minerRuns), ["miner_binding_id", "created_at"]),
+    ).toBe(true);
+  });
+});
+
+describe("miner_suppressions table (APPEND-ONLY)", () => {
+  it("is named 'miner_suppressions'", () => {
+    expect(tableCfg(minerSuppressions).name).toBe("miner_suppressions");
+  });
+
+  it("has uuid PK id", () => {
+    const id = columnByName(tableCfg(minerSuppressions), "id");
+    expect(id.getSQLType()).toBe("uuid");
+    expect(id.hasDefault).toBe(true);
+  });
+
+  it("has catalog_domain_id uuid NOT NULL with FK to domains(id) ON DELETE RESTRICT", () => {
+    const cfg = tableCfg(minerSuppressions);
+    const col = columnByName(cfg, "catalog_domain_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(true);
+    const fk = cfg.foreignKeys.find(
+      (f) => f.reference().foreignTable === domains,
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe("restrict");
+  });
+
+  it("has pattern_fingerprint text NOT NULL", () => {
+    const col = columnByName(tableCfg(minerSuppressions), "pattern_fingerprint");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has reviewer_id uuid NOT NULL with FK to users(id) ON DELETE RESTRICT", () => {
+    const cfg = tableCfg(minerSuppressions);
+    const col = columnByName(cfg, "reviewer_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(true);
+    const fk = cfg.foreignKeys.find(
+      (f) => f.reference().foreignTable === users,
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe("restrict");
+  });
+
+  it("has nullable reason text", () => {
+    const col = columnByName(tableCfg(minerSuppressions), "reason");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(false);
+  });
+
+  it("has created_at NOT NULL", () => {
+    const col = columnByName(tableCfg(minerSuppressions), "created_at");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has UNIQUE (catalog_domain_id, pattern_fingerprint)", () => {
+    const cfg = tableCfg(minerSuppressions);
+    const match = cfg.uniqueConstraints.find((u) => {
+      const names = u.columns.map((c) => c.name);
+      return (
+        names.length === 2 &&
+        names[0] === "catalog_domain_id" &&
+        names[1] === "pattern_fingerprint"
+      );
+    });
+    expect(match).toBeDefined();
+  });
+
+  it("has NO updated_at column (append-only)", () => {
+    const cfg = tableCfg(minerSuppressions);
+    expect(cfg.columns.map((c) => c.name)).not.toContain("updated_at");
+  });
+});
+
+describe("catalog_candidate table (MUTATION-ADJACENT)", () => {
+  it("is named 'catalog_candidate'", () => {
+    expect(tableCfg(catalogCandidate).name).toBe("catalog_candidate");
+  });
+
+  it("has uuid PK id", () => {
+    const id = columnByName(tableCfg(catalogCandidate), "id");
+    expect(id.getSQLType()).toBe("uuid");
+    expect(id.hasDefault).toBe(true);
+  });
+
+  it("has miner_run_id uuid NOT NULL with FK to miner_runs(id) ON DELETE RESTRICT", () => {
+    const cfg = tableCfg(catalogCandidate);
+    const col = columnByName(cfg, "miner_run_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(true);
+    const fk = cfg.foreignKeys.find(
+      (f) => f.reference().foreignTable === minerRuns,
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe("restrict");
+  });
+
+  it("has catalog_domain_id uuid NOT NULL with FK to domains(id) ON DELETE RESTRICT", () => {
+    const cfg = tableCfg(catalogCandidate);
+    const col = columnByName(cfg, "catalog_domain_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(true);
+    const fk = cfg.foreignKeys.find(
+      (f) =>
+        f.reference().foreignTable === domains &&
+        f.reference().columns.some((c) => c.name === "catalog_domain_id"),
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe("restrict");
+  });
+
+  it("has class catalog_class NOT NULL", () => {
+    const col = columnByName(tableCfg(catalogCandidate), "class");
+    expect(col.getSQLType()).toBe("catalog_class");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has status catalog_candidate_status NOT NULL DEFAULT 'detected'", () => {
+    const col = columnByName(tableCfg(catalogCandidate), "status");
+    expect(col.getSQLType()).toBe("catalog_candidate_status");
+    expect(col.notNull).toBe(true);
+    expect(col.default).toBe("detected");
+  });
+
+  it("has pattern_fingerprint text NOT NULL", () => {
+    const col = columnByName(tableCfg(catalogCandidate), "pattern_fingerprint");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has evidence_refs jsonb NOT NULL", () => {
+    const col = columnByName(tableCfg(catalogCandidate), "evidence_refs");
+    expect(col.getSQLType()).toBe("jsonb");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has draft_payload jsonb NOT NULL", () => {
+    const col = columnByName(tableCfg(catalogCandidate), "draft_payload");
+    expect(col.getSQLType()).toBe("jsonb");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has nullable reviewed_by uuid with FK to users(id) ON DELETE RESTRICT", () => {
+    const cfg = tableCfg(catalogCandidate);
+    const col = columnByName(cfg, "reviewed_by");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(false);
+    const fk = cfg.foreignKeys.find(
+      (f) =>
+        f.reference().foreignTable === users &&
+        f.reference().columns.some((c) => c.name === "reviewed_by"),
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe("restrict");
+  });
+
+  it("has nullable reviewed_at timestamptz", () => {
+    const col = columnByName(tableCfg(catalogCandidate), "reviewed_at");
+    expect(col.getSQLType()).toBe("timestamp with time zone");
+    expect(col.notNull).toBe(false);
+  });
+
+  it("has both created_at AND updated_at (mutation-adjacent)", () => {
+    const cfg = tableCfg(catalogCandidate);
+    const created = columnByName(cfg, "created_at");
+    const updated = columnByName(cfg, "updated_at");
+    expect(created.notNull).toBe(true);
+    expect(created.hasDefault).toBe(true);
+    expect(updated.notNull).toBe(true);
+    expect(updated.hasDefault).toBe(true);
+  });
+
+  it("has an index on status", () => {
+    expect(hasIndexOn(tableCfg(catalogCandidate), ["status"])).toBe(true);
+  });
+
+  it("has an index on miner_run_id", () => {
+    expect(hasIndexOn(tableCfg(catalogCandidate), ["miner_run_id"])).toBe(
+      true,
+    );
+  });
+});
+
+describe("redaction_events table (APPEND-ONLY)", () => {
+  it("is named 'redaction_events'", () => {
+    expect(tableCfg(redactionEvents).name).toBe("redaction_events");
+  });
+
+  it("has uuid PK id", () => {
+    const id = columnByName(tableCfg(redactionEvents), "id");
+    expect(id.getSQLType()).toBe("uuid");
+    expect(id.hasDefault).toBe(true);
+  });
+
+  it("has pipeline text NOT NULL", () => {
+    const col = columnByName(tableCfg(redactionEvents), "pipeline");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has nullable domain_id uuid with FK to domains(id) ON DELETE RESTRICT", () => {
+    const cfg = tableCfg(redactionEvents);
+    const col = columnByName(cfg, "domain_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(false);
+    const fk = cfg.foreignKeys.find(
+      (f) => f.reference().foreignTable === domains,
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe("restrict");
+  });
+
+  it("has nullable binding_id uuid with FK to sources_bindings(id) ON DELETE RESTRICT", () => {
+    const cfg = tableCfg(redactionEvents);
+    const col = columnByName(cfg, "binding_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(false);
+    const fk = cfg.foreignKeys.find(
+      (f) => f.reference().foreignTable === sourcesBindings,
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe("restrict");
+  });
+
+  it("has guard_slug text NOT NULL", () => {
+    const col = columnByName(tableCfg(redactionEvents), "guard_slug");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has category text NOT NULL", () => {
+    const col = columnByName(tableCfg(redactionEvents), "category");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has pattern_version text NOT NULL", () => {
+    const col = columnByName(tableCfg(redactionEvents), "pattern_version");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has matched_byte_ranges jsonb NOT NULL", () => {
+    const col = columnByName(tableCfg(redactionEvents), "matched_byte_ranges");
+    expect(col.getSQLType()).toBe("jsonb");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has fail_mode guard_fail_mode NOT NULL", () => {
+    const col = columnByName(tableCfg(redactionEvents), "fail_mode");
+    expect(col.getSQLType()).toBe("guard_fail_mode");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has created_at NOT NULL", () => {
+    const col = columnByName(tableCfg(redactionEvents), "created_at");
+    expect(col.notNull).toBe(true);
+    expect(col.hasDefault).toBe(true);
+  });
+
+  it("has an index on (pipeline, created_at)", () => {
+    expect(
+      hasIndexOn(tableCfg(redactionEvents), ["pipeline", "created_at"]),
+    ).toBe(true);
+  });
+
+  it("has NO updated_at column (append-only)", () => {
+    const cfg = tableCfg(redactionEvents);
+    expect(cfg.columns.map((c) => c.name)).not.toContain("updated_at");
+  });
+
+  it("has NO matched content column — metadata only per §3.3", () => {
+    const cfg = tableCfg(redactionEvents);
+    const names = cfg.columns.map((c) => c.name);
+    expect(names).not.toContain("matched_text");
+    expect(names).not.toContain("matched_content");
+    expect(names).not.toContain("original_text");
+  });
+});
+
+describe("erasure_log table (APPEND-ONLY)", () => {
+  it("is named 'erasure_log'", () => {
+    expect(tableCfg(erasureLog).name).toBe("erasure_log");
+  });
+
+  it("has uuid PK id", () => {
+    const id = columnByName(tableCfg(erasureLog), "id");
+    expect(id.getSQLType()).toBe("uuid");
+    expect(id.hasDefault).toBe(true);
+  });
+
+  it("has binding_id uuid NOT NULL with FK to sources_bindings(id) ON DELETE RESTRICT", () => {
+    const cfg = tableCfg(erasureLog);
+    const col = columnByName(cfg, "binding_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(true);
+    const fk = cfg.foreignKeys.find(
+      (f) => f.reference().foreignTable === sourcesBindings,
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe("restrict");
+  });
+
+  it("has action erasure_action NOT NULL", () => {
+    const col = columnByName(tableCfg(erasureLog), "action");
+    expect(col.getSQLType()).toBe("erasure_action");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has target_ref text NOT NULL", () => {
+    const col = columnByName(tableCfg(erasureLog), "target_ref");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has executed_by uuid NOT NULL with FK to users(id) ON DELETE RESTRICT", () => {
+    const cfg = tableCfg(erasureLog);
+    const col = columnByName(cfg, "executed_by");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(true);
+    const fk = cfg.foreignKeys.find(
+      (f) => f.reference().foreignTable === users,
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe("restrict");
+  });
+
+  it("has created_at NOT NULL", () => {
+    const col = columnByName(tableCfg(erasureLog), "created_at");
+    expect(col.notNull).toBe(true);
+    expect(col.hasDefault).toBe(true);
+  });
+
+  it("has an index on (binding_id, created_at)", () => {
+    expect(hasIndexOn(tableCfg(erasureLog), ["binding_id", "created_at"])).toBe(
+      true,
+    );
+  });
+
+  it("has NO updated_at column (append-only)", () => {
+    const cfg = tableCfg(erasureLog);
+    expect(cfg.columns.map((c) => c.name)).not.toContain("updated_at");
   });
 });
