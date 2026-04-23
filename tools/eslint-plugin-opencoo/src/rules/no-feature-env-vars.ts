@@ -73,6 +73,36 @@ export const noFeatureEnvVars = createRule<
   create(context, [options]) {
     const allowList = new Set(options.allowList ?? DEFAULT_ALLOW_LIST);
 
+    function literalNameOfKey(
+      key: TSESTree.Node,
+      computed: boolean,
+    ): string | null | "dynamic" {
+      if (!computed) {
+        if (key.type === AST_NODE_TYPES.Identifier) {
+          return key.name;
+        }
+        if (
+          key.type === AST_NODE_TYPES.Literal &&
+          typeof key.value === "string"
+        ) {
+          return key.value;
+        }
+        return "dynamic";
+      }
+      if (key.type === AST_NODE_TYPES.Literal) {
+        return typeof key.value === "string" ? key.value : "dynamic";
+      }
+      if (
+        key.type === AST_NODE_TYPES.TemplateLiteral &&
+        key.expressions.length === 0 &&
+        key.quasis.length === 1
+      ) {
+        const quasi = key.quasis[0];
+        return quasi?.value.cooked ?? "dynamic";
+      }
+      return "dynamic";
+    }
+
     return {
       MemberExpression(node): void {
         if (!isProcessEnv(node.object)) return;
@@ -116,6 +146,34 @@ export const noFeatureEnvVars = createRule<
             messageId: "featureEnvVar",
             data: { name },
           });
+        }
+      },
+      VariableDeclarator(node): void {
+        if (node.id.type !== AST_NODE_TYPES.ObjectPattern) return;
+        if (node.init === null || !isProcessEnv(node.init)) return;
+
+        for (const prop of node.id.properties) {
+          if (prop.type === AST_NODE_TYPES.RestElement) {
+            // `const { ...rest } = process.env` exposes the full env object —
+            // equivalent to dynamic access, can't be allow-list checked.
+            context.report({ node: prop, messageId: "dynamicAccess" });
+            continue;
+          }
+
+          const name = literalNameOfKey(prop.key, prop.computed);
+          if (name === "dynamic") {
+            context.report({ node: prop, messageId: "dynamicAccess" });
+            continue;
+          }
+          if (name === null) continue;
+
+          if (!allowList.has(name)) {
+            context.report({
+              node: prop,
+              messageId: "featureEnvVar",
+              data: { name },
+            });
+          }
         }
       },
     };
