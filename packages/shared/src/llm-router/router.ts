@@ -4,8 +4,6 @@ import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import {
   computeMonthToDateCost,
   costFor,
-  FALLBACK_PRICING,
-  PRICING,
 } from "../cost-tracker/index.js";
 import type { DomainId } from "../db/brands.js";
 import { domains } from "../db/schema/domains.js";
@@ -56,17 +54,11 @@ interface DomainRow {
 const TOKEN_CHAR_RATIO = 4; // ~4 chars/token for English; over-estimates for code
 const RESPONSE_TOKEN_ESTIMATE = 512;
 
+// Pre-check estimate intentionally passes no logger — the unknown-model
+// warning fires exactly once per call, from `recordUsage`'s `costFor`.
 function estimateCost(model: string, prompt: string): number {
   const tokensIn = Math.ceil(prompt.length / TOKEN_CHAR_RATIO);
-  const tokensOut = RESPONSE_TOKEN_ESTIMATE;
-  const entry = PRICING[model];
-  if (entry === undefined) {
-    return (
-      tokensIn * FALLBACK_PRICING.inputPerToken +
-      tokensOut * FALLBACK_PRICING.outputPerToken
-    );
-  }
-  return tokensIn * entry.inputPerToken + tokensOut * entry.outputPerToken;
+  return costFor(model, tokensIn, RESPONSE_TOKEN_ESTIMATE);
 }
 
 export class LlmRouter {

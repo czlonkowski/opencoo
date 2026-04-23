@@ -57,10 +57,7 @@ export function costFor(
   const entry = PRICING[model];
   if (entry === undefined) {
     options.logger?.warn("cost-tracker.unknown_model", { model });
-    return (
-      tokensIn * FALLBACK_PRICING.inputPerToken +
-      tokensOut * FALLBACK_PRICING.outputPerToken
-    );
   }
-  return tokensIn * entry.inputPerToken + tokensOut * entry.outputPerToken;
+  const rates = entry ?? FALLBACK_PRICING;
+  return tokensIn * rates.inputPerToken + tokensOut * rates.outputPerToken;
 }
