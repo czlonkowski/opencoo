@@ -118,6 +118,20 @@ if (isOpencooError(err)) {
 
 The `cause` argument is routed through a ternary internally so `super(msg, { cause: undefined })` — a type error under `exactOptionalPropertyTypes` — never fires.
 
+## Text normalization
+
+`@opencoo/shared/text-normalize` exposes a single `normalize(input: string): string` applied ONCE at the router edge before a document's bytes reach the Classifier (architecture §6.3). Pipeline order: BOM strip → line-ending normalize (CRLF/CR → LF) → NFC → control-strip (C0/C1 except `\t`/`\n`) → fence-aware whitespace collapse → blank-line cap (3+ LFs → 2). Idempotent by construction — a second pass is a no-op.
+
+```ts
+import { normalize } from "@opencoo/shared/text-normalize";
+
+const clean = normalize(rawDocumentBytes);
+```
+
+Fenced code blocks (``` or ~~~, CommonMark rules) are preserved verbatim — their interior is not touched, and an unclosed fence at EOF keeps its remainder verbatim too. Outside fences, leading whitespace on each line is preserved (nested Markdown lists survive), interior runs of `[ \t]+` collapse to one space, trailing whitespace trims.
+
+**IMPORTANT: 4-space indented code blocks are NOT preserved** — converters must emit fenced blocks per architecture §6.3. A line with 4+ leading spaces is collapsed like any other prose line; only `` ``` `` or `~~~` with 0-3 leading spaces opens a fence.
+
 ## Migrations
 
 `drizzle-kit generate` is idempotent — `tests/generate-idempotent.test.ts` asserts this by running it twice into temp dirs and byte-diffing the outputs (with volatile `when`/`id` fields normalized). A regression means the schema code has picked up nondeterminism — investigate and fix, do not delete the test.
