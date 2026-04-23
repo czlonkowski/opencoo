@@ -8,10 +8,9 @@ import {
   text,
   timestamp,
   uniqueIndex,
-  uuid,
 } from "drizzle-orm/pg-core";
 
-import { createdAt, primaryKeyId } from "./columns.js";
+import { createdAt, primaryKeyId, restrictFk } from "./columns.js";
 import { webhookStatus } from "./enums.js";
 import { sourcesBindings } from "./sources-bindings.js";
 
@@ -24,9 +23,7 @@ export const webhookEvents = pgTable(
     payloadHash: text("payload_hash").notNull(),
     payload: jsonb("payload"),
     signatureOk: boolean("signature_ok").notNull(),
-    bindingId: uuid("binding_id").references(() => sourcesBindings.id, {
-      onDelete: "restrict",
-    }),
+    bindingId: restrictFk("binding_id", () => sourcesBindings.id),
     deliveryCount: integer("delivery_count").notNull().default(1),
     status: webhookStatus("status").notNull().default("pending"),
     receivedAt: timestamp("received_at", { withTimezone: true })

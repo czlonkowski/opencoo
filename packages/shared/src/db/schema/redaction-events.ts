@@ -1,6 +1,6 @@
-import { index, jsonb, pgTable, text, uuid } from "drizzle-orm/pg-core";
+import { index, jsonb, pgTable, text } from "drizzle-orm/pg-core";
 
-import { createdAt, primaryKeyId } from "./columns.js";
+import { createdAt, primaryKeyId, restrictFk } from "./columns.js";
 import { domains } from "./domains.js";
 import { guardFailMode } from "./enums.js";
 import { sourcesBindings } from "./sources-bindings.js";
@@ -16,12 +16,8 @@ export const redactionEvents = pgTable(
   {
     id: primaryKeyId(),
     pipeline: text("pipeline").notNull(),
-    domainId: uuid("domain_id").references(() => domains.id, {
-      onDelete: "restrict",
-    }),
-    bindingId: uuid("binding_id").references(() => sourcesBindings.id, {
-      onDelete: "restrict",
-    }),
+    domainId: restrictFk("domain_id", () => domains.id),
+    bindingId: restrictFk("binding_id", () => sourcesBindings.id),
     guardSlug: text("guard_slug").notNull(),
     category: text("category").notNull(),
     patternVersion: text("pattern_version").notNull(),

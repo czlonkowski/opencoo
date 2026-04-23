@@ -1,6 +1,6 @@
-import { index, pgTable, text, uuid } from "drizzle-orm/pg-core";
+import { index, pgTable, text } from "drizzle-orm/pg-core";
 
-import { createdAt, primaryKeyId } from "./columns.js";
+import { createdAt, primaryKeyId, requiredRestrictFk } from "./columns.js";
 import { erasureAction } from "./enums.js";
 import { sourcesBindings } from "./sources-bindings.js";
 import { users } from "./users.js";
@@ -14,14 +14,10 @@ export const erasureLog = pgTable(
   "erasure_log",
   {
     id: primaryKeyId(),
-    bindingId: uuid("binding_id")
-      .notNull()
-      .references(() => sourcesBindings.id, { onDelete: "restrict" }),
+    bindingId: requiredRestrictFk("binding_id", () => sourcesBindings.id),
     action: erasureAction("action").notNull(),
     targetRef: text("target_ref").notNull(),
-    executedBy: uuid("executed_by")
-      .notNull()
-      .references(() => users.id, { onDelete: "restrict" }),
+    executedBy: requiredRestrictFk("executed_by", () => users.id),
     createdAt: createdAt(),
   },
   (t) => [

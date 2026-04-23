@@ -1,6 +1,12 @@
-import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
-import { createdAt, primaryKeyId, updatedAt } from "./columns.js";
+import {
+  createdAt,
+  primaryKeyId,
+  requiredRestrictFk,
+  restrictFk,
+  updatedAt,
+} from "./columns.js";
 import { domains } from "./domains.js";
 import { catalogCandidateStatus, catalogClass } from "./enums.js";
 import { minerRuns } from "./miner-runs.js";
@@ -17,20 +23,17 @@ export const catalogCandidate = pgTable(
   "catalog_candidate",
   {
     id: primaryKeyId(),
-    minerRunId: uuid("miner_run_id")
-      .notNull()
-      .references(() => minerRuns.id, { onDelete: "restrict" }),
-    catalogDomainId: uuid("catalog_domain_id")
-      .notNull()
-      .references(() => domains.id, { onDelete: "restrict" }),
+    minerRunId: requiredRestrictFk("miner_run_id", () => minerRuns.id),
+    catalogDomainId: requiredRestrictFk(
+      "catalog_domain_id",
+      () => domains.id,
+    ),
     class: catalogClass("class").notNull(),
     status: catalogCandidateStatus("status").notNull().default("detected"),
     patternFingerprint: text("pattern_fingerprint").notNull(),
     evidenceRefs: jsonb("evidence_refs").$type<EvidenceRef[]>().notNull(),
     draftPayload: jsonb("draft_payload").$type<DraftPayload>().notNull(),
-    reviewedBy: uuid("reviewed_by").references(() => users.id, {
-      onDelete: "restrict",
-    }),
+    reviewedBy: restrictFk("reviewed_by", () => users.id),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

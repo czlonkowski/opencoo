@@ -1,6 +1,6 @@
 import { index, pgTable, text, uuid } from "drizzle-orm/pg-core";
 
-import { createdAt, primaryKeyId } from "./columns.js";
+import { createdAt, primaryKeyId, requiredRestrictFk } from "./columns.js";
 import { sourcesBindings } from "./sources-bindings.js";
 
 // APPEND-ONLY per THREAT-MODEL §2 invariant 8: no updated_at, no $onUpdate,
@@ -12,9 +12,10 @@ export const pageCitations = pgTable(
     id: primaryKeyId(),
     domainSlug: text("domain_slug").notNull(),
     pagePath: text("page_path").notNull(),
-    sourceBindingId: uuid("source_binding_id")
-      .notNull()
-      .references(() => sourcesBindings.id, { onDelete: "restrict" }),
+    sourceBindingId: requiredRestrictFk(
+      "source_binding_id",
+      () => sourcesBindings.id,
+    ),
     sourceRef: text("source_ref").notNull(),
     // FK to agent_runs(id) is declared without .references() — the target
     // table lands in PR 04, which adds the FK via its own migration.

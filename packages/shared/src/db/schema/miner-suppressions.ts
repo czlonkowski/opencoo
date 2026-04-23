@@ -1,6 +1,6 @@
-import { pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
+import { pgTable, text, unique } from "drizzle-orm/pg-core";
 
-import { createdAt, primaryKeyId } from "./columns.js";
+import { createdAt, primaryKeyId, requiredRestrictFk } from "./columns.js";
 import { domains } from "./domains.js";
 import { users } from "./users.js";
 
@@ -12,13 +12,9 @@ export const minerSuppressions = pgTable(
   "miner_suppressions",
   {
     id: primaryKeyId(),
-    catalogDomainId: uuid("catalog_domain_id")
-      .notNull()
-      .references(() => domains.id, { onDelete: "restrict" }),
+    catalogDomainId: requiredRestrictFk("catalog_domain_id", () => domains.id),
     patternFingerprint: text("pattern_fingerprint").notNull(),
-    reviewerId: uuid("reviewer_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "restrict" }),
+    reviewerId: requiredRestrictFk("reviewer_id", () => users.id),
     reason: text("reason"),
     createdAt: createdAt(),
   },

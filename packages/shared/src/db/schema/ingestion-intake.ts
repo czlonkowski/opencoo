@@ -1,6 +1,6 @@
-import { pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
+import { pgTable, text, unique } from "drizzle-orm/pg-core";
 
-import { createdAt, primaryKeyId } from "./columns.js";
+import { createdAt, primaryKeyId, requiredRestrictFk } from "./columns.js";
 import { errorClass, intakeStatus } from "./enums.js";
 import { sourcesBindings } from "./sources-bindings.js";
 
@@ -8,9 +8,7 @@ export const ingestionIntake = pgTable(
   "ingestion_intake",
   {
     id: primaryKeyId(),
-    bindingId: uuid("binding_id")
-      .notNull()
-      .references(() => sourcesBindings.id, { onDelete: "restrict" }),
+    bindingId: requiredRestrictFk("binding_id", () => sourcesBindings.id),
     sourceDocId: text("source_doc_id").notNull(),
     sourceRevision: text("source_revision").notNull(),
     contentHash: text("content_hash").notNull(),

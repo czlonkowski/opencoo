@@ -1,14 +1,7 @@
 import { sql } from "drizzle-orm";
-import {
-  index,
-  integer,
-  numeric,
-  pgTable,
-  timestamp,
-  uuid,
-} from "drizzle-orm/pg-core";
+import { index, integer, numeric, pgTable, timestamp } from "drizzle-orm/pg-core";
 
-import { createdAt, primaryKeyId } from "./columns.js";
+import { createdAt, primaryKeyId, requiredRestrictFk } from "./columns.js";
 import { catalogClass } from "./enums.js";
 import { sourcesBindings } from "./sources-bindings.js";
 
@@ -20,9 +13,10 @@ export const minerRuns = pgTable(
   "miner_runs",
   {
     id: primaryKeyId(),
-    minerBindingId: uuid("miner_binding_id")
-      .notNull()
-      .references(() => sourcesBindings.id, { onDelete: "restrict" }),
+    minerBindingId: requiredRestrictFk(
+      "miner_binding_id",
+      () => sourcesBindings.id,
+    ),
     class: catalogClass("class").notNull(),
     windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
     windowEnd: timestamp("window_end", { withTimezone: true }).notNull(),
