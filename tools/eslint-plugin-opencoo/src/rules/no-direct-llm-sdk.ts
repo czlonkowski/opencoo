@@ -9,7 +9,6 @@ export interface NoDirectLlmSdkOptions {
 type MessageIds = "directLlmSdk";
 
 const DEFAULT_ALLOWED_PATHS = [
-  "packages/shared/llm-router/**",
   "packages/shared/src/llm-router/providers/**",
 ];
 
