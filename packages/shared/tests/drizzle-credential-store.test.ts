@@ -12,18 +12,9 @@ import {
 } from "../src/credential-store/errors.js";
 import { DrizzleCredentialStore } from "../src/credential-store/drizzle-store.js";
 import type { CredentialId } from "../src/db/brands.js";
-import { ConsoleLogger, type LoggerWriteStream } from "../src/logger.js";
+import { nullLogger } from "./helpers/null-logger.js";
 
 type Db = PgliteDatabase<typeof schema>;
-
-function nullLogger(): ConsoleLogger {
-  const nullStream: LoggerWriteStream = {
-    write(): boolean {
-      return true;
-    },
-  };
-  return new ConsoleLogger({ stream: nullStream });
-}
 
 // Initialise a fresh in-process Postgres (pglite WASM) per test — the
 // instance is a real Postgres, so gen_random_uuid(), bytea round-trip,

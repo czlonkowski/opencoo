@@ -91,7 +91,7 @@ Stream and clock are test seams — `new ConsoleLogger({ stream, now })` capture
 
 ### Invariant 11 callout
 
-The logger does **not** filter raw prompts/responses at runtime. THREAT-MODEL §2 invariant 11 ("never log raw prompts at `info`") is a code-review gate, not a firewall. Prompts + responses go through the `llm_usage_debug` table (PR 07 llm-router), not `logger.info`. If a reviewer sees prompt bytes reaching `logger.info`/`warn`/`error`, that's a ship-blocker.
+The logger does **not** filter raw prompts/responses at runtime. THREAT-MODEL §2 invariant 11 ("never log raw prompts at `info`") is a code-review gate, not a firewall. Prompts + responses go through the `llm_usage_debug` table (see §LLM router below), gated on `LLM_DEBUG_LOG=1` and TTL-pruned by Cleanup. If a reviewer sees prompt bytes reaching `logger.info`/`warn`/`error`, that's a ship-blocker.
 
 ## Errors
 
@@ -171,6 +171,61 @@ Key source of truth: `ENCRYPTION_KEY_FILE` (Docker secrets) > `ENCRYPTION_KEY` (
 **Fixture.** `InMemoryCredentialStore` satisfies the same interface with a `Map<id, row>`, for use-case tests that don't need to spin up Postgres. Row shape mirrors the `credentials` pgTable byte-for-byte.
 
 **Testing with pglite.** `DrizzleCredentialStore` unit tests use `@electric-sql/pglite` (real Postgres, WASM, in-process) rather than pg-mem — the latter's bytea adapter re-encodes through UTF-8 text and destroys binary fidelity. pglite gives us true round-trip integrity at test time.
+
+## LLM router
+
+`@opencoo/shared/llm-router` is the single sanctioned path every LLM call in opencoo takes — no agent, pipeline, or adapter imports `ai` / `@ai-sdk/*` directly (enforced by the `opencoo/no-direct-llm-sdk` lint rule, which allowlists only `packages/shared/src/llm-router/providers/**`). THREAT-MODEL §2 invariant 5 is enforced by construction here.
+
+```ts
+import {
+  LlmRouter,
+  InMemoryQueuePauser,
+  MockLlmClient,
+} from "@opencoo/shared/llm-router";
+import { createProvider } from "@opencoo/shared/llm-router/providers";
+
+const provider = await createProvider("openai");
+const router = new LlmRouter({
+  db, env: process.env, logger,
+  pauser: new InMemoryQueuePauser(),
+  provider,
+});
+
+const result = await router.generateText({
+  domainId, tier: "worker",
+  pipelineOrAgent: "ingest.classifier",
+  prompt: "classify this document",
+});
+```
+
+**Enforcement order per call:**
+1. Load the domain, parse `llm_policy` (Zod). Empty `{}` → `FALLBACK_POLICY`; malformed → `LlmPolicyViolationError`.
+2. `local_only: true` + non-ollama provider → `LlmPolicyViolationError`.
+3. Budget pre-check: `computeMonthToDateCost + estimateCost` vs `domains.llm_budget_monthly_cap_usd`. Breach → pause queues, insert `budget-cap-breach` marker row, throw `LlmBudgetExceededError` (errorClass `upstream-quota`). Fail-closed — provider is never called.
+4. Provider call, wrapped in try/finally.
+5. `llm_usage` row always written in `finally` — cost accounting stays honest even on provider failure.
+6. If `LLM_DEBUG_LOG=1`: matching `llm_usage_debug` row written, FK-paired to the usage row (Cleanup cascades both together when pruning).
+
+**Providers.** Four lazy-import modules under `providers/`: `openai`, `anthropic`, `google`, `ollama` (wrapped via `@ai-sdk/openai-compatible`). Each fails with a targeted `LlmProviderError` ("Install `@ai-sdk/openai` to use the OpenAI provider") if the SDK isn't installed, so ops gets an actionable message instead of a `Cannot find module` stack trace.
+
+**Testing.** `@opencoo/shared/llm-router/testing` exports `MockLlmClient` — a table-driven provider that returns registered `{text, tokensIn, tokensOut}` for matching `(model, promptIncludes)` pairs and throws `LlmProviderError` on any unmatched call (no silent fallbacks). Use this instead of mocking provider SDKs directly.
+
+**Never-log-plaintext regression lock.** The router emits `llm.policy.fallback`, `llm.budget.breached` metadata via the injected Logger — no prompt text, no response text. `llm_usage_debug` carries the content; that table is append-only (§2 invariant 8) and gated on the env flag.
+
+## Cost tracker
+
+`@opencoo/shared/cost-tracker` holds the pricing table and the month-to-date aggregation SQL.
+
+```ts
+import { costFor, computeMonthToDateCost } from "@opencoo/shared/cost-tracker";
+
+const dollars = costFor("gpt-4o-mini", 1000, 500);
+const mtd = await computeMonthToDateCost(db, domainId);
+```
+
+`PRICING` is keyed per-model with USD-per-token (NOT per-thousand). `FALLBACK_PRICING` is deliberately slightly more expensive than the cheapest known model so unknown-model calls over-reserve rather than under-count — budget-cap prefers false-positive breaches to leaking spend. Update `PRICING` when vendor price sheets change; the `cost-tracker.unknown_model` warn event logs the model name on the fallback path so stale pricing shows up in ops.
+
+`computeMonthToDateCost(db, domainId)` runs a single `SELECT COALESCE(SUM(cost_usd), 0) FROM llm_usage WHERE domain_id = ? AND timestamp >= date_trunc('month', now())`. NULL `domain_id` rows are never counted — they exist for bootstrap-time pings that don't belong to any cap.
 
 ## Migrations
 

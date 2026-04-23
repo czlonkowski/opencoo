@@ -15,6 +15,7 @@ export type IngestionIntakeId = Branded<string, "IngestionIntakeId">;
 export type WebhookEventId = Branded<string, "WebhookEventId">;
 export type PageCitationId = Branded<string, "PageCitationId">;
 export type LlmUsageId = Branded<string, "LlmUsageId">;
+export type LlmUsageDebugId = Branded<string, "LlmUsageDebugId">;
 export type MinerRunId = Branded<string, "MinerRunId">;
 export type CatalogCandidateId = Branded<string, "CatalogCandidateId">;
 export type MinerSuppressionId = Branded<string, "MinerSuppressionId">;

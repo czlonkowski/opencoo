@@ -22,6 +22,13 @@
       "when": 1776976963320,
       "tag": "0002_agent_runs_fk_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1776983279172,
+      "tag": "0003_llm_usage_debug_and_domain_id",
+      "breakpoints": true
     }
   ]
 }

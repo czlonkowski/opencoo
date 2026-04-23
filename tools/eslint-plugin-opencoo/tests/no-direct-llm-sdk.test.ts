@@ -16,24 +16,27 @@ const ruleTester = new RuleTester({
 ruleTester.run("no-direct-llm-sdk", noDirectLlmSdk, {
   valid: [
     {
-      name: "llm-router can import Vercel AI SDK",
-      filename: "/repo/packages/shared/llm-router/src/router.ts",
-      code: `import { generateText } from 'ai';`,
-    },
-    {
-      name: "llm-router can import provider plugin",
-      filename: "/repo/packages/shared/llm-router/src/providers/openai.ts",
-      code: `import { openai } from '@ai-sdk/openai';`,
-    },
-    {
-      name: "llm-router can import Anthropic SDK",
-      filename: "/repo/packages/shared/llm-router/src/providers/anthropic.ts",
-      code: `import Anthropic from '@anthropic-ai/sdk';`,
-    },
-    {
       name: "non-LLM import outside router is fine",
       filename: "/repo/packages/engine-ingestion/src/index.ts",
       code: `import { logger } from '@opencoo/shared-logger';`,
+    },
+    {
+      name: "llm-router providers directory may import the AI SDK (PR 08 path)",
+      filename:
+        "/repo/packages/shared/src/llm-router/providers/openai.ts",
+      code: `import { generateText } from 'ai';`,
+    },
+    {
+      name: "llm-router providers directory may import @ai-sdk/openai (PR 08 path)",
+      filename:
+        "/repo/packages/shared/src/llm-router/providers/openai.ts",
+      code: `import { createOpenAI } from '@ai-sdk/openai';`,
+    },
+    {
+      name: "llm-router providers directory may import @ai-sdk/openai-compatible (Ollama)",
+      filename:
+        "/repo/packages/shared/src/llm-router/providers/ollama.ts",
+      code: `import { createOpenAICompatible } from '@ai-sdk/openai-compatible';`,
     },
   ],
   invalid: [
@@ -83,6 +86,12 @@ ruleTester.run("no-direct-llm-sdk", noDirectLlmSdk, {
       name: "re-export of ai SDK counts",
       filename: "/repo/packages/engine-ingestion/src/re-export.ts",
       code: `export { generateText } from 'ai';`,
+      errors: [{ messageId: "directLlmSdk" }],
+    },
+    {
+      name: "llm-router router.ts (outside providers/**) may NOT import the AI SDK",
+      filename: "/repo/packages/shared/src/llm-router/router.ts",
+      code: `import { generateText } from 'ai';`,
       errors: [{ messageId: "directLlmSdk" }],
     },
   ],

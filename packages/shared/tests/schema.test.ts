@@ -11,6 +11,7 @@ import {
   automationCandidateStatus,
   automationDeployments,
   automationDeploymentStatus,
+  llmUsageDebug,
   catalogCandidate,
   catalogCandidateStatus,
   catalogClass,
@@ -954,6 +955,70 @@ describe("llm_usage table", () => {
     expect(
       hasIndexOn(tableCfg(llmUsage), ["pipeline_or_agent", "timestamp"]),
     ).toBe(true);
+  });
+
+  // PR 08 — domain_id column added via migration 0003.
+  it("has nullable domain_id uuid with FK to domains(id) ON DELETE SET NULL", () => {
+    const cfg = tableCfg(llmUsage);
+    const col = columnByName(cfg, "domain_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(false);
+    expectSetNullFkTo(cfg, domains, "domain_id");
+  });
+});
+
+describe("llm_usage_debug table (APPEND-ONLY, PR 08)", () => {
+  it("is named 'llm_usage_debug'", () => {
+    expect(tableCfg(llmUsageDebug).name).toBe("llm_usage_debug");
+  });
+
+  it("has uuid PK id with gen_random_uuid() default", () => {
+    const cfg = tableCfg(llmUsageDebug);
+    const id = columnByName(cfg, "id");
+    expect(id.getSQLType()).toBe("uuid");
+    expect(id.notNull).toBe(true);
+    expect(id.hasDefault).toBe(true);
+    expect(primaryKeyColumnNames(cfg)).toContain("id");
+  });
+
+  it("has usage_id uuid NOT NULL with FK to llm_usage(id) ON DELETE CASCADE", () => {
+    const cfg = tableCfg(llmUsageDebug);
+    const col = columnByName(cfg, "usage_id");
+    expect(col.getSQLType()).toBe("uuid");
+    expect(col.notNull).toBe(true);
+    const fk = cfg.foreignKeys.find(
+      (f) => f.reference().foreignTable === llmUsage,
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe("cascade");
+  });
+
+  it("has prompt_text text NOT NULL", () => {
+    const col = columnByName(tableCfg(llmUsageDebug), "prompt_text");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has response_text text NOT NULL", () => {
+    const col = columnByName(tableCfg(llmUsageDebug), "response_text");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(true);
+  });
+
+  it("has created_at NOT NULL DEFAULT now()", () => {
+    const col = columnByName(tableCfg(llmUsageDebug), "created_at");
+    expect(col.getSQLType()).toBe("timestamp with time zone");
+    expect(col.notNull).toBe(true);
+    expect(col.hasDefault).toBe(true);
+  });
+
+  it("has an index on created_at (for Cleanup TTL prune)", () => {
+    expect(hasIndexOn(tableCfg(llmUsageDebug), ["created_at"])).toBe(true);
+  });
+
+  it("has NO updated_at column (append-only)", () => {
+    const cfg = tableCfg(llmUsageDebug);
+    expect(cfg.columns.map((c) => c.name)).not.toContain("updated_at");
   });
 });
 

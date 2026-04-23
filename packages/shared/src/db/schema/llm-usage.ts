@@ -9,6 +9,7 @@ import {
 
 import { agentRuns } from "./agent-runs.js";
 import { createdAt, primaryKeyId, setNullFk } from "./columns.js";
+import { domains } from "./domains.js";
 import { llmEngine, llmTier } from "./enums.js";
 
 // The cost+latency audit for every LLM call routed through `llm-router`
@@ -33,6 +34,13 @@ export const llmUsage = pgTable(
     // Per-pipeline rollups must still sum correctly even when the
     // referencing run is gone.
     runId: setNullFk("run_id", () => agentRuns.id),
+    // FK to domains(id) is ON DELETE SET NULL so historical cost
+    // attribution survives a domain being purged. `domain_id` is
+    // nullable both because a few non-domain-scoped calls (e.g.
+    // bootstrap-time pings) have no domain context and because
+    // pre-migration-0003 rows were never populated — the budget-cap
+    // pre-check treats NULL as "not counted toward any domain cap".
+    domainId: setNullFk("domain_id", () => domains.id),
     tokensIn: integer("tokens_in").notNull(),
     tokensOut: integer("tokens_out").notNull(),
     costUsd: numeric("cost_usd", { precision: 10, scale: 6 }).notNull(),

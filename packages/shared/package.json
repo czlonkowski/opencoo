@@ -29,6 +29,18 @@
     "./credential-store": {
       "types": "./dist/credential-store/index.d.ts",
       "default": "./dist/credential-store/index.js"
+    },
+    "./llm-router": {
+      "types": "./dist/llm-router/index.d.ts",
+      "default": "./dist/llm-router/index.js"
+    },
+    "./llm-router/testing": {
+      "types": "./dist/llm-router/testing/mock-llm-client.d.ts",
+      "default": "./dist/llm-router/testing/mock-llm-client.js"
+    },
+    "./cost-tracker": {
+      "types": "./dist/cost-tracker/index.d.ts",
+      "default": "./dist/cost-tracker/index.js"
     }
   },
   "files": [
@@ -43,6 +55,11 @@
     "db:check": "drizzle-kit check"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "~3.0.71",
+    "@ai-sdk/google": "~3.0.64",
+    "@ai-sdk/openai": "~3.0.53",
+    "@ai-sdk/openai-compatible": "~2.0.41",
+    "ai": "~6.0.168",
     "drizzle-orm": "0.45.2",
     "drizzle-zod": "0.8.3",
     "zod": "4.3.6"

@@ -81,5 +81,19 @@ ruleTester.run("no-update-append-only", noUpdateAppendOnly, {
       code: `tx.update(agentRuns).set({ status: 'failed' });`,
       errors: [{ messageId: "updateAppendOnly", data: { table: "agentRuns" } }],
     },
+    {
+      name: "update on llmUsageDebug flags updateAppendOnly",
+      code: `db.update(llmUsageDebug).set({ promptText: 'rewrite' });`,
+      errors: [
+        { messageId: "updateAppendOnly", data: { table: "llmUsageDebug" } },
+      ],
+    },
+    {
+      name: "delete on llmUsageDebug flags deleteAppendOnly",
+      code: `db.delete(llmUsageDebug);`,
+      errors: [
+        { messageId: "deleteAppendOnly", data: { table: "llmUsageDebug" } },
+      ],
+    },
   ],
 });

@@ -8,7 +8,9 @@ export interface NoDirectLlmSdkOptions {
 
 type MessageIds = "directLlmSdk";
 
-const DEFAULT_ALLOWED_PATHS = ["packages/shared/llm-router/**"];
+const DEFAULT_ALLOWED_PATHS = [
+  "packages/shared/src/llm-router/providers/**",
+];
 
 // Exact package names that are forbidden outside the router.
 const FORBIDDEN_EXACT = new Set([

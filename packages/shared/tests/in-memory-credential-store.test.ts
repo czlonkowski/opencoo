@@ -6,16 +6,7 @@ import {
   UnsupportedEncryptionVersionError,
 } from "../src/credential-store/errors.js";
 import { InMemoryCredentialStore } from "../src/credential-store/in-memory-store.js";
-import { ConsoleLogger, type LoggerWriteStream } from "../src/logger.js";
-
-function nullLogger(): ConsoleLogger {
-  const nullStream: LoggerWriteStream = {
-    write(): boolean {
-      return true;
-    },
-  };
-  return new ConsoleLogger({ stream: nullStream });
-}
+import { nullLogger } from "./helpers/null-logger.js";
 
 function newStore(): InMemoryCredentialStore {
   return new InMemoryCredentialStore({
