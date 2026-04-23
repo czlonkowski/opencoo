@@ -15,11 +15,37 @@ const BOM = 0xfeff;
 const CRLF_OR_CR = /\r\n?/g;
 const CONTROL_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g;
 
+// Leading-preserving whitespace collapse. Split into leading
+// indentation (spaces/tabs) + body; collapse any run of interior
+// horizontal whitespace to one space; trim trailing horizontal
+// whitespace. Preserving the leading run is what keeps nested
+// Markdown lists readable (`  - outer\n    - inner` stays as-is).
+const LEADING = /^([ \t]*)(.*)$/;
+const HORIZONTAL_WS_RUN = /[ \t]+/g;
+const TRAILING_HORIZONTAL_WS = /[ \t]+$/;
+const THREE_OR_MORE_NEWLINES = /\n{3,}/g;
+
+function collapseLine(line: string): string {
+  const m = LEADING.exec(line);
+  const lead = m?.[1] ?? "";
+  const body = (m?.[2] ?? "").replace(HORIZONTAL_WS_RUN, " ");
+  return (lead + body).replace(TRAILING_HORIZONTAL_WS, "");
+}
+
 export function normalize(input: string): string {
   let out = input;
   if (out.charCodeAt(0) === BOM) out = out.slice(1);
   out = out.replace(CRLF_OR_CR, "\n");
   out = out.normalize("NFC");
   out = out.replace(CONTROL_CHARS, "");
+
+  const lines = out.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    lines[i] = collapseLine(line);
+  }
+  out = lines.join("\n");
+
+  out = out.replace(THREE_OR_MORE_NEWLINES, "\n\n");
   return out;
 }
