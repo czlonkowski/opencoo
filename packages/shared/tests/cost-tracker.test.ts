@@ -32,7 +32,8 @@ function captureStream(): CapturedStream {
 
 async function freshDb(): Promise<Db> {
   const pg = new PGlite();
-  await pg.query(`
+  // pg.exec (not pg.query) accepts multi-statement DDL in one call.
+  await pg.exec(`
     CREATE TABLE domains (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
       slug text NOT NULL,
@@ -129,9 +130,10 @@ describe("computeMonthToDateCost", () => {
   beforeEach(async () => {
     db = await freshDb();
     await db.execute(sql`
-      INSERT INTO domains (id, slug, name) VALUES
-        (${domainA}, 'wiki-a', 'Wiki A'),
-        (${domainB}, 'wiki-b', 'Wiki B');
+      INSERT INTO domains (id, slug, name) VALUES (${domainA}, 'wiki-a', 'Wiki A')
+    `);
+    await db.execute(sql`
+      INSERT INTO domains (id, slug, name) VALUES (${domainB}, 'wiki-b', 'Wiki B')
     `);
   });
 
