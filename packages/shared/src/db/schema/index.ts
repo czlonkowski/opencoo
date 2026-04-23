@@ -1,5 +1,6 @@
 export * from "./enums.js";
 export * from "./agent-definitions.js";
+export * from "./agent-instances.js";
 export * from "./catalog-candidate.js";
 export * from "./credentials.js";
 export * from "./domains.js";
