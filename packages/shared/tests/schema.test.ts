@@ -98,6 +98,36 @@ function hasIndexOn(
   );
 }
 
+// Assert that `cfg` has an `ON DELETE RESTRICT` foreign key pointing at
+// `target`. When a table has two FKs to the same target, pass the
+// source column name to disambiguate.
+function expectRestrictFkTo(
+  cfg: ReturnType<typeof getTableConfig>,
+  target: PgTable,
+  fromColumn?: string,
+): void {
+  const fk = cfg.foreignKeys.find((f) => {
+    if (f.reference().foreignTable !== target) return false;
+    if (fromColumn === undefined) return true;
+    return f.reference().columns.some((c) => c.name === fromColumn);
+  });
+  expect(fk).toBeDefined();
+  expect(fk?.onDelete).toBe("restrict");
+}
+
+// Assert that `column` carries no foreign-key constraint (used for the
+// compiled_by_run_id / run_id columns whose FK to agent_runs is
+// deferred to PR 04).
+function expectNoFkOn(
+  cfg: ReturnType<typeof getTableConfig>,
+  column: string,
+): void {
+  const fkCols = cfg.foreignKeys.flatMap((f) =>
+    f.reference().columns.map((c) => c.name),
+  );
+  expect(fkCols).not.toContain(column);
+}
+
 describe("pg enums", () => {
   it("domain_class has three values: knowledge, catalog-workflows, catalog-skills", () => {
     expect(domainClass.enumName).toBe("domain_class");
@@ -349,12 +379,7 @@ describe("sources_bindings table", () => {
     const col = columnByName(cfg, "domain_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(true);
-
-    const fk = cfg.foreignKeys.find(
-      (f) => f.reference().foreignTable === domains,
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, domains);
   });
 
   it("has adapter_slug text NOT NULL", () => {
@@ -401,12 +426,7 @@ describe("sources_bindings table", () => {
     const col = columnByName(cfg, "credentials_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(false);
-
-    const fk = cfg.foreignKeys.find(
-      (f) => f.reference().foreignTable === credentials,
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, credentials);
   });
 
   it("has nullable retention_days_override integer", () => {
@@ -562,11 +582,7 @@ describe("ingestion_intake table", () => {
     const col = columnByName(cfg, "binding_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(true);
-    const fk = cfg.foreignKeys.find(
-      (f) => f.reference().foreignTable === sourcesBindings,
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, sourcesBindings);
   });
 
   it("has source_doc_id text NOT NULL", () => {
@@ -677,11 +693,7 @@ describe("webhook_events table", () => {
     const col = columnByName(cfg, "binding_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(false);
-    const fk = cfg.foreignKeys.find(
-      (f) => f.reference().foreignTable === sourcesBindings,
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, sourcesBindings);
   });
 
   it("has delivery_count integer NOT NULL DEFAULT 1", () => {
@@ -762,11 +774,7 @@ describe("page_citations table (APPEND-ONLY)", () => {
     const col = columnByName(cfg, "source_binding_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(true);
-    const fk = cfg.foreignKeys.find(
-      (f) => f.reference().foreignTable === sourcesBindings,
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, sourcesBindings);
   });
 
   it("has source_ref text NOT NULL", () => {
@@ -776,14 +784,11 @@ describe("page_citations table (APPEND-ONLY)", () => {
   });
 
   it("has nullable compiled_by_run_id uuid (FK to agent_runs deferred to PR 04)", () => {
-    const col = columnByName(tableCfg(pageCitations), "compiled_by_run_id");
+    const cfg = tableCfg(pageCitations);
+    const col = columnByName(cfg, "compiled_by_run_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(false);
-    const cfg = tableCfg(pageCitations);
-    const fkCols = cfg.foreignKeys.flatMap((f) =>
-      f.reference().columns.map((c) => c.name),
-    );
-    expect(fkCols).not.toContain("compiled_by_run_id");
+    expectNoFkOn(cfg, "compiled_by_run_id");
   });
 
   it("has nullable prompt_version text", () => {
@@ -864,14 +869,11 @@ describe("llm_usage table", () => {
   });
 
   it("has nullable run_id uuid (FK to agent_runs deferred to PR 04)", () => {
-    const col = columnByName(tableCfg(llmUsage), "run_id");
+    const cfg = tableCfg(llmUsage);
+    const col = columnByName(cfg, "run_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(false);
-    const cfg = tableCfg(llmUsage);
-    const fkCols = cfg.foreignKeys.flatMap((f) =>
-      f.reference().columns.map((c) => c.name),
-    );
-    expect(fkCols).not.toContain("run_id");
+    expectNoFkOn(cfg, "run_id");
   });
 
   it("has tokens_in / tokens_out integer NOT NULL", () => {
@@ -935,11 +937,7 @@ describe("miner_runs table", () => {
     const col = columnByName(cfg, "miner_binding_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(true);
-    const fk = cfg.foreignKeys.find(
-      (f) => f.reference().foreignTable === sourcesBindings,
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, sourcesBindings);
   });
 
   it("has class catalog_class NOT NULL", () => {
@@ -1019,11 +1017,7 @@ describe("miner_suppressions table (APPEND-ONLY)", () => {
     const col = columnByName(cfg, "catalog_domain_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(true);
-    const fk = cfg.foreignKeys.find(
-      (f) => f.reference().foreignTable === domains,
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, domains);
   });
 
   it("has pattern_fingerprint text NOT NULL", () => {
@@ -1037,11 +1031,7 @@ describe("miner_suppressions table (APPEND-ONLY)", () => {
     const col = columnByName(cfg, "reviewer_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(true);
-    const fk = cfg.foreignKeys.find(
-      (f) => f.reference().foreignTable === users,
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, users);
   });
 
   it("has nullable reason text", () => {
@@ -1090,11 +1080,7 @@ describe("catalog_candidate table (MUTATION-ADJACENT)", () => {
     const col = columnByName(cfg, "miner_run_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(true);
-    const fk = cfg.foreignKeys.find(
-      (f) => f.reference().foreignTable === minerRuns,
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, minerRuns);
   });
 
   it("has catalog_domain_id uuid NOT NULL with FK to domains(id) ON DELETE RESTRICT", () => {
@@ -1102,13 +1088,7 @@ describe("catalog_candidate table (MUTATION-ADJACENT)", () => {
     const col = columnByName(cfg, "catalog_domain_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(true);
-    const fk = cfg.foreignKeys.find(
-      (f) =>
-        f.reference().foreignTable === domains &&
-        f.reference().columns.some((c) => c.name === "catalog_domain_id"),
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, domains, "catalog_domain_id");
   });
 
   it("has class catalog_class NOT NULL", () => {
@@ -1147,13 +1127,7 @@ describe("catalog_candidate table (MUTATION-ADJACENT)", () => {
     const col = columnByName(cfg, "reviewed_by");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(false);
-    const fk = cfg.foreignKeys.find(
-      (f) =>
-        f.reference().foreignTable === users &&
-        f.reference().columns.some((c) => c.name === "reviewed_by"),
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, users, "reviewed_by");
   });
 
   it("has nullable reviewed_at timestamptz", () => {
@@ -1205,11 +1179,7 @@ describe("redaction_events table (APPEND-ONLY)", () => {
     const col = columnByName(cfg, "domain_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(false);
-    const fk = cfg.foreignKeys.find(
-      (f) => f.reference().foreignTable === domains,
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, domains);
   });
 
   it("has nullable binding_id uuid with FK to sources_bindings(id) ON DELETE RESTRICT", () => {
@@ -1217,11 +1187,7 @@ describe("redaction_events table (APPEND-ONLY)", () => {
     const col = columnByName(cfg, "binding_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(false);
-    const fk = cfg.foreignKeys.find(
-      (f) => f.reference().foreignTable === sourcesBindings,
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, sourcesBindings);
   });
 
   it("has guard_slug text NOT NULL", () => {
@@ -1296,11 +1262,7 @@ describe("erasure_log table (APPEND-ONLY)", () => {
     const col = columnByName(cfg, "binding_id");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(true);
-    const fk = cfg.foreignKeys.find(
-      (f) => f.reference().foreignTable === sourcesBindings,
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, sourcesBindings);
   });
 
   it("has action erasure_action NOT NULL", () => {
@@ -1320,11 +1282,7 @@ describe("erasure_log table (APPEND-ONLY)", () => {
     const col = columnByName(cfg, "executed_by");
     expect(col.getSQLType()).toBe("uuid");
     expect(col.notNull).toBe(true);
-    const fk = cfg.foreignKeys.find(
-      (f) => f.reference().foreignTable === users,
-    );
-    expect(fk).toBeDefined();
-    expect(fk?.onDelete).toBe("restrict");
+    expectRestrictFkTo(cfg, users);
   });
 
   it("has created_at NOT NULL", () => {
