@@ -37,6 +37,10 @@ If the test errors, fix the error and re-run until it fails for the right reason
 
 A test that passes sometimes doesn't count. If CI is flaky on your PR's new test, fix the flake before merging — even if re-runs are green. "Works in CI after re-run" is a known opencoo anti-pattern when adapter tests race against real external systems. Use service-containers + deterministic fixture data; pin SDK versions.
 
+### TDD helper hygiene
+
+If a new test surfaces the need to extend a shared test helper (e.g. `uniqueColumnNames()` needs to also look at column-level `.unique()` in addition to table-level constraints), land the helper-widening as its own test-only commit **before** the feat commit it enables. Otherwise the feat commit lands with a known-Red assertion that only goes Green in a later commit — `git bisect` on the feat commit then finds a failure in the helper, not in the feature, and reviewers have to reconstruct the ordering from surrounding commits. Match the pattern from PR 02 (`test(shared): defer getTableConfig to per-test calls`) — the helper shape was prepared before the feat commits depended on it.
+
 ---
 
 ## 2. TypeScript conventions
