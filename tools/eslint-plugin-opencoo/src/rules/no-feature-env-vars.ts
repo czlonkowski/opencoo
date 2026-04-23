@@ -1,6 +1,6 @@
 import { createRule } from "../utils/create-rule.js";
 
-interface Options {
+export interface NoFeatureEnvVarsOptions {
   allowList?: string[];
 }
 
@@ -20,7 +20,10 @@ const DEFAULT_ALLOW_LIST = [
   "TELEMETRY_ENDPOINT",
 ];
 
-export const noFeatureEnvVars = createRule<[Options], MessageIds>({
+export const noFeatureEnvVars = createRule<
+  [NoFeatureEnvVarsOptions],
+  MessageIds
+>({
   name: "no-feature-env-vars",
   meta: {
     type: "problem",

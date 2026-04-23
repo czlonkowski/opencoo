@@ -1,6 +1,6 @@
 import { createRule } from "../utils/create-rule.js";
 
-interface Options {
+export interface NoDirectGiteaWriteOptions {
   allowedPaths?: string[];
 }
 
@@ -11,7 +11,10 @@ const DEFAULT_ALLOWED_PATHS = [
   "packages/cli/src/provision/**",
 ];
 
-export const noDirectGiteaWrite = createRule<[Options], MessageIds>({
+export const noDirectGiteaWrite = createRule<
+  [NoDirectGiteaWriteOptions],
+  MessageIds
+>({
   name: "no-direct-gitea-write",
   meta: {
     type: "problem",

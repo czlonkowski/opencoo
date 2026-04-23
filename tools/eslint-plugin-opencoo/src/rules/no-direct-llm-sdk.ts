@@ -1,6 +1,6 @@
 import { createRule } from "../utils/create-rule.js";
 
-interface Options {
+export interface NoDirectLlmSdkOptions {
   allowedPaths?: string[];
 }
 
@@ -8,7 +8,10 @@ type MessageIds = "directLlmSdk";
 
 const DEFAULT_ALLOWED_PATHS = ["packages/shared/llm-router/**"];
 
-export const noDirectLlmSdk = createRule<[Options], MessageIds>({
+export const noDirectLlmSdk = createRule<
+  [NoDirectLlmSdkOptions],
+  MessageIds
+>({
   name: "no-direct-llm-sdk",
   meta: {
     type: "problem",

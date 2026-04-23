@@ -2,13 +2,16 @@ import { createRule } from "../utils/create-rule.js";
 
 type AppliesTo = "ingestion" | "self-operating" | "auto";
 
-interface Options {
+export interface NoCrossEngineImportOptions {
   appliesTo?: AppliesTo;
 }
 
 type MessageIds = "crossEngineImport";
 
-export const noCrossEngineImport = createRule<[Options], MessageIds>({
+export const noCrossEngineImport = createRule<
+  [NoCrossEngineImportOptions],
+  MessageIds
+>({
   name: "no-cross-engine-import",
   meta: {
     type: "problem",
@@ -22,6 +25,7 @@ export const noCrossEngineImport = createRule<[Options], MessageIds>({
         additionalProperties: false,
         properties: {
           appliesTo: {
+            type: "string",
             enum: ["ingestion", "self-operating", "auto"],
           },
         },
