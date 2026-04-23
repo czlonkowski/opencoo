@@ -29,6 +29,18 @@
     "./credential-store": {
       "types": "./dist/credential-store/index.d.ts",
       "default": "./dist/credential-store/index.js"
+    },
+    "./llm-router": {
+      "types": "./dist/llm-router/index.d.ts",
+      "default": "./dist/llm-router/index.js"
+    },
+    "./llm-router/testing": {
+      "types": "./dist/llm-router/testing/mock-llm-client.d.ts",
+      "default": "./dist/llm-router/testing/mock-llm-client.js"
+    },
+    "./cost-tracker": {
+      "types": "./dist/cost-tracker/index.d.ts",
+      "default": "./dist/cost-tracker/index.js"
     }
   },
   "files": [
