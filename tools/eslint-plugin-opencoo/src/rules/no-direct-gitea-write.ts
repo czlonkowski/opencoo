@@ -1,4 +1,7 @@
+import type { TSESTree } from "@typescript-eslint/utils";
+
 import { createRule } from "../utils/create-rule.js";
+import { pathMatchesAny } from "../utils/path-matcher.js";
 
 export interface NoDirectGiteaWriteOptions {
   allowedPaths?: string[];
@@ -10,6 +13,27 @@ const DEFAULT_ALLOWED_PATHS = [
   "packages/shared/wiki-write/**",
   "packages/cli/src/provision/**",
 ];
+
+// Forbidden package names — direct Gitea clients.
+const FORBIDDEN_PACKAGES = new Set([
+  "@opencoo/gitea-client",
+  "gitea-js",
+  "@opencoo/wiki-gitea",
+]);
+
+// Forbidden path fragments — importing wiki-gitea adapter source directly.
+const FORBIDDEN_PATH_FRAGMENTS = [
+  "packages/adapters/wiki-gitea/",
+  "/adapters/wiki-gitea/",
+];
+
+function isForbiddenSource(source: string): boolean {
+  if (FORBIDDEN_PACKAGES.has(source)) return true;
+  for (const pkg of FORBIDDEN_PACKAGES) {
+    if (source.startsWith(`${pkg}/`)) return true;
+  }
+  return FORBIDDEN_PATH_FRAGMENTS.some((f) => source.includes(f));
+}
 
 export const noDirectGiteaWrite = createRule<
   [NoDirectGiteaWriteOptions],
@@ -40,5 +64,42 @@ export const noDirectGiteaWrite = createRule<
     },
   },
   defaultOptions: [{ allowedPaths: DEFAULT_ALLOWED_PATHS }],
-  create: () => ({}),
+  create(context, [options]) {
+    const allowedPaths = options.allowedPaths ?? DEFAULT_ALLOWED_PATHS;
+    if (pathMatchesAny(context.filename, allowedPaths)) {
+      return {};
+    }
+
+    function check(node: TSESTree.Node, source: string): void {
+      if (isForbiddenSource(source)) {
+        context.report({
+          node,
+          messageId: "directGiteaWrite",
+          data: { source },
+        });
+      }
+    }
+
+    return {
+      ImportDeclaration(node): void {
+        check(node.source, node.source.value);
+      },
+      ExportAllDeclaration(node): void {
+        check(node.source, node.source.value);
+      },
+      ExportNamedDeclaration(node): void {
+        if (node.source !== null && node.source !== undefined) {
+          check(node.source, node.source.value);
+        }
+      },
+      ImportExpression(node): void {
+        if (
+          node.source.type === "Literal" &&
+          typeof node.source.value === "string"
+        ) {
+          check(node.source, node.source.value);
+        }
+      },
+    };
+  },
 });
