@@ -262,26 +262,32 @@ export class LlmRouter {
     // RETURNING roundtrip (pglite supports RETURNING but keeping the
     // wire simple helps when we swap in a thinner driver later).
     const usageId = crypto.randomUUID();
-    await this.db.insert(llmUsage).values({
-      id: sql`${usageId}::uuid`,
-      timestamp: new Date(args.startedAt),
-      engine: "ingestion",
-      tier: args.opts.tier,
-      model: args.model,
-      pipelineOrAgent: args.opts.pipelineOrAgent,
-      domainId: args.opts.domainId,
-      documentId: args.opts.documentId ?? null,
-      tokensIn: args.tokensIn,
-      tokensOut: args.tokensOut,
-      costUsd: cost.toFixed(6),
-      latencyMs: args.endedAt - args.startedAt,
-    });
-    if (args.debugEnabled) {
-      await this.db.insert(llmUsageDebug).values({
-        usageId: sql`${usageId}::uuid`,
-        promptText: args.opts.prompt,
-        responseText: args.debugResponseText,
+    // Both rows land under one `db.transaction` so the pair is atomic
+    // — a failure on the debug insert rolls back the metadata insert,
+    // matching the llm-usage-debug.ts schema header comment and the
+    // §LLM-router README contract.
+    await this.db.transaction(async (tx) => {
+      await tx.insert(llmUsage).values({
+        id: sql`${usageId}::uuid`,
+        timestamp: new Date(args.startedAt),
+        engine: "ingestion",
+        tier: args.opts.tier,
+        model: args.model,
+        pipelineOrAgent: args.opts.pipelineOrAgent,
+        domainId: args.opts.domainId,
+        documentId: args.opts.documentId ?? null,
+        tokensIn: args.tokensIn,
+        tokensOut: args.tokensOut,
+        costUsd: cost.toFixed(6),
+        latencyMs: args.endedAt - args.startedAt,
       });
-    }
+      if (args.debugEnabled) {
+        await tx.insert(llmUsageDebug).values({
+          usageId: sql`${usageId}::uuid`,
+          promptText: args.opts.prompt,
+          responseText: args.debugResponseText,
+        });
+      }
+    });
   }
 }

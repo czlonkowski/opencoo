@@ -306,6 +306,29 @@ describe("LlmRouter — LLM_DEBUG_LOG gated debug insertion", () => {
     const list = Array.isArray(debug) ? debug : debug.rows;
     expect(list).toHaveLength(0);
   });
+
+  it("rolls back llm_usage when the llm_usage_debug insert fails (atomic pair)", async () => {
+    const mock = new MockLlmClient();
+    mock.register({
+      match: { model: "gpt-4o-mini", promptIncludes: "hi" },
+      response: { text: "ok", tokensIn: 1, tokensOut: 1 },
+    });
+    // Drop the companion table so the debug insert raises; the
+    // transaction must roll back the llm_usage row too.
+    await db.execute(sql`DROP TABLE llm_usage_debug`);
+    const { router } = newRouter(db, mock, { LLM_DEBUG_LOG: "1" });
+    await expect(
+      router.generateText({
+        domainId,
+        tier: "worker",
+        pipelineOrAgent: "x",
+        prompt: "hi",
+      }),
+    ).rejects.toThrow();
+    const usage = await db.execute(sql`SELECT id FROM llm_usage`);
+    const list = Array.isArray(usage) ? usage : usage.rows;
+    expect(list).toHaveLength(0);
+  });
 });
 
 describe("LlmRouter — generateObject round-trip", () => {
