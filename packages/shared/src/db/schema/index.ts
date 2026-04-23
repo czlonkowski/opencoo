@@ -2,6 +2,7 @@ export * from "./enums.js";
 export * from "./catalog-candidate.js";
 export * from "./credentials.js";
 export * from "./domains.js";
+export * from "./erasure-log.js";
 export * from "./ingestion-intake.js";
 export * from "./llm-usage.js";
 export * from "./miner-runs.js";
