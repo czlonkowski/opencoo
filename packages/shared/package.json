@@ -21,6 +21,10 @@
     "./logger": {
       "types": "./dist/logger.d.ts",
       "default": "./dist/logger.js"
+    },
+    "./text-normalize": {
+      "types": "./dist/text-normalize.d.ts",
+      "default": "./dist/text-normalize.js"
     }
   },
   "files": [
