@@ -391,15 +391,21 @@ async function readErrorMessage(response: Response): Promise<string> {
 }
 
 /**
- * Recognise the three Gitea diagnostic messages that mean "the branch
- * advanced under you / file shape changed". Tested against
- * gitea/gitea:1.26.0; if a future Gitea version rephrases these, this
- * function is the only place to update.
+ * The three Gitea diagnostic messages that mean "the branch advanced
+ * under you / file shape changed". Tested against gitea/gitea:1.26.0;
+ * if a future Gitea version rephrases these, this list is the only
+ * place to update.
+ *
+ *   1. update with stale blob sha   → "sha does not match …"
+ *   2. create over existing path    → "file already exists …"
+ *   3. delete missing path          → "file does not exist …"
  */
+const STALE_SIGNAL_PATTERNS = [
+  /sha does not match/i,
+  /file already exists/i,
+  /file does not exist/i,
+] as const;
+
 function isStaleSignalMessage(message: string): boolean {
-  return (
-    /sha does not match/i.test(message) ||
-    /file already exists/i.test(message) ||
-    /file does not exist/i.test(message)
-  );
+  return STALE_SIGNAL_PATTERNS.some((re) => re.test(message));
 }
