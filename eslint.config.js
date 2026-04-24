@@ -85,4 +85,19 @@ export default tseslint.config(
       "opencoo/no-cross-engine-import": ["error", { appliesTo: "ingestion" }],
     },
   },
+
+  // 5. Adapter contract-test files legitimately read their OWN sidecar
+  //    URL from process.env to gate the real-service tier (e.g.
+  //    `DOCLING_URL` for converter-docling, `PANDOC_URL` for a future
+  //    converter-pandoc). These URLs are NOT opencoo feature config —
+  //    production code receives them at construction time from the
+  //    routing layer; they only appear in tests. Scoped narrowly so
+  //    adapter *production* code (packages/adapters/*/src/**) is still
+  //    subject to the full allow-list.
+  {
+    files: ["packages/adapters/*/tests/**/*.{ts,tsx}"],
+    rules: {
+      "opencoo/no-feature-env-vars": "off",
+    },
+  },
 );

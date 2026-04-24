@@ -7,6 +7,7 @@ export default defineConfig({
       "tests/**/*.test.ts",
       "tools/**/*.test.ts",
       "packages/*/tests/**/*.test.ts",
+      "packages/adapters/*/tests/**/*.test.ts",
     ],
     exclude: [
       "**/node_modules/**",
