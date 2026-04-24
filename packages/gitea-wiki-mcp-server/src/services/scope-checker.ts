@@ -107,9 +107,11 @@ export function createGiteaScopeChecker(
 
     invalidate(token): void {
       const tokenHash = hashToken(token);
-      for (const key of [...cache.keys()]) {
-        const entry = cache.get(key);
-        if (entry !== undefined && entry.tokenHash === tokenHash) {
+      // Snapshot via [...entries()] so we iterate a stable list without
+      // disturbing LRU recency (`cache.get` would promote entries) and
+      // without racing our own `cache.delete` mutations.
+      for (const [key, entry] of [...cache.entries()]) {
+        if (entry.tokenHash === tokenHash) {
           cache.delete(key);
         }
       }
