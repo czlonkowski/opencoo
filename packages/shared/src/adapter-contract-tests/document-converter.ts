@@ -215,6 +215,40 @@ export function documentConverterContract(
   fixtures: DocumentConverterFixtures,
   options: ContractOptions = {},
 ): void {
+  // Build an adapter with a single canned response for `fixture`, then
+  // drive it with the same fixture's bytes/mimeType/filename. The
+  // pre-seed shape is `{filename, mimeType, response}` — the mock
+  // matches on (filename, mimeType) — and the convert call mirrors it.
+  // Factored so every assertion body below stays focused on the expect.
+  async function convertFixture(
+    fixture: FixtureBase & { readonly clientResponse?: CannedClientResponse },
+    responseOverride?: CannedClientResponse | "throw",
+  ): Promise<ConversionResult> {
+    const response =
+      responseOverride ??
+      fixture.clientResponse ??
+      // FixtureBase without clientResponse is the malformed case, which
+      // must always pass responseOverride: "throw". If we get here, the
+      // caller set up the fixture wrong — fail loud.
+      (() => {
+        throw new Error(
+          "convertFixture: fixture has no clientResponse and no responseOverride",
+        );
+      })();
+    const adapter = makeAdapter([
+      {
+        filename: fixture.filename,
+        mimeType: fixture.mimeType,
+        response,
+      },
+    ]);
+    return adapter.convert({
+      bytes: fixture.bytes,
+      mimeType: fixture.mimeType,
+      filename: fixture.filename,
+    });
+  }
+
   describe("DocumentConverterAdapter contract", () => {
     it("declares a stable slug", () => {
       const adapter = makeAdapter([]);
@@ -237,75 +271,29 @@ export function documentConverterContract(
     });
 
     it("converts a happy-path document to Markdown + structureSignals", async () => {
-      const { happyPath } = fixtures;
-      const adapter = makeAdapter([
-        {
-          filename: happyPath.filename,
-          mimeType: happyPath.mimeType,
-          response: happyPath.clientResponse,
-        },
-      ]);
-      const result = await adapter.convert({
-        bytes: happyPath.bytes,
-        mimeType: happyPath.mimeType,
-        filename: happyPath.filename,
-      });
-      expect(result.markdown).toContain(happyPath.expectedMarkdownIncludes);
+      const result = await convertFixture(fixtures.happyPath);
+      expect(result.markdown).toContain(
+        fixtures.happyPath.expectedMarkdownIncludes,
+      );
       expect(result.structureSignals).toBeDefined();
       expect(result.degraded).toBe(false);
       expect(result.degradationReason).toBeUndefined();
     });
 
     it("flags xlsx-no-pipes degradation when an XLSX converts with zero pipes", async () => {
-      const { xlsxNoPipes } = fixtures;
-      const adapter = makeAdapter([
-        {
-          filename: xlsxNoPipes.filename,
-          mimeType: xlsxNoPipes.mimeType,
-          response: xlsxNoPipes.clientResponse,
-        },
-      ]);
-      const result = await adapter.convert({
-        bytes: xlsxNoPipes.bytes,
-        mimeType: xlsxNoPipes.mimeType,
-        filename: xlsxNoPipes.filename,
-      });
+      const result = await convertFixture(fixtures.xlsxNoPipes);
       expect(result.degraded).toBe(true);
       expect(result.degradationReason).toBe("xlsx-no-pipes");
     });
 
     it("flags pptx-no-headings degradation when a PPTX converts with zero headings", async () => {
-      const { pptxNoHeadings } = fixtures;
-      const adapter = makeAdapter([
-        {
-          filename: pptxNoHeadings.filename,
-          mimeType: pptxNoHeadings.mimeType,
-          response: pptxNoHeadings.clientResponse,
-        },
-      ]);
-      const result = await adapter.convert({
-        bytes: pptxNoHeadings.bytes,
-        mimeType: pptxNoHeadings.mimeType,
-        filename: pptxNoHeadings.filename,
-      });
+      const result = await convertFixture(fixtures.pptxNoHeadings);
       expect(result.degraded).toBe(true);
       expect(result.degradationReason).toBe("pptx-no-headings");
     });
 
     it("strips script/style/iframe/object/embed/form tag families from HTML output", async () => {
-      const { htmlHostile } = fixtures;
-      const adapter = makeAdapter([
-        {
-          filename: htmlHostile.filename,
-          mimeType: htmlHostile.mimeType,
-          response: htmlHostile.clientResponse,
-        },
-      ]);
-      const result = await adapter.convert({
-        bytes: htmlHostile.bytes,
-        mimeType: htmlHostile.mimeType,
-        filename: htmlHostile.filename,
-      });
+      const result = await convertFixture(fixtures.htmlHostile);
       for (const tag of TAG_FAMILIES) {
         const re = new RegExp(`<${tag}\\b`, "i");
         expect(result.markdown).not.toMatch(re);
@@ -313,72 +301,24 @@ export function documentConverterContract(
     });
 
     it("neutralises javascript: URIs in Markdown links", async () => {
-      const { htmlHostile } = fixtures;
-      const adapter = makeAdapter([
-        {
-          filename: htmlHostile.filename,
-          mimeType: htmlHostile.mimeType,
-          response: htmlHostile.clientResponse,
-        },
-      ]);
-      const result = await adapter.convert({
-        bytes: htmlHostile.bytes,
-        mimeType: htmlHostile.mimeType,
-        filename: htmlHostile.filename,
-      });
+      const result = await convertFixture(fixtures.htmlHostile);
       expect(result.markdown).not.toMatch(/]\(\s*javascript:/i);
     });
 
     it("strips on*= inline event handlers", async () => {
-      const { htmlHostile } = fixtures;
-      const adapter = makeAdapter([
-        {
-          filename: htmlHostile.filename,
-          mimeType: htmlHostile.mimeType,
-          response: htmlHostile.clientResponse,
-        },
-      ]);
-      const result = await adapter.convert({
-        bytes: htmlHostile.bytes,
-        mimeType: htmlHostile.mimeType,
-        filename: htmlHostile.filename,
-      });
+      const result = await convertFixture(fixtures.htmlHostile);
       expect(result.markdown).not.toMatch(/\son[a-z]+\s*=\s*["']/i);
     });
 
     it("fails closed with ConversionError when the sidecar client throws on malformed bytes", async () => {
-      const { malformed } = fixtures;
-      const adapter = makeAdapter([
-        {
-          filename: malformed.filename,
-          mimeType: malformed.mimeType,
-          response: "throw",
-        },
-      ]);
-      await expect(
-        adapter.convert({
-          bytes: malformed.bytes,
-          mimeType: malformed.mimeType,
-          filename: malformed.filename,
-        }),
-      ).rejects.toBeInstanceOf(ConversionError);
+      await expect(convertFixture(fixtures.malformed, "throw")).rejects.toBeInstanceOf(
+        ConversionError,
+      );
     });
 
     it("applies text-normalize exactly once — running the output through normalize again is a no-op", async () => {
       const { normalize } = await import("../text-normalize.js");
-      const { happyPath } = fixtures;
-      const adapter = makeAdapter([
-        {
-          filename: happyPath.filename,
-          mimeType: happyPath.mimeType,
-          response: happyPath.clientResponse,
-        },
-      ]);
-      const result = await adapter.convert({
-        bytes: happyPath.bytes,
-        mimeType: happyPath.mimeType,
-        filename: happyPath.filename,
-      });
+      const result = await convertFixture(fixtures.happyPath);
       // normalize is idempotent by construction; if the adapter applied
       // it, a second pass is equal-bytes. If it did NOT, a second pass
       // will differ (line endings, NFC, etc.).
