@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { DomainSlug } from "../../db/brands.js";
+import { validatePath } from "../path-guard.js";
 import type {
   WikiAdapter,
   WikiOperation,
@@ -66,6 +67,14 @@ export class InMemoryWikiAdapter implements WikiAdapter {
   }
 
   async writeAtomic(args: WriteAtomicArgs): Promise<WriteAtomicResult> {
+    // Defense-in-depth path-guard. wikiWrite() already validates paths
+    // before reaching here, but the adapter may also be called directly
+    // by future tooling (CLI, recovery scripts). The contract suite
+    // (wiki-adapter.ts assertion #11) locks this rejection for every
+    // backend.
+    for (const op of args.operations) {
+      validatePath(op.path);
+    }
     const state = this.stateOf(args.domainSlug);
     if (args.parentSha !== state.head) {
       return { status: "stale", currentSha: state.head };

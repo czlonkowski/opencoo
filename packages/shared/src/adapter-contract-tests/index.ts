@@ -4,3 +4,4 @@
 // care about tree-shaking can still import the concrete submodule via
 // `@opencoo/shared/adapter-contract-tests/<name>`.
 export * from "./document-converter.js";
+export * from "./wiki-adapter.js";

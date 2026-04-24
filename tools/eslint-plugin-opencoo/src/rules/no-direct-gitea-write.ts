@@ -11,6 +11,12 @@ type MessageIds = "directGiteaWrite";
 const DEFAULT_ALLOWED_PATHS = [
   "packages/shared/src/wiki-write/**",
   "packages/cli/src/provision/**",
+  // The wiki-gitea adapter is the second sanctioned write path — its
+  // job IS to talk to Gitea. wikiWrite() in @opencoo/shared still owns
+  // orchestration (queue, delete-cap, retries); this adapter owns
+  // the actual transport. THREAT-MODEL §2 invariant 2 stays intact:
+  // every Gitea-touching import lives in one of these named places.
+  "packages/adapters/wiki-gitea/**",
 ];
 
 // Forbidden package names — direct Gitea clients.
@@ -43,7 +49,7 @@ export const noDirectGiteaWrite = createRule<
     type: "problem",
     docs: {
       description:
-        "Gitea API clients must not be imported outside packages/shared/wiki-write (THREAT-MODEL.md §2 invariant 2).",
+        "Gitea API clients must not be imported outside the three sanctioned sites: the wiki-write orchestrator (packages/shared/src/wiki-write/**), the wiki-gitea adapter (packages/adapters/wiki-gitea/**), and the cli provisioning path (packages/cli/src/provision/**). THREAT-MODEL.md §2 invariant 2.",
     },
     schema: [
       {
@@ -59,7 +65,7 @@ export const noDirectGiteaWrite = createRule<
     ],
     messages: {
       directGiteaWrite:
-        "Import Gitea clients only inside packages/shared/wiki-write; route writes through that module instead of '{{source}}'.",
+        "Import Gitea clients only from the wiki-write orchestrator (packages/shared/src/wiki-write/**), the wiki-gitea adapter (packages/adapters/wiki-gitea/**), or cli provisioning (packages/cli/src/provision/**); route writes through wiki-write instead of importing '{{source}}' directly.",
     },
   },
   defaultOptions: [{ allowedPaths: DEFAULT_ALLOWED_PATHS }],
