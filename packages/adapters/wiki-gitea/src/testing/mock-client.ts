@@ -76,6 +76,35 @@ export class MockGiteaClient implements GiteaClient {
     }
   }
 
+  /**
+   * Test-only backdoor — simulates an EXTERNAL commit landing on the
+   * branch, advancing HEAD without going through `commitFiles`. Used
+   * by the preflight regression tests (copilot #13) to prove that
+   * unrelated-file races make a subsequent commitFiles({parentSha:
+   * oldHead}) surface as `stale`. Not part of the `GiteaClient` port;
+   * production code must never call this.
+   *
+   * @internal
+   */
+  _injectConcurrentCommit(
+    repo: GiteaRepoLocator,
+    branch: string,
+    path: string,
+    content: string,
+  ): string {
+    void branch;
+    const state = this.stateOf(repo);
+    state.files.set(path, content);
+    const newHead = nextSha(state.head, `__concurrent__:${path}`);
+    state.head = newHead;
+    state.commits.set(newHead, {
+      message: `[concurrent] ${path}`,
+      authorName: "external",
+      authorEmail: "external@opencoo.test",
+    });
+    return newHead;
+  }
+
   async getBranchSha(
     repo: GiteaRepoLocator,
     branch: string,
