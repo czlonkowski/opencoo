@@ -86,33 +86,53 @@ function findRawMatches(text: string): RawMatch[] {
 }
 
 /**
- * Resolve overlapping matches deterministically:
- * - Sort by start ascending; on tie, longer match first; on tie,
- *   alphabetical category order.
- * - Walk and drop any candidate whose start is < the previous
- *   accepted match's end.
+ * Resolve overlapping matches deterministically using a true
+ * longest-match-wins policy:
  *
- * This produces a non-overlapping LONGEST-MATCH set so the
- * transformedText replacement is unambiguous and idempotent.
+ *   1. Sort candidates by length DESCENDING (longer matches considered
+ *      first); ties broken by startCu ASCENDING; further ties broken
+ *      by alphabetical category order.
+ *   2. Walk in that order, keeping each candidate IFF its [start, end)
+ *      range does not intersect any already-accepted range. The first
+ *      step's "longest first" guarantees the longer of any two
+ *      overlapping candidates is the one accepted.
+ *   3. Re-sort the accepted set by startCu ASCENDING so contract
+ *      assertion 8 (events sorted by start) holds for downstream
+ *      consumers.
+ *
+ * The earlier sort-then-walk impl was actually leftmost-first — it
+ * accepted whatever started earliest, even if a longer overlapping
+ * match started a few cols later. The new impl gives the same answer
+ * on the v1 catalog's typical inputs (most patterns have unique
+ * anchors and don't actually overlap) but matches the documented
+ * intent for the corner cases that DO overlap (copilot #14 Fix 1).
  *
  * @internal — exported only for unit testing.
  */
 export function _resolveOverlap(raw: RawMatch[]): RawMatch[] {
   const sorted = [...raw].sort((a, b) => {
-    if (a.startCu !== b.startCu) return a.startCu - b.startCu;
     const aLen = a.endCu - a.startCu;
     const bLen = b.endCu - b.startCu;
-    if (aLen !== bLen) return bLen - aLen; // longer first on tie
+    if (aLen !== bLen) return bLen - aLen; // longer first
+    if (a.startCu !== b.startCu) return a.startCu - b.startCu;
     return a.category < b.category ? -1 : a.category > b.category ? 1 : 0;
   });
-  const out: RawMatch[] = [];
-  let cursor = 0;
-  for (const m of sorted) {
-    if (m.startCu < cursor) continue;
-    out.push(m);
-    cursor = m.endCu;
+
+  const accepted: RawMatch[] = [];
+  for (const candidate of sorted) {
+    let collides = false;
+    for (const a of accepted) {
+      // Half-open intervals: [start, end). Intersection is
+      // candidate.start < a.end && a.start < candidate.end.
+      if (candidate.startCu < a.endCu && a.startCu < candidate.endCu) {
+        collides = true;
+        break;
+      }
+    }
+    if (!collides) accepted.push(candidate);
   }
-  return out;
+
+  return accepted.sort((a, b) => a.startCu - b.startCu);
 }
 
 function applyTransform(text: string, matches: readonly RawMatch[]): string {
