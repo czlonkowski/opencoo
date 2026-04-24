@@ -29,6 +29,15 @@ const MIME_PPTX =
 // closes it. Inside a fence, we don't count pipes or headings.
 const FENCE_RE = /^ {0,3}(`{3,}|~{3,})/;
 
+// ATX heading marker. Space after the `#` run keeps `#fragment` prose
+// from counting as a heading.
+const ATX_HEADING_RE = /^#{1,6}\s/;
+
+// GFM table separator cell: optional leading/trailing colon (alignment)
+// around a run of three-plus dashes. Used to detect "heading row
+// immediately followed by separator row" = one table.
+const SEPARATOR_CELL_RE = /^\s*:?-{3,}:?\s*$/;
+
 interface CountedLines {
   readonly gfmPipes: number;
   readonly detectedHeadings: number;
@@ -42,11 +51,6 @@ function countLines(markdown: string): CountedLines {
   let gfmPipes = 0;
   let detectedHeadings = 0;
   let detectedTables = 0;
-
-  // GFM table detection: a heading row (`| … |`) immediately followed
-  // by a separator row (`| --- | --- |`). We increment on the separator
-  // line — the cheapest unambiguous signal.
-  const SEPARATOR_CELL = /^\s*:?-{3,}:?\s*$/;
   let prevPipeLine: string | null = null;
 
   for (const line of lines) {
@@ -74,16 +78,14 @@ function countLines(markdown: string): CountedLines {
       if (c === "|") gfmPipes++;
     }
 
-    // ATX heading (`# `, `## `, …). Require the space so `#fragment`
-    // prose doesn't count.
-    if (/^#{1,6}\s/.test(line)) detectedHeadings++;
+    if (ATX_HEADING_RE.test(line)) detectedHeadings++;
 
     // GFM table separator — split on `|`, verify every non-empty cell
     // matches the separator pattern. A one-col separator (`| --- |`)
     // produces two empty cells + one dash cell, so filter empties.
     if (prevPipeLine !== null && line.includes("|")) {
       const cells = line.split("|").filter((c) => c.length > 0);
-      if (cells.length > 0 && cells.every((c) => SEPARATOR_CELL.test(c))) {
+      if (cells.length > 0 && cells.every((c) => SEPARATOR_CELL_RE.test(c))) {
         detectedTables++;
       }
     }
@@ -93,10 +95,13 @@ function countLines(markdown: string): CountedLines {
   return { gfmPipes, detectedHeadings, detectedTables };
 }
 
-interface DegradationOutcome {
-  readonly degraded: boolean;
-  readonly degradationReason?: DegradationReason;
-}
+// Discriminated union: when `degraded` is true, `degradationReason` is
+// present and typed; when false, the field is absent (not just
+// `undefined`). Matches `ConversionResult`'s `exactOptionalPropertyTypes`
+// contract without requiring a non-null assertion at the use site.
+type DegradationOutcome =
+  | { readonly degraded: false }
+  | { readonly degraded: true; readonly degradationReason: DegradationReason };
 
 function detectDegradation(
   mimeType: string,
@@ -132,7 +137,7 @@ export function buildResult(
       markdown,
       structureSignals: signals,
       degraded: true,
-      degradationReason: degradation.degradationReason!,
+      degradationReason: degradation.degradationReason,
     };
   }
   return {
