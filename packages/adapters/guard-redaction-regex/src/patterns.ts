@@ -159,9 +159,16 @@ export const PATTERNS = [
   },
   {
     category: "bearer-token",
-    // `Bearer <40+ alnum/dash/underscore>`; bounded to 40-200 chars
-    // to avoid catastrophic backtrack on malformed input.
-    regex: /\bBearer\s+[A-Za-z0-9._~+\/\-]{40,200}=*/g,
+    // `Bearer <40-200 alnum/punct>`; every quantifier bounded
+    // explicitly (copilot #14 Fix 5):
+    //   `\s{1,3}`   — at most 3 whitespace chars between `Bearer`
+    //                  and the token; the HTTP grammar permits
+    //                  exactly one but tab-then-space and similar
+    //                  do appear in malformed clients.
+    //   `{40,200}`  — token character-class run, already bounded.
+    //   `={0,2}`    — base64 padding is at most 2 `=` chars; this
+    //                  reflects the canonical RFC 4648 limit.
+    regex: /\bBearer\s{1,3}[A-Za-z0-9._~+\/\-]{40,200}={0,2}/g,
     failMode: "block",
   },
 ] as const satisfies readonly PatternDef[];
