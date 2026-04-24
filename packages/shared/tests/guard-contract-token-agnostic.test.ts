@@ -23,6 +23,17 @@ import {
 
 const STUB_PATTERN = /SECRET-[A-Z0-9]{8}/g;
 
+/**
+ * Convert a code-unit offset to a UTF-8 byte offset for `text`.
+ * The contract expects events to carry byte offsets (per the
+ * matched_byte_ranges schema). A naive stub that returns string
+ * indices fails the suite's UTF-8 multi-byte assertion — that's
+ * exactly the contract working as intended.
+ */
+function cuToByte(text: string, cu: number): number {
+  return Buffer.byteLength(text.slice(0, cu), "utf8");
+}
+
 class StubGuardWithCustomToken implements GuardAdapter {
   readonly slug = "stub-custom-token";
   readonly role = "redaction" as const;
@@ -32,18 +43,19 @@ class StubGuardWithCustomToken implements GuardAdapter {
   async classify(input: GuardClassifyInput): Promise<GuardClassifyResult> {
     const ranges: { start: number; end: number }[] = [];
     let transformed = input.text;
-    // Single-pass scan: collect byte ranges + replace with the
-    // intentionally-non-bracket token.
     let scan = "";
     let cursor = 0;
     let match: RegExpExecArray | null;
     const re = new RegExp(STUB_PATTERN.source, STUB_PATTERN.flags);
     while ((match = re.exec(input.text)) !== null) {
-      const start = match.index;
-      const end = match.index + match[0].length;
-      ranges.push({ start, end });
-      scan += input.text.slice(cursor, start) + "<<HIDDEN>>";
-      cursor = end;
+      const startCu = match.index;
+      const endCu = match.index + match[0].length;
+      ranges.push({
+        start: cuToByte(input.text, startCu),
+        end: cuToByte(input.text, endCu),
+      });
+      scan += input.text.slice(cursor, startCu) + "<<HIDDEN>>";
+      cursor = endCu;
     }
     if (ranges.length > 0) {
       transformed = scan + input.text.slice(cursor);

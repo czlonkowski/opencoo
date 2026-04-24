@@ -157,8 +157,6 @@ export interface GuardAdapterFixtureOptions {
 // The generator
 // ---------------------------------------------------------------------------
 
-const REDACTION_TOKEN_RE = /\[REDACTED:[a-z0-9-]+\]/i;
-
 export function guardAdapterContract(
   options: GuardAdapterFixtureOptions,
 ): void {
@@ -320,25 +318,20 @@ export function guardAdapterContract(
 
     // 12. Idempotent under transform: re-classifying the transformed
     //     text from a redaction guard yields zero events for the same
-    //     categories (the redaction token does not re-match). This
-    //     locks the rule "redaction tokens are inert under future
-    //     pattern matches" — critical to prevent infinite-loop
-    //     redaction in the engine.
+    //     categories. Locks "redaction tokens (whatever shape the
+    //     adapter chose) are inert under future pattern matches",
+    //     which is the engine-side anti-loop guarantee.
+    //
+    //     This assertion is intentionally TOKEN-SHAPE-AGNOSTIC
+    //     (copilot #14 Fix 3): an adapter that uses `<<HIDDEN>>`,
+    //     `█████`, or any other non-bracket form satisfies the
+    //     contract iff the behavioural property holds.
     it("redaction transform is idempotent — re-classifying transformedText yields no new matches in the same categories", async () => {
       if (options.knownMatches.length === 0) return;
       const a = options.makeAdapter();
       if (a.role !== "redaction") return;
       const match = options.knownMatches[0]!;
       const r1 = await a.classify({ text: match.sample });
-      // Sanity-check that the redaction token shape is at least
-      // recognisably bracket-prefixed; if the adapter chose
-      // something exotic (no brackets), this assertion still
-      // passes — we only assert IDEMPOTENCE, not the token shape.
-      // (The bracket pattern is a heuristic for the failure-mode
-      // assertion below.)
-      expect(REDACTION_TOKEN_RE.test(r1.transformedText) || r1.transformedText === "").toBe(
-        r1.events.length > 0 || r1.transformedText === "",
-      );
       const r2 = await a.classify({ text: r1.transformedText });
       const sameCategoryAgain = r2.events.filter(
         (e) => e.category === match.category,
