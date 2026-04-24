@@ -12,6 +12,7 @@ import { describe, it, expect } from "vitest";
 import { guardAdapterContract } from "@opencoo/shared/adapter-contract-tests/guard";
 
 import { guardRedactionRegex, PATTERN_VERSION } from "../src/index.js";
+import { _resolveOverlap, type RawMatch } from "../src/adapter.js";
 
 guardAdapterContract({
   backendName: "regex",
@@ -151,5 +152,73 @@ describe("guard-redaction-regex — adapter-specific cases", () => {
     // The sample must have actually matched (otherwise the test
     // tautologically passes).
     expect(r.events.some((e) => e.category === "email")).toBe(true);
+  });
+});
+
+// (copilot #14 Fix 1) — overlap policy is documented as
+// "longest-match-wins" but the original sort-then-walk implementation
+// is actually leftmost-first: an earlier-starting shorter match
+// vetoes a later-starting longer match that overlaps it. These tests
+// pin the documented contract.
+describe("guard-redaction-regex — _resolveOverlap policy", () => {
+  it("when a shorter match starts BEFORE a longer match, the longer match wins", () => {
+    // raw matches:
+    //   short:  start=0, end=4   (4 chars)
+    //   long:   start=2, end=10  (8 chars, overlaps short by 2 cols)
+    // Longest-match-wins must keep `long`, not `short`.
+    const raw: RawMatch[] = [
+      {
+        category: "short",
+        failMode: "transform",
+        startCu: 0,
+        endCu: 4,
+      },
+      {
+        category: "long",
+        failMode: "transform",
+        startCu: 2,
+        endCu: 10,
+      },
+    ];
+    const out = _resolveOverlap(raw);
+    expect(out.map((m) => m.category)).toEqual(["long"]);
+  });
+
+  it("when matches don't overlap, both survive in start-ascending order", () => {
+    const raw: RawMatch[] = [
+      {
+        category: "first",
+        failMode: "transform",
+        startCu: 0,
+        endCu: 4,
+      },
+      {
+        category: "second",
+        failMode: "transform",
+        startCu: 10,
+        endCu: 15,
+      },
+    ];
+    const out = _resolveOverlap(raw);
+    expect(out.map((m) => m.category)).toEqual(["first", "second"]);
+  });
+
+  it("identical-range collisions break by alphabetical category", () => {
+    const raw: RawMatch[] = [
+      {
+        category: "zebra",
+        failMode: "transform",
+        startCu: 0,
+        endCu: 5,
+      },
+      {
+        category: "apple",
+        failMode: "transform",
+        startCu: 0,
+        endCu: 5,
+      },
+    ];
+    const out = _resolveOverlap(raw);
+    expect(out.map((m) => m.category)).toEqual(["apple"]);
   });
 });

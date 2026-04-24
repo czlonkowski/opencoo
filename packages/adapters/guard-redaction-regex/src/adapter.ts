@@ -42,7 +42,8 @@ export const PATTERN_VERSION = "v1.2026-04-25";
 
 const ADAPTER_SLUG = "guard-redaction-regex";
 
-interface RawMatch {
+/** @internal — exported only for `_resolveOverlap` unit tests. */
+export interface RawMatch {
   readonly category: string;
   readonly failMode: GuardFailMode;
   /** Code-unit offsets from RegExp.exec, used to compute byte
@@ -93,8 +94,10 @@ function findRawMatches(text: string): RawMatch[] {
  *
  * This produces a non-overlapping LONGEST-MATCH set so the
  * transformedText replacement is unambiguous and idempotent.
+ *
+ * @internal — exported only for unit testing.
  */
-function resolveOverlap(raw: RawMatch[]): RawMatch[] {
+export function _resolveOverlap(raw: RawMatch[]): RawMatch[] {
   const sorted = [...raw].sort((a, b) => {
     if (a.startCu !== b.startCu) return a.startCu - b.startCu;
     const aLen = a.endCu - a.startCu;
@@ -142,7 +145,7 @@ class RegexRedactionGuard implements GuardAdapter {
     }
 
     const raw = findRawMatches(text);
-    const resolved = resolveOverlap(raw);
+    const resolved = _resolveOverlap(raw);
     const byteMap = buildByteOffsetMap(text);
 
     const events: GuardEvent[] = resolved.map((m) => {
