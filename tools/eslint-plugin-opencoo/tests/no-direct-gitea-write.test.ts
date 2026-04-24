@@ -27,6 +27,18 @@ ruleTester.run("no-direct-gitea-write", noDirectGiteaWrite, {
       code: `import { createClient } from 'gitea-js';`,
     },
     {
+      name: "wiki-gitea adapter source can import gitea client (the sanctioned write path)",
+      filename:
+        "/repo/packages/adapters/wiki-gitea/src/client.ts",
+      code: `import { createClient } from '@opencoo/gitea-client';`,
+    },
+    {
+      name: "wiki-gitea adapter testing fixtures can import gitea client",
+      filename:
+        "/repo/packages/adapters/wiki-gitea/src/testing/mock-client.ts",
+      code: `import { giteaApi } from 'gitea-js';`,
+    },
+    {
       name: "unrelated import from a normal package is fine",
       filename: "/repo/packages/engine-ingestion/src/index.ts",
       code: `import { logger } from '@opencoo/shared-logger';`,
