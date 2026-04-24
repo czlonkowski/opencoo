@@ -80,6 +80,52 @@ guardAdapterContract({
       expectedByteRanges: [{ start: 6, end: 37 }],
       sentinel: "BEGIN RSA PRIVATE KEY",
     },
+    {
+      category: "phone-pl",
+      // `+48 123 456 789` (15 chars including prefix + spaces) —
+      // satisfies the optional-prefix shape AND the 11-digit-after-
+      // separator-strip validate hook. Preceded by 5 bytes ("Call ").
+      sample: "Call +48 123 456 789 today.",
+      expectedByteRanges: [{ start: 5, end: 20 }],
+      sentinel: "123 456 789",
+    },
+    {
+      category: "regon",
+      // 14-digit Polish REGON with valid weighted-sum checksum.
+      // 9-digit REGONs collide with phone-pl's bare-9-digit shape
+      // (alphabetical tiebreak picks phone-pl); 14-digit is
+      // uniquely a REGON.
+      sample: "Company REGON 12345678500002 listed.",
+      expectedByteRanges: [{ start: 14, end: 28 }],
+      sentinel: "12345678500002",
+    },
+    {
+      category: "aws-secret-key",
+      // The match anchors on the literal `aws_secret_access_key=`
+      // and consumes 40 base64-ish chars after. Preceded by 8
+      // bytes ("config: "), so the match runs from 8 to 70.
+      sample:
+        "config: aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY end",
+      expectedByteRanges: [{ start: 8, end: 70 }],
+      sentinel: "wJalrXUtnFEMI",
+    },
+    {
+      category: "slack-token",
+      // `xoxb-<10>-<10>-<24>` — bot-token shape with bounded
+      // segment lengths. Preceded by 6 bytes ("token=").
+      sample: "token=xoxb-1234567890-1234567890-abcdefghij1234567890ABCD",
+      expectedByteRanges: [{ start: 6, end: 57 }],
+      sentinel: "abcdefghij1234567890",
+    },
+    {
+      category: "bearer-token",
+      // `Bearer <40 alnum>` — bounded post-Fix-5 quantifiers.
+      // Preceded by 15 bytes ("Authorization: ").
+      sample:
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz1234567890ABCDEF",
+      expectedByteRanges: [{ start: 15, end: 64 }],
+      sentinel: "abcdefghijklmnopqrstuvwxyz",
+    },
   ],
 });
 

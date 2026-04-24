@@ -107,11 +107,13 @@ for (const event of r.events) {
 pnpm --filter @opencoo/guard-redaction-regex test
 ```
 
-The test file invokes the shared `guardAdapterContract` with eight known-good positive samples (one per category that has a structurally-detectable shape — phone, REGON, AWS secret, slack, bearer have shape-only matchers and are exercised via adapter-specific cases instead of the full contract loop), then runs adapter-specific cases for:
+The test file invokes the shared `guardAdapterContract` with thirteen known-good positive samples — one per category in the v1 catalog except `phone-international` (its E.164 shape collides with `phone-pl` under the longest-match-wins overlap policy, so it's exercised by being the leftmost match in compound texts rather than as a standalone known-match). Then it runs adapter-specific cases for:
 
 - `PATTERN_VERSION` constant
 - `[REDACTED:<category>]` transform token shape
 - PESEL / Luhn / IBAN MOD-97 checksum-validator rejection of false positives
+- Every `PATTERNS` regex uses bounded quantifiers (structural ReDoS check)
+- `_resolveOverlap` longest-match-wins policy (3 unit tests)
 - 100KiB hostile-blob perf canary (<500ms)
 - 100KiB metadata-only sentinel scan
 
