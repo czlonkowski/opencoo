@@ -12,14 +12,22 @@
  *   GET  /api/v1/repos/{owner}/{repo}/git/commits/{sha}
  *
  * The port is deliberately Gitea-shaped (file changes carry base64
- * content; stale-detect leans on Gitea's `sha`-mismatch 409). Two
- * implementations consume it: `GiteaRestClient` (real wire) and
+ * content; stale-detect leans on Gitea's HTTP 422 + diagnostic body
+ * — see `isStaleSignalMessage` for the three recognised phrases).
+ * Two implementations consume it: `GiteaRestClient` (real wire) and
  * `MockGiteaClient` in `./testing/mock-client.ts`.
  *
  * Stale-detect contract: `commitFiles` returns `{ status: 'stale',
  * currentSha }` when the request's `parentSha` no longer matches the
  * branch HEAD. The adapter passes this through to its
  * `WriteAtomicResult`. NEVER throw on stale — it's the normal path.
+ *
+ * Error surface: transport failures (non-422 HTTP errors, malformed
+ * JSON, 422s whose body doesn't match a stale-signal phrase) throw a
+ * plain `Error` with the failing endpoint and HTTP status. The
+ * orchestrating `wikiWrite()` upstream is the layer that wraps these
+ * into `WikiTransportError` if it needs the typed-error semantics —
+ * the adapter stays stack-light and dependency-free on shared/errors.
  */
 
 // ---------------------------------------------------------------------------
@@ -81,8 +89,10 @@ export interface GiteaClient {
     path: string,
     ref: string,
   ): Promise<GiteaFileContent | null>;
-  /** Atomic batch commit. Stale-detect returns ok|stale; transport
-   *  failures throw `WikiTransportError`. */
+  /** Atomic batch commit. Stale-detect returns `ok | stale`; transport
+   *  failures (non-stale HTTP errors, malformed JSON, etc.) throw a
+   *  plain `Error` — `wikiWrite()` upstream wraps that into a typed
+   *  `WikiTransportError` when callers need the taxonomy. */
   commitFiles(args: CommitFilesArgs): Promise<CommitFilesResult>;
   /** Optional commit-metadata reader, used by the contract suite's
    *  CommitInspector path (assertions 8/9/10). */
