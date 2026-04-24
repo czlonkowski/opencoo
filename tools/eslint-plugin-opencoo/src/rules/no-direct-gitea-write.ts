@@ -11,6 +11,12 @@ type MessageIds = "directGiteaWrite";
 const DEFAULT_ALLOWED_PATHS = [
   "packages/shared/src/wiki-write/**",
   "packages/cli/src/provision/**",
+  // The wiki-gitea adapter is the second sanctioned write path — its
+  // job IS to talk to Gitea. wikiWrite() in @opencoo/shared still owns
+  // orchestration (queue, delete-cap, retries); this adapter owns
+  // the actual transport. THREAT-MODEL §2 invariant 2 stays intact:
+  // every Gitea-touching import lives in one of these named places.
+  "packages/adapters/wiki-gitea/**",
 ];
 
 // Forbidden package names — direct Gitea clients.
