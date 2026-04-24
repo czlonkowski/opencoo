@@ -241,11 +241,25 @@ export class GiteaRestClient implements GiteaClient {
       }),
     };
     const response = await this.request("POST", path, body);
-    // Gitea returns 409 when sha-mismatch on update — that's the
-    // stale-detect signal we surface to the adapter.
-    if (response.status === 409) {
-      const currentSha = await this.getBranchSha(args.repo, args.branch);
-      return { status: "stale", currentSha };
+    // Gitea's stale-detect signal is an HTTP 422 with one of two
+    // distinguishing messages:
+    //   - "sha does not match [given: …, expected: …]"      (update)
+    //   - "repository file already exists [path: …]"         (create)
+    //   - "repository file does not exist [path: …]"         (delete)
+    // Tested against gitea/gitea:1.26.0; older versions used different
+    // status codes — if a regression appears, surface the raw message
+    // for triage rather than silently expanding the match. Other 422s
+    // (malformed body, empty content, etc.) bubble through as
+    // transport errors.
+    if (response.status === 422) {
+      const errMessage = await readErrorMessage(response);
+      if (isStaleSignalMessage(errMessage)) {
+        const currentSha = await this.getBranchSha(args.repo, args.branch);
+        return { status: "stale", currentSha };
+      }
+      throw new Error(
+        `Gitea commitFiles ${args.repo.owner}/${args.repo.name} → HTTP 422: ${errMessage}`,
+      );
     }
     if (!response.ok) {
       throw new Error(
@@ -355,4 +369,37 @@ export class GiteaRestClient implements GiteaClient {
  */
 function encodePath(p: string): string {
   return p.split("/").map(encodeURIComponent).join("/");
+}
+
+/**
+ * Read Gitea's error-shape `{message, url}` body. Falls back to
+ * `<unparseable error body>` if the response isn't JSON.
+ */
+async function readErrorMessage(response: Response): Promise<string> {
+  try {
+    const body: unknown = await response.json();
+    if (
+      isObject(body) &&
+      typeof (body as { message?: unknown }).message === "string"
+    ) {
+      return (body as { message: string }).message;
+    }
+    return JSON.stringify(body);
+  } catch {
+    return "<unparseable error body>";
+  }
+}
+
+/**
+ * Recognise the three Gitea diagnostic messages that mean "the branch
+ * advanced under you / file shape changed". Tested against
+ * gitea/gitea:1.26.0; if a future Gitea version rephrases these, this
+ * function is the only place to update.
+ */
+function isStaleSignalMessage(message: string): boolean {
+  return (
+    /sha does not match/i.test(message) ||
+    /file already exists/i.test(message) ||
+    /file does not exist/i.test(message)
+  );
 }

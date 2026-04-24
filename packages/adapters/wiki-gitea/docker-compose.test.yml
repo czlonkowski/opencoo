@@ -1,0 +1,42 @@
+# Local Gitea for the gated wiki-gitea contract test.
+#
+# Spin up:
+#   docker compose -f packages/adapters/wiki-gitea/docker-compose.test.yml up -d gitea
+#   ./packages/adapters/wiki-gitea/scripts/bootstrap-gitea.sh
+#   eval $(./packages/adapters/wiki-gitea/scripts/bootstrap-gitea.sh --eval)
+#   pnpm --filter @opencoo/wiki-gitea test:contract
+#
+# Tear down:
+#   docker compose -f packages/adapters/wiki-gitea/docker-compose.test.yml down -v
+#
+# Image pin: gitea/gitea:1.26.0 — see README §"Gitea image pin" for
+# the digest and the rotation cadence (CONVENTIONS §6.6).
+
+services:
+  gitea:
+    image: gitea/gitea:1.26.0
+    container_name: opencoo-wiki-gitea-test
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      GITEA__database__DB_TYPE: sqlite3
+      # Pre-seed the install so /api/v1 is reachable without the web wizard.
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__service__DISABLE_REGISTRATION: "false"
+      GITEA__service__REQUIRE_SIGNIN_VIEW: "false"
+      GITEA__server__ROOT_URL: http://localhost:3001/
+      GITEA__server__SSH_DOMAIN: localhost
+      # Tighten the image's defaults for a test sidecar.
+      GITEA__log__MODE: console
+      GITEA__log__LEVEL: warn
+    ports:
+      - "3001:3000"
+      - "2222:22"
+    volumes:
+      # Ephemeral by design — `down -v` wipes state. The bootstrap
+      # script re-creates the admin user + PAT each run.
+      - gitea-data:/data
+    restart: "no"
+
+volumes:
+  gitea-data:
