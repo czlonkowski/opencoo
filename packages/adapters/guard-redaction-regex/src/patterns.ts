@@ -90,10 +90,7 @@ export const PATTERNS = [
     // 10 digits with optional Polish prefix `PL` and optional dashes.
     regex: /\b(?:PL)?\d{3}-?\d{2,3}-?\d{2,3}-?\d{2,3}\b/g,
     failMode: "transform",
-    validate: (m) => {
-      const digits = m.replace(/\D/g, "");
-      return isValidNip(digits);
-    },
+    validate: (m) => isValidNip(m.replace(/\D/g, "")),
   },
   {
     category: "regon",
