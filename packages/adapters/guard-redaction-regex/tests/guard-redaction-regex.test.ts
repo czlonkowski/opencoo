@@ -73,8 +73,10 @@ guardAdapterContract({
       // Header marker only — full body intentionally omitted from
       // fixture; the matcher locks onto the BEGIN line which is
       // the unambiguous signal that a private key was pasted.
+      // `-----BEGIN RSA PRIVATE KEY-----` is 31 bytes; preceded by
+      // 6 bytes ("Found "), so the match runs from 6 to 37.
       sample: "Found -----BEGIN RSA PRIVATE KEY----- in log.",
-      expectedByteRanges: [{ start: 6, end: 41 }],
+      expectedByteRanges: [{ start: 6, end: 37 }],
       sentinel: "BEGIN RSA PRIVATE KEY",
     },
   ],
