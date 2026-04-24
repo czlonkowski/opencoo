@@ -78,16 +78,25 @@ export class MockGiteaClient implements GiteaClient {
 
   async getBranchSha(
     repo: GiteaRepoLocator,
-    _branch: string,
+    branch: string,
   ): Promise<string> {
+    // The mock keeps a single HEAD per repo regardless of branch — the
+    // adapter only ever asks for the configured branch. Reference the
+    // arg so noUnusedParameters doesn't fire; a future multi-branch
+    // mock can hash by `${repoKey}/${branch}`.
+    void branch;
     return this.stateOf(repo).head;
   }
 
   async getFileContent(
     repo: GiteaRepoLocator,
     path: string,
-    _ref: string,
+    ref: string,
   ): Promise<GiteaFileContent | null> {
+    // Mock has no commit history — `ref` is the live HEAD by
+    // construction. Real GiteaRestClient honours `ref` against the
+    // server; the mock can't, and the adapter doesn't depend on it.
+    void ref;
     const state = this.repos.get(repoKey(repo));
     const content = state?.files.get(path);
     if (content === undefined) return null;
