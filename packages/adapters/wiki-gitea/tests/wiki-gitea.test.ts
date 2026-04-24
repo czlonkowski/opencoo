@@ -21,7 +21,8 @@ wikiAdapterContract({
     // a `${owner}/${repoPrefix}-${domainSlug}` Gitea repo. The mock
     // initialises that repo as empty so getHeadSha returns a stable
     // initial sha.
-    await client.initRepo({ owner: "opencoo", name: `wiki-${domainSlug}` });
+    const repo = { owner: "opencoo", name: `wiki-${domainSlug}` };
+    await client.initRepo(repo);
     const adapter = giteaWikiAdapter({
       client,
       owner: "opencoo",
@@ -32,8 +33,10 @@ wikiAdapterContract({
       adapter,
       cleanup: async () => undefined,
       // CommitInspector — the mock records every commit so the
-      // pass-through assertions (8/9/10) can introspect them.
-      inspectCommit: (sha: string) => client.inspectCommit(sha),
+      // pass-through assertions (8/9/10) can introspect them. The
+      // contract's CommitInspector is repo-blind (sha is enough);
+      // we close over the repo here.
+      inspectCommit: (sha: string) => client.inspectCommit(repo, sha),
     };
   },
 });
