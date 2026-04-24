@@ -92,6 +92,21 @@ export function bearerAuth(opts: BearerAuthOptions) {
     });
   }
 
+  // MCP SDK reads `req.auth` off the Express request when constructing the
+  // transport's RequestHandlerExtra; resource callbacks receive it as
+  // `extra.authInfo`. We pass the raw token through so the worldview
+  // resource can run its per-request Gitea-PAT scope check.
+  function admit(
+    req: Request,
+    principal: AuthPrincipal,
+    token: string,
+    next: NextFunction,
+  ): void {
+    req.authPrincipal = principal;
+    req.auth = authInfoFor(principal, token);
+    next();
+  }
+
   return async function bearerMiddleware(
     req: Request,
     res: Response,
@@ -112,14 +127,7 @@ export function bearerAuth(opts: BearerAuthOptions) {
       givenBuf.length === expectedBuf.length &&
       crypto.timingSafeEqual(givenBuf, expectedBuf)
     ) {
-      const principal: AuthPrincipal = { kind: "static" };
-      req.authPrincipal = principal;
-      // MCP SDK reads req.auth off the Express request when constructing the
-      // transport's RequestHandlerExtra; resource callbacks receive it as
-      // `extra.authInfo`. We pass the raw token through so the worldview
-      // resource can run its per-request Gitea-PAT scope check.
-      req.auth = authInfoFor(principal, token);
-      next();
+      admit(req, { kind: "static" }, token, next);
       return;
     }
 
@@ -128,10 +136,7 @@ export function bearerAuth(opts: BearerAuthOptions) {
       const result = await validator.validate(token);
       if (result.valid && result.user) {
         const { login, email, name } = result.user;
-        const principal: AuthPrincipal = { kind: "gitea", login, email, name };
-        req.authPrincipal = principal;
-        req.auth = authInfoFor(principal, token);
-        next();
+        admit(req, { kind: "gitea", login, email, name }, token, next);
         return;
       }
     }
