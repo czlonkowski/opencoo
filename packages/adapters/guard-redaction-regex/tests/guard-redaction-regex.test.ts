@@ -222,3 +222,30 @@ describe("guard-redaction-regex — _resolveOverlap policy", () => {
     expect(out.map((m) => m.category)).toEqual(["apple"]);
   });
 });
+
+// (copilot #14 Fix 5) — every regex in PATTERNS must use bounded
+// quantifiers per the catalog comment "no unbounded + / *". The
+// initial bearer-token regex shipped with `\s+` (unbounded
+// whitespace between "Bearer" and the token) and `=*` (unbounded
+// base64 padding). V8's anti-ReDoS heuristics happen to handle
+// these specific cases fast, but the catalog rule is structural,
+// not behavioural — every adversarial input class is one
+// substitution away from being slow. Lock the structure.
+describe("guard-redaction-regex — every PATTERNS regex uses bounded quantifiers", () => {
+  it("no regex source contains unbounded `+` or `*` quantifiers (outside character classes)", async () => {
+    const { PATTERNS } = await import("../src/patterns.js");
+    // Strip character classes `[...]` first — `+` and `*` inside a
+    // character class are LITERAL chars, not quantifiers. Then
+    // search for any bare `+` or `*` not preceded by `\` (escaped)
+    // and not part of a bounded `{m,n}` shape.
+    const QUANTIFIER_OUTSIDE_CLASS_RE = /(?<!\\)[+*]/;
+    for (const pattern of PATTERNS) {
+      const stripped = pattern.regex.source.replace(/\[(?:\\.|[^\\\]])*\]/g, "[]");
+      if (QUANTIFIER_OUTSIDE_CLASS_RE.test(stripped)) {
+        throw new Error(
+          `pattern ${pattern.category} has an unbounded \`+\` or \`*\` quantifier in: ${pattern.regex.source}`,
+        );
+      }
+    }
+  });
+});
