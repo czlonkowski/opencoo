@@ -9,9 +9,19 @@
  *   eval $(./packages/adapters/wiki-gitea/scripts/bootstrap-gitea.sh --eval)
  *   pnpm --filter @opencoo/wiki-gitea test:contract
  *
- * Each test gets a fresh repo (random suffix) so concurrent or
- * leftover repos don't interfere. Cleanup deletes the repo via the
- * Gitea API after the test.
+ * Repo isolation (copilot #13 fix 4): every test gets its OWN
+ * `repoPrefix` of the form `wiki-test-${random}` so the adapter
+ * resolves to a fully-randomised repo name (`wiki-test-${rand}-${slug}`)
+ * that cannot collide with a canonical `wiki-${slug}` repo. The test
+ * never deletes or mutates a canonical name — even if `GITEA_URL`
+ * accidentally pointed at a non-ephemeral Gitea, real wikis would be
+ * untouched. Concurrent test runs also don't collide because each
+ * run picks its own random prefix.
+ *
+ * Teardown deletes the just-created repo via DELETE
+ * `/api/v1/repos/{owner}/{name}`. On teardown failure we WARN to the
+ * console but do not fail the suite (avoids leaking repos blocking
+ * the CI signal on a transient API hiccup).
  */
 import { describe, it, expect } from "vitest";
 
@@ -45,14 +55,17 @@ if (HAS_GITEA) {
   wikiAdapterContract({
     backendName: "gitea-real",
     async makeAdapter(domainSlug) {
-      // Random suffix so concurrent test runs don't collide.
+      // Random per-test prefix so the adapter resolves to a unique
+      // repo name (`wiki-test-${rand}-${slug}`). NEVER touches a
+      // canonical `wiki-${slug}` repo — fail-safe against a
+      // misconfigured GITEA_URL pointing at a real Gitea.
       const rand = Math.random().toString(36).slice(2, 10);
-      const repoName = `wiki-${domainSlug}-${rand}`;
-      const client = new GiteaRestClient({ url, token });
+      const repoPrefix = `wiki-test-${rand}`;
+      const repoName = `${repoPrefix}-${domainSlug}`;
 
-      // Create the repo via the Gitea admin API. We do this directly
-      // with fetch so the GiteaClient port stays focused on the four
-      // endpoints the adapter actually uses.
+      // Create the per-test repo via the Gitea admin API. We do this
+      // directly with fetch so the GiteaClient port stays focused on
+      // the four endpoints the adapter actually uses.
       const createRes = await fetch(`${url}/api/v1/user/repos`, {
         method: "POST",
         headers: {
@@ -74,71 +87,37 @@ if (HAS_GITEA) {
         );
       }
 
-      // The adapter expects repo names of the form
-      // `${repoPrefix}-${slug}`. Pin repoPrefix so this exact repo is
-      // resolved.
+      const client = new GiteaRestClient({ url, token });
       const adapter = giteaWikiAdapter({
         client,
         owner: GITEA_OWNER,
-        repoPrefix: `wiki`, // adapter will request `wiki-${domainSlug}`
+        repoPrefix, // randomised — adapter resolves to repoName above
         branch: "main",
       });
-
-      // Adapter would resolve `wiki-${domainSlug}` — but our actual
-      // repo has the random suffix. To keep the contract suite happy
-      // we DELETE the random-suffix repo and create one matching the
-      // canonical `wiki-${domainSlug}` shape. Cleanup wipes it.
-      await fetch(
-        `${url}/api/v1/repos/${encodeURIComponent(GITEA_OWNER)}/${encodeURIComponent(repoName)}`,
-        {
-          method: "DELETE",
-          headers: { Authorization: `token ${token}` },
-        },
-      );
-      const canonicalName = `wiki-${domainSlug}`;
-      // If a stale canonical-named repo exists from a previous run,
-      // wipe it before re-creating.
-      await fetch(
-        `${url}/api/v1/repos/${encodeURIComponent(GITEA_OWNER)}/${encodeURIComponent(canonicalName)}`,
-        {
-          method: "DELETE",
-          headers: { Authorization: `token ${token}` },
-        },
-      );
-      const createCanonical = await fetch(`${url}/api/v1/user/repos`, {
-        method: "POST",
-        headers: {
-          Authorization: `token ${token}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          name: canonicalName,
-          description: "wiki-gitea contract test (ephemeral)",
-          private: false,
-          auto_init: true,
-          default_branch: "main",
-        }),
-      });
-      if (!createCanonical.ok) {
-        throw new Error(
-          `failed to create canonical repo ${GITEA_OWNER}/${canonicalName}: HTTP ${createCanonical.status}`,
-        );
-      }
 
       return {
         adapter,
         async cleanup() {
-          await fetch(
-            `${url}/api/v1/repos/${encodeURIComponent(GITEA_OWNER)}/${encodeURIComponent(canonicalName)}`,
+          // Best-effort delete; teardown failure WARNS but doesn't
+          // fail the suite (transient API hiccups shouldn't drown
+          // out a real assertion failure). Leaked repos surface
+          // on the next test run if the rand prefix collides
+          // (probabilistically: 36^8 namespace, ignorable).
+          const del = await fetch(
+            `${url}/api/v1/repos/${encodeURIComponent(GITEA_OWNER)}/${encodeURIComponent(repoName)}`,
             {
               method: "DELETE",
               headers: { Authorization: `token ${token}` },
             },
           );
+          if (!del.ok && del.status !== 404) {
+            console.warn(
+              `[wiki-gitea contract] teardown failed for ${GITEA_OWNER}/${repoName}: HTTP ${del.status} (test still passed; repo may need manual cleanup)`,
+            );
+          }
         },
         inspectCommit: (sha: string) =>
-          client.inspectCommit({ owner: GITEA_OWNER, name: canonicalName }, sha),
+          client.inspectCommit({ owner: GITEA_OWNER, name: repoName }, sha),
       };
     },
   });
