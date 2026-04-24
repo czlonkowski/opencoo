@@ -228,6 +228,18 @@ export class GiteaRestClient implements GiteaClient {
   }
 
   async commitFiles(args: CommitFilesArgs): Promise<CommitFilesResult> {
+    // Preflight: HEAD vs parentSha (copilot #13). Gitea's per-file SHA
+    // rejection only catches conflicts ON THE SAME PATH — an unrelated
+    // concurrent commit advances HEAD without per-file conflict, and
+    // a naive POST would silently succeed with the WRONG git parent.
+    // The WriteAtomicArgs.parentSha contract requires "proceed only if
+    // HEAD === parentSha, else stale" — surface the stale status here
+    // before any write.
+    const headSha = await this.getBranchSha(args.repo, args.branch);
+    if (headSha !== args.parentSha) {
+      return { status: "stale", currentSha: headSha };
+    }
+
     const path = `/api/v1/repos/${encodeURIComponent(args.repo.owner)}/${encodeURIComponent(args.repo.name)}/contents`;
     // Gitea's ChangeFilesOptions: `branch`, `new_branch?`, `message`,
     // `author`, `committer`, `dates`, `files: [{operation, path,
