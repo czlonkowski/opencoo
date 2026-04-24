@@ -57,6 +57,10 @@
     "./adapter-contract-tests/document-converter": {
       "types": "./dist/adapter-contract-tests/document-converter.d.ts",
       "default": "./dist/adapter-contract-tests/document-converter.js"
+    },
+    "./adapter-contract-tests/wiki-adapter": {
+      "types": "./dist/adapter-contract-tests/wiki-adapter.d.ts",
+      "default": "./dist/adapter-contract-tests/wiki-adapter.js"
     }
   },
   "files": [
