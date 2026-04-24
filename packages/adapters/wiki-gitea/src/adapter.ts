@@ -120,11 +120,11 @@ class GiteaWikiAdapterImpl implements GiteaWikiAdapter {
   }
 
   /**
-   * Translate WikiOperations to Gitea ChangeFiles entries. Pre-fetches
-   * existing-file blob shas for `update` and `delete` ops, and resolves
-   * `append` semantics by concatenating the existing content with the
-   * suffix. The resulting list is ALL `create | update | delete` —
-   * Gitea has no native append.
+   * Translate WikiOperations to Gitea ChangeFiles entries. Every op
+   * needs the existing file's blob sha (so create-vs-update can be
+   * decided and `update`/`delete` can carry `fromSha`). The resulting
+   * list is ALL `create | update | delete` — Gitea has no native
+   * append; `append` is resolved here as read-old + concat + update.
    */
   private async resolveOperations(
     repo: GiteaRepoLocator,
@@ -133,44 +133,28 @@ class GiteaWikiAdapterImpl implements GiteaWikiAdapter {
   ): Promise<GiteaFileChange[]> {
     const changes: GiteaFileChange[] = [];
     for (const op of ops) {
+      const existing = await this.deps.client.getFileContent(
+        repo,
+        op.path,
+        parentSha,
+      );
+
       if (op.mode === "delete") {
-        const existing = await this.deps.client.getFileContent(repo, op.path, parentSha);
-        if (existing === null) {
-          // Gitea will refuse to delete a missing file. Treat
-          // "delete a path that doesn't exist" as a no-op; the
-          // contract suite's delete assertion always preconditions
-          // on an existing file. Future: consider surfacing this
-          // as an explicit `WikiPathError` if it becomes a
-          // common bug source.
-          continue;
-        }
-        changes.push({
-          mode: "delete",
-          path: op.path,
-          fromSha: existing.sha,
-        });
+        // Gitea refuses to delete a missing file; treat "delete a
+        // path that doesn't exist" as a no-op. The contract suite's
+        // delete assertion always preconditions on an existing file.
+        if (existing === null) continue;
+        changes.push({ mode: "delete", path: op.path, fromSha: existing.sha });
         continue;
       }
 
-      if (op.mode === "replace") {
-        const existing = await this.deps.client.getFileContent(repo, op.path, parentSha);
-        const base = {
-          mode: existing === null ? "create" : "update",
-          path: op.path,
-          contentBase64: Buffer.from(op.content, "utf8").toString("base64"),
-        } as const;
-        changes.push(
-          existing !== null
-            ? { ...base, fromSha: existing.sha }
-            : base,
-        );
-        continue;
-      }
-
-      // append — read-old + concat + update (or create if missing).
-      const existing = await this.deps.client.getFileContent(repo, op.path, parentSha);
+      // replace | append — append concatenates onto existing content;
+      // replace overwrites. When there's no existing content the two
+      // collapse to the same payload.
       const newContent =
-        existing !== null ? existing.content + op.content : op.content;
+        op.mode === "append" && existing !== null
+          ? existing.content + op.content
+          : op.content;
       const base = {
         mode: existing === null ? "create" : "update",
         path: op.path,
