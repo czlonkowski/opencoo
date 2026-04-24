@@ -56,9 +56,12 @@ describe("adapter-contract-tests/document-converter — module shape", () => {
     const stub: DocumentConverterAdapter = {
       slug: "test",
       mimeTypes: ["application/pdf"],
-      async convert(_args) {
+      async convert(args) {
+        // Reference `args` so `noUnusedParameters` is satisfied; the
+        // stub doesn't need to inspect its input — only to type-check
+        // against the interface shape.
         const result: ConversionResult = {
-          markdown: "# t",
+          markdown: `# ${args.filename}`,
           structureSignals: {
             detectedTables: 0,
             gfmPipes: 0,

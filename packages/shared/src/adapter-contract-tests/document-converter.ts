@@ -150,9 +150,12 @@ export interface HtmlHostileFixture extends FixtureBase {
   readonly clientResponse: CannedClientResponse;
 }
 
-export interface MalformedFixture extends FixtureBase {
-  /** No canned response — the MockClient is expected to throw. */
-}
+/**
+ * No canned response — the MockClient is expected to throw when the
+ * adapter forwards these bytes. Pure alias of FixtureBase; declared
+ * separately for readability in the `DocumentConverterFixtures` record.
+ */
+export type MalformedFixture = FixtureBase;
 
 export interface DocumentConverterFixtures {
   readonly happyPath: HappyPathFixture;
