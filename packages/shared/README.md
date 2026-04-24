@@ -284,6 +284,35 @@ First line is always `${tag} ${description}` — downstream audit tooling keys o
 
 **InMemoryWikiAdapter fixture.** Use-case tests under `@opencoo/shared/wiki-write/testing` pass this in place of the real Gitea adapter. `writeAtomic` derives `sha256(prevHead || serialisedOps)` so SHA chaining is deterministic and testable. The `@internal inject(domainSlug, path, content)` method is the backdoor that tests use to simulate external writes for stale-retry scenarios — production code must never touch it.
 
+## Adapter contract suites
+
+`@opencoo/shared/adapter-contract-tests/*` exports reusable vitest suites for every adapter boundary in the architecture. Every concrete adapter package (`converter-docling`, a future `converter-pandoc`, the output/source/automation families in later PRs) consumes the same generator and passes the same assertion matrix — one source of truth for the contract, so two adapters cannot silently drift from each other.
+
+```ts
+import { documentConverterContract } from "@opencoo/shared/adapter-contract-tests/document-converter";
+import { converterDocling } from "@opencoo/converter-docling";
+import { MockDoclingClient } from "@opencoo/converter-docling/testing";
+
+documentConverterContract(
+  (canned) => converterDocling({ client: new MockDoclingClient(canned) }),
+  fixtures,
+);
+```
+
+Currently shipped boundaries:
+
+- `./adapter-contract-tests/document-converter` — `DocumentConverterAdapter`, `ConversionError`, `ConversionResult`, `StructureSignals`, `DocumentConverterFixtures`, and the 11-assertion `documentConverterContract(makeAdapter, fixtures, options?)` generator. Covers: stable slug, declared `mimeTypes`, Markdown happy-path, xlsx-no-pipes degradation, pptx-no-headings degradation, six stripped tag families (`script|style|iframe|object|embed|form`), neutralised `javascript:` URIs, stripped `on*=` handlers, `ConversionError` on malformed bytes, idempotent `text-normalize`. Governed by THREAT-MODEL §3.2.
+
+### Adding a new boundary
+
+1. Define the interface + `*Error` class + `*Fixtures` shape in `src/adapter-contract-tests/<boundary>.ts`.
+2. Export the generator: `export function <boundary>Contract(makeAdapter, fixtures, options?)`.
+3. Add the submodule to the `exports` map in `package.json` at `./adapter-contract-tests/<boundary>`.
+4. Re-export from `src/adapter-contract-tests/index.ts` (barrel).
+5. Document the invariants the generator asserts in this README section.
+
+Adapters import the suite as a library (`import { … } from "@opencoo/shared/adapter-contract-tests/<boundary>"`). The suite imports `vitest` at the top level — adapter test files get their vitest globals from the usual spot, so this works without any peer-dep dance.
+
 ## Migrations
 
 `drizzle-kit generate` is idempotent — `tests/generate-idempotent.test.ts` asserts this by running it twice into temp dirs and byte-diffing the outputs (with volatile `when`/`id` fields normalized). A regression means the schema code has picked up nondeterminism — investigate and fix, do not delete the test.

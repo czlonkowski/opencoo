@@ -49,6 +49,14 @@
     "./wiki-write/testing": {
       "types": "./dist/wiki-write/testing/in-memory-adapter.d.ts",
       "default": "./dist/wiki-write/testing/in-memory-adapter.js"
+    },
+    "./adapter-contract-tests": {
+      "types": "./dist/adapter-contract-tests/index.d.ts",
+      "default": "./dist/adapter-contract-tests/index.js"
+    },
+    "./adapter-contract-tests/document-converter": {
+      "types": "./dist/adapter-contract-tests/document-converter.d.ts",
+      "default": "./dist/adapter-contract-tests/document-converter.js"
     }
   },
   "files": [
