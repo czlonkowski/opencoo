@@ -122,13 +122,19 @@ describe("guard-redaction-regex — adapter-specific cases", () => {
   it("100KiB perf canary — classify a hostile mixed-PII blob in under 500ms", async () => {
     const a = guardRedactionRegex();
     // Mix: prose padding + recurring email + PESEL + secret token.
+    // Track accumulated length in a counter so the loop is O(n)
+    // overall (the previous `chunks.join("").length` re-joined the
+    // array on every iteration — O(n²) for a 100KiB blob, copilot
+    // #14 Fix 2).
     const chunks: string[] = [];
     const padding = "lorem ipsum dolor sit amet ".repeat(20); // ~540 bytes
-    while (chunks.join("").length < 100 * 1024) {
+    let total = 0;
+    while (total < 100 * 1024) {
       chunks.push(padding);
       chunks.push(" SUPPORT-7421@opencoo.test ");
       chunks.push(" PESEL 44051401359 ");
       chunks.push(" AKIAIOSFODNN7EXAMPLE ");
+      total += padding.length + 27 + 19 + 22;
     }
     const big = chunks.join("");
     expect(big.length).toBeGreaterThanOrEqual(100 * 1024);
