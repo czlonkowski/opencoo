@@ -25,6 +25,24 @@ Most "wiki RAG" stacks ship embeddings + a vector DB + an index-maintenance head
 
 All tools are read-only, support `response_format: "markdown"` (default) or `"json"`, and paginate via `limit` / `offset` where applicable.
 
+## Resources
+
+The server also exposes MCP **resources** — URI-addressable read-only surfaces that agents pull as grounding context (not tool calls):
+
+| URI | Returns |
+| --- | --- |
+| `worldview://{slug}` | `{slug}/worldview.md` — the Thinker-compiled synthesis for that domain. |
+| `worldview://company` | `{aggregator}/company.md` — cross-domain synthesis. Only available when exactly one `REPOS` entry has `aggregator: true`. |
+
+Worldview resources are **authorisation-gated at the MCP boundary** so an agent can only read a domain's synthesis its caller's Gitea PAT can itself see:
+
+- **Internal static-token clients** (`MCP_BEARER_TOKEN`) have implicit full scope — no live API call, no per-request Gitea round-trip.
+- **OAuth-principal clients** (ChatGPT, Claude.ai, anyone on the public OAuth path) are scope-checked per request against Gitea's `GET /repos/{owner}/{name}`. Decisions are cached per `(token, repo)` for 60 s to absorb the N+1 cost across a session.
+- Every deny path returns the same `resource not accessible` error — callers cannot use the response shape to distinguish "repo doesn't exist" from "PAT out of scope" from "worldview.md not yet compiled". The operator-facing reason is logged at console.error level.
+- Fail-closed on 5xx, network errors, or timeouts.
+
+The slug `company` is **reserved** — binding a real repo to it is rejected at boot.
+
 ## Architecture
 
 ```
@@ -123,14 +141,18 @@ All via environment variables. See `.env.example` for the full list with descrip
 
 ```jsonc
 [
-  {"slug":"public-wiki","owner":"org","name":"public-wiki","default":true,"access_tag":"public"},
-  {"slug":"exec-wiki","owner":"org","name":"exec-wiki","default":false,"access_tag":"exec"}
+  {"slug":"exec","owner":"org","name":"wiki-exec","default":true,"access_tag":"exec"},
+  {"slug":"hr","owner":"org","name":"wiki-hr","access_tag":"hr"},
+  // ONE entry may set aggregator:true. That repo becomes the source for
+  // worldview://company (reads company.md from its root). ≤1 aggregator
+  // is enforced at boot; the slug "company" is reserved.
+  {"slug":"roll-up","owner":"org","name":"wiki-roll-up","aggregator":true}
 ]
 ```
 
 Each tool accepts an optional `repo: "slug"` parameter; omit it to target the default repo.
 
-**Planned (not built yet)**: per-token repo scoping via a `TOKENS` env map. Today a single bearer gates all repos.
+Worldview scoping is enforced at the MCP boundary — see [Resources](#resources) above. For tool calls there is no per-slug ACL: a client with a valid bearer can call any wiki tool against any listed repo.
 
 ## Development
 
@@ -205,6 +227,7 @@ Rollback = unset `PUBLIC_URL`. Internal static-bearer path is completely unchang
 - Ripgrep `path_glob` is allow-list-validated; queries are passed as argv, never shell.
 - Rate limit: 60 requests/min per IP on `/mcp` (trust proxy = 1 hop for real client IPs behind Caddy).
 - CORS origin allow-list via `CORS_ORIGINS`; `WWW-Authenticate` / `Mcp-Session-Id` / `Mcp-Protocol-Version` kept in `exposedHeaders`.
+- `worldview://` resources are PAT-scope-enforced per request for OAuth principals (internal static tokens bypass). Deny paths are uniformly reported as `resource not accessible`; 60 s LRU cache on decisions; fail-closed.
 
 ## Known limits
 

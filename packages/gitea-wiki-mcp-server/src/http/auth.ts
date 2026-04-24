@@ -13,6 +13,7 @@
  */
 import crypto from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { GiteaOAuthValidator } from "../services/gitea-oauth.js";
 
 export interface AuthPrincipal {
@@ -27,7 +28,31 @@ declare module "express-serve-static-core" {
     // Distinct from the MCP SDK's `auth` (AuthInfo shape with token/clientId/
     // scopes). This one carries the resolved principal for our hybrid flow.
     authPrincipal?: AuthPrincipal;
+    // `req.auth` is what StreamableHTTPServerTransport reads to populate
+    // `RequestHandlerExtra.authInfo`. The SDK declares the same augmentation
+    // inside its own bearerAuth middleware, but that file only gets imported
+    // transitively when the SDK's bearerAuth is used; we hand-roll auth, so
+    // we redeclare it here.
+    auth?: AuthInfo;
   }
+}
+
+/**
+ * Build the MCP SDK's AuthInfo shape for a successfully-authenticated
+ * principal. Surfaces the raw token so downstream resource handlers (e.g.
+ * worldview) can feed it to the GiteaScopeChecker. `extra.kind` lets the
+ * handler distinguish static vs. OAuth principals without re-parsing.
+ */
+function authInfoFor(principal: AuthPrincipal, token: string): AuthInfo {
+  return {
+    token,
+    // The MCP AuthInfo type requires clientId. For the static path there is
+    // no OAuth client — synthesize a stable string so the field is present
+    // without leaking meaningful data to clients that inspect it.
+    clientId: principal.kind === "gitea" ? (principal.login ?? "gitea") : "internal",
+    scopes: [],
+    extra: { kind: principal.kind },
+  };
 }
 
 export interface BearerAuthOptions {
@@ -67,6 +92,21 @@ export function bearerAuth(opts: BearerAuthOptions) {
     });
   }
 
+  // MCP SDK reads `req.auth` off the Express request when constructing the
+  // transport's RequestHandlerExtra; resource callbacks receive it as
+  // `extra.authInfo`. We pass the raw token through so the worldview
+  // resource can run its per-request Gitea-PAT scope check.
+  function admit(
+    req: Request,
+    principal: AuthPrincipal,
+    token: string,
+    next: NextFunction,
+  ): void {
+    req.authPrincipal = principal;
+    req.auth = authInfoFor(principal, token);
+    next();
+  }
+
   return async function bearerMiddleware(
     req: Request,
     res: Response,
@@ -87,8 +127,7 @@ export function bearerAuth(opts: BearerAuthOptions) {
       givenBuf.length === expectedBuf.length &&
       crypto.timingSafeEqual(givenBuf, expectedBuf)
     ) {
-      req.authPrincipal = { kind: "static" };
-      next();
+      admit(req, { kind: "static" }, token, next);
       return;
     }
 
@@ -97,8 +136,7 @@ export function bearerAuth(opts: BearerAuthOptions) {
       const result = await validator.validate(token);
       if (result.valid && result.user) {
         const { login, email, name } = result.user;
-        req.authPrincipal = { kind: "gitea", login, email, name };
-        next();
+        admit(req, { kind: "gitea", login, email, name }, token, next);
         return;
       }
     }
