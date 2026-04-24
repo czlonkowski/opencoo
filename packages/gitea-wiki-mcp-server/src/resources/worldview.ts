@@ -207,11 +207,14 @@ export function registerWorldviewResource(
   scopeChecker: GiteaScopeChecker,
   log?: WorldviewReaderDeps["log"],
 ): void {
-  const reader = createWorldviewReader(
-    log !== undefined
-      ? { registry, scopeChecker, log }
-      : { registry, scopeChecker },
-  );
+  const reader = createWorldviewReader({
+    registry,
+    scopeChecker,
+    // Conditional spread keeps `log` absent (not `undefined`) under
+    // `exactOptionalPropertyTypes` — the reader factory treats absent
+    // as "no-op log", which is the intended default.
+    ...(log !== undefined ? { log } : {}),
+  });
   server.registerResource(
     "worldview",
     new ResourceTemplate("worldview://{slug}", { list: undefined }),
