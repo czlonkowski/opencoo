@@ -154,6 +154,48 @@ export interface GuardAdapterFixtureOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Validation helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate the shape of `events` returned from a `classify()` call,
+ * given the input's UTF-8 byte length. Used by the contract suite's
+ * sort-order assertion (#8) BEFORE checking sort order so a malformed
+ * event (empty range array, inverted bounds, OOB end) fails loud
+ * instead of being masked by a `?? -1` default. Pure function;
+ * exposed as a named export so consumers (and tests) can drive it
+ * independently of the suite that uses it (copilot #14 Fix 4).
+ */
+export function validateEventRanges(
+  events: ReadonlyArray<GuardEvent>,
+  textByteLength: number,
+): { ok: true } | { ok: false; reason: string } {
+  for (const e of events) {
+    if (e.matchedByteRanges.length === 0) {
+      return {
+        ok: false,
+        reason: `event '${e.category}' has empty matchedByteRanges`,
+      };
+    }
+    for (const r of e.matchedByteRanges) {
+      if (!(r.start < r.end)) {
+        return {
+          ok: false,
+          reason: `event '${e.category}' has inverted range start=${r.start} end=${r.end}`,
+        };
+      }
+      if (r.end > textByteLength) {
+        return {
+          ok: false,
+          reason: `event '${e.category}' has out-of-bounds end=${r.end} > textBytes=${textByteLength}`,
+        };
+      }
+    }
+  }
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
 // The generator
 // ---------------------------------------------------------------------------
 
@@ -249,13 +291,18 @@ export function guardAdapterContract(
       const sep = "\n---\n";
       const combined = `${m1.sample}${sep}${m2.sample}`;
       const r = await a.classify({ text: combined });
-      // Filter to the two categories under test (other patterns
-      // might incidentally fire too — sort assertion is per the
-      // FULL events list).
-      const byStart = [...r.events].map((e) => {
-        const first = e.matchedByteRanges[0];
-        return first ? first.start : -1;
-      });
+      // BEFORE checking sort order, validate every event's ranges.
+      // Empty range arrays, inverted bounds (start >= end), and
+      // out-of-bounds end (end > textBytes) are port-shape
+      // violations and must surface as test failures with a clear
+      // diagnostic, not be masked by a `?? -1` default
+      // (copilot #14 Fix 4).
+      const inputBytes = Buffer.byteLength(combined, "utf8");
+      const validation = validateEventRanges(r.events, inputBytes);
+      expect(validation.ok, validation.ok ? "" : validation.reason).toBe(true);
+      // Now sort-order: each event has a non-empty `matchedByteRanges`
+      // (validated above), so the first range exists.
+      const byStart = r.events.map((e) => e.matchedByteRanges[0]!.start);
       const sorted = [...byStart].sort((x, y) => x - y);
       expect(byStart).toEqual(sorted);
     });
