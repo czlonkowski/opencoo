@@ -115,18 +115,19 @@ export class DoclingHttpClient implements DoclingClient {
           `Docling response missing markdown field for ${args.filename}`,
         );
       }
-      const out: DoclingClientResponse = {
-        markdown: raw.markdown,
-      };
-      // structureSignals is advisory — we pass through whatever
-      // Docling reports but the adapter re-derives its own.
+      // structureSignals is advisory — we pass through whatever Docling
+      // reports but the adapter re-derives its own from the final
+      // scrubbed Markdown, so we don't validate its inner shape here.
       if (
         typeof raw.structureSignals === "object" &&
         raw.structureSignals !== null
       ) {
-        return { ...out, structureSignals: raw.structureSignals as Partial<StructureSignals> };
+        return {
+          markdown: raw.markdown,
+          structureSignals: raw.structureSignals as Partial<StructureSignals>,
+        };
       }
-      return out;
+      return { markdown: raw.markdown };
     } finally {
       clearTimeout(timer);
     }
