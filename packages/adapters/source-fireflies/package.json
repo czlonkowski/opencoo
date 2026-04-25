@@ -1,0 +1,36 @@
+{
+  "name": "@opencoo/source-fireflies",
+  "version": "0.0.0",
+  "private": true,
+  "description": "SourceAdapter for Fireflies meeting transcripts (webhook mode). Implements `SourceAdapter` from @opencoo/shared with webhook helpers (verifier + extractSignature + parseEvents). Single-event-per-request envelope; HMAC-SHA256 over the raw body.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/mock-fireflies-events.d.ts",
+      "default": "./dist/testing/mock-fireflies-events.js"
+    }
+  },
+  "files": [
+    "dist/**"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:contract": "vitest run -t 'sourceAdapterContract'"
+  },
+  "dependencies": {
+    "@opencoo/shared": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "~5.7.2",
+    "vitest": "^3.0.5"
+  }
+}
