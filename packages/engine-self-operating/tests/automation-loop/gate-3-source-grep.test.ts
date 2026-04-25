@@ -5,14 +5,19 @@
  * Gate 3 enforcements:
  *   - Type level: AutomationAdapter has no `activate()` method.
  *   - Schema level: BuilderOutput has no `activated` field.
- *   - **This file**: source of `builder/run.ts` does NOT contain
- *     the literal `'activated'` (case-insensitive). Catches the
- *     case where someone bypasses the type system via an inline
- *     SQL string, a fetch() call, or any other escape hatch.
+ *   - **This file**: source of `builder/run.ts` (comments
+ *     stripped) does NOT contain any of the activation-shape
+ *     verbs `activate(d)?`, `enable(d)?`, `toggle(d)?`
+ *     (case-insensitive). Catches the case where someone
+ *     bypasses the type system via an inline SQL string, a
+ *     fetch() call, or any other escape hatch — even one
+ *     where the literal isn't exactly `'activated'`.
  *
- * The test reads `builder/run.ts` from disk and runs a regex.
- * Failing this test means a future PR introduced a string that
- * suggests activation — STOP and review before approving.
+ * The test reads `builder/run.ts` from disk, strips block +
+ * line comments (so file headers can mention Gate 3 by name),
+ * and runs a regex over the remaining executable code. Failing
+ * this test means a future PR introduced an activation-shape
+ * verb in code — STOP and review before approving.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -27,7 +32,7 @@ const BUILDER_RUN_PATH = resolve(
 );
 
 describe("Gate 3 source-grep — builder/run.ts (plan #102)", () => {
-  it("does NOT contain the literal 'activated' (case-insensitive)", () => {
+  it("contains no activate/enable/toggle verbs in executable code (case-insensitive, comments stripped)", () => {
     const source = readFileSync(BUILDER_RUN_PATH, "utf8");
     // Strip comments — they may legitimately reference Gate 3
     // by name (e.g. "manual activation only"). We only forbid
