@@ -128,6 +128,51 @@ describe("startEngine", () => {
     expect(redis.disconnect).toHaveBeenCalled();
   });
 
+  it("tears down db when redisFactory throws (copilot #20)", async () => {
+    const db = fakeDb();
+    await expect(
+      startEngine({
+        config: baseConfig,
+        dbFactory: () => db,
+        redisFactory: () => {
+          throw new Error("redis-down");
+        },
+        serverFactory: fakeServer,
+      }),
+    ).rejects.toThrow("redis-down");
+    expect(db.end).toHaveBeenCalled();
+  });
+
+  it("tears down db + redis when serverFactory throws (copilot #20)", async () => {
+    const db = fakeDb();
+    const redis = fakeRedis();
+    await expect(
+      startEngine({
+        config: baseConfig,
+        dbFactory: () => db,
+        redisFactory: () => redis,
+        serverFactory: () => {
+          throw new Error("server-build-failed");
+        },
+      }),
+    ).rejects.toThrow("server-build-failed");
+    expect(db.end).toHaveBeenCalled();
+    expect(redis.disconnect).toHaveBeenCalled();
+  });
+
+  it("rethrows the dbFactory error untouched (no resources to tear down yet)", async () => {
+    await expect(
+      startEngine({
+        config: baseConfig,
+        dbFactory: () => {
+          throw new Error("db-down");
+        },
+        redisFactory: fakeRedis,
+        serverFactory: fakeServer,
+      }),
+    ).rejects.toThrow("db-down");
+  });
+
   it("probeExtender lets the consumer add probes (e.g. self-op's wikiAdapter probe)", async () => {
     let receivedProbes: Record<string, unknown> = {};
     await startEngine({
