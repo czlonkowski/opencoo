@@ -284,6 +284,42 @@ describe("wikiWrite — input validation", () => {
     ).rejects.toThrow(WikiWriteInputError);
   });
 
+  it("rejects body containing a bare 'Co-authored-by:' line — no space after colon (copilot #18)", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        deps,
+        baseInput({
+          body: "details\nCo-authored-by:",
+        }),
+      ),
+    ).rejects.toThrow(WikiWriteInputError);
+  });
+
+  it("rejects body containing a bare 'Worldview-Impact:' line (copilot #18)", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        deps,
+        baseInput({
+          body: "details\nWorldview-Impact:",
+        }),
+      ),
+    ).rejects.toThrow(WikiWriteInputError);
+  });
+
+  it("rejects body containing a bare 'Opencoo-Instance:' line (copilot #18)", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        deps,
+        baseInput({
+          body: "details\nOpencoo-Instance:",
+        }),
+      ),
+    ).rejects.toThrow(WikiWriteInputError);
+  });
+
   it("rejects worldviewImpact entry containing a newline (one-bullet-per-trailer-line invariant)", async () => {
     const { deps } = harness();
     await expect(
