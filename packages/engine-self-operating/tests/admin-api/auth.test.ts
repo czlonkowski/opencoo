@@ -39,7 +39,7 @@ describe("admin-api auth — verifyAdmin preHandler", () => {
     expect(body.reason).toBe("missing_authorization_header");
   });
 
-  it("rejects malformed Authorization (not Bearer) with 401", async () => {
+  it("rejects malformed Authorization (not Bearer) with 401 and the malformed reason", async () => {
     const f = await makeAdminFixture();
     cleanup = f.close;
     const res = await f.app.inject({
@@ -48,6 +48,9 @@ describe("admin-api auth — verifyAdmin preHandler", () => {
       headers: { authorization: "Basic abcdef" },
     });
     expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body) as { error: string; reason: string };
+    expect(body.error).toBe("unauthorized");
+    expect(body.reason).toBe("malformed_authorization_header");
   });
 
   it("rejects when the user is not in ADMIN_TEAM_SLUG (403)", async () => {

@@ -34,10 +34,19 @@ export function attachDebugBannerHook(
   app.addHook(
     "onSend",
     async (
-      _req: FastifyRequest,
+      req: FastifyRequest,
       reply: FastifyReply,
       payload: unknown,
     ): Promise<unknown> => {
+      // Scope to admin-API responses only. The hook is registered
+      // on the root Fastify instance (so it cleanly composes with
+      // the Proxy-wrapped admin routes), but it MUST NOT mutate
+      // health probes, static UI bodies, or future non-admin JSON
+      // routes. Match `/api/admin` exactly + `/api/admin/...`.
+      const path = req.url.split("?", 1)[0] ?? "";
+      if (path !== "/api/admin" && !path.startsWith("/api/admin/")) {
+        return payload;
+      }
       const contentType = reply.getHeader("content-type");
       const ct = Array.isArray(contentType) ? contentType[0] : contentType;
       if (typeof ct !== "string" || !ct.includes("application/json")) {

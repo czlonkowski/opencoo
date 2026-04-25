@@ -44,6 +44,7 @@ export function registerSourceBindingsRoutes(
              b.notes
       FROM sources_bindings b
       JOIN domains d ON d.id = b.domain_id
+      WHERE b.review_mode = 'review' OR b.enabled = false
       ORDER BY b.created_at DESC
       LIMIT 200
     `)) as unknown as {

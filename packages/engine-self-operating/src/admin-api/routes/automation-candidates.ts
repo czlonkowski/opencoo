@@ -101,6 +101,12 @@ export function registerAutomationCandidatesRoutes(
     async (req, reply) => {
       const ctx = requireAdminContext(req);
       const id = (req.params as { id: string }).id;
+      // Validate `:id` is a UUID before letting it reach the
+      // SQL `${id}::uuid` cast — a malformed id otherwise hits
+      // Postgres and surfaces as 500.
+      if (!z.string().uuid().safeParse(id).success) {
+        return reply.code(400).send({ error: "invalid_id" });
+      }
       const parseResult = decisionSchema.safeParse(req.body);
       if (!parseResult.success) {
         return reply.code(400).send({

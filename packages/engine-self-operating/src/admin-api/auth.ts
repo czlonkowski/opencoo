@@ -152,11 +152,21 @@ export function buildVerifyAdmin(
   return async (req, reply) => {
     const authHeader = req.headers["authorization"];
     const rawHeader = Array.isArray(authHeader) ? authHeader[0] : authHeader;
-    const pat = extractBearer(rawHeader);
-    if (pat === undefined || pat.length === 0) {
+    if (rawHeader === undefined) {
       reply.code(401).send({
         error: "unauthorized",
         reason: "missing_authorization_header",
+      });
+      return;
+    }
+    const pat = extractBearer(rawHeader);
+    if (pat === undefined || pat.length === 0) {
+      // Header present but not in `Bearer <token>` shape — distinguish
+      // from missing so client diagnostics are accurate without
+      // leaking sensitive details about the malformed value.
+      reply.code(401).send({
+        error: "unauthorized",
+        reason: "malformed_authorization_header",
       });
       return;
     }

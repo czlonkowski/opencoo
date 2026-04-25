@@ -162,17 +162,20 @@ describe("admin-api csrf — state-changing route gate", () => {
     expect(cookieStr).toMatch(/opencoo_csrf=/);
     expect(cookieStr).toContain("SameSite=Strict");
     expect(cookieStr).toContain("Secure");
-    // The CSRF cookie is intentionally NOT HttpOnly — the SPA
-    // must read it client-side to mirror it as the header.
-    // Assert the absence so a future "let's HttpOnly everything"
-    // refactor breaks the test.
-    expect(cookieStr.includes("HttpOnly") && cookieStr.includes("opencoo_csrf=")).toBe(true);
-    // ^ The cookie line for opencoo_session has HttpOnly. The
-    // line for opencoo_csrf must NOT — distinguish by parsing
-    // cookie-by-cookie.
+    // Per-cookie assertion: the CSRF cookie line MUST NOT include
+    // HttpOnly (the SPA needs to read it client-side to mirror as
+    // header); the session cookie line MUST include HttpOnly.
+    // Asserting on the joined `cookieStr` is ambiguous because
+    // both cookies are sent on this response — distinguish them.
     const lines = Array.isArray(setCookie) ? setCookie : [setCookie ?? ""];
     const csrfLine = lines.find((l) => l.includes("opencoo_csrf="));
     expect(csrfLine).toBeDefined();
     expect(csrfLine?.includes("HttpOnly")).toBe(false);
+    const sessionLine = lines.find((l) => l.includes("opencoo_session="));
+    if (sessionLine !== undefined) {
+      // Session cookie may not be set on _csrf endpoint depending
+      // on first-call semantics; only assert when present.
+      expect(sessionLine.includes("HttpOnly")).toBe(true);
+    }
   });
 });

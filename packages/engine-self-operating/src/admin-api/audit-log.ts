@@ -76,15 +76,25 @@ export interface WriteAuditLogArgs {
 /** Normalise + truncate the User-Agent header. Accepts the raw
  *  Fastify shape (string | string[] | undefined): picks the
  *  first entry from an array (some upstreams send duplicate
- *  headers), then caps at 256 bytes — operators don't need the
- *  full forensic trail and an attacker-supplied UA shouldn't
- *  blow the row size. */
+ *  headers), then caps at 256 BYTES (UTF-8) — JS string length
+ *  counts UTF-16 code units, so we walk codepoints and accumulate
+ *  byte length. Operators don't need the full forensic trail and
+ *  an attacker-supplied UA shouldn't blow the row size. */
 function truncateUserAgent(
   ua: string | readonly string[] | null | undefined,
 ): string | null {
   const value = Array.isArray(ua) ? ua[0] : ua;
   if (typeof value !== "string") return null;
-  return value.length > 256 ? value.slice(0, 256) : value;
+  if (Buffer.byteLength(value, "utf8") <= 256) return value;
+  let out = "";
+  let used = 0;
+  for (const ch of value) {
+    const chBytes = Buffer.byteLength(ch, "utf8");
+    if (used + chBytes > 256) break;
+    out += ch;
+    used += chBytes;
+  }
+  return out;
 }
 
 /**
