@@ -10,3 +10,8 @@ export {
   type McpToolClient,
 } from "./interface.js";
 export { InMemoryMcpToolClient } from "./in-memory.js";
+export {
+  createPatScopedMcpClient,
+  type PatScopedAuditEntry,
+  type PatScopedMcpToolClient,
+} from "./pat-scope.js";

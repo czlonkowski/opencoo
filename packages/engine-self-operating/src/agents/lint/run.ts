@@ -25,11 +25,18 @@ import type { DomainId } from "@opencoo/shared/db";
 import type { LlmRouter } from "@opencoo/shared/llm-router";
 import { PROMPT_NAMES, loadPrompt } from "@opencoo/shared/prompts";
 
-import type { AgentRunContext } from "../../agent-harness/index.js";
+import type {
+  AgentDefinitionRegistry,
+  AgentRunContext,
+} from "../../agent-harness/index.js";
 import type { McpToolClient } from "../../mcp-tool-client/index.js";
 import { assertDomainSlugInScope } from "../scope-check.js";
 import { indexSearch, wikiReadPage } from "../tools/index.js";
 
+import {
+  detectAutomationDrift,
+  type ToolCallObservation,
+} from "./detectors/automation-drift.js";
 import {
   CONTRADICTIONS_PAGE_CAP,
   detectContradictions,
@@ -69,6 +76,14 @@ export const STALE_PAGES_DEFAULT_THRESHOLD_DAYS = 90;
  */
 export const WIKI_READ_PAGE_CONCURRENCY = 4;
 
+/**
+ * Window over which the automation_drift detector inspects
+ * past tool_calls (plan #97 Q6). 30 days matches the v0.1
+ * Lint cadence (weekly) with enough history to catch a
+ * regression that landed mid-cycle.
+ */
+export const AUTOMATION_DRIFT_WINDOW_DAYS = 30;
+
 export interface RunLintCoreArgs {
   readonly bindings: readonly WildcardBindingsInput[];
   readonly newestCitations: readonly PageNewestCitation[];
@@ -77,6 +92,13 @@ export interface RunLintCoreArgs {
   readonly wikiPaths: readonly string[];
   readonly citedPaths: ReadonlySet<string>;
   readonly contradictionInputs: readonly PageBody[];
+  /** Past tool-call observations (30-day window, status='success'
+   *  only) for the automation_drift detector. The orchestrator
+   *  loads these via SQL; the core takes them already-flattened. */
+  readonly toolCallObservations: readonly ToolCallObservation[];
+  /** Definition slug → allowed tool name set, snapshotted from
+   *  the AgentDefinitionRegistry at run time. */
+  readonly allowedToolsBySlug: ReadonlyMap<string, ReadonlySet<string>>;
   readonly thresholdDays: number;
   readonly domainSlug: string;
   readonly domainId: DomainId;
@@ -118,6 +140,12 @@ export async function runLintCore(args: RunLintCoreArgs): Promise<LintOutput> {
       fetchedAt: args.now,
     })),
   );
+  findings.push(
+    ...detectAutomationDrift({
+      observations: args.toolCallObservations,
+      allowedToolsBySlug: args.allowedToolsBySlug,
+    }),
+  );
 
   return { version: "v1", findings };
 }
@@ -148,11 +176,26 @@ interface PageNewestCitationRow {
   newest_prompt_version: string | null;
 }
 
+interface ToolCallRow {
+  definition_slug: string;
+  run_id: string;
+  started_at: string;
+  tool_calls: Array<{ name: string }>;
+}
+
 export interface RunLintArgs {
   readonly db: Db;
   readonly mcp: McpToolClient;
   readonly domainSlug: string;
+  /** Full registry — needed for the automation_drift detector
+   *  to snapshot every agent's allowed toolNames. The body
+   *  iterates `definitions.list()` to build the per-slug
+   *  allowed-tools Map. */
+  readonly definitions: AgentDefinitionRegistry;
   readonly thresholdDays?: number;
+  /** Window over which the automation_drift detector inspects
+   *  past tool_calls. Defaults to AUTOMATION_DRIFT_WINDOW_DAYS. */
+  readonly automationDriftWindowDays?: number;
   readonly now?: () => Date;
 }
 
@@ -246,11 +289,12 @@ export async function runLint(
   //    HTTP-backed McpToolClient, the previous serial loop took
   //    one round trip per page (up to 50 sequentially); the
   //    batched form caps at WIKI_READ_PAGE_CONCURRENCY in flight.
-  //    Deterministic ordering (indexSearch returns sorted +
-  //    `pathToBody` Map preserves order) so contradictionInputs
-  //    is identical across runs. (copilot #22 PERF)
+  //    Deterministic ordering: indexSearch returns sorted, and
+  //    `Promise.all` resolves to results in input-array order,
+  //    so pushing into `contradictionInputs` batch-by-batch
+  //    preserves the sampledPaths order. (copilot #22 PERF)
   const sampledPaths = wikiPaths.slice(0, CONTRADICTIONS_PAGE_CAP);
-  const pathToBody = new Map<string, string>();
+  const contradictionInputs: PageBody[] = [];
   for (let i = 0; i < sampledPaths.length; i += WIKI_READ_PAGE_CONCURRENCY) {
     const batch = sampledPaths.slice(i, i + WIKI_READ_PAGE_CONCURRENCY);
     const bodies = await Promise.all(
@@ -261,14 +305,61 @@ export async function runLint(
       ),
     );
     for (let j = 0; j < batch.length; j++) {
-      pathToBody.set(batch[j]!, bodies[j]!);
+      contradictionInputs.push({
+        domainSlug: args.domainSlug,
+        path: batch[j]!,
+        body: bodies[j]!,
+      });
     }
   }
-  const contradictionInputs: PageBody[] = sampledPaths.map((path) => ({
-    domainSlug: args.domainSlug,
-    path,
-    body: pathToBody.get(path)!,
-  }));
+
+  // 5. Load tool-call observations for the automation_drift
+  //    detector. Window: last N days, status='success' only
+  //    (a failed run's tool_calls aren't reliable evidence —
+  //    the run blew up before completing). Unroll the JSONB
+  //    `tool_calls` array into one observation per (run, name)
+  //    so the detector is a pure JS filter.
+  //
+  //    CROSS-TENANT SCOPE (copilot #23 fix 3): only consider
+  //    runs whose `agent_instances.scope_domain_ids` contains
+  //    the current Lint run's resolved domainId. Without the
+  //    JOIN, a per-domain Lint pass would surface findings
+  //    from OTHER domains' agent runs — leaking runIds + tool
+  //    names across tenants in shared deployments.
+  const windowDays =
+    args.automationDriftWindowDays ?? AUTOMATION_DRIFT_WINDOW_DAYS;
+  const toolCallsResult = (await args.db.execute(sql`
+    SELECT ar.definition_slug,
+           ar.id::text AS run_id,
+           ar.started_at::text AS started_at,
+           ar.tool_calls
+    FROM agent_runs ar
+    JOIN agent_instances ai ON ai.id = ar.instance_id
+    WHERE ar.status = 'success'
+      AND ar.started_at >= NOW() - (${windowDays}::text || ' days')::interval
+      AND ${domainId}::uuid = ANY(ai.scope_domain_ids)
+  `)) as unknown as ExecResult<ToolCallRow>;
+
+  const toolCallObservations: ToolCallObservation[] = [];
+  for (const row of toolCallsResult.rows) {
+    for (const call of row.tool_calls ?? []) {
+      toolCallObservations.push({
+        definitionSlug: row.definition_slug,
+        runId: row.run_id,
+        startedAt: row.started_at,
+        name: call.name,
+      });
+    }
+  }
+
+  // Snapshot definition → allowed-tools map from the registry.
+  // The detector skips any observation whose slug is missing
+  // from this map, treating registry-drift as a separate
+  // (logged) concern.
+  const allowedToolsBySlug = new Map<string, ReadonlySet<string>>();
+  for (const def of args.definitions.list()) {
+    allowedToolsBySlug.set(def.slug, new Set(def.toolNames));
+  }
 
   return runLintCore({
     bindings,
@@ -278,6 +369,8 @@ export async function runLint(
     wikiPaths,
     citedPaths,
     contradictionInputs,
+    toolCallObservations,
+    allowedToolsBySlug,
     thresholdDays: args.thresholdDays ?? STALE_PAGES_DEFAULT_THRESHOLD_DAYS,
     domainSlug: args.domainSlug,
     domainId,

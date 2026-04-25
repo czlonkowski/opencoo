@@ -1,16 +1,18 @@
 /**
- * Public surface for the Lint agent (PR 20, plan #92 part A).
- * The composition root (PR 30 CLI) registers the definition
- * and wires the body via
- * `invokeAgent({ run: ctx => runLint(ctx, ...) })`.
+ * Public surface for the Lint agent (PR 20). The composition
+ * root (PR 30 CLI) registers the definition and wires the body
+ * via `invokeAgent({ run: ctx => runLint(ctx, ...) })`.
  *
- * Detector primitives are also exported so the orchestrator
- * integration test + future plan-#92-part-B `automation_drift`
- * detector can reuse the same shapes.
+ * v0.1 detector roster (6 detectors):
+ *   - wildcard_bindings, stale_pages, orphans,
+ *     prompt_version_drift, contradictions (plan #92 part A)
+ *   - automation_drift (plan #97 part B)
  */
 export { LINT_DEFINITION } from "./definition.js";
 export {
+  AUTOMATION_DRIFT_WINDOW_DAYS,
   STALE_PAGES_DEFAULT_THRESHOLD_DAYS,
+  WIKI_READ_PAGE_CONCURRENCY,
   currentLoaderPromptVersions,
   runLint,
   runLintCore,
@@ -53,3 +55,8 @@ export {
   type ContradictionsArgs,
   type PageBody,
 } from "./detectors/contradictions.js";
+export {
+  detectAutomationDrift,
+  type AutomationDriftArgs,
+  type ToolCallObservation,
+} from "./detectors/automation-drift.js";

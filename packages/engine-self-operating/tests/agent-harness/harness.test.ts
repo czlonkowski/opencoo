@@ -54,6 +54,7 @@ const HEARTBEAT_DEF: AgentDefinition = {
   description: "Daily heartbeat report",
   outputSchemaName: "HeartbeatOutput",
   defaultMemory: { type: "none" },
+  toolNames: ["worldview.read", "index.search"],
 };
 
 describe("invokeAgent — happy path", () => {
@@ -90,6 +91,93 @@ describe("invokeAgent — happy path", () => {
     );
     expect(rows.rows[0]?.status).toBe("success");
     expect(rows.rows[0]?.output).toEqual({ summary: "ok", priority: 1 });
+  });
+});
+
+describe("invokeAgent — callerPat propagation (PR 20 part B / plan #97)", () => {
+  // The harness threads a caller-supplied PAT through to the
+  // agent body via AgentRunContext.callerPat. Reader agents
+  // (Heartbeat, Lint) ignore it — they run on a schedule with
+  // no human caller. Chat consumes it and asserts non-empty
+  // before any LLM call. Whatever the body sees on `ctx`
+  // must be exactly what the caller passed (no normalization,
+  // no stripping) so Chat can apply its own strict check.
+  it("ctx.callerPat === args.callerPat when the caller supplies a PAT", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedAgentInstance(fixture);
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(HEARTBEAT_DEF);
+    const router = makeRouter(new MockLlmClient(), fixture.db);
+
+    let observed: string | undefined;
+    await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "http",
+      inputs: {},
+      callerPat: "ghp_test_pat_12345",
+      run: async (ctx) => {
+        observed = ctx.callerPat;
+        return { ok: true };
+      },
+    });
+    expect(observed).toBe("ghp_test_pat_12345");
+  });
+
+  it("ctx.callerPat === undefined when the caller omits the field (Heartbeat/Lint scheduled path)", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedAgentInstance(fixture);
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(HEARTBEAT_DEF);
+    const router = makeRouter(new MockLlmClient(), fixture.db);
+
+    let observed: string | undefined = "sentinel";
+    await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "scheduled",
+      inputs: {},
+      run: async (ctx) => {
+        observed = ctx.callerPat;
+        return { ok: true };
+      },
+    });
+    expect(observed).toBeUndefined();
+  });
+
+  it("preserves whitespace-only PATs verbatim (validation lives in the agent body, not the harness)", async () => {
+    // Per Q2: the strict empty-PAT check is the Chat agent's
+    // responsibility, not the harness's. Whatever the caller
+    // passes is propagated unchanged so the agent can apply
+    // its own contract.
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedAgentInstance(fixture);
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(HEARTBEAT_DEF);
+    const router = makeRouter(new MockLlmClient(), fixture.db);
+
+    let observed: string | undefined;
+    await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "http",
+      inputs: {},
+      callerPat: "   ",
+      run: async (ctx) => {
+        observed = ctx.callerPat;
+        return { ok: true };
+      },
+    });
+    expect(observed).toBe("   ");
   });
 });
 

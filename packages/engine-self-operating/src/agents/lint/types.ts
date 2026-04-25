@@ -25,6 +25,7 @@ export const LINT_FINDING_KINDS = [
   "orphans",
   "prompt_version_drift",
   "contradictions",
+  "automation_drift",
 ] as const;
 export type LintFindingKind = (typeof LINT_FINDING_KINDS)[number];
 
