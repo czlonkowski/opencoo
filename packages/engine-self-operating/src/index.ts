@@ -29,6 +29,24 @@ export {
   type StartServer,
 } from "./start.js";
 
+// Output-channel surface (PR 20, plan #92 part A). The Heartbeat
+// + Lint agents return JSON; the engine's post-run hook routes
+// the payload through this registry. The registry enforces the
+// per-instance `outputChannelIds[]` binding so a prompt-injection
+// attack on the agent cannot redirect delivery (Q10).
+export {
+  MockOutputChannelAdapter,
+  OutputChannelMismatchError,
+  OutputChannelRegistry,
+  OutputChannelUnknownAdapterError,
+  type CapturedDelivery,
+  type OutputChannelAdapter,
+  type OutputChannelBinding,
+  type OutputChannelDeliverArgs,
+  type OutputChannelDelivery,
+  type OutputChannelDeliverInvocation,
+} from "./output-channels/index.js";
+
 // Agent harness surface (PR 19, plan #87). The composition root
 // (PR 30 CLI) wires concrete agents (PR 20+) onto this harness.
 export {
