@@ -61,7 +61,7 @@ describe("AutomationAdapter — Gate 3 method-name allow-list", () => {
     expect(EXPECTED_METHOD_NAMES).toEqual(["deployWorkflow"]);
   });
 
-  it("InMemoryAutomationAdapter exposes only deployWorkflow as a callable instance method", () => {
+  it("InMemoryAutomationAdapter includes deployWorkflow and omits forbidden callable instance methods", () => {
     // Walk the prototype + own props, filter to functions.
     const adapter = new InMemoryAutomationAdapter();
     const proto = Object.getPrototypeOf(adapter) as object;
