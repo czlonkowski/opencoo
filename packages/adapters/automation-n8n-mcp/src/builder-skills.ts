@@ -15,30 +15,24 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export interface BuilderSkill {
-  /** Globally unique slug; the Builder agent references skills
-   *  by this. */
-  readonly slug: string;
-  /** Semver-ish version string from the vendored bundle. */
-  readonly version: string;
-  /** SHA pinned at vendor time — recorded on
-   *  `agent_runs.skills_used` so a later marketplace bump does
-   *  not retroactively change what the build referenced. */
-  readonly sha: string;
-  /** Markdown body of the skill — the agent harness inlines
-   *  this into the LLM prompt at composition time. */
-  readonly body: string;
-  /** One-line summary; surfaces in `list_workflow_templates`. */
-  readonly summary?: string;
-}
+import { z } from "zod";
 
-interface BuilderSkillFile {
-  readonly slug: unknown;
-  readonly version: unknown;
-  readonly sha: unknown;
-  readonly body: unknown;
-  readonly summary?: unknown;
-}
+/**
+ * Zod schema for a vendored BuilderSkill JSON file. `.strict()`
+ * rejects unknown keys at boundary so a malformed snapshot fails
+ * loud at module load (instead of silently dropping fields).
+ */
+const builderSkillSchema = z
+  .object({
+    slug: z.string().min(1),
+    version: z.string().min(1),
+    sha: z.string().min(1),
+    body: z.string().min(1),
+    summary: z.string().min(1).optional(),
+  })
+  .strict();
+
+export type BuilderSkill = z.infer<typeof builderSkillSchema>;
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VENDOR_DIR = join(HERE, "..", "vendor", "n8n-skills");
@@ -54,27 +48,13 @@ function loadVendoredSkills(): readonly BuilderSkill[] {
   for (const name of entries.sort()) {
     if (!name.endsWith(".json")) continue;
     const raw = readFileSync(join(VENDOR_DIR, name), "utf8");
-    const parsed = JSON.parse(raw) as BuilderSkillFile;
-    if (
-      typeof parsed.slug !== "string" ||
-      typeof parsed.version !== "string" ||
-      typeof parsed.sha !== "string" ||
-      typeof parsed.body !== "string"
-    ) {
+    const parseResult = builderSkillSchema.safeParse(JSON.parse(raw));
+    if (!parseResult.success) {
       throw new Error(
-        `vendor/n8n-skills/${name}: malformed BuilderSkill (slug/version/sha/body)`,
+        `vendor/n8n-skills/${name}: malformed BuilderSkill — ${parseResult.error.message}`,
       );
     }
-    const skill: BuilderSkill = {
-      slug: parsed.slug,
-      version: parsed.version,
-      sha: parsed.sha,
-      body: parsed.body,
-      ...(typeof parsed.summary === "string"
-        ? { summary: parsed.summary }
-        : {}),
-    };
-    out.push(skill);
+    out.push(parseResult.data);
   }
   return out;
 }

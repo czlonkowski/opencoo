@@ -23,9 +23,9 @@
  * The test asserts behavior against makeMockN8nApi(state). No
  * Docker, no real n8n.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -471,13 +471,9 @@ describe("automation-n8n-mcp — N8nLikeApi shape (Gate 3 type-level extension)"
 
 function walkTs(dir: string): string[] {
   // Lazy synchronous walk — small package, no perf cost.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const fs = require("node:fs") as typeof import("node:fs");
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const path = require("node:path") as typeof import("node:path");
   const out: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, entry.name);
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
     if (entry.isDirectory()) {
       out.push(...walkTs(p));
     } else if (entry.isFile() && p.endsWith(".ts")) {
