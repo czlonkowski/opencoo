@@ -187,6 +187,13 @@ export function extractFirefliesSignature(
  * include `revision` in older API versions.
  */
 function deriveEventId(body: RawFirefliesWebhookBody): string {
+  // Caller validates `meetingId` and `action` are non-empty
+  // strings BEFORE calling — those are required. `revOrTx`
+  // must also be non-empty: if both `revision` and
+  // `transcriptId` are absent / empty, two distinct events for
+  // the same `(meetingId, action)` would hash to the SAME
+  // eventId and dedupe-incorrectly at intake. Caller is
+  // responsible for that guard (we keep the helper pure-ish).
   const revOrTx = body.revision ?? body.transcriptId ?? "";
   const parts = [body.meetingId ?? "", revOrTx, body.action ?? ""].join("|");
   return createHash("sha256").update(parts).digest("hex").slice(0, 32);
@@ -248,10 +255,31 @@ export function buildFirefliesWebhookHelpers(
         typeof action !== "string" ||
         action.length === 0 ||
         typeof transcript !== "string" ||
-        typeof title !== "string"
+        typeof title !== "string" ||
+        title.length === 0
       ) {
         throw new ValidationError(
-          "fireflies webhook: event missing required fields (meetingId, action, transcript, title)",
+          "fireflies webhook: event missing required fields (meetingId, action, transcript, non-empty title)",
+        );
+      }
+
+      // eventId guard (Copilot triage): if BOTH `revision` and
+      // `transcriptId` are absent / empty, the eventId hash
+      // input is just `${meetingId}|${''}|${action}` and two
+      // distinct events with the same (meetingId, action) would
+      // dedupe-incorrectly at intake. At least one of revision /
+      // transcriptId must be a non-empty string.
+      const revisionStr =
+        typeof parsed.revision === "string" && parsed.revision.length > 0
+          ? parsed.revision
+          : undefined;
+      const transcriptIdStr =
+        typeof parsed.transcriptId === "string" && parsed.transcriptId.length > 0
+          ? parsed.transcriptId
+          : undefined;
+      if (revisionStr === undefined && transcriptIdStr === undefined) {
+        throw new ValidationError(
+          "fireflies webhook: event must carry at least one of {revision, transcriptId}; both missing makes eventId collision-prone",
         );
       }
 
@@ -260,23 +288,25 @@ export function buildFirefliesWebhookHelpers(
       if (!matchesAllowlist(title, allowlist)) return [];
 
       const eventId = deriveEventId(parsed);
-      // sourceDocId = meetingId (decision 10 — all revisions of
-      // the same meeting share the audit prefix). The
-      // sourceRevision below is the per-event eventId so a
-      // revised transcript surfaces as a fresh intake row.
+      // sourceDocId = meetingId — all revisions of the same
+      // meeting share the audit prefix. sourceRevision below is
+      // the per-event eventId so a revised transcript surfaces
+      // as a fresh intake row under the same docId.
       const sourceDocId = meetingId;
       const at = fetchedAt ?? new Date();
 
-      // contentBytes encodes the FULL body verbatim — speakers,
-      // timestamps, metadata, transcript text. The
-      // Compilation Worker has everything; spotlight-wrapping
-      // happens at the LLM-call edge (orchestrator override 6).
-      const contentBytes = Buffer.from(JSON.stringify(parsed), "utf8");
-      if (contentBytes.length > ONE_MIB) {
+      // contentBytes is the ORIGINAL request body bytes —
+      // byte-for-byte preservation lets ops audit/replay against
+      // the HMAC signature. Re-serializing JSON.stringify(parsed)
+      // would lose original whitespace + key order. Spotlight-
+      // wrapping happens at the LLM-call edge (orchestrator
+      // override 6).
+      if (body.length > ONE_MIB) {
         throw new ValidationError(
-          `fireflies webhook: event exceeds 1 MiB ceiling (got ${contentBytes.length} bytes)`,
+          `fireflies webhook: event exceeds 1 MiB ceiling (got ${body.length} bytes)`,
         );
       }
+      const contentBytes = body;
 
       const out: SourceWebhookEvent[] = [
         {

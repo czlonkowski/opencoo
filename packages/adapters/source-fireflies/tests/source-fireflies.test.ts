@@ -339,6 +339,33 @@ describe("source-fireflies — webhook helpers", () => {
     expect(() => helpers.parseEvents({ body: missing })).toThrow();
   });
 
+  it("parseEvents throws when title is an empty string (Copilot triage — allowlist requires non-empty title)", () => {
+    const helpers = buildFirefliesWebhookHelpers();
+    const fx = buildMockFirefliesWebhookFixture({ title: "" });
+    expect(() => helpers.parseEvents({ body: fx.body })).toThrow(
+      /missing required fields|non-empty title/,
+    );
+  });
+
+  it("parseEvents throws when BOTH revision and transcriptId are absent (Copilot triage — eventId collision-prone)", () => {
+    const helpers = buildFirefliesWebhookHelpers();
+    // Build a body without revision AND without transcriptId.
+    // The mock fixture defaults to providing both; we override
+    // by constructing the body manually.
+    const body = Buffer.from(
+      JSON.stringify({
+        meetingId: "m-1",
+        action: "transcript.completed",
+        transcript: "Speaker: Hello",
+        title: "Standup",
+      }),
+      "utf8",
+    );
+    expect(() => helpers.parseEvents({ body })).toThrow(
+      /at least one of \{revision, transcriptId\}/,
+    );
+  });
+
   it("parseEvents enforces the 1 MiB ceiling on contentBytes", () => {
     const fx = buildMockFirefliesWebhookFixture({
       meetingId: "m-fat",
