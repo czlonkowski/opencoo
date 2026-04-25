@@ -46,6 +46,10 @@
       "types": "./dist/source-adapter/index.d.ts",
       "default": "./dist/source-adapter/index.js"
     },
+    "./output-adapter": {
+      "types": "./dist/output-adapter/index.d.ts",
+      "default": "./dist/output-adapter/index.js"
+    },
     "./wiki-write": {
       "types": "./dist/wiki-write/index.d.ts",
       "default": "./dist/wiki-write/index.js"

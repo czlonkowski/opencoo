@@ -5,5 +5,6 @@
 // `@opencoo/shared/adapter-contract-tests/<name>`.
 export * from "./document-converter.js";
 export * from "./guard.js";
+export * from "./output-adapter.js";
 export * from "./source-adapter.js";
 export * from "./wiki-adapter.js";

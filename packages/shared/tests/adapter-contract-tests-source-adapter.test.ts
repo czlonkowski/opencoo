@@ -63,4 +63,63 @@ describe("sourceAdapterContract — generator signature pin", () => {
     const invalid: SourceAdapterFixtureOptions["mode"] = "http";
     expect(invalid).toBe("http"); // value is set but TS errored above
   });
+
+  it("webhook mode REQUIRES webhookFixture (PR 24 / plan #115 discriminated-union pin)", () => {
+    // Polling shape — no fixture needed.
+    const _polling: SourceAdapterFixtureOptions = {
+      backendName: "x",
+      mode: "polling",
+      makeAdapter: async () => ({
+        adapter: { slug: "x", scan: async () => ({ documents: [], nextCursor: null }) },
+        simulate: {
+          addDoc: () => undefined,
+          bumpRevision: () => undefined,
+          removeDoc: () => undefined,
+        },
+        seed: () => undefined,
+        cleanup: async () => undefined,
+      }),
+    };
+    // Webhook shape — fixture REQUIRED. Omitting it fails
+    // type-check (verified via the @ts-expect-error below).
+    const _webhook: SourceAdapterFixtureOptions = {
+      backendName: "y",
+      mode: "webhook",
+      makeAdapter: async () => ({
+        adapter: { slug: "y", scan: async () => ({ documents: [], nextCursor: null }) },
+        simulate: {
+          addDoc: () => undefined,
+          bumpRevision: () => undefined,
+          removeDoc: () => undefined,
+        },
+        seed: () => undefined,
+        cleanup: async () => undefined,
+      }),
+      webhookFixture: {
+        body: Buffer.from("{}"),
+        secret: Buffer.from("s"),
+        validSignature: "deadbeef",
+        headers: {},
+        signatureHeaderName: "x-sig",
+      },
+    };
+    expect(_polling.mode).toBe("polling");
+    expect(_webhook.mode).toBe("webhook");
+    // @ts-expect-error — webhook mode without webhookFixture is rejected
+    const _missing: SourceAdapterFixtureOptions = {
+      backendName: "z",
+      mode: "webhook",
+      makeAdapter: async () => ({
+        adapter: { slug: "z", scan: async () => ({ documents: [], nextCursor: null }) },
+        simulate: {
+          addDoc: () => undefined,
+          bumpRevision: () => undefined,
+          removeDoc: () => undefined,
+        },
+        seed: () => undefined,
+        cleanup: async () => undefined,
+      }),
+    };
+    expect(_missing.mode).toBe("webhook");
+  });
 });

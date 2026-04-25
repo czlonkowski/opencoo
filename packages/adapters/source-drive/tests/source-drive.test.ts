@@ -132,40 +132,15 @@ sourceAdapterContract({
   },
 });
 
-// Webhook-mode contract suite — for parity tests would run this
-// shape; Drive is polling-only so the webhook stubs run via the
-// generator's `it.skip` path. We DO still exercise the path so
-// the `mode: 'webhook'` branch has a regression guard at adapter
-// level too.
-sourceAdapterContract({
-  backendName: "source-drive",
-  mode: "webhook",
-  makeAdapter: async () => {
-    // Drive is polling-only; the webhook stubs are TODOs and
-    // run via the generator's `it.skip` path. This factory is
-    // never actually called, so the body just returns a
-    // typed-correct handle.
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
-    const credentialId = await seedRefreshToken(store);
-    const sim = createMockDriveSimulator();
-    const adapter = createGoogleDriveAdapter({
-      credentialStore: store,
-      credentialId,
-      config: { folderId: TEST_FOLDER },
-      makeDrive: makeMockDrive({ state: sim.state }),
-    });
-    return {
-      adapter,
-      seed: () => undefined,
-      simulate: {
-        addDoc: () => undefined,
-        bumpRevision: () => undefined,
-        removeDoc: () => undefined,
-      },
-      cleanup: async () => undefined,
-    };
-  },
-});
+// NOTE — Drive is polling-only, so we don't run the webhook
+// branch of `sourceAdapterContract` here. PR 24 / plan #115
+// promoted the webhook fixture to a REQUIRED discriminated-
+// union member; the regression guard at adapter level now
+// lives in `@opencoo/source-asana`'s test where the fixture
+// is real. (The previous no-op factory pattern compiled but
+// never asserted anything; promoting the fixture to required
+// removed both the false-positive coverage and the type-pin
+// gap.)
 
 // ---------------------------------------------------------------------------
 // Adapter-specific tests
