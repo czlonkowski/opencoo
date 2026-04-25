@@ -14,12 +14,25 @@
  * `source_content`, `system`, `assistant`. Case-insensitive so
  * `<SOURCE_CONTENT>` cannot smuggle through.
  *
- * Order matters: the `&` substitution MUST run first. If we
- * replaced `<system>` with `&lt;system&gt;` while leaving existing
- * `&` alone, an attacker could pre-encode `&amp;lt;system&amp;gt;`
- * which the model's HTML decoder might collapse to `&lt;system&gt;`
- * then to `<system>`. Escaping `&` first turns the attacker's
- * pre-encoded `&amp;` into `&amp;amp;` so no double-decode survives.
+ * Pipeline order is amp → sentinel → xmlbody, and each step is
+ * load-bearing on the one before it.
+ *
+ * (1) `&` substitution MUST run first. If we replaced `<system>`
+ *     with `&lt;system&gt;` while leaving existing `&` alone, an
+ *     attacker could pre-encode `&amp;lt;system&amp;gt;` which the
+ *     model's HTML decoder might collapse to `&lt;system&gt;` then
+ *     to `<system>`. Escaping `&` first turns the attacker's
+ *     pre-encoded `&amp;` into `&amp;amp;` so no double-decode
+ *     survives.
+ * (2) Sentinel rewriting MUST run on raw `<sentinel>` bytes —
+ *     i.e. BEFORE `escapeXmlBody` turns `<` into `&lt;`. We rewrite
+ *     the tag NAME (`<source_content` → `<source_content_escaped`),
+ *     not the brackets, so even a model that decoded the entities
+ *     back to `<…>` would not see a sentinel a downstream parser
+ *     would recognize. Defense in depth on top of (3).
+ * (3) `escapeXmlBody` runs last and handles the surviving `<` / `>`
+ *     for general XML well-formedness — including the angle
+ *     brackets we just emitted around the renamed sentinel tokens.
  *
  * Defense-in-depth note: even if a sentinel survived this layer,
  * the downstream Zod-strict + path-guard + binding-guard wall
@@ -48,18 +61,22 @@ function escapeXmlAttr(input: string): string {
 }
 
 /**
- * Replace literal `<sentinel...>` and `</sentinel...>` byte
- * sequences in the body. The body has already had `&` escaped to
- * `&amp;`, so this is the only remaining place `<` can appear.
- * Case-insensitive so SHOUTED variants (`<SYSTEM>`) are caught.
+ * Rewrite the NAME of every literal `<sentinel...>` /
+ * `</sentinel...>` opening byte by appending `_escaped`. Runs on
+ * raw bytes (after escapeAmp, before escapeXmlBody) so it sees
+ * unmodified `<` characters. The angle brackets are left in place
+ * for escapeXmlBody to entity-encode in the next step.
+ *
+ * Case-insensitive so SHOUTED variants (`<SYSTEM>`) are caught
+ * with the same suffix.
  */
 function escapeSentinels(body: string): string {
   let out = body;
   for (const tag of SENTINELS) {
     const open = new RegExp(`<(${tag})\\b`, "gi");
     const close = new RegExp(`</(${tag})\\b`, "gi");
-    out = out.replace(open, "&lt;$1");
-    out = out.replace(close, "&lt;/$1");
+    out = out.replace(open, `<$1_escaped`);
+    out = out.replace(close, `</$1_escaped`);
   }
   return out;
 }
@@ -67,9 +84,10 @@ function escapeSentinels(body: string): string {
 export function spotlight(args: SpotlightArgs): string {
   const sourceAttr = escapeXmlAttr(args.source);
   const fetchedAtAttr = args.fetchedAt.toISOString();
-  // Amp-first → XML body → sentinel-tag neutralization. The order
-  // is the security property; do not reorder without re-reading
-  // the header comment above.
-  const inner = escapeSentinels(escapeXmlBody(escapeAmp(args.content)));
+  // Amp → sentinel → xmlbody. The order is the security property;
+  // do not reorder without re-reading the header comment above.
+  // Sentinel rewriting MUST see raw `<` bytes, so it runs before
+  // escapeXmlBody turns them into `&lt;`.
+  const inner = escapeXmlBody(escapeSentinels(escapeAmp(args.content)));
   return `<source_content source="${sourceAttr}" fetched_at="${fetchedAtAttr}">${inner}</source_content>`;
 }
