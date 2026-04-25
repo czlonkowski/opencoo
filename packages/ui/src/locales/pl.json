@@ -13,10 +13,13 @@
     "logout": "log out"
   },
   "auth": {
-    "patPrompt": "Paste your Gitea personal access token",
-    "patHelper": "Token stays in this tab only — clears on close. Required scope: read:user, read:org.",
+    "modalTitle": "opencoo",
+    "patPrompt": "Paste your Gitea personal access token to continue.",
+    "patFieldLabel": "personal access token",
     "patSubmit": "Sign in",
+    "authenticating": "authenticating…",
     "patEmpty": "Token is required.",
+    "storageNote": "stored in session storage · cleared when this tab closes",
     "loadingUser": "Resolving identity…",
     "loginFailed": "Sign-in failed.",
     "forbidden": "Your account is not in the admin team.",
@@ -59,11 +62,16 @@
     "subtitle": "Per-domain provider/model assignments. Diff-and-confirm before apply.",
     "preview": "Preview diff",
     "apply": "Apply",
+    "committing": "committing…",
     "cancel": "Cancel",
     "empty": "Select a domain to view its policy.",
-    "noChanges": "No changes to apply.",
+    "noChanges": "No changes",
     "diffTitle": "Sovereignty diff",
-    "diffHelp": "Server-computed diff. Token expires in {{seconds}}s.",
+    "diffSubtitle": "current → proposed",
+    "panelCurrent": "current",
+    "panelProposed": "proposed",
+    "timerLabel": "expires in",
+    "timerExpired": "expired",
     "diffExpired": "Token expired. Re-preview to continue.",
     "tokenMismatch": "The proposed policy changed since preview. Re-preview to continue.",
     "applied": "Applied. New policy is active for new pipeline runs."
@@ -76,7 +84,12 @@
       "locale": "locale",
       "version": "version"
     },
-    "empty": "No prompts loaded."
+    "empty": "No prompts loaded.",
+    "diffBanner": {
+      "title_one": "prompt has a new default available",
+      "title_other": "prompts have new defaults available",
+      "acknowledge": "acknowledge diff"
+    }
   },
   "common": {
     "save": "Save",
@@ -86,10 +99,13 @@
     "error": "Something went wrong."
   },
   "credentialForm": {
-    "secretHelp": "Stored encrypted at rest. Server never echoes it back.",
-    "required": "Required."
+    "required": "required",
+    "optional": "optional",
+    "requiredError": "Required.",
+    "encryptedNote": "stored encrypted",
+    "saving": "saving…"
   },
   "debug": {
-    "bannerLabel": "LLM_DEBUG_LOG=1 — prompts and responses are mirrored to llm_usage_debug. Disable in production."
+    "bannerLabel": "LLM_DEBUG_LOG=1 · prompts and responses are mirroring to llm_usage_debug"
   }
 }

@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Card } from "../components/Card.js";
+import { PromptsDiffBanner } from "../components/PromptsDiffBanner.js";
 import { fetchAdmin } from "../lib/api.js";
 import type { PromptManifestEntry } from "../types.js";
 
@@ -41,6 +42,11 @@ export function Prompts(): JSX.Element {
         <h1 style={{ margin: 0 }}>{t("prompts.title")}</h1>
         <p style={{ margin: "4px 0 0", color: "var(--ink-3)" }}>{t("prompts.subtitle")}</p>
       </div>
+      {/* PromptsDiffBanner mounts with empty `lagging` for v0.1
+       *  — no per-domain prompt overrides yet, so no drift to
+       *  surface. The component stays here so the day overrides
+       *  ship the wiring is one passed-prop away. */}
+      <PromptsDiffBanner lagging={[]} />
       <Card>
         {error !== null ? (
           <div style={{ color: "var(--alert)" }}>{error}</div>
