@@ -60,7 +60,7 @@ async function snapshotInvariants(
 async function seedAuxRows(f: PipelineFixture): Promise<void> {
   // Seed one user (FK target).
   const userResult = await f.raw.query<{ id: string }>(
-    `INSERT INTO users (email, name) VALUES ('a@a', 'A') RETURNING id`,
+    `INSERT INTO users (gitea_username) VALUES ('test-user') RETURNING id`,
   );
   const userId = userResult.rows[0]!.id;
   // One row per cleanup-invariant table.
@@ -69,7 +69,7 @@ async function seedAuxRows(f: PipelineFixture): Promise<void> {
     [f.bindingId],
   );
   await f.raw.query(
-    `INSERT INTO redaction_events (pipeline, domain_id, binding_id, guard_slug, category, pattern_version, matched_byte_ranges, fail_mode) VALUES ('classifier', $1, $2, 'regex-pii', 'email', 'v1', '[]'::jsonb, 'redact')`,
+    `INSERT INTO redaction_events (pipeline, domain_id, binding_id, guard_slug, category, pattern_version, matched_byte_ranges, fail_mode) VALUES ('classifier', $1, $2, 'regex-pii', 'email', 'v1', '[]'::jsonb, 'transform')`,
     [f.domainId, f.bindingId],
   );
   await f.raw.query(
@@ -81,7 +81,7 @@ async function seedAuxRows(f: PipelineFixture): Promise<void> {
     [f.bindingId, userId],
   );
   await f.raw.query(
-    `INSERT INTO agent_runs (definition_slug, trigger, status) VALUES ('classifier', 'pipeline', 'succeeded')`,
+    `INSERT INTO agent_runs (definition_slug, trigger, status) VALUES ('classifier', 'scheduled', 'success')`,
   );
 }
 

@@ -2,28 +2,39 @@
  * pglite test fixture for pipelines tests. Extends the compiler
  * fixture with the additional rows the scanner / cleanup /
  * compilation-worker pipelines exercise.
+ *
+ * Enum DDL is generated dynamically from `@opencoo/shared/db/schema`
+ * (copilot #19): walk every export, keep the ones drizzle's
+ * `isPgEnum` recognises, and CREATE TYPE … AS ENUM(...) from
+ * each one's `enumName` + `enumValues`. This eliminates the
+ * "fixture diverges from schema" drift class — every enum we
+ * own (and every value within it) flows from the source-of-truth
+ * file, no hand-typed copies in this test file to chase when
+ * schema changes.
  */
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle, type PgliteDatabase } from "drizzle-orm/pglite";
+import { isPgEnum, type PgEnum } from "drizzle-orm/pg-core";
 
 import * as schema from "@opencoo/shared/db/schema";
 
 export type PipelineTestDb = PgliteDatabase<typeof schema>;
 
-const DDL = `
-  -- enums
-  CREATE TYPE intake_status AS ENUM ('pending', 'classified', 'skipped');
-  CREATE TYPE error_class AS ENUM ('transient', 'upstream-quota', 'validation');
-  CREATE TYPE domain_class AS ENUM ('knowledge', 'catalog-workflows', 'catalog-skills');
-  CREATE TYPE governance_cadence AS ENUM ('continuous', 'weekly', 'monthly');
-  CREATE TYPE review_mode AS ENUM ('auto', 'review-required');
-  CREATE TYPE llm_engine AS ENUM ('ingestion', 'self-op');
-  CREATE TYPE llm_tier AS ENUM ('thinker', 'worker', 'light');
-  CREATE TYPE agent_run_status AS ENUM ('queued', 'running', 'succeeded', 'failed');
-  CREATE TYPE agent_trigger AS ENUM ('schedule', 'webhook', 'manual', 'pipeline');
-  CREATE TYPE erasure_action AS ENUM ('purge_intake', 'purge_webhooks', 'purge_llm_debug', 'recompile_page', 'delete_page');
-  CREATE TYPE guard_fail_mode AS ENUM ('redact', 'block');
+function buildEnumsDdl(): string {
+  const lines: string[] = [];
+  for (const value of Object.values(schema)) {
+    if (isPgEnum(value)) {
+      const e = value as PgEnum<[string, ...string[]]>;
+      const literals = e.enumValues
+        .map((v) => `'${v.replace(/'/g, "''")}'`)
+        .join(", ");
+      lines.push(`CREATE TYPE "${e.enumName}" AS ENUM (${literals});`);
+    }
+  }
+  return lines.join("\n");
+}
 
+const TABLES_DDL = `
   -- domains
   CREATE TABLE domains (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
@@ -41,11 +52,12 @@ const DDL = `
     updated_at timestamp with time zone DEFAULT now() NOT NULL
   );
 
-  -- users (FK target for erasure_log)
+  -- users (mirrors @opencoo/shared/db/schema/users.ts: gitea_username + role
+  -- per copilot #19; the previous email/name DDL was wrong).
   CREATE TABLE users (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-    email text NOT NULL,
-    name text NOT NULL,
+    gitea_username text NOT NULL UNIQUE,
+    role user_role DEFAULT 'operator' NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
   );
 
@@ -195,7 +207,8 @@ export async function freshPipelineDb(
   opts: FreshOptions = {},
 ): Promise<PipelineFixture> {
   const pg = new PGlite();
-  await pg.exec(DDL);
+  await pg.exec(buildEnumsDdl());
+  await pg.exec(TABLES_DDL);
   const db: PipelineTestDb = drizzle(pg, { schema });
 
   const domainResult = await pg.query<{ id: string }>(
