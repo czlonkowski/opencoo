@@ -9,8 +9,11 @@
  *
  * Probes are passed in via `ProbeMap`; each entry is a
  * `() => Promise<ProbeResult>`. The handler runs them concurrently
- * with `Promise.all` so /ready latency is bounded by the SLOWEST
- * probe, not their sum.
+ * (latency bounded by the SLOWEST probe, not their sum) and
+ * defensively wraps each call in try/catch — a buggy probe that
+ * throws is surfaced as a failed check (`{ok: false, reason}`)
+ * rather than crashing the route into a 500. Fail-closed at the
+ * HTTP boundary (copilot #15 Fix 5).
  */
 import Fastify, { type FastifyInstance } from "fastify";
 
@@ -41,9 +44,19 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
 
   app.get("/ready", async (_req, reply) => {
     const results = await Promise.all(
-      Object.entries(options.probes).map(
-        async ([name, fn]) => [name, await fn()] as const,
-      ),
+      Object.entries(options.probes).map(async ([name, fn]) => {
+        try {
+          return [name, await fn()] as const;
+        } catch (err) {
+          // Probes are CONTRACTUALLY supposed to always resolve;
+          // catching the rejection here is belt-and-suspenders so
+          // a buggy probe surfaces as a failed check rather than
+          // a 500. The reason string preserves the original
+          // error's message for operator triage.
+          const reason = err instanceof Error ? err.message : String(err);
+          return [name, { ok: false, reason }] as const;
+        }
+      }),
     );
     const allOk = results.every(([, r]) => r.ok);
     const body: ReadyResponse = {
