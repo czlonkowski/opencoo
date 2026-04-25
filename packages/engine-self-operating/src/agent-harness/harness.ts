@@ -47,7 +47,6 @@ import type { AgentDefinition, AgentDefinitionRegistry } from "./definitions.js"
 import { OpencooError } from "@opencoo/shared/errors";
 
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
-import type { DomainId } from "@opencoo/shared/db";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
@@ -59,15 +58,12 @@ export interface AgentInvocation {
   readonly instanceId: string;
   readonly trigger: AgentTrigger;
   readonly inputs: Record<string, unknown>;
-  /** The domain the LlmRouter routes against. The harness
-   *  picks one from `instance.scopeDomainIds[0]` if the
-   *  caller doesn't override; multi-domain agents resolve
-   *  per-call upstream. */
-  readonly domainId?: DomainId;
   /** The agent's body — receives the loaded instance + the
-   *  spotlighted memory string + the LlmRouter (already
-   *  scoped to `domainId`) and returns the JSON output to
-   *  persist. */
+   *  spotlighted memory string + the LlmRouter and returns
+   *  the JSON output to persist. v0.1 routes against the
+   *  domains exposed via `instance.scopeDomainIds`; an
+   *  explicit per-invocation domain override arrives in
+   *  PR 20+ when a concrete agent demonstrates the need. */
   readonly run: (ctx: AgentRunContext) => Promise<unknown>;
   readonly clock?: () => Date;
 }
