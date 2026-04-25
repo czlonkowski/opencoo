@@ -124,6 +124,48 @@ const TABLES_DDL = `
     response_text text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
   );
+
+  -- credentials (FK target for sources_bindings; minimal shape
+  -- — real schema has more columns, the lint orchestrator
+  -- doesn't read them).
+  CREATE TABLE credentials (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    label text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+  );
+
+  -- sources_bindings (Lint wildcard-bindings detector reads this).
+  CREATE TABLE sources_bindings (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    domain_id uuid NOT NULL REFERENCES domains(id) ON DELETE RESTRICT,
+    adapter_slug text NOT NULL,
+    source_id text,
+    config jsonb DEFAULT '{}'::jsonb NOT NULL,
+    allowed_paths text[] DEFAULT '{}'::text[] NOT NULL,
+    review_mode review_mode DEFAULT 'auto' NOT NULL,
+    schedule_cron text,
+    credentials_id uuid REFERENCES credentials(id) ON DELETE RESTRICT,
+    retention_days_override integer,
+    enabled boolean DEFAULT true NOT NULL,
+    last_scanned_at timestamp with time zone,
+    last_scan_cursor text,
+    notes text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+  );
+
+  -- page_citations (Lint stale-pages / orphans / prompt-drift
+  -- detectors aggregate over this).
+  CREATE TABLE page_citations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    domain_slug text NOT NULL,
+    page_path text NOT NULL,
+    source_binding_id uuid NOT NULL REFERENCES sources_bindings(id) ON DELETE RESTRICT,
+    source_ref text NOT NULL,
+    compiled_by_run_id uuid REFERENCES agent_runs(id) ON DELETE SET NULL,
+    prompt_version text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+  );
 `;
 
 export interface AgentFixture {
@@ -172,4 +214,62 @@ export async function seedAgentInstance(
     [definitionSlug, instanceName, [fixture.domainId], memory],
   );
   return { instanceId: result.rows[0]!.id, definitionSlug };
+}
+
+export interface SeedBindingArgs {
+  readonly adapterSlug?: string;
+  readonly allowedPaths: readonly string[];
+  readonly enabled?: boolean;
+}
+
+/** Seed one source binding for the fixture's default domain. Used by
+ *  the Lint orchestrator integration test. */
+export async function seedBinding(
+  fixture: AgentFixture,
+  args: SeedBindingArgs,
+): Promise<{ readonly bindingId: string }> {
+  const result = await fixture.raw.query<{ id: string }>(
+    `INSERT INTO sources_bindings
+       (domain_id, adapter_slug, allowed_paths, enabled)
+     VALUES ($1::uuid, $2, $3::text[], $4)
+     RETURNING id`,
+    [
+      fixture.domainId,
+      args.adapterSlug ?? "drive",
+      args.allowedPaths,
+      args.enabled ?? true,
+    ],
+  );
+  return { bindingId: result.rows[0]!.id };
+}
+
+export interface SeedCitationArgs {
+  readonly domainSlug?: string;
+  readonly pagePath: string;
+  readonly bindingId: string;
+  readonly promptVersion?: string;
+  /** Seconds-ago for the row's created_at — supports stale-page tests. */
+  readonly createdSecondsAgo?: number;
+}
+
+/** Seed one page_citations row for the fixture's default domain. */
+export async function seedPageCitation(
+  fixture: AgentFixture,
+  args: SeedCitationArgs,
+): Promise<void> {
+  const createdAt = args.createdSecondsAgo
+    ? `NOW() - INTERVAL '${args.createdSecondsAgo} seconds'`
+    : "NOW()";
+  await fixture.raw.query(
+    `INSERT INTO page_citations
+       (domain_slug, page_path, source_binding_id, source_ref, prompt_version, created_at)
+     VALUES ($1, $2, $3::uuid, $4, $5, ${createdAt})`,
+    [
+      args.domainSlug ?? "test-domain",
+      args.pagePath,
+      args.bindingId,
+      `gdrive://test-${args.pagePath}`,
+      args.promptVersion ?? null,
+    ],
+  );
 }
