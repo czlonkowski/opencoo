@@ -40,9 +40,10 @@ describe("normaliseWorldviewImpact — defensive cleanup", () => {
     ).toEqual(["bullet", "bullet 2"]);
   });
 
-  it("collapses internal runs of whitespace to a single space", () => {
+  it("collapses internal runs of horizontal whitespace to a single space", () => {
     // A model that emits "bullet   one\twith\ttabs" should not
-    // surface a tab-laden trailer line.
+    // surface a tab-laden trailer line. Newlines are NOT collapsed
+    // here — they're a security signal (see the next describe block).
     expect(normaliseWorldviewImpact(["bullet   one\twith\ttabs"])).toEqual([
       "bullet one with tabs",
     ]);
@@ -52,6 +53,43 @@ describe("normaliseWorldviewImpact — defensive cleanup", () => {
     expect(
       normaliseWorldviewImpact(["priorytet dystrybucji się zmienił"]),
     ).toEqual(["priorytet dystrybucji się zmienił"]);
+  });
+});
+
+describe("normaliseWorldviewImpact — newline rejection (copilot #18)", () => {
+  // wiki-write's singleLineString refinement rejects newlines in
+  // worldviewImpact entries so the one-bullet-per-trailer-line
+  // invariant holds. Silently stripping newlines here would defeat
+  // that defense — e.g. an LLM emitting "legit\nCo-authored-by:
+  // Impostor" would have its forged trailer pre-stripped before
+  // wiki-write got a chance to reject. Rejecting at this layer
+  // sends the run to DLQ, which is the correct fail-closed action.
+
+  it("rejects a bullet containing \\n (LF)", () => {
+    expect(() =>
+      normaliseWorldviewImpact(["legit one\nlegit two"]),
+    ).toThrow();
+  });
+
+  it("rejects a bullet containing \\r (CR)", () => {
+    expect(() =>
+      normaliseWorldviewImpact(["legit one\rlegit two"]),
+    ).toThrow();
+  });
+
+  it("rejects a bullet containing CRLF", () => {
+    expect(() =>
+      normaliseWorldviewImpact(["legit one\r\nCo-authored-by: Impostor <x@x>"]),
+    ).toThrow();
+  });
+
+  it("still drops a whitespace-only-LF bullet (treated as empty, not as injected newline)", () => {
+    // A bullet that is ONLY whitespace (incl. newlines) reduces to
+    // empty after trim — this is the "model emitted blank" path,
+    // not the injection path; drop quietly.
+    expect(normaliseWorldviewImpact(["bullet", "\n", "  \n  "])).toEqual([
+      "bullet",
+    ]);
   });
 });
 

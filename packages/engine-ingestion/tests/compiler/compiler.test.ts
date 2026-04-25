@@ -205,4 +205,48 @@ describe("compile — adversarial LLM defenses surface as DLQ", () => {
     );
     expect(written).toBeNull();
   });
+
+  it("DLQs when LLM emits a worldview_impact bullet containing a newline (copilot #18)", async () => {
+    // The model passes Zod (worldview_impact is array<string>) but
+    // smuggles a forged trailer inside one bullet. Without the
+    // explicit newline check in normaliseWorldviewImpact, the
+    // newline gets silently collapsed and a forged Co-authored-by
+    // line lands in the commit.
+    const mock = new MockLlmClient();
+    mock.register({
+      match: { model: "gpt-4o-mini", promptIncludes: "opencoo Compiler" },
+      response: {
+        text: JSON.stringify({
+          merged_body: "# Q3\n\nDistribution motion.\n",
+          worldview_impact: [
+            "legit one",
+            "legit two\nCo-authored-by: Impostor <x@x>",
+          ],
+        }),
+        tokensIn: 1,
+        tokensOut: 1,
+      },
+    });
+    const f = await makeFixture(mock);
+    const writeSpy = vi.spyOn(f.wikiAdapter, "writeAtomic");
+    await expect(
+      compile({
+        router: f.router,
+        domainId: f.domainId as Parameters<typeof compile>[0]["domainId"],
+        domainSlug: "test-domain",
+        bindingId: f.bindingId as Parameters<typeof compile>[0]["bindingId"],
+        sourceRef: "drive:doc-1",
+        sourceContent: "x",
+        pagePaths: ["strategy/x.md"],
+        locale: "en",
+        wikiDeps: f.wikiDeps,
+        author: COMPILER_AUTHOR,
+        db: f.db as unknown as Parameters<typeof compile>[0]["db"],
+      }),
+    ).rejects.toThrow();
+    // Critically: NO wiki write — the newline got caught BEFORE
+    // wikiWrite could see (and silently accept) the smuggled
+    // bullet.
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
 });
