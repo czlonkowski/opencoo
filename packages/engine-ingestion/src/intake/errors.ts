@@ -6,9 +6,12 @@
 import { OpencooError, type OpencooErrorOptions } from "@opencoo/shared/errors";
 
 /**
- * The webhook receiver looked up a binding by id and got nothing,
- * OR the requested adapter slug isn't registered. Both are
- * caller-bug shapes — DLQ at the engine layer, do not retry.
+ * The requested adapter slug isn't registered. Caller-bug shape —
+ * DLQ at the engine layer, do not retry. Note: this error is NOT
+ * thrown for "binding id not found in DB" — the receiver returns
+ * 404 directly for that case without throwing, since unknown
+ * binding ids are normal at the HTTP boundary (random scanners,
+ * stale URLs).
  */
 export class AdapterNotFoundError extends OpencooError {
   readonly slug: string;
