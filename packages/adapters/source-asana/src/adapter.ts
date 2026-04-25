@@ -171,8 +171,12 @@ export function createAsanaSourceAdapter(
   args: CreateAsanaSourceAdapterArgs,
 ): SourceAdapter {
   // Validate the config at factory time — fail loud here.
-  const _config = asanaBindingConfigSchema.parse(args.config);
-  void _config;
+  asanaBindingConfigSchema.parse(args.config);
+  // credentialStore + credentialId are part of the factory shape
+  // (THREAT-MODEL §3.6 invariant 11) but unused by webhook-mode
+  // adapters: the engine-ingestion receiver resolves the actual
+  // webhook secret via `config.webhookSecretCredentialId` at
+  // verify-time, not through these args.
   void args.credentialStore;
   void args.credentialId;
 

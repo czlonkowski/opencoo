@@ -51,6 +51,29 @@ const VALID_PAYLOAD: AsanaTaskPayload = {
   projectGid: "1214005588882595",
 };
 
+interface MakeFixtureOptions {
+  /** Initial mock-API behavior. Defaults to `{kind:'ok'}`. */
+  readonly behavior?: import(
+    "../src/testing/mock-asana-tasks.js"
+  ).UpstreamBehavior;
+}
+
+async function makeFixture(opts: MakeFixtureOptions = {}): Promise<{
+  readonly state: ReturnType<typeof createMockAsanaApiState>;
+  readonly adapter: ReturnType<typeof createAsanaOutputAdapter>;
+  readonly store: CredentialStore;
+  readonly credentialId: CredentialId;
+}> {
+  const state = createMockAsanaApiState();
+  if (opts.behavior !== undefined) state.behavior = opts.behavior;
+  const adapter = createAsanaOutputAdapter({
+    makeApi: () => makeMockAsanaApi(state),
+  });
+  const store = new InMemoryCredentialStore({ logger: silentLogger() });
+  const credentialId = await seedToken(store);
+  return { state, adapter, store, credentialId };
+}
+
 // ---------------------------------------------------------------------------
 // Shared outputAdapterContract — 8 assertions
 // ---------------------------------------------------------------------------
@@ -164,22 +187,14 @@ describe("output-asana — credential schema", () => {
 });
 
 describe("output-asana — adapter wiring", () => {
-  it("slug is 'asana'", () => {
-    const state = createMockAsanaApiState();
-    const adapter = createAsanaOutputAdapter({
-      makeApi: () => makeMockAsanaApi(state),
-    });
+  it("slug is 'asana'", async () => {
+    const { adapter } = await makeFixture();
     expect(adapter.slug).toBe(ASANA_OUTPUT_ADAPTER_SLUG);
     expect(adapter.slug).toBe("asana");
   });
 
   it("write() resolves the access token from CredentialStore + passes through to API", async () => {
-    const state = createMockAsanaApiState();
-    const adapter = createAsanaOutputAdapter({
-      makeApi: () => makeMockAsanaApi(state),
-    });
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
-    const credentialId = await seedToken(store);
+    const { adapter, store, credentialId, state } = await makeFixture();
     const result = await adapter.write({
       credentialStore: store,
       credentialId,
@@ -195,17 +210,13 @@ describe("output-asana — adapter wiring", () => {
   });
 
   it("classifies HTTP 429 as upstream-quota with retryAfterSeconds", async () => {
-    const state = createMockAsanaApiState();
-    state.behavior = {
-      kind: "http-error",
-      status: 429,
-      retryAfterSeconds: 60,
-    };
-    const adapter = createAsanaOutputAdapter({
-      makeApi: () => makeMockAsanaApi(state),
+    const { adapter, store, credentialId } = await makeFixture({
+      behavior: {
+        kind: "http-error",
+        status: 429,
+        retryAfterSeconds: 60,
+      },
     });
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
-    const credentialId = await seedToken(store);
     try {
       await adapter.write({
         credentialStore: store,
@@ -222,13 +233,9 @@ describe("output-asana — adapter wiring", () => {
   });
 
   it("classifies HTTP 503 as transient", async () => {
-    const state = createMockAsanaApiState();
-    state.behavior = { kind: "http-error", status: 503 };
-    const adapter = createAsanaOutputAdapter({
-      makeApi: () => makeMockAsanaApi(state),
+    const { adapter, store, credentialId } = await makeFixture({
+      behavior: { kind: "http-error", status: 503 },
     });
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
-    const credentialId = await seedToken(store);
     try {
       await adapter.write({
         credentialStore: store,
@@ -242,13 +249,9 @@ describe("output-asana — adapter wiring", () => {
   });
 
   it("classifies HTTP 400 as validation (4xx other)", async () => {
-    const state = createMockAsanaApiState();
-    state.behavior = { kind: "http-error", status: 400 };
-    const adapter = createAsanaOutputAdapter({
-      makeApi: () => makeMockAsanaApi(state),
+    const { adapter, store, credentialId } = await makeFixture({
+      behavior: { kind: "http-error", status: 400 },
     });
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
-    const credentialId = await seedToken(store);
     try {
       await adapter.write({
         credentialStore: store,
@@ -262,13 +265,9 @@ describe("output-asana — adapter wiring", () => {
   });
 
   it("classifies a transient (network drop) shape from the SDK as transient", async () => {
-    const state = createMockAsanaApiState();
-    state.behavior = { kind: "transient" };
-    const adapter = createAsanaOutputAdapter({
-      makeApi: () => makeMockAsanaApi(state),
+    const { adapter, store, credentialId } = await makeFixture({
+      behavior: { kind: "transient" },
     });
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
-    const credentialId = await seedToken(store);
     try {
       await adapter.write({
         credentialStore: store,

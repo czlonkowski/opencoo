@@ -46,6 +46,39 @@ async function seedSecret(
   });
 }
 
+interface MakeFixtureOptions {
+  /** Override the binding-config — defaults to the canonical
+   *  `{ projectGid, webhookSecretCredentialId }` minimum. */
+  readonly config?: Record<string, unknown>;
+  /** Bytes to seed as the webhook secret. Defaults to the
+   *  shared corpus fixture's secret. */
+  readonly secret?: Buffer;
+}
+
+async function makeFixture(
+  opts: MakeFixtureOptions = {},
+): Promise<{
+  readonly store: CredentialStore;
+  readonly credentialId: CredentialId;
+  readonly adapter: ReturnType<typeof createAsanaSourceAdapter>;
+}> {
+  const store = new InMemoryCredentialStore({ logger: silentLogger() });
+  const credentialId = await seedSecret(
+    store,
+    opts.secret ?? Buffer.from("asana-test-secret"),
+  );
+  const adapter = createAsanaSourceAdapter({
+    credentialStore: store,
+    credentialId,
+    config:
+      opts.config ?? {
+        projectGid: "p",
+        webhookSecretCredentialId: credentialId,
+      },
+  });
+  return { store, credentialId, adapter };
+}
+
 // ---------------------------------------------------------------------------
 // Shared sourceAdapterContract — webhook mode
 // ---------------------------------------------------------------------------
@@ -125,31 +158,13 @@ describe("source-asana — binding-config schema", () => {
 
 describe("source-asana — adapter wiring", () => {
   it("slug is 'asana'", async () => {
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
-    const credentialId = await seedSecret(store, fixture.secret);
-    const adapter = createAsanaSourceAdapter({
-      credentialStore: store,
-      credentialId,
-      config: {
-        projectGid: "p",
-        webhookSecretCredentialId: credentialId,
-      },
-    });
+    const { adapter } = await makeFixture({ secret: fixture.secret });
     expect(adapter.slug).toBe(ASANA_ADAPTER_SLUG);
     expect(adapter.slug).toBe("asana");
   });
 
   it("scan() is a no-op (webhook mode — receiver pushes events)", async () => {
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
-    const credentialId = await seedSecret(store, fixture.secret);
-    const adapter = createAsanaSourceAdapter({
-      credentialStore: store,
-      credentialId,
-      config: {
-        projectGid: "p",
-        webhookSecretCredentialId: credentialId,
-      },
-    });
+    const { adapter } = await makeFixture({ secret: fixture.secret });
     const result = await adapter.scan({ cursor: null });
     expect(result.documents).toEqual([]);
     expect(result.nextCursor).toBeNull();
