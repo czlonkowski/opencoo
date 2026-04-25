@@ -92,9 +92,10 @@ export async function classify(args: ClassifyArgs): Promise<ClassifierOutput> {
       );
     }
     for (const pp of td.page_paths) {
-      // Throws ClassifierPathError or WikiPathError on failure;
-      // we let both propagate unchanged so the caller can distinguish
-      // by `instanceof` for telemetry.
+      // Throws ClassifierPathError on failure — both shape-guard
+      // rejects (wrapped from WikiPathError, preserved as `.cause`)
+      // and glob-mismatch rejects surface as the same type so the
+      // caller routes path failures uniformly.
       validateAllowedPath(pp, args.allowedPaths);
     }
   }
