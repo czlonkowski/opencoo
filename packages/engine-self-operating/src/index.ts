@@ -29,6 +29,18 @@ export {
   type StartServer,
 } from "./start.js";
 
+// MCP tool-client surface (PR 20, plan #92 part A). v0.1 ships
+// only the port + an in-memory test fixture; production
+// `HttpMcpToolClient` arrives in PR 23+. Per Q12, the in-memory
+// fixture does NOT import gitea-mcp internals — it is a pure
+// data test double conforming to the same shape.
+export {
+  InMemoryMcpToolClient,
+  McpResourceNotFoundError,
+  type McpListFilter,
+  type McpToolClient,
+} from "./mcp-tool-client/index.js";
+
 // Output-channel surface (PR 20, plan #92 part A). The Heartbeat
 // + Lint agents return JSON; the engine's post-run hook routes
 // the payload through this registry. The registry enforces the
