@@ -59,6 +59,16 @@ interface ExecResult<R> {
 
 export const STALE_PAGES_DEFAULT_THRESHOLD_DAYS = 90;
 
+/**
+ * Max in-flight `wiki.read_page` calls during contradictions
+ * sampling. With HTTP-backed McpToolClient, batching at 4
+ * caps the network parallelism without overwhelming the
+ * gitea-mcp server. Hardcoded for v0.1 — promotion to a
+ * llm_policy or per-domain config is a v0.2 concern. (copilot
+ * #22 PERF)
+ */
+export const WIKI_READ_PAGE_CONCURRENCY = 4;
+
 export interface RunLintCoreArgs {
   readonly bindings: readonly WildcardBindingsInput[];
   readonly newestCitations: readonly PageNewestCitation[];
@@ -231,21 +241,34 @@ export async function runLint(
     indexSearch(args.mcp, { domainSlug: args.domainSlug }),
   );
 
-  // 4. Sample the first N pages for the contradictions detector.
-  //    Deterministic ordering (indexSearch returns sorted) so
-  //    test runs are reproducible.
+  // 4. Sample the first N pages for the contradictions detector
+  //    and read their bodies in bounded concurrent batches. With
+  //    HTTP-backed McpToolClient, the previous serial loop took
+  //    one round trip per page (up to 50 sequentially); the
+  //    batched form caps at WIKI_READ_PAGE_CONCURRENCY in flight.
+  //    Deterministic ordering (indexSearch returns sorted +
+  //    `pathToBody` Map preserves order) so contradictionInputs
+  //    is identical across runs. (copilot #22 PERF)
   const sampledPaths = wikiPaths.slice(0, CONTRADICTIONS_PAGE_CAP);
-  const contradictionInputs: PageBody[] = [];
-  for (const path of sampledPaths) {
-    const body = await ctx.callTool("wiki.read_page", () =>
-      wikiReadPage(args.mcp, { domainSlug: args.domainSlug, path }),
+  const pathToBody = new Map<string, string>();
+  for (let i = 0; i < sampledPaths.length; i += WIKI_READ_PAGE_CONCURRENCY) {
+    const batch = sampledPaths.slice(i, i + WIKI_READ_PAGE_CONCURRENCY);
+    const bodies = await Promise.all(
+      batch.map((path) =>
+        ctx.callTool("wiki.read_page", () =>
+          wikiReadPage(args.mcp, { domainSlug: args.domainSlug, path }),
+        ),
+      ),
     );
-    contradictionInputs.push({
-      domainSlug: args.domainSlug,
-      path,
-      body,
-    });
+    for (let j = 0; j < batch.length; j++) {
+      pathToBody.set(batch[j]!, bodies[j]!);
+    }
   }
+  const contradictionInputs: PageBody[] = sampledPaths.map((path) => ({
+    domainSlug: args.domainSlug,
+    path,
+    body: pathToBody.get(path)!,
+  }));
 
   return runLintCore({
     bindings,
