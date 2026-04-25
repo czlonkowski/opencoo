@@ -166,7 +166,13 @@ export async function invokeAgent(
         const result = await fn();
         toolCalls.push({
           name,
-          args: undefined,
+          // toolCallSchema requires `args` (z.unknown()).
+          // JSON.stringify drops undefined keys, so the JSONB
+          // row would lack `args` entirely and re-parse on
+          // read would fail. Default to `{}` here; agents that
+          // call tools with structured arguments push entries
+          // explicitly via `recordToolCall`.
+          args: {},
           result: result as unknown,
           durationMs: clock().getTime() - t0,
         });
@@ -174,7 +180,7 @@ export async function invokeAgent(
       } catch (err) {
         toolCalls.push({
           name,
-          args: undefined,
+          args: {},
           durationMs: clock().getTime() - t0,
           error: err instanceof Error ? err.message : String(err),
         });
