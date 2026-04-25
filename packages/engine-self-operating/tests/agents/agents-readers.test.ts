@@ -3,18 +3,26 @@
  *
  * Drives BOTH reader agents — Heartbeat and Lint — through
  * `invokeAgent` end-to-end against a single fixture, then
- * asserts the central read-only invariant:
+ * asserts the central read-only invariant via the tool-call
+ * ledger:
  *
- *   `wikiAdapter.writeAtomic` was called ZERO times across
- *   both runs. The reader agents are read-only by construction;
- *   neither one is permitted to write to the wiki.
+ *   `agent_runs.tool_calls` for every reader-agent run contains
+ *   ONLY read-side tool names. No `wiki.write*`, `wiki.replace*`,
+ *   `wiki.delete*`, `wiki.commit*`, or other writer-shape names
+ *   appear in the persisted JSONB. The reader agents are
+ *   read-only by construction; neither has a writer tool wrapper
+ *   in `src/agents/tools/`.
  *
- * The proof is structural: the agents have no wikiWrite tool
- * registered (their tool wrappers cover only wiki-read /
- * worldview-read / index-search). This test backstops that
- * structure by passing a counting WikiAdapter through the
- * fixture and asserting the counter stays at 0 after both runs
- * complete.
+ * The deny-list throws `AgentDenyListError` if any of the named
+ * destructive tools is invoked (prevention); this test pins
+ * their absence in the ledger after the runs (verification).
+ * Together: prevention + verification.
+ *
+ * The earlier shape — instantiating a `CountingWikiAdapter`
+ * spy and asserting `writeAtomicCalls === 0` — passed
+ * vacuously because the spy was never wired into the harness's
+ * tool-dispatch path (the readers don't take a WikiAdapter).
+ * The ledger-based assertion is the actual structural pin.
  *
  * Also asserts:
  *   - Output channel binding enforcement: the engine routes
@@ -29,12 +37,6 @@ import { describe, expect, it } from "vitest";
 
 import { ConsoleLogger } from "@opencoo/shared/logger";
 import { LlmRouter, type LlmProvider } from "@opencoo/shared/llm-router";
-import {
-  type WikiAdapter,
-  type WriteAtomicArgs,
-  type WriteAtomicResult,
-} from "@opencoo/shared/wiki-write";
-import { InMemoryWikiAdapter } from "@opencoo/shared/wiki-write/testing";
 
 import {
   AgentDefinitionRegistry,
@@ -93,32 +95,30 @@ function makeRouter(provider: LlmProvider, db: unknown): LlmRouter {
 }
 
 /**
- * Counting WikiAdapter — wraps an InMemoryWikiAdapter and
- * tracks how many times `writeAtomic` is called. The agent
- * post-run hook never invokes wikiWrite for reader agents, so
- * the counter must stay at 0.
+ * A name is "writer-shape" if it could plausibly mutate wiki
+ * state. The reader-agent tool wrappers only emit
+ * `worldview.read`, `index.search`, `wiki.read_page` — anything
+ * matching one of these prefixes/suffixes is a regression.
+ * Combined with the deny-list (which throws at dispatch time),
+ * this gives prevention + verification.
  */
-class CountingWikiAdapter implements WikiAdapter {
-  readonly inner = new InMemoryWikiAdapter();
-  writeAtomicCalls = 0;
+const WRITER_TOOL_PATTERNS: readonly RegExp[] = [
+  /^wiki\.write/,
+  /^wiki\.replace/,
+  /^wiki\.delete/,
+  /^wiki\.commit/,
+  /^wiki\.append/,
+  /^wiki\.force_push/,
+  /^mcp\.write/,
+  /^output_channel_deliver/, // Q10: not a tool, ledger-pinned absent.
+];
 
-  getHeadSha = (slug: Parameters<WikiAdapter["getHeadSha"]>[0]) =>
-    this.inner.getHeadSha(slug);
-  readPage = (
-    slug: Parameters<WikiAdapter["readPage"]>[0],
-    path: Parameters<WikiAdapter["readPage"]>[1],
-  ) => this.inner.readPage(slug, path);
-  listMarkdown = (slug: Parameters<WikiAdapter["listMarkdown"]>[0]) =>
-    this.inner.listMarkdown(slug);
-
-  async writeAtomic(args: WriteAtomicArgs): Promise<WriteAtomicResult> {
-    this.writeAtomicCalls++;
-    return this.inner.writeAtomic(args);
-  }
+function isWriterToolName(name: string): boolean {
+  return WRITER_TOOL_PATTERNS.some((re) => re.test(name));
 }
 
 describe("agents-readers — Heartbeat + Lint never call wikiWrite (LOAD-BEARING)", () => {
-  it("after a Heartbeat run AND a Lint run, the counting wiki adapter shows 0 writes", async () => {
+  it("after a Heartbeat run AND a Lint run, agent_runs.tool_calls contains no writer-shape tool names", async () => {
     const fixture = await freshAgentDb();
 
     // Seed the bindings + citations so Lint has something to run against.
@@ -137,9 +137,6 @@ describe("agents-readers — Heartbeat + Lint never call wikiWrite (LOAD-BEARING
     mcp.setResource("wiki://test-domain/index.md", "# index");
     mcp.setResource("wiki://test-domain/projects/q3.md", "Q3 deck");
     mcp.setResource("worldview://test-domain", "# wv");
-
-    // Counting wiki adapter — wikiWrite calls must stay at 0.
-    const wikiAdapter = new CountingWikiAdapter();
 
     // Output channel: register a mock channel + bind it on each
     // instance. We assert the registry ends up with one delivery
@@ -238,13 +235,76 @@ describe("agents-readers — Heartbeat + Lint never call wikiWrite (LOAD-BEARING
       },
     });
 
-    // -- LOAD-BEARING ASSERTION --
-    expect(wikiAdapter.writeAtomicCalls).toBe(0);
+    // -- LOAD-BEARING ASSERTION (ledger-based) --
+    // Pull both runs' tool_calls from agent_runs.tool_calls and
+    // assert no entry's `name` matches a writer-shape pattern.
+    // The deny-list at the harness's tool-dispatch path would
+    // throw `AgentDenyListError` if a destructive tool name was
+    // invoked (prevention); this assertion pins their ABSENCE
+    // in the persisted ledger (verification).
+    const ledgerRows = await fixture.raw.query<{
+      id: string;
+      definition_slug: string;
+      tool_calls: Array<{ name: string }>;
+    }>(
+      `SELECT id::text AS id, definition_slug, tool_calls FROM agent_runs WHERE id IN ($1::uuid, $2::uuid)`,
+      [heartbeatResult.runId, lintResult.runId],
+    );
+    expect(ledgerRows.rows).toHaveLength(2);
+    const allToolCalls = ledgerRows.rows.flatMap((r) => r.tool_calls);
+    // Every recorded tool name must be a known reader name —
+    // anything writer-shape is a regression. Failures surface
+    // as the violating name(s) so the diagnostic points right
+    // at the offending call site.
+    const violatingNames = allToolCalls
+      .map((c) => c.name)
+      .filter(isWriterToolName);
+    expect(violatingNames).toEqual([]);
+    // Sanity: both runs DID call read-side tools. If the ledger
+    // is empty the assertion above is still vacuous — pin that
+    // we actually exercised the harness's dispatch path.
+    expect(allToolCalls.length).toBeGreaterThan(0);
+    const knownReaderNames = new Set([
+      "worldview.read",
+      "index.search",
+      "wiki.read_page",
+    ]);
+    for (const c of allToolCalls) {
+      expect(knownReaderNames.has(c.name)).toBe(true);
+    }
 
     // -- Output channel sanity --
     expect(slack.deliveries).toHaveLength(2);
     expect(slack.deliveries[0]?.payload).toEqual(heartbeatPayload);
     expect((slack.deliveries[1]?.payload as LintOutput)?.version).toBe("v1");
+  });
+
+  // Red guard for the assertion itself — proves the
+  // load-bearing assertion above isn't vacuous. If a future
+  // refactor breaks `isWriterToolName` so it stops matching
+  // writer names, this guard fires loudly.
+  it("isWriterToolName flags every shape we care about (regression guard)", () => {
+    for (const name of [
+      "wiki.write_page",
+      "wiki.write",
+      "wiki.replace_page",
+      "wiki.delete_repo",
+      "wiki.delete",
+      "wiki.commit",
+      "wiki.append_log",
+      "wiki.force_push",
+      "mcp.write_resource",
+      "output_channel_deliver",
+    ]) {
+      expect(isWriterToolName(name), `expected ${name} to be flagged`).toBe(true);
+    }
+    for (const name of [
+      "worldview.read",
+      "index.search",
+      "wiki.read_page",
+    ]) {
+      expect(isWriterToolName(name), `expected ${name} NOT to be flagged`).toBe(false);
+    }
   });
 
   it("attempting to deliver to a channel NOT in the instance's bindings throws OutputChannelMismatchError", async () => {
