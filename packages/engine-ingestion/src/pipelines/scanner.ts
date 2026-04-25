@@ -46,7 +46,18 @@ interface ExecResult<R> {
   readonly affectedRows?: number;
 }
 
-export const SCANNER_CLASSIFY_QUEUE_SLUG = "scanner.classify" as const;
+/**
+ * Canonical full queue name the Compilation Worker subscribes to.
+ * Multi-dot prefix bypasses `buildIngestionQueue` (which rejects
+ * dotted slugs) and is constructed directly via `new Queue(...)`
+ * — same shape as `ingestion.dlq.intake` from PR 14 and
+ * `ingestion.review.dispatch` from this PR. Keep byte-for-byte
+ * consistent across producer (Scanner), consumer (Compilation
+ * Worker), README, and the composition-root wiring (copilot #19
+ * followup).
+ */
+export const SCANNER_CLASSIFY_QUEUE_SLUG =
+  "ingestion.scanner.classify" as const;
 
 /** v0.1 inline-payload size cap. Beyond this, classification
  *  would hit SpotlightOverflowError; the Scanner short-circuits
@@ -66,7 +77,9 @@ export interface SourceAdapterRegistry {
 /**
  * BullMQ queue surface the Scanner enqueues onto. Kept narrow
  * so tests can stub without instantiating a real Queue. The
- * harness wires the real one (`buildIngestionQueue('scanner.classify')`).
+ * harness wires the real one via `new Queue(SCANNER_CLASSIFY_QUEUE_SLUG, ...)`
+ * — multi-dot prefix bypasses `buildIngestionQueue` since that
+ * helper rejects dotted slugs.
  */
 export interface ScannerEnqueue {
   add(name: string, data: ScannerClassifyJob): Promise<unknown>;
