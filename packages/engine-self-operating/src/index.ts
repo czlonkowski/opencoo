@@ -51,6 +51,47 @@ export {
   type RunChatArgs,
 } from "./agents/chat/index.js";
 
+// Surfacer + Builder + 3-gate automation loop (PR 21 / plan #102).
+// Surfacer (Gate 1) emits proposed candidates; the Review
+// Dashboard flips them to 'approved'; Builder (Gate 2) picks
+// approved rows and deploys via AutomationAdapter (Gate 3 —
+// type-level no-activation).
+export {
+  SURFACER_DEFINITION,
+  SURFACER_OUTPUT_SCHEMA,
+  runSurfacer,
+  type RunSurfacerArgs,
+  type RunSurfacerResult,
+  type SurfacerCandidate,
+  type SurfacerOutput,
+} from "./agents/surfacer/index.js";
+
+export {
+  BUILDER_DEFINITION,
+  BUILDER_OUTPUT_SCHEMA,
+  runBuilder,
+  type BuilderOutput,
+  type RunBuilderArgs,
+  type RunBuilderResult,
+} from "./agents/builder/index.js";
+
+export {
+  BuilderGate2Error,
+  insertCandidate,
+  markBuilt,
+  requireApproved,
+  type AutomationCandidate,
+  type InsertCandidateArgs,
+} from "./automation-loop/index.js";
+
+export {
+  InMemoryAutomationAdapter,
+  type AutomationAdapter,
+  type CapturedDeployment,
+  type DeployWorkflowArgs,
+  type DeployWorkflowResult,
+} from "./automation-adapter/index.js";
+
 export {
   AUTOMATION_DRIFT_WINDOW_DAYS,
   CONTRADICTIONS_OUTPUT_SCHEMA,
