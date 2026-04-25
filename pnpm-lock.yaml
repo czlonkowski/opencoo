@@ -129,6 +129,9 @@ importers:
       '@types/picomatch':
         specifier: ^4.0.2
         version: 4.0.3
+      dotenv:
+        specifier: ^16.4.7
+        version: 16.6.1
       ioredis-mock:
         specifier: 8.13.1
         version: 8.13.1(@types/ioredis-mock@8.2.7(ioredis@5.10.1))(ioredis@5.10.1)
