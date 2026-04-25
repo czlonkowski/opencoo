@@ -52,11 +52,15 @@ export function createPatScopedMcpClient(
   base: McpToolClient,
   callerPat: string,
 ): PatScopedMcpToolClient {
+  // Internal mutable backing array. The public `auditLog`
+  // getter returns a shallow copy so callers cannot push into
+  // the wrapper's state via `as unknown as`-style escape
+  // hatches (copilot #23 fix 1).
   const auditLog: PatScopedAuditEntry[] = [];
   return {
     callerPat,
     get auditLog(): readonly PatScopedAuditEntry[] {
-      return auditLog;
+      return [...auditLog];
     },
     async readResource(uri: string): Promise<string> {
       auditLog.push({ kind: "readResource", uri, callerPat });

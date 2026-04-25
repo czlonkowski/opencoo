@@ -21,6 +21,7 @@ import {
   InMemoryMcpToolClient,
   createPatScopedMcpClient,
   type McpToolClient,
+  type PatScopedAuditEntry,
 } from "../../src/mcp-tool-client/index.js";
 
 describe("createPatScopedMcpClient — wrapper shape", () => {
@@ -112,6 +113,29 @@ describe("createPatScopedMcpClient — observable PAT propagation per call", () 
     await wrapped.listResources({ scheme: "wiki" });
     expect(wrapped.auditLog).toEqual([
       { kind: "listResources", filter: { scheme: "wiki" }, callerPat: "ghp_alice" },
+    ]);
+  });
+
+  // Copilot #23 fix 1: the auditLog getter must return a
+  // shallow copy so callers can't mutate the wrapper's
+  // internal backing array via `as unknown as` escape hatches.
+  it("auditLog getter returns a shallow copy — external mutation does not affect the wrapper's internal state", async () => {
+    const base = new InMemoryMcpToolClient();
+    base.setResource("wiki://x/a.md", "a");
+    const wrapped = createPatScopedMcpClient(base, "ghp_alice");
+    await wrapped.readResource("wiki://x/a.md");
+
+    // Cast away readonly + push a fake entry.
+    const escaped = wrapped.auditLog as unknown as PatScopedAuditEntry[];
+    escaped.push({
+      kind: "readResource",
+      uri: "wiki://injected/poison.md",
+      callerPat: "ghp_attacker",
+    });
+
+    // The wrapper's REAL audit log is untouched.
+    expect(wrapped.auditLog).toEqual([
+      { kind: "readResource", uri: "wiki://x/a.md", callerPat: "ghp_alice" },
     ]);
   });
 });
