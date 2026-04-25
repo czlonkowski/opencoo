@@ -15,6 +15,7 @@ export const WikiWriteTagSchema = z.enum([
   "[catalog-rename]",
   "[catalog-unarchive]",
   "[skill-supersede]",
+  "[index-rebuild]",
 ]);
 export type WikiWriteTag = z.infer<typeof WikiWriteTagSchema>;
 
