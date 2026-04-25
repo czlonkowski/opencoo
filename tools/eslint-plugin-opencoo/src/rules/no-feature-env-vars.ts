@@ -30,6 +30,12 @@ const DEFAULT_ALLOW_LIST = [
   "REDIS_URL_FILE",
   "GITEA_URL",
   "GITEA_URL_FILE",
+  // Engine-self-operating ships the Management UI as a bundled
+  // SPA. UI_DIST_PATH points at the dist directory at boot;
+  // _FILE variant follows the same Docker-secrets convention.
+  // (PR 18, plan #82)
+  "UI_DIST_PATH",
+  "UI_DIST_PATH_FILE",
 ];
 
 function isIdentifier(

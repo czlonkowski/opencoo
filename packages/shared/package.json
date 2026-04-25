@@ -77,6 +77,10 @@
     "./prompts": {
       "types": "./dist/prompts/index.d.ts",
       "default": "./dist/prompts/index.js"
+    },
+    "./engine-scaffold": {
+      "types": "./dist/engine-scaffold/index.d.ts",
+      "default": "./dist/engine-scaffold/index.js"
     }
   },
   "files": [
@@ -96,14 +100,20 @@
     "@ai-sdk/openai": "~3.0.53",
     "@ai-sdk/openai-compatible": "~2.0.41",
     "ai": "~6.0.168",
+    "bullmq": "5.76.1",
     "drizzle-orm": "0.45.2",
     "drizzle-zod": "0.8.3",
+    "fastify": "5.8.5",
+    "ioredis": "5.10.1",
+    "pg": "8.20.0",
     "zod": "4.3.6"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.4.4",
     "@types/node": "^22.10.5",
+    "@types/pg": "8.20.0",
     "drizzle-kit": "0.31.10",
+    "ioredis-mock": "8.13.1",
     "typescript": "~5.7.2",
     "vitest": "^3.0.5"
   }
