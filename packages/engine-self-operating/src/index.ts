@@ -29,9 +29,9 @@ export {
   type StartServer,
 } from "./start.js";
 
-// Concrete reader agents (PR 20, plan #92 part A). Read-only —
-// every tool call flows through the harness; no agent in this
-// PR registers a writer tool.
+// Concrete reader agents (PR 20, plan #92 part A + plan #97
+// part B). Read-only — every tool call flows through the
+// harness; no agent in this PR registers a writer tool.
 export {
   HEARTBEAT_DEFINITION,
   HEARTBEAT_OUTPUT_SCHEMA,
@@ -42,6 +42,16 @@ export {
 } from "./agents/heartbeat/index.js";
 
 export {
+  CHAT_DEFINITION,
+  CHAT_OUTPUT_SCHEMA,
+  ChatPatRequiredError,
+  runChat,
+  type ChatOutput,
+  type RunChatArgs,
+} from "./agents/chat/index.js";
+
+export {
+  AUTOMATION_DRIFT_WINDOW_DAYS,
   CONTRADICTIONS_OUTPUT_SCHEMA,
   CONTRADICTIONS_PAGE_CAP,
   LINT_DEFINITION,
@@ -49,7 +59,9 @@ export {
   LINT_FINDING_SCHEMA,
   LINT_OUTPUT_SCHEMA,
   STALE_PAGES_DEFAULT_THRESHOLD_DAYS,
+  WIKI_READ_PAGE_CONCURRENCY,
   currentLoaderPromptVersions,
+  detectAutomationDrift,
   detectContradictions,
   detectOrphans,
   detectPromptVersionDrift,
@@ -57,6 +69,7 @@ export {
   detectWildcardBindings,
   runLint,
   runLintCore,
+  type AutomationDriftArgs,
   type ContradictionsArgs,
   type LintFinding,
   type LintFindingKind,
@@ -69,6 +82,7 @@ export {
   type RunLintArgs,
   type RunLintCoreArgs,
   type StalePagesArgs,
+  type ToolCallObservation,
   type WildcardBindingsInput,
 } from "./agents/lint/index.js";
 
