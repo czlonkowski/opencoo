@@ -81,6 +81,10 @@
     "./engine-scaffold": {
       "types": "./dist/engine-scaffold/index.d.ts",
       "default": "./dist/engine-scaffold/index.js"
+    },
+    "./spotlight": {
+      "types": "./dist/spotlight/index.d.ts",
+      "default": "./dist/spotlight/index.js"
     }
   },
   "files": [
