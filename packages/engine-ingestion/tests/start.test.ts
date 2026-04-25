@@ -81,12 +81,9 @@ describe("start() — resource cleanup on listen failure (copilot #15 Fix 4)", (
     await expect(
       start({
         env: validEnv,
-        // @ts-expect-error — factories are added by Fix 4 impl below
         dbFactory: () => pool,
-        // @ts-expect-error — factories are added by Fix 4 impl below
         redisFactory: () => redis,
-        // @ts-expect-error — factories are added by Fix 4 impl below
-        serverFactory: (_probes: ProbeMap) => server,
+        serverFactory: (probes: ProbeMap) => { void probes; return server; },
       }),
     ).rejects.toThrow(/EADDRINUSE/);
 
@@ -105,12 +102,9 @@ describe("start() — resource cleanup on listen failure (copilot #15 Fix 4)", (
     await expect(
       start({
         env: validEnv,
-        // @ts-expect-error — factories are added by Fix 4 impl below
         dbFactory: () => pool,
-        // @ts-expect-error — factories are added by Fix 4 impl below
         redisFactory: () => redis,
-        // @ts-expect-error — factories are added by Fix 4 impl below
-        serverFactory: (_probes: ProbeMap) => server,
+        serverFactory: (probes: ProbeMap) => { void probes; return server; },
       }),
     ).rejects.toThrow(/EACCES/);
   });
@@ -130,12 +124,9 @@ describe("start() — resource cleanup on listen failure (copilot #15 Fix 4)", (
     await expect(
       start({
         env: validEnv,
-        // @ts-expect-error — factories are added by Fix 4 impl below
         dbFactory: () => pool,
-        // @ts-expect-error — factories are added by Fix 4 impl below
         redisFactory: () => redis,
-        // @ts-expect-error — factories are added by Fix 4 impl below
-        serverFactory: (_probes: ProbeMap) => server,
+        serverFactory: (probes: ProbeMap) => { void probes; return server; },
       }),
     ).rejects.toThrow(/EADDRINUSE/);
 
@@ -151,12 +142,9 @@ describe("start() — close() idempotency (copilot #15 Fix 7)", () => {
 
     const engine = await start({
       env: validEnv,
-      // @ts-expect-error — factories are added by Fix 4 impl below
       dbFactory: () => pool,
-      // @ts-expect-error — factories are added by Fix 4 impl below
       redisFactory: () => redis,
-      // @ts-expect-error — factories are added by Fix 4 impl below
-      serverFactory: (_probes: ProbeMap) => server,
+      serverFactory: (probes: ProbeMap) => { void probes; return server; },
     });
 
     await engine.close();
@@ -174,12 +162,9 @@ describe("start() — close() idempotency (copilot #15 Fix 7)", () => {
 
     const engine = await start({
       env: validEnv,
-      // @ts-expect-error — factories are added by Fix 4 impl below
       dbFactory: () => pool,
-      // @ts-expect-error — factories are added by Fix 4 impl below
       redisFactory: () => redis,
-      // @ts-expect-error — factories are added by Fix 4 impl below
-      serverFactory: (_probes: ProbeMap) => server,
+      serverFactory: (probes: ProbeMap) => { void probes; return server; },
     });
 
     await Promise.all([engine.close(), engine.close(), engine.close()]);
