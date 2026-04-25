@@ -26,12 +26,14 @@
     "fastify": "5.8.5",
     "ioredis": "5.10.1",
     "pg": "8.20.0",
+    "picomatch": "^4.0.3",
     "zod": "4.3.6"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.4.4",
     "@types/node": "^22.10.5",
     "@types/pg": "8.20.0",
+    "@types/picomatch": "^4.0.2",
     "ioredis-mock": "8.13.1",
     "typescript": "~5.7.2",
     "vitest": "^3.0.5"

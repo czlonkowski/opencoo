@@ -24,7 +24,7 @@ import {
 import { ClassifierPathError } from "../../src/classifier/path-guard.js";
 import { BindingConfigError } from "../../src/classifier/binding-guard.js";
 
-import { freshIntakeDb } from "../intake/_pglite-fixture.js";
+import { freshClassifierDb } from "./_pglite-fixture.js";
 
 function silentLogger(): ConsoleLogger {
   return new ConsoleLogger({
@@ -38,7 +38,7 @@ interface FixtureBundle {
 }
 
 async function makeFixture(provider: LlmProvider): Promise<FixtureBundle> {
-  const { db, domainId } = await freshIntakeDb();
+  const { db, domainId } = await freshClassifierDb();
   const router = new LlmRouter({
     db: db as unknown as Parameters<typeof LlmRouter>[0]["db"],
     env: {},
