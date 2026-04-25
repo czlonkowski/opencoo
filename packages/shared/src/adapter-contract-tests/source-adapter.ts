@@ -309,7 +309,11 @@ function runPollingAssertions(
         (d) => d.sourceDocId === "doc-1",
       );
       expect(bumped, "doc-1 should re-surface after bumpRevision").toBeDefined();
-      expect(bumped?.sourceRevision).not.toBe(firstRevision);
+      // Strict — `expect(bumped).toBeDefined()` plus optional
+      // chaining could let an unexpectedly-undefined revision
+      // pass; this asserts the field is present AND distinct.
+      expect(bumped?.sourceRevision).toBeDefined();
+      expect(bumped!.sourceRevision).not.toBe(firstRevision);
     } finally {
       await handle.cleanup();
     }

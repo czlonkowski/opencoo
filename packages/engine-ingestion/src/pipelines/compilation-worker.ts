@@ -30,6 +30,7 @@
 
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
+import { z } from "zod";
 
 import type { LlmRouter } from "@opencoo/shared/llm-router";
 import { CONTENT_KINDS } from "@opencoo/shared/db";
@@ -210,6 +211,28 @@ export async function runCompilationWorker(
   };
 }
 
+// Zod schema for the n8n workflow shape we care about. `.passthrough()`
+// preserves unknown keys (nodes / connections / settings / version)
+// so the catalog-workflow compiler can JSON-stringify them
+// verbatim. We narrow `tags` to `string[]` (filtering out non-string
+// entries the n8n API occasionally serialises as objects) — downstream
+// `buildTagsLine` assumes string tags. Other fields are validated only
+// loosely; the Compiler treats the body opaquely after the strip.
+const n8nWorkflowSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    tags: z
+      .array(z.unknown())
+      .optional()
+      .transform((arr) =>
+        arr === undefined
+          ? undefined
+          : arr.filter((t): t is string => typeof t === "string"),
+      ),
+  })
+  .passthrough();
+
 function parseN8nWorkflowContent(
   content: string,
   sourceRef: string,
@@ -222,18 +245,13 @@ function parseN8nWorkflowContent(
       `compilation-worker: catalog-workflow content for ${sourceRef} is not valid JSON (${err instanceof Error ? err.message : String(err)})`,
     );
   }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+  const result = n8nWorkflowSchema.safeParse(parsed);
+  if (!result.success) {
     throw new Error(
-      `compilation-worker: catalog-workflow content for ${sourceRef} is not a JSON object`,
+      `compilation-worker: catalog-workflow content for ${sourceRef} failed shape validation: ${result.error.message}`,
     );
   }
-  const wf = parsed as Record<string, unknown>;
-  if (typeof wf["id"] !== "string" || typeof wf["name"] !== "string") {
-    throw new Error(
-      `compilation-worker: catalog-workflow content for ${sourceRef} is missing required {id,name}`,
-    );
-  }
-  return wf as CatalogWorkflowInput;
+  return result.data as CatalogWorkflowInput;
 }
 
 async function persistRedactionEvents(args: {

@@ -12,8 +12,11 @@
  *      no longer match).
  *   4. Strips top-level `updatedAt` BEFORE serializing
  *      `contentBytes` (decision 3) — the body never carries
- *      `updatedAt`, and the canonical bytes used for
- *      `sourceRevision` are byte-identical to the body bytes.
+ *      `updatedAt`. `sourceRevision` is computed from a
+ *      SEPARATE canonical byte stream (sorted keys, no
+ *      whitespace) over the same updatedAt-stripped workflow,
+ *      so revision stability is independent of pretty-print
+ *      whitespace in `contentBytes`.
  *   5. Computes `sourceRevision` = sha256(canonical-bytes
  *      minus updatedAt).slice(0, 16) — stable across replay
  *      (decision: NOT updatedAt-derived).

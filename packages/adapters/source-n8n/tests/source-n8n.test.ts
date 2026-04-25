@@ -243,13 +243,33 @@ describe("source-n8n — adapter wiring", () => {
   });
 
   it("filters out workflows whose tags don't intersect tagFilter (defense-in-depth)", async () => {
-    const { state, adapter } = await makeFixture();
-    state.workflows.push(
-      buildWorkflow({ id: "in-cat", name: "in", tags: ["catalog"] }),
-    );
-    state.workflows.push(
-      buildWorkflow({ id: "off-cat", name: "off", tags: ["other"] }),
-    );
+    // Inject a deliberately-misbehaving listing API that returns
+    // BOTH on-tag and off-tag workflows regardless of `tagFilter`
+    // — this simulates an n8n upstream whose tag query is broken
+    // OR a workflow whose tags were edited mid-scan to no longer
+    // match. The adapter's post-filter is the ONLY thing dropping
+    // the off-tag result here. Using `makeMockN8nListing` would
+    // server-side filter by tag and leave the post-filter
+    // unexercised — this targeted test keeps the assertion honest.
+    const store = new InMemoryCredentialStore({ logger: silentLogger() });
+    const credentialId = await seedToken(store);
+    const adapter = createN8nSourceAdapter({
+      credentialStore: store,
+      credentialId,
+      config: {
+        baseUrl: "https://example.test",
+        tagFilter: ["catalog"],
+      } satisfies N8nBindingConfig,
+      makeApi: () => ({
+        listWorkflows: async () => ({
+          workflows: [
+            buildWorkflow({ id: "in-cat", name: "in", tags: ["catalog"] }),
+            buildWorkflow({ id: "off-cat", name: "off", tags: ["other"] }),
+          ],
+          nextCursor: null,
+        }),
+      }),
+    });
     const result = await adapter.scan({ cursor: null });
     expect(result.documents.map((d) => d.sourceDocId)).toEqual(["in-cat"]);
   });

@@ -69,17 +69,23 @@ humans. The compiler embeds these bytes verbatim inside the
 fenced ` ```n8n-workflow ` block.
 
 `updatedAt` is stripped in BOTH layers (decision 3): the adapter
-strips at fetch time so the canonical bytes used for the revision
-match the `contentBytes`, and the compiler also strips
-defense-in-depth so a non-n8n upstream cannot smuggle the field
-through.
+strips at fetch time so both the emitted `contentBytes` and the
+canonical revision input omit that field, and the compiler also
+strips defense-in-depth so a non-n8n upstream cannot smuggle the
+field through. Note that the **revision** is computed from a
+SEPARATE canonical byte stream (sorted-keys, no whitespace) so
+`sourceRevision` is stable regardless of pretty-print whitespace
+in `contentBytes`.
 
 ## 1 MiB ceiling
 
 Inherited from the shared `SourceAdapter` contract (assertion 7).
-Workflows whose serialised body exceeds 1 MiB are dropped with a
-log line — the Scanner pipeline's BullMQ payload would overflow
-otherwise.
+Workflows whose serialised body exceeds 1 MiB are dropped — the
+Scanner pipeline's BullMQ payload would overflow otherwise. The
+drop is silent at the adapter layer; operators see it indirectly
+via the cursor advancing without a corresponding intake row, and
+the contract test pins the behavior. Adding adapter-level logging
+is a v0.2 hardening (matches the source-drive precedent).
 
 ## Tag-filter defense-in-depth
 
