@@ -103,3 +103,84 @@ describe("buildFrontmatter — schema_version pin", () => {
     expect(out).toContain("schema_version: 1.0.0");
   });
 });
+
+describe("buildFrontmatter — YAML implicit-typing safety (copilot #18)", () => {
+  // YAML 1.2 implicit typing turns unquoted scalars matching certain
+  // patterns into non-strings. Downstream consumers (gray-matter,
+  // js-yaml in the Lint pipeline) would parse `title: 2026` as int,
+  // `title: true` as bool, `title: null` as null. Always-quote
+  // scalars matching the implicit-type patterns to keep the field
+  // a string end-to-end.
+
+  it("quotes a pure-digit title to keep it a string", () => {
+    const out = buildFrontmatter({
+      title: "2026",
+      pagePath: "strategy/x.md",
+      domainSlug: "d",
+      compiledAt: new Date(0),
+      promptVersion: "1.0.0",
+    });
+    expect(out).toContain('title: "2026"');
+    expect(out).not.toMatch(/title: 2026\n/);
+  });
+
+  it("quotes a decimal-number title to keep it a string", () => {
+    const out = buildFrontmatter({
+      title: "3.14",
+      pagePath: "strategy/x.md",
+      domainSlug: "d",
+      compiledAt: new Date(0),
+      promptVersion: "1.0.0",
+    });
+    expect(out).toContain('title: "3.14"');
+  });
+
+  it("quotes 'true' / 'false' / 'yes' / 'no' / 'on' / 'off' titles (case-insensitive)", () => {
+    for (const word of ["true", "TRUE", "false", "yes", "No", "on", "OFF"]) {
+      const out = buildFrontmatter({
+        title: word,
+        pagePath: "strategy/x.md",
+        domainSlug: "d",
+        compiledAt: new Date(0),
+        promptVersion: "1.0.0",
+      });
+      expect(out).toContain(`title: "${word}"`);
+    }
+  });
+
+  it("quotes 'null' / '~' titles (YAML null keywords)", () => {
+    for (const word of ["null", "NULL", "~"]) {
+      const out = buildFrontmatter({
+        title: word,
+        pagePath: "strategy/x.md",
+        domainSlug: "d",
+        compiledAt: new Date(0),
+        promptVersion: "1.0.0",
+      });
+      expect(out).toContain(`title: "${word}"`);
+    }
+  });
+
+  it("quotes a date-shaped title to keep it a string", () => {
+    const out = buildFrontmatter({
+      title: "2026-04-25",
+      pagePath: "strategy/x.md",
+      domainSlug: "d",
+      compiledAt: new Date(0),
+      promptVersion: "1.0.0",
+    });
+    expect(out).toContain('title: "2026-04-25"');
+  });
+
+  it("does not double-quote a plain alphanumeric title (regression guard)", () => {
+    const out = buildFrontmatter({
+      title: "simple-title",
+      pagePath: "strategy/x.md",
+      domainSlug: "d",
+      compiledAt: new Date(0),
+      promptVersion: "1.0.0",
+    });
+    expect(out).toContain("title: simple-title");
+    expect(out).not.toContain('title: "simple-title"');
+  });
+});
