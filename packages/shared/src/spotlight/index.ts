@@ -5,11 +5,11 @@
  * shared module in PR 19 because the agent harness in
  * engine-self-operating ALSO needs to spotlight external
  * memory content (run-history tails sourced from
- * `agent_runs.tool_calls[].result`) before injection into
- * agent prompts. The two engines must use byte-identical
- * envelope semantics or an attacker who poisons one engine's
- * input could pivot through the other (THREAT-MODEL §3.4 +
- * §3.5 memory poisoning).
+ * `agent_runs.output` of prior terminal runs for the same
+ * instance) before injection into agent prompts. The two
+ * engines must use byte-identical envelope semantics or an
+ * attacker who poisons one engine's input could pivot through
+ * the other (THREAT-MODEL §3.4 + §3.5 memory poisoning).
  *
  * Architecture §6.6 / THREAT-MODEL §3.4 Layer 1: the prompt
  * tells the model that everything inside
