@@ -75,14 +75,35 @@ export default tseslint.config(
 
   // 4. Fixtures block — parametrises no-cross-engine-import so it fires on
   //    the fixture path (which is NOT under packages/engine-*/ so the
-  //    auto-detect would miss).
+  //    auto-detect would miss). Default to ingestion-direction; the
+  //    self-op-direction fixture overrides via block 4b below.
   {
     files: fixturesScope,
+    ignores: [
+      "tests/eslint-fixtures/no-cross-engine-import-selfop.fixture.ts",
+    ],
     plugins: { opencoo },
     languageOptions: tsLanguageOptions,
     rules: {
       ...boundaryRules,
       "opencoo/no-cross-engine-import": ["error", { appliesTo: "ingestion" }],
+    },
+  },
+
+  // 4b. Self-op-direction fixture for no-cross-engine-import (PR 18 /
+  //     plan #82 Q12). Same shape as block 4 but with
+  //     appliesTo:'self-operating' so the rule fires on a hypothetical
+  //     engine-self-operating file reaching INTO @opencoo/engine-ingestion.
+  {
+    files: ["tests/eslint-fixtures/no-cross-engine-import-selfop.fixture.ts"],
+    plugins: { opencoo },
+    languageOptions: tsLanguageOptions,
+    rules: {
+      ...boundaryRules,
+      "opencoo/no-cross-engine-import": [
+        "error",
+        { appliesTo: "self-operating" },
+      ],
     },
   },
 

@@ -7,15 +7,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   PipelineRegistry,
-  type PipelineContext,
   type PipelineDefinition,
 } from "../../src/engine-scaffold/index.js";
 
 function stub(name: string): PipelineDefinition {
   return {
     name,
-    async run(_ctx: PipelineContext) {
-      /* no-op */
+    async run(): Promise<void> {
+      /* no-op — context unused in this test stub */
     },
   };
 }
