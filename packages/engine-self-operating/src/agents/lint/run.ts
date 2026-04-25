@@ -27,6 +27,7 @@ import { PROMPT_NAMES, loadPrompt } from "@opencoo/shared/prompts";
 
 import type { AgentRunContext } from "../../agent-harness/index.js";
 import type { McpToolClient } from "../../mcp-tool-client/index.js";
+import { assertDomainSlugInScope } from "../scope-check.js";
 import { indexSearch, wikiReadPage } from "../tools/index.js";
 
 import {
@@ -156,7 +157,17 @@ export async function runLint(
       `lint: instance ${ctx.instance.id} has empty scopeDomainIds — nothing to lint`,
     );
   }
-  const domainId = scope[0]! as DomainId;
+
+  // Cross-check: domainSlug must resolve to an id in scope
+  // BEFORE any LLM call, MCP read, or binding/citation query.
+  // Throws DomainScopeMismatchError (validation → DLQ) on
+  // mismatch or unknown slug. Same contract as Heartbeat.
+  const resolvedDomainId = await assertDomainSlugInScope({
+    db: args.db,
+    domainSlug: args.domainSlug,
+    scopeDomainIds: scope,
+  });
+  const domainId = resolvedDomainId as DomainId;
 
   // 1. Load source bindings for this domain (wildcard detector).
   const bindingsResult = (await args.db.execute(sql`
