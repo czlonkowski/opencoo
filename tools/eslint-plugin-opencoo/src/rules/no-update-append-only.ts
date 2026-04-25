@@ -10,6 +10,15 @@ import { createRule } from "../utils/create-rule.js";
  * and the iteration list in
  * `packages/shared/tests/append-only-invariant.test.ts`.
  *
+ * `agentRuns` is intentionally NOT in this set (PR 19 / plan #87
+ * Q11 carve-out). The agent harness terminalizes
+ * `agent_runs.status` from 'running' to a terminal value on
+ * completion via a single guarded UPDATE
+ * (`WHERE status = 'running'`). Once the row is terminal it's
+ * append-only by runtime guard; the lint rule lets the harness
+ * build the statement, the runtime contract enforces the
+ * one-time semantics.
+ *
  * When you add a new append-only table, append its Drizzle symbol
  * name here. The set is intentionally hard-coded for v0.1; migrate to
  * schema metadata (derive from a manifest export in @opencoo/shared)
@@ -20,7 +29,6 @@ const APPEND_ONLY_TABLES = new Set([
   "redactionEvents",
   "erasureLog",
   "minerSuppressions",
-  "agentRuns",
   "llmUsageDebug",
 ]);
 
