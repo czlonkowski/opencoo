@@ -257,4 +257,80 @@ describe("invokeAgent — tool-call ledger", () => {
     expect(calls[0]?.result).toBe("page-content");
     expect(calls[1]?.result).toBe("another-page");
   });
+
+  // ToolCall.args is required by the Zod schema
+  // (`args: z.unknown()`). When `args: undefined` is passed,
+  // JSON.stringify drops the key entirely and the persisted
+  // JSONB row is missing `args`. Future readers (Spotlight,
+  // ledger consumers) re-validating with toolCallSchema would
+  // fail. Default to an empty object so the key always lands
+  // in the row. (copilot #21)
+  it("recorded ToolCalls always have an `args` key (success path defaults to {})", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedAgentInstance(fixture);
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(HEARTBEAT_DEF);
+    const router = makeRouter(new MockLlmClient(), fixture.db);
+
+    const result = await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "scheduled",
+      inputs: {},
+      run: async (ctx) => {
+        await ctx.callTool("wiki.read_page", async () => "ok");
+        return { ok: true };
+      },
+    });
+
+    const rows = await fixture.raw.query<{
+      tool_calls: Array<Record<string, unknown>>;
+    }>(`SELECT tool_calls FROM agent_runs WHERE id = $1`, [result.runId]);
+    const call = rows.rows[0]?.tool_calls?.[0];
+    expect(call).toBeDefined();
+    expect(call).toHaveProperty("args");
+    expect(call?.args).toEqual({});
+  });
+
+  it("recorded ToolCalls have `args` even when the tool body throws (error path defaults to {})", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedAgentInstance(fixture);
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(HEARTBEAT_DEF);
+    const router = makeRouter(new MockLlmClient(), fixture.db);
+
+    const result = await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "scheduled",
+      inputs: {},
+      run: async (ctx) => {
+        try {
+          await ctx.callTool("wiki.read_page", async () => {
+            throw new Error("downstream nope");
+          });
+        } catch {
+          // swallowed so the harness records the failed tool
+          // call and still reaches completeRun via the body's
+          // own return path
+        }
+        return { ok: true };
+      },
+    });
+
+    const rows = await fixture.raw.query<{
+      tool_calls: Array<Record<string, unknown>>;
+    }>(`SELECT tool_calls FROM agent_runs WHERE id = $1`, [result.runId]);
+    const call = rows.rows[0]?.tool_calls?.[0];
+    expect(call).toBeDefined();
+    expect(call).toHaveProperty("args");
+    expect(call?.args).toEqual({});
+    expect(call?.error).toBe("downstream nope");
+  });
 });
