@@ -103,44 +103,13 @@ export async function start(
     options.config ?? loadEngineConfig(options.env ?? process.env);
   const logger = options.logger ?? new ConsoleLogger();
 
-  // The shared `startEngine` accepts a synchronous `serverFactory`;
-  // we pre-await ours (which registers the static-UI plugin) and
-  // pass through.
+  // The shared `startEngine` awaits its serverFactory return, so we
+  // pass our async factory directly — no sync shim required.
   const userServerFactory = options.serverFactory ?? defaultServerFactory;
-
-  const probesPlaceholder: ProbeMap = {};
-  // Pre-build the server factory closure that captures config +
-  // logger; the shared startEngine passes only the probe map.
-  const serverFactory = (probes: ProbeMap): StartServer => {
-    // Synchronous shim: the registration is async-eager — we kick
-    // it off and return the (still-mounting) Fastify instance.
-    // Fastify's plugin registration completes before app.ready() /
-    // app.listen() awaits, so by the time startEngine awaits
-    // listen(), the static-UI plugin has finished loading.
-    const built = userServerFactory(probes, config, logger);
-    if (built instanceof Promise) {
-      // The shared startEngine treats the return value as a
-      // StartServer synchronously; we resolve via a thunk that
-      // proxies listen() through a lazy await.
-      let resolved: StartServer | undefined;
-      const ready = built.then((instance) => {
-        resolved = instance;
-        return instance;
-      });
-      return {
-        async listen(opts) {
-          const inst = resolved ?? (await ready);
-          return inst.listen(opts);
-        },
-        async close() {
-          const inst = resolved ?? (await ready);
-          return inst.close();
-        },
-      };
-    }
-    return built;
-  };
-  void probesPlaceholder;
+  const serverFactory = (
+    probes: ProbeMap,
+  ): Promise<StartServer> | StartServer =>
+    userServerFactory(probes, config, logger);
 
   const baseOptions: BaseStartOptions<EngineConfig, SelfOperatingRegistry> = {
     config,

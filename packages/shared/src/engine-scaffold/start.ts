@@ -98,8 +98,13 @@ export interface StartOptions<
    *  could add `wikiAdapter` later). When undefined the defaults
    *  are used as-is. */
   readonly probeExtender?: (probes: ProbeMap) => ProbeMap;
-  /** @internal Test seam — defaults to `buildServer({probes})`. */
-  readonly serverFactory?: (probes: ProbeMap) => StartServer;
+  /** @internal Test seam — defaults to `buildServer({probes})`.
+   *  Accepts an async factory so engines that need async plugin
+   *  registration (engine-self-operating's static-UI plugin)
+   *  don't have to bridge through a synchronous shim. */
+  readonly serverFactory?: (
+    probes: ProbeMap,
+  ) => StartServer | Promise<StartServer>;
 }
 
 function defaultServerFactory(probes: ProbeMap): StartServer {
@@ -162,7 +167,7 @@ export async function startEngine<
       ? options.probeExtender(baseProbes)
       : baseProbes;
 
-  const app = (options.serverFactory ?? defaultServerFactory)(probes);
+  const app = await (options.serverFactory ?? defaultServerFactory)(probes);
 
   try {
     await app.listen({ host: "0.0.0.0", port: options.config.port });
