@@ -1,12 +1,8 @@
 /**
- * Instance memory loaders. Per the planner's reality check 5
- * the InstanceMemory shape is
- *   { type: 'none' | 'log-tail' | 'run-history',
- *     count?: int,
- *     agent_filter?: string,
- *     format?: string }
- * — `type` chooses the loader; `count` caps the tail; the
- * other two are reserved for v0.2 expansion.
+ * Instance memory loaders. The `InstanceMemory` shape is the
+ * canonical Zod-typed contract from
+ * `@opencoo/shared/db/types/instance-memory` — engines import
+ * the shared type rather than duplicating the union.
  *
  * v0.1 ships two loaders:
  *   - 'none' → empty array (no memory injected).
@@ -29,17 +25,18 @@
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
+import type { InstanceMemory } from "@opencoo/shared/db";
+
+// Re-export so engine-self-operating callers can keep
+// importing from "../agent-harness/index.js" without reaching
+// into @opencoo/shared/db directly. The type is owned by
+// shared; the loader is owned here.
+export type { InstanceMemory };
+
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
 interface ExecResult<R> {
   readonly rows: R[];
-}
-
-export interface InstanceMemory {
-  readonly type: "none" | "log-tail" | "run-history";
-  readonly count?: number;
-  readonly agent_filter?: string;
-  readonly format?: string;
 }
 
 export interface MemoryEntry {
