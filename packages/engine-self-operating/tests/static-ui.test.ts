@@ -211,6 +211,61 @@ describe("registerStaticUi — happy path with bundled dist", () => {
   });
 });
 
+describe("registerStaticUi — @fastify/static import failure (copilot #20)", () => {
+  // When the plugin can't load (corrupt install, missing
+  // optional dependency), we still want the engine to boot AND
+  // for /api/* requests to land their own 404, not a generic
+  // 503 from this layer. The previous catch-all 503 handler
+  // didn't distinguish.
+
+  function makeUiDist(): string {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "selfop-ui-pluginfail-"));
+    fs.writeFileSync(
+      path.join(tmp, "index.html"),
+      "<!doctype html><title>opencoo</title>",
+    );
+    return tmp;
+  }
+
+  it("/api/unknown returns 404 (not 503) when the static plugin fails to load", async () => {
+    const ui = makeUiDist();
+    const app = buildServer({ probes: {} });
+    await registerStaticUi(app, {
+      uiDistPath: ui,
+      logger: silentLogger(),
+      loadStaticPlugin: async () => {
+        throw new Error("simulated plugin load failure");
+      },
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/unknown",
+    });
+    expect(response.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("an SPA route still returns 503 when the static plugin fails to load", async () => {
+    const ui = makeUiDist();
+    const app = buildServer({ probes: {} });
+    await registerStaticUi(app, {
+      uiDistPath: ui,
+      logger: silentLogger(),
+      loadStaticPlugin: async () => {
+        throw new Error("simulated plugin load failure");
+      },
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/dashboard",
+    });
+    expect(response.statusCode).toBe(503);
+    const body = response.json() as { status: string };
+    expect(body.status).toBe("ui_unavailable");
+    await app.close();
+  });
+});
+
 describe("isPathWithinRoot — defense-in-depth predicate (copilot #20)", () => {
   // Independently of @fastify/static's URL normalization, the
   // allowedPath predicate is opencoo's last line of defense
