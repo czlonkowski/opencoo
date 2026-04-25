@@ -91,8 +91,11 @@ export {
 export {
   InMemoryMcpToolClient,
   McpResourceNotFoundError,
+  createPatScopedMcpClient,
   type McpListFilter,
   type McpToolClient,
+  type PatScopedAuditEntry,
+  type PatScopedMcpToolClient,
 } from "./mcp-tool-client/index.js";
 
 // Output-channel surface (PR 20, plan #92 part A). The Heartbeat
