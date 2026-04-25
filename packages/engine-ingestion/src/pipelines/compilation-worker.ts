@@ -32,6 +32,7 @@ import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 import type { LlmRouter } from "@opencoo/shared/llm-router";
+import { CONTENT_KINDS } from "@opencoo/shared/db";
 import type {
   ContentKind,
   DomainId,
@@ -305,5 +306,5 @@ async function loadBindingMeta(
 }
 
 function isContentKind(value: string): value is ContentKind {
-  return value === "document" || value === "n8n-workflow" || value === "skill-bundle";
+  return (CONTENT_KINDS as readonly string[]).includes(value);
 }

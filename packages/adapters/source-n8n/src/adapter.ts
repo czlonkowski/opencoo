@@ -27,8 +27,6 @@
  * no LLM). The adapter does NOT set `contentKind` on the
  * emitted document — the engine reads it from the binding row.
  */
-import { createHash } from "node:crypto";
-
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
 import type {
@@ -40,7 +38,6 @@ import type {
 
 import { n8nBindingConfigSchema } from "./binding-config.js";
 import {
-  canonicalBytes,
   stripUpdatedAt,
   computeWorkflowRevision,
 } from "./canonical-bytes.js";
@@ -147,12 +144,3 @@ function serialiseWorkflowBody(wf: N8nWorkflowSummary): Buffer {
 // Re-export for callers that want to compute the revision
 // directly (test fixtures, replay tooling).
 export { canonicalBytes, computeWorkflowRevision } from "./canonical-bytes.js";
-
-// Stable hash helper used internally — re-exported in case
-// downstream tooling needs the same byte stream.
-export function _canonicalSha256Hex16(value: unknown): string {
-  return createHash("sha256")
-    .update(canonicalBytes(value))
-    .digest("hex")
-    .slice(0, 16);
-}

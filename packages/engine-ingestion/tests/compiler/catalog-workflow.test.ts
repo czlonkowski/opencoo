@@ -21,6 +21,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
+import * as ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 
@@ -243,11 +244,14 @@ describe("compileCatalogWorkflow — deterministic (no LLM)", () => {
       resolve(HERE, "../../src/compiler/catalog-workflow.ts"),
       "utf8",
     );
-    // Strip comments (file headers may legitimately mention the
-    // router by name when explaining why we don't import it).
-    const codeOnly = src
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/\/\/.*$/gm, "");
+    // Token-aware comment strip via the TS scanner — same shape
+    // as PR 25's gate-3-source-grep.test.ts. The regex stripper
+    // would consume `//` sequences inside string/template
+    // literals (e.g. URLs), which is the false-positive vector
+    // the scanner-based approach avoids. File headers may
+    // legitimately mention the router by name when explaining
+    // why we don't import it.
+    const codeOnly = stripCommentsViaScanner(src);
     expect(codeOnly).not.toMatch(/from\s+["']@opencoo\/shared\/llm-router["']/);
   });
 
@@ -348,3 +352,36 @@ describe("compileCatalogWorkflow — orchestration", () => {
     expect(second.commitSha).toBeNull();
   });
 });
+
+/**
+ * Token-aware comment strip via the TS scanner. Mirrors the
+ * helper in `engine-self-operating/tests/automation-loop/
+ * gate-3-source-grep.test.ts` — string/template/regex literals
+ * are preserved verbatim so a `from "@opencoo/shared/llm-router"`
+ * substring inside a string literal would still surface, while
+ * the same substring inside a `//` or `/* *\/` comment is
+ * legitimately stripped. Newlines preserved so failure messages
+ * referencing line numbers stay accurate.
+ */
+function stripCommentsViaScanner(source: string): string {
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.ESNext,
+    /* skipTrivia */ false,
+    ts.LanguageVariant.Standard,
+    source,
+  );
+  const parts: string[] = [];
+  let token = scanner.scan();
+  while (token !== ts.SyntaxKind.EndOfFileToken) {
+    if (
+      token === ts.SyntaxKind.SingleLineCommentTrivia ||
+      token === ts.SyntaxKind.MultiLineCommentTrivia
+    ) {
+      parts.push(scanner.getTokenText().replace(/[^\n]/g, ""));
+    } else {
+      parts.push(scanner.getTokenText());
+    }
+    token = scanner.scan();
+  }
+  return parts.join("");
+}

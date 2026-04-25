@@ -40,7 +40,6 @@
  * load-bearing assertion.
  */
 
-import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 import { CATALOG_WORKFLOW_FENCE_LANG } from "@opencoo/shared/db";
@@ -355,7 +354,4 @@ async function tryRecordCitation(
     // Soft-fail — same as the document compiler. The wiki commit
     // landed; reconciliation can backfill missing citations.
   }
-  // Reference db arg so eslint-no-unused-vars doesn't complain
-  // when the try-block short-circuits (it consumes args.db).
-  void sql;
 }
