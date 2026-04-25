@@ -78,13 +78,12 @@ describe("assertBindingNotWildcardOnly", () => {
     ).not.toThrow();
   });
 
-  it("ACCEPTS [`**/something/specific.md`] — leading globstar is fine when the suffix anchors the path", () => {
-    // This is a debatable shape; the v0.1 guard's rule is "reject
-    // patterns that start with **/ followed by an unbounded
-    // segment". A specific filename suffix anchors it.
-    // …actually planner's call (Q5) is to reject ANY `**/foo` shape
-    // regardless of suffix specificity. The next test pins that.
-    // This test exists to document the boundary we DON'T cross.
+  it("ACCEPTS a concrete nested literal path — no leading wildcard means safe", () => {
+    // Documents the boundary: planner's call (Q5) is to reject
+    // ANY pattern that starts with the leading-globstar shape
+    // (the previous test pins that). A fully-concrete path with
+    // no globs in it is the opposite end of the spectrum and
+    // must pass — it identifies exactly one file.
     expect(() =>
       assertBindingNotWildcardOnly(["specific/dir/file.md"]),
     ).not.toThrow();
