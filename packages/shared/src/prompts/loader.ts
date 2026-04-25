@@ -14,10 +14,18 @@
  * requires extending both the tuple AND the inlined registry, so
  * a stale entry in only one half fails type-check.
  */
-import { EN_CLASSIFIER_PROMPT } from "./en-classifier.js";
+import {
+  CLASSIFIER_PROMPT_VERSION,
+  EN_CLASSIFIER_PROMPT,
+} from "./en-classifier.js";
 import { PL_CLASSIFIER_PROMPT } from "./pl-classifier.js";
+import {
+  COMPILER_PROMPT_VERSION,
+  EN_COMPILER_PROMPT,
+} from "./en-compiler.js";
+import { PL_COMPILER_PROMPT } from "./pl-compiler.js";
 
-export const PROMPT_NAMES = ["classifier"] as const;
+export const PROMPT_NAMES = ["classifier", "compiler"] as const;
 export type PromptName = (typeof PROMPT_NAMES)[number];
 
 export const PROMPT_LOCALES = ["en", "pl", "auto"] as const;
@@ -37,10 +45,25 @@ const REGISTRY: {
 } = {
   en: {
     classifier: EN_CLASSIFIER_PROMPT,
+    compiler: EN_COMPILER_PROMPT,
   },
   pl: {
     classifier: PL_CLASSIFIER_PROMPT,
+    compiler: PL_COMPILER_PROMPT,
   },
+};
+
+/**
+ * Version registry — one VERSION per prompt NAME (not per locale).
+ * EN and PL move in lockstep so this map is locale-free; the
+ * loader exposes the value through `LoadedPrompt.version`. The
+ * compiler writes it into `page_citations.prompt_version` so a
+ * stale-output bug can be triaged by querying which version
+ * produced which page.
+ */
+const VERSIONS: { readonly [N in PromptName]: string } = {
+  classifier: CLASSIFIER_PROMPT_VERSION,
+  compiler: COMPILER_PROMPT_VERSION,
 };
 
 export interface LoadPromptArgs {
@@ -54,6 +77,12 @@ export interface LoadedPrompt {
    *  always `en` or `pl`. */
   readonly locale: Exclude<PromptLocale, "auto">;
   readonly body: string;
+  /** Semver-shaped string identifying this prompt revision.
+   *  Persisted by the compiler into `page_citations.prompt_version`
+   *  so a stale-output bug can be triaged by querying which version
+   *  produced which page. EN and PL of the same name share one
+   *  version. */
+  readonly version: string;
   /** True when the requested locale was `auto` or an unknown
    *  string and we fell back to `en`. The caller logs this at
    *  whatever level it deems appropriate (warn for production,
@@ -73,6 +102,7 @@ export function loadPrompt(args: LoadPromptArgs): LoadedPrompt {
     name: args.name,
     locale: effective,
     body: REGISTRY[effective][args.name],
+    version: VERSIONS[args.name],
     fallbackApplied,
   };
 }
