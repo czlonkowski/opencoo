@@ -156,3 +156,29 @@ describe("loadInstanceMemory — type='run-history'", () => {
     expect(memory).toEqual([]);
   });
 });
+
+// Fail-closed on unknown `memory.type`. The Zod schema in
+// @opencoo/shared/db rejects unknown types at the validation
+// edge, but if a misshapen row ever reaches the loader (for
+// example: a v0.2 type added to one engine but not the other),
+// the loader must throw `TypeError` rather than silently
+// returning [] and pretending the agent has no memory.
+// (copilot #21)
+describe("loadInstanceMemory — fail-closed on unknown type", () => {
+  it("throws TypeError when memory.type is not one of the v0.1 loaders", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedAgentInstance(fixture);
+    await expect(
+      loadInstanceMemory(
+        fixture.db as unknown as Parameters<typeof loadInstanceMemory>[0],
+        instanceId,
+        // Cast through unknown — the runtime guard is the
+        // load-bearing safeguard; the type system already
+        // rejects this branch.
+        { type: "telemetry-stream" } as unknown as Parameters<
+          typeof loadInstanceMemory
+        >[2],
+      ),
+    ).rejects.toBeInstanceOf(TypeError);
+  });
+});
