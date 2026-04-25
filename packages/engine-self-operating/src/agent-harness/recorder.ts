@@ -111,15 +111,17 @@ export async function completeRun(args: CompleteRunArgs): Promise<void> {
   //      row hits 0 affected rows even on a buggy caller.
   //   2. JS rowCount check below + AgentRunAlreadyTerminalError
   //      → DLQ (validation-class).
-  // Lint disable pins the carve-out at exactly this call
-  // site: `agentRuns` is in `APPEND_ONLY_TABLES` and any
-  // other UPDATE/DELETE path lints red. This is also a
-  // forward-looking guard — if the raw-SQL form is ever
-  // refactored to `args.db.update(agentRuns)`, the
-  // `eslint-disable-next-line` keeps this single sanctioned
-  // location passing while the rest of the codebase stays
-  // protected.
-  // eslint-disable-next-line opencoo/no-update-append-only
+  // The `opencoo/no-update-append-only` rule keeps `agentRuns`
+  // in `APPEND_ONLY_TABLES` so any `db.update(agentRuns)` /
+  // `db.delete(agentRuns)` call elsewhere lints red. This raw
+  // `db.execute(sql\`UPDATE agent_runs...\`)` form does not
+  // match the rule's AST matcher (which fires on
+  // `.update(<Identifier>)` / `.delete(<Identifier>)` calls),
+  // so no inline disable is needed today. If this ever gets
+  // refactored to `args.db.update(agentRuns)`, you MUST
+  // add `// eslint-disable-next-line opencoo/no-update-append-only`
+  // immediately above the call to keep the carve-out
+  // explicit and pinned to this single location.
   const result = (await args.db.execute(sql`
     UPDATE agent_runs
     SET status = ${args.status},
