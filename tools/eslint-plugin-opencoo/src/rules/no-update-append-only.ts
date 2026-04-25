@@ -10,17 +10,27 @@ import { createRule } from "../utils/create-rule.js";
  * and the iteration list in
  * `packages/shared/tests/append-only-invariant.test.ts`.
  *
+ * `agentRuns` is in this set. The §2 invariant 8 carve-out
+ * (PR 19 / plan #87 Q11) is implemented as an INLINE
+ * `// eslint-disable-next-line opencoo/no-update-append-only`
+ * at the SOLE sanctioned call site — `recorder.completeRun()`
+ * — which terminalizes `status` from 'running' to a terminal
+ * value via a guarded UPDATE (`WHERE status = 'running'`).
+ * Keeping the table in the set means any other code path that
+ * tries to UPDATE/DELETE `agent_runs` lints red and the
+ * carve-out remains visible at exactly one location.
+ *
  * When you add a new append-only table, append its Drizzle symbol
  * name here. The set is intentionally hard-coded for v0.1; migrate to
  * schema metadata (derive from a manifest export in @opencoo/shared)
  * if the set grows beyond ~10 entries.
  */
 const APPEND_ONLY_TABLES = new Set([
+  "agentRuns",
   "pageCitations",
   "redactionEvents",
   "erasureLog",
   "minerSuppressions",
-  "agentRuns",
   "llmUsageDebug",
 ]);
 

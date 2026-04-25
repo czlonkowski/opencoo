@@ -46,8 +46,20 @@ ruleTester.run("no-update-append-only", noUpdateAppendOnly, {
   ],
   invalid: [
     {
-      name: "update on agent_runs flags updateAppendOnly",
+      name: "update on agent_runs flags updateAppendOnly — carve-out at recorder.ts only (copilot #21)",
       code: `db.update(agentRuns).set({ status: 'success' });`,
+      errors: [{ messageId: "updateAppendOnly", data: { table: "agentRuns" } }],
+    },
+    {
+      name: "delete on agent_runs flags deleteAppendOnly — never allowed in engine code",
+      code: `db.delete(agentRuns).where(true);`,
+      errors: [
+        { messageId: "deleteAppendOnly", data: { table: "agentRuns" } },
+      ],
+    },
+    {
+      name: "transaction handle: tx.update(agentRuns) flags too — only the inline-disabled completeRun() call site is sanctioned",
+      code: `tx.update(agentRuns).set({ status: 'failed' });`,
       errors: [{ messageId: "updateAppendOnly", data: { table: "agentRuns" } }],
     },
     {
@@ -75,11 +87,6 @@ ruleTester.run("no-update-append-only", noUpdateAppendOnly, {
       errors: [
         { messageId: "deleteAppendOnly", data: { table: "minerSuppressions" } },
       ],
-    },
-    {
-      name: "chain case with transaction handle: tx.update(agentRuns) flags",
-      code: `tx.update(agentRuns).set({ status: 'failed' });`,
-      errors: [{ messageId: "updateAppendOnly", data: { table: "agentRuns" } }],
     },
     {
       name: "update on llmUsageDebug flags updateAppendOnly",
