@@ -134,6 +134,60 @@ describe("HEARTBEAT_OUTPUT_SCHEMA — strict Zod contract", () => {
     };
     expect(() => HEARTBEAT_OUTPUT_SCHEMA.parse(empty)).not.toThrow();
   });
+
+  // Caps must match the prompt body's stated bounds (en/pl
+  // heartbeat prompt: summary 200 chars, title 80 chars). A
+  // wider schema lets a verbose LLM payload land in
+  // agent_runs.output without DLQ — Copilot #22 BLOCKING.
+  it("rejects a summary longer than 200 chars (prompt cap)", () => {
+    const bad = {
+      version: "v1",
+      summary: "x".repeat(201),
+      alerts: [],
+    };
+    expect(() => HEARTBEAT_OUTPUT_SCHEMA.parse(bad)).toThrow();
+  });
+
+  it("accepts a summary at exactly 200 chars (boundary inclusive)", () => {
+    const ok: HeartbeatOutput = {
+      version: "v1",
+      summary: "x".repeat(200),
+      alerts: [],
+    };
+    expect(() => HEARTBEAT_OUTPUT_SCHEMA.parse(ok)).not.toThrow();
+  });
+
+  it("rejects a title longer than 80 chars (prompt cap)", () => {
+    const bad = {
+      version: "v1",
+      summary: "ok",
+      alerts: [
+        {
+          priority: 1,
+          title: "x".repeat(81),
+          body: "b",
+          citations: ["a.md"],
+        },
+      ],
+    };
+    expect(() => HEARTBEAT_OUTPUT_SCHEMA.parse(bad)).toThrow();
+  });
+
+  it("accepts a title at exactly 80 chars (boundary inclusive)", () => {
+    const ok: HeartbeatOutput = {
+      version: "v1",
+      summary: "ok",
+      alerts: [
+        {
+          priority: 1,
+          title: "x".repeat(80),
+          body: "b",
+          citations: ["a.md"],
+        },
+      ],
+    };
+    expect(() => HEARTBEAT_OUTPUT_SCHEMA.parse(ok)).not.toThrow();
+  });
 });
 
 describe("runHeartbeat — body wires McpToolClient via ctx.callTool", () => {
