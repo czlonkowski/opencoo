@@ -27,9 +27,20 @@ import { createHmac } from "node:crypto";
 import { buildWebhookReceiver } from "../../src/intake/webhook-receiver.js";
 import { InMemoryAdapterRegistry } from "../../src/intake/adapter-registry.js";
 import { InMemoryCredentialStore } from "@opencoo/shared/credential-store";
+import { ConsoleLogger } from "@opencoo/shared/logger";
 import { HmacSha256Verifier } from "@opencoo/shared/webhook-verifier";
 
 import { freshIntakeDb } from "./_pglite-fixture.js";
+
+function silentLogger(): ConsoleLogger {
+  return new ConsoleLogger({
+    stream: {
+      write(): boolean {
+        return true;
+      },
+    },
+  });
+}
 
 interface QueueRecorder {
   add: ReturnType<typeof vi.fn>;
@@ -44,7 +55,7 @@ const SECRET_PLAINTEXT = Buffer.from("test-shared-secret", "utf8");
 async function makeFixture() {
   const fixture = await freshIntakeDb();
 
-  const credentialStore = new InMemoryCredentialStore();
+  const credentialStore = new InMemoryCredentialStore({ logger: silentLogger() });
   const credentialId = await credentialStore.write({
     name: "drive-webhook-secret",
     schemaRef: "webhook/v1",

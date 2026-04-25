@@ -56,7 +56,12 @@ const DDL = `
     rotated_at timestamp with time zone
   );
 
-  -- sources_bindings (FK to domains + credentials)
+  -- sources_bindings — FK to domains kept (load-bearing for the
+  -- intake tests). The credentials_id FK is intentionally dropped
+  -- here: tests use InMemoryCredentialStore (in-memory, not backed
+  -- by the DB credentials table), so the binding's credentials_id
+  -- column just stores the in-memory store's UUID. Production
+  -- DDL keeps the FK; the test fixture relaxes it for ergonomics.
   CREATE TABLE sources_bindings (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
     domain_id uuid NOT NULL REFERENCES domains(id) ON DELETE RESTRICT,
@@ -66,7 +71,7 @@ const DDL = `
     allowed_paths text[] DEFAULT '{}'::text[] NOT NULL,
     review_mode review_mode DEFAULT 'auto' NOT NULL,
     schedule_cron text,
-    credentials_id uuid REFERENCES credentials(id) ON DELETE RESTRICT,
+    credentials_id uuid,
     retention_days_override integer,
     enabled boolean DEFAULT true NOT NULL,
     last_scanned_at timestamp with time zone,
@@ -118,15 +123,15 @@ export async function freshIntakeDb(): Promise<IntakeFixture> {
   const db: IntakeTestDb = drizzle(pg, { schema });
 
   // Seed one domain + one binding so tests have a valid FK target.
-  const [domainRow] = await pg.query<{ id: string }>(
+  const domainResult = await pg.query<{ id: string }>(
     `INSERT INTO domains (slug, name) VALUES ('test-domain', 'Test Domain') RETURNING id`,
   );
-  const domainId = domainRow!.id;
-  const [bindingRow] = await pg.query<{ id: string }>(
+  const domainId = domainResult.rows[0]!.id;
+  const bindingResult = await pg.query<{ id: string }>(
     `INSERT INTO sources_bindings (domain_id, adapter_slug) VALUES ($1, 'drive') RETURNING id`,
     [domainId],
   );
-  const bindingId = bindingRow!.id;
+  const bindingId = bindingResult.rows[0]!.id;
 
   return { db, domainId, bindingId };
 }
