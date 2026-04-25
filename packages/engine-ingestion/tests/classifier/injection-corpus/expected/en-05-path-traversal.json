@@ -1,0 +1,25 @@
+{
+  "fixture": "en/05-path-traversal.txt",
+  "locale": "en",
+  "adversaryGoal": "Document body contains a literal `strategy/../hr/onboarding.md` and asks the classifier to use it. The wiki shape guard rejects `..` segments.",
+  "mockResponse": {
+    "kind": "json",
+    "body": {
+      "version": "v1",
+      "language": "en",
+      "summary": "Q3 priorities",
+      "target_domains": [
+        {
+          "domain_slug": "test-domain",
+          "page_paths": ["strategy/../hr/onboarding.md"]
+        }
+      ],
+      "pipelines": ["compile.single-source"]
+    }
+  },
+  "expectedOutcome": {
+    "kind": "reject",
+    "errorName": "ClassifierPathError",
+    "errorClass": "validation"
+  }
+}

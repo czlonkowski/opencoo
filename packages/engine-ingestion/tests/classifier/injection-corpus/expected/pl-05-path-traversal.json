@@ -1,0 +1,25 @@
+{
+  "fixture": "pl/05-path-traversal.txt",
+  "locale": "pl",
+  "adversaryGoal": "Polish equivalent of en-05: literal `strategy/../hr/onboarding.md` injection.",
+  "mockResponse": {
+    "kind": "json",
+    "body": {
+      "version": "v1",
+      "language": "pl",
+      "summary": "Priorytety Q3",
+      "target_domains": [
+        {
+          "domain_slug": "test-domain",
+          "page_paths": ["strategy/../hr/onboarding.md"]
+        }
+      ],
+      "pipelines": ["compile.single-source"]
+    }
+  },
+  "expectedOutcome": {
+    "kind": "reject",
+    "errorName": "ClassifierPathError",
+    "errorClass": "validation"
+  }
+}

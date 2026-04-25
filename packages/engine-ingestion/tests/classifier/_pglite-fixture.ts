@@ -76,13 +76,40 @@ export interface ClassifierFixture {
   readonly domainId: string;
 }
 
-export async function freshClassifierDb(): Promise<ClassifierFixture> {
+export interface FreshClassifierDbOptions {
+  /** Override the model name on every tier of the seeded domain's
+   *  llm_policy. Used by the injection corpus when RUN_REAL_LLM=1
+   *  to drive a real provider on a non-default model. Default:
+   *  empty policy → router falls back to FALLBACK_POLICY which is
+   *  gpt-4o-mini across all three tiers. */
+  readonly modelOverride?: string;
+  /** Override the provider on every tier. Same gating as
+   *  modelOverride; defaults to empty (FALLBACK_POLICY = openai). */
+  readonly providerOverride?: string;
+}
+
+export async function freshClassifierDb(
+  opts: FreshClassifierDbOptions = {},
+): Promise<ClassifierFixture> {
   const pg = new PGlite();
   await pg.exec(DDL);
   const db: ClassifierTestDb = drizzle(pg, { schema });
 
+  let policyJson = "{}";
+  if (opts.modelOverride !== undefined || opts.providerOverride !== undefined) {
+    const provider = opts.providerOverride ?? "openai";
+    const model = opts.modelOverride ?? "gpt-4o-mini";
+    const tier = { provider, model };
+    policyJson = JSON.stringify({
+      thinker: tier,
+      worker: tier,
+      light: tier,
+      local_only: false,
+    });
+  }
   const domainResult = await pg.query<{ id: string }>(
-    `INSERT INTO domains (slug, name) VALUES ('test-domain', 'Test Domain') RETURNING id`,
+    `INSERT INTO domains (slug, name, llm_policy) VALUES ('test-domain', 'Test Domain', $1::jsonb) RETURNING id`,
+    [policyJson],
   );
   const domainId = domainResult.rows[0]!.id;
 
