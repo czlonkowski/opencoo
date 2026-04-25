@@ -108,3 +108,55 @@ describe("buildServer — unknown routes", () => {
     await app.close();
   });
 });
+
+// (copilot #15 Fix 5) — probe functions are SUPPOSED to always
+// resolve to {ok, reason?}, but a buggy probe that throws should
+// not crash the /ready route into a 500. The contract is "503 +
+// structured body" at the HTTP boundary; the rejection is
+// surfaced as a failed probe with the error message as `reason`.
+describe("buildServer — /ready handles probe rejection defensively", () => {
+  it("returns 503 with structured body when a probe rejects unexpectedly", async () => {
+    const app = buildServer({
+      probes: {
+        postgres: async () => ({ ok: true }),
+        redis: async () => {
+          throw new Error("ioredis client died unexpectedly");
+        },
+      },
+    });
+    const res = await app.inject({ method: "GET", url: "/ready" });
+    expect(res.statusCode).toBe(503);
+    const body = res.json() as {
+      status: string;
+      probes: Record<string, { ok: boolean; reason?: string }>;
+    };
+    expect(body.status).toBe("not_ready");
+    expect(body.probes.postgres?.ok).toBe(true);
+    expect(body.probes.redis?.ok).toBe(false);
+    expect(body.probes.redis?.reason).toContain("ioredis client died");
+    await app.close();
+  });
+
+  it("returns 503 even when EVERY probe rejects", async () => {
+    const app = buildServer({
+      probes: {
+        postgres: async () => {
+          throw new Error("pg pool failed");
+        },
+        redis: async () => {
+          throw new Error("redis dead");
+        },
+      },
+    });
+    const res = await app.inject({ method: "GET", url: "/ready" });
+    expect(res.statusCode).toBe(503);
+    const body = res.json() as {
+      status: string;
+      probes: Record<string, { ok: boolean; reason?: string }>;
+    };
+    expect(body.status).toBe("not_ready");
+    expect(body.probes.postgres?.ok).toBe(false);
+    expect(body.probes.redis?.ok).toBe(false);
+    await app.close();
+  });
+});
