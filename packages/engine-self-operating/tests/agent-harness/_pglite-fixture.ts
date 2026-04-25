@@ -44,6 +44,7 @@ const TABLES_DDL = `
     llm_budget_monthly_cap_usd numeric(10, 2),
     retention_days integer,
     worldview_enabled boolean DEFAULT true NOT NULL,
+    is_aggregator boolean DEFAULT false NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
   );
