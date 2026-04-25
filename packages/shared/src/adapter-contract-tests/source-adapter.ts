@@ -153,7 +153,7 @@ export function sourceAdapterContract(
     if (options.mode === "polling") {
       runPollingAssertions(options);
     } else {
-      runWebhookStubs(options);
+      runWebhookStubs();
     }
   });
 }
@@ -357,7 +357,7 @@ function runPollingAssertions(
   });
 }
 
-function runWebhookStubs(_options: SourceAdapterFixtureOptions): void {
+function runWebhookStubs(): void {
   // TODO: flesh out when PR 24 (Asana) / PR 27 (Fireflies)
   // land their webhook receivers. The shape is documented in
   // architecture §10 and §3.1: HMAC-verify or DLQ; replay
