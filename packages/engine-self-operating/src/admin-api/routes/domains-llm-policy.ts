@@ -199,15 +199,10 @@ export function registerDomainsLlmPolicyRoutes(
           payload_hash: computePayloadHash({ domainId: id, proposed: after }),
         },
         sourceIp: req.ip,
-        userAgent: extractUserAgent(req.headers["user-agent"]),
+        userAgent: req.headers["user-agent"],
       });
 
       return reply.code(200).send({ ok: true, id });
     },
   );
-}
-
-function extractUserAgent(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) return value[0] ?? null;
-  return value ?? null;
 }

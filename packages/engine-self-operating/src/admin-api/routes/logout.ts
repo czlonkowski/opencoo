@@ -40,14 +40,9 @@ export function registerLogoutRoute(args: RegisterLogoutRouteArgs): void {
         userId: ctx.userId,
         metadata: { username: ctx.username },
         sourceIp: req.ip,
-        userAgent: extractUserAgent(req.headers["user-agent"]),
+        userAgent: req.headers["user-agent"],
       });
       return reply.code(200).send({ ok: true });
     },
   );
-}
-
-function extractUserAgent(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) return value[0] ?? null;
-  return value ?? null;
 }
