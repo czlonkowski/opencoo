@@ -31,3 +31,11 @@ export {
   type LlmRouterOptions,
 } from "./router.js";
 export { MockLlmClient } from "./testing/mock-llm-client.js";
+
+// OpenRouter provider helper — test-only, gated on RUN_REAL_LLM=1
+// in the classifier injection corpus. NOT registered in the closed
+// PROVIDERS tuple; production code never selects it.
+export {
+  createOpenRouterProvider,
+  type OpenRouterProviderOptions,
+} from "./providers/openrouter.js";
