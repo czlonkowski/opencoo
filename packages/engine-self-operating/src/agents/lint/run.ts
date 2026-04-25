@@ -319,16 +319,25 @@ export async function runLint(
   //    the run blew up before completing). Unroll the JSONB
   //    `tool_calls` array into one observation per (run, name)
   //    so the detector is a pure JS filter.
+  //
+  //    CROSS-TENANT SCOPE (copilot #23 fix 3): only consider
+  //    runs whose `agent_instances.scope_domain_ids` contains
+  //    the current Lint run's resolved domainId. Without the
+  //    JOIN, a per-domain Lint pass would surface findings
+  //    from OTHER domains' agent runs — leaking runIds + tool
+  //    names across tenants in shared deployments.
   const windowDays =
     args.automationDriftWindowDays ?? AUTOMATION_DRIFT_WINDOW_DAYS;
   const toolCallsResult = (await args.db.execute(sql`
-    SELECT definition_slug,
-           id::text AS run_id,
-           started_at::text AS started_at,
-           tool_calls
-    FROM agent_runs
-    WHERE status = 'success'
-      AND started_at >= NOW() - (${windowDays}::text || ' days')::interval
+    SELECT ar.definition_slug,
+           ar.id::text AS run_id,
+           ar.started_at::text AS started_at,
+           ar.tool_calls
+    FROM agent_runs ar
+    JOIN agent_instances ai ON ai.id = ar.instance_id
+    WHERE ar.status = 'success'
+      AND ar.started_at >= NOW() - (${windowDays}::text || ' days')::interval
+      AND ${domainId}::uuid = ANY(ai.scope_domain_ids)
   `)) as unknown as ExecResult<ToolCallRow>;
 
   const toolCallObservations: ToolCallObservation[] = [];
