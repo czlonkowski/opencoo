@@ -185,12 +185,12 @@ export async function registerStaticUi(
   // `@fastify/static` ships the dist/ assets; our notFoundHandler
   // owns the SPA fallback so we keep wildcard:false and decide
   // index.html-vs-404 ourselves.
-  let staticPlugin;
+  let staticPlugin: typeof import("@fastify/static").default;
   try {
     const loader =
       options.loadStaticPlugin ??
       (async () => import("@fastify/static"));
-    const mod = (await loader()) as { default: unknown };
+    const mod = (await loader()) as typeof import("@fastify/static");
     staticPlugin = mod.default;
   } catch (err) {
     options.logger.warn("static_ui.plugin_missing", {
