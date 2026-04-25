@@ -40,18 +40,15 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
   });
 
   app.get("/ready", async (_req, reply) => {
-    const entries = Object.entries(options.probes);
     const results = await Promise.all(
-      entries.map(async ([name, fn]) => [name, await fn()] as const),
+      Object.entries(options.probes).map(
+        async ([name, fn]) => [name, await fn()] as const,
+      ),
     );
-    const probesMap: Record<string, ProbeResult> = {};
-    for (const [name, result] of results) {
-      probesMap[name] = result;
-    }
     const allOk = results.every(([, r]) => r.ok);
     const body: ReadyResponse = {
       status: allOk ? "ready" : "not_ready",
-      probes: probesMap,
+      probes: Object.fromEntries(results),
     };
     if (!allOk) {
       reply.code(503);
