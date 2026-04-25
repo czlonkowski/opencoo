@@ -86,6 +86,13 @@ ingested.
 
 ## Webhook envelope
 
+**Note (forward-looking):** the PoC ingests Fireflies via Drive today,
+so this envelope shape mirrors Fireflies' public webhook docs +
+the planner's prescription rather than direct PoC observation.
+When partner traffic actually starts arriving, pin the field names
+and types against a captured production payload — adjust here if the
+real envelope differs.
+
 Single-event-per-request:
 
 ```jsonc
@@ -124,6 +131,12 @@ Single-event-per-request:
 the raw body. The verifier is
 `@opencoo/shared/webhook-verifier#HmacSha256Verifier` — NO
 re-implementation; the package gets HMAC for free.
+
+**Note (forward-looking):** the header name above is the planner's
+prescription against Fireflies' public webhook docs. The PoC has no
+direct Fireflies webhook today; when partner traffic arrives, confirm
+the actual header against a real signed request and pin if Fireflies
+ships a different name (e.g. `X-Hub-Signature` style).
 
 ## Architectural pins
 
