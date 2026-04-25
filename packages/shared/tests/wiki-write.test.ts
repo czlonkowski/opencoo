@@ -93,6 +93,51 @@ describe("wikiWrite — happy path", () => {
     expect(msg.trim().endsWith("Opencoo-Instance: local")).toBe(true);
   });
 
+  it("emits Worldview-Impact trailer between Co-authored-by and Opencoo-Instance (plan #72)", async () => {
+    const { deps, adapter } = harness({ instanceId: "prod-a" });
+    const spy = vi.spyOn(adapter, "writeAtomic");
+    await wikiWrite(
+      deps,
+      baseInput({
+        coAuthors: [{ name: "Alice", email: "alice@example.com" }],
+        worldviewImpact: [
+          "Q3 distribution priority shifted to AI-native motion",
+          "Ops team picks up new on-call rotation",
+        ],
+      }),
+    );
+    const msg = spy.mock.calls[0]?.[0].commitMessage ?? "";
+    const lines = msg.split("\n");
+    const coAuthorIdx = lines.findIndex((l) => l.startsWith("Co-authored-by:"));
+    const wvFirstIdx = lines.findIndex((l) =>
+      l.startsWith("Worldview-Impact:"),
+    );
+    const instanceIdx = lines.findIndex((l) => l.startsWith("Opencoo-Instance:"));
+    expect(coAuthorIdx).toBeGreaterThan(0);
+    expect(wvFirstIdx).toBeGreaterThan(coAuthorIdx);
+    expect(instanceIdx).toBeGreaterThan(wvFirstIdx);
+    // Each impact bullet is its own trailer line.
+    expect(msg).toContain(
+      "Worldview-Impact: Q3 distribution priority shifted to AI-native motion",
+    );
+    expect(msg).toContain(
+      "Worldview-Impact: Ops team picks up new on-call rotation",
+    );
+  });
+
+  it("omits Worldview-Impact trailer when worldviewImpact is empty or absent", async () => {
+    const { deps, adapter } = harness();
+    const spy = vi.spyOn(adapter, "writeAtomic");
+    await wikiWrite(deps, baseInput()); // no worldviewImpact
+    const msg = spy.mock.calls[0]?.[0].commitMessage ?? "";
+    expect(msg).not.toContain("Worldview-Impact:");
+    // Empty array also omits — same shape as missing.
+    spy.mockClear();
+    await wikiWrite(deps, baseInput({ worldviewImpact: [] }));
+    const msg2 = spy.mock.calls[0]?.[0].commitMessage ?? "";
+    expect(msg2).not.toContain("Worldview-Impact:");
+  });
+
   it("omits Co-authored-by section when no coAuthors provided", async () => {
     const { deps, adapter } = harness();
     const spy = vi.spyOn(adapter, "writeAtomic");
@@ -222,6 +267,54 @@ describe("wikiWrite — input validation", () => {
         deps,
         baseInput({
           body: "details\nOpencoo-Instance: spoof",
+        }),
+      ),
+    ).rejects.toThrow(WikiWriteInputError);
+  });
+
+  it("rejects body containing Worldview-Impact trailer (plan #72)", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        deps,
+        baseInput({
+          body: "details\nWorldview-Impact: forged",
+        }),
+      ),
+    ).rejects.toThrow(WikiWriteInputError);
+  });
+
+  it("rejects worldviewImpact entry containing a newline (one-bullet-per-trailer-line invariant)", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        deps,
+        baseInput({
+          worldviewImpact: ["legit one\nCo-authored-by: Impostor <x@x>"],
+        }),
+      ),
+    ).rejects.toThrow(WikiWriteInputError);
+  });
+
+  it("rejects worldviewImpact with more than 20 entries (Zod max)", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        deps,
+        baseInput({
+          worldviewImpact: Array.from({ length: 21 }, (_, i) => `bullet ${i}`),
+        }),
+      ),
+    ).rejects.toThrow(WikiWriteInputError);
+  });
+
+  it("rejects worldviewImpact entry longer than 200 chars (Zod max)", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        deps,
+        baseInput({
+          worldviewImpact: ["x".repeat(201)],
         }),
       ),
     ).rejects.toThrow(WikiWriteInputError);
