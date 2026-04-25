@@ -65,3 +65,24 @@ export {
   type WebhookReceiverOptions,
   type WebhookQueueLike,
 } from "./intake/webhook-receiver.js";
+
+// Classifier surface (PR 15): orchestrator + guards + spotlight.
+// Adversarial-LLM defenses per THREAT-MODEL §3.4. The Scanner
+// pipeline (PR 16+) consumes `classify` and the typed errors for
+// DLQ routing.
+export {
+  classify,
+  ClassifierValidationError,
+  spotlight,
+  assertBindingNotWildcardOnly,
+  BindingConfigError,
+  validateAllowedPath,
+  ClassifierPathError,
+  CLASSIFIER_OUTPUT_SCHEMA,
+  TARGET_DOMAIN_SCHEMA,
+  type ClassifyArgs,
+  type ClassifierOutput,
+  type ClassifierOutputWire,
+  type ClassifierTargetDomain,
+  type SpotlightArgs,
+} from "./classifier/index.js";

@@ -69,6 +69,10 @@
     "./webhook-verifier": {
       "types": "./dist/webhook-verifier/index.d.ts",
       "default": "./dist/webhook-verifier/index.js"
+    },
+    "./prompts": {
+      "types": "./dist/prompts/index.d.ts",
+      "default": "./dist/prompts/index.js"
     }
   },
   "files": [

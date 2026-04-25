@@ -100,4 +100,18 @@ export default tseslint.config(
       "opencoo/no-feature-env-vars": "off",
     },
   },
+
+  // 6. Classifier injection-corpus driver legitimately reads the
+  //    `RUN_REAL_LLM` / `OPENROUTER_API_KEY` / `RUN_REAL_LLM_MODEL`
+  //    env vars to gate the optional real-LLM tier of the corpus
+  //    sweep — same shape as rule 5 for adapter sidecar URLs. The
+  //    flags are CI/dev-only; no production code path reads them.
+  //    Scoped narrowly to the single corpus driver so other tests
+  //    in engine-ingestion remain subject to the allow-list.
+  {
+    files: ["packages/engine-ingestion/tests/classifier/injection.test.ts"],
+    rules: {
+      "opencoo/no-feature-env-vars": "off",
+    },
+  },
 );

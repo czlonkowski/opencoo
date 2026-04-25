@@ -110,6 +110,9 @@ importers:
       pg:
         specifier: 8.20.0
         version: 8.20.0
+      picomatch:
+        specifier: ^4.0.3
+        version: 4.0.4
       zod:
         specifier: 4.3.6
         version: 4.3.6
@@ -123,6 +126,12 @@ importers:
       '@types/pg':
         specifier: 8.20.0
         version: 8.20.0
+      '@types/picomatch':
+        specifier: ^4.0.2
+        version: 4.0.3
+      dotenv:
+        specifier: ^16.4.7
+        version: 16.6.1
       ioredis-mock:
         specifier: 8.13.1
         version: 8.13.1(@types/ioredis-mock@8.2.7(ioredis@5.10.1))(ioredis@5.10.1)
@@ -1122,6 +1131,9 @@ packages:
 
   '@types/pg@8.20.0':
     resolution: {integrity: sha512-bEPFOaMAHTEP1EzpvHTbmwR8UsFyHSKsRisLIHVMXnpNefSbGA1bD6CVy+qKjGSqmZqNqBDV2azOBo8TgkcVow==}
+
+  '@types/picomatch@4.0.3':
+    resolution: {integrity: sha512-iG0T6+nYJ9FAPmx9SsUlnwcq1ZVRuCXcVEvWnntoPlrOpwtSTKNDC9uVAxTsC3PUvJ+99n4RpAcNgBbHX3JSnQ==}
 
   '@types/qs@6.15.0':
     resolution: {integrity: sha512-JawvT8iBVWpzTrz3EGw9BTQFg3BQNmwERdKE22vlTxawwtbyUSlMppvZYKLZzB5zgACXdXxbD3m1bXaMqP/9ow==}
@@ -3302,6 +3314,8 @@ snapshots:
       '@types/node': 22.19.17
       pg-protocol: 1.13.0
       pg-types: 2.2.0
+
+  '@types/picomatch@4.0.3': {}
 
   '@types/qs@6.15.0': {}
 

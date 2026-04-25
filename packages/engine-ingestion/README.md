@@ -161,6 +161,37 @@ const app = buildWebhookReceiver({
 });
 ```
 
+## Classifier (PR 15)
+
+The classifier subsystem is the first LLM-driven pipeline stage. `classify()` wires four fail-closed guards from `THREAT-MODEL.md` §3.4:
+
+1. **Binding-guard** — `assertBindingNotWildcardOnly` refuses bindings whose `allowed_paths` is empty, `["**"]`, or any `**/foo` shape. Fires BEFORE the LLM is invoked so a config bug doesn't waste a token.
+2. **Spotlight** — `spotlight()` wraps the source body in `<source_content source="..." fetched_at="...">…</source_content>`. Escapes `&` first, then `<`/`>`, then neutralises six sentinel families (`source_content`, `system`, `assistant` × open/close) case-insensitively. Documented order is the security property: amp-first prevents pre-encoded `&amp;lt;system&amp;gt;` from self-decoding.
+3. **Strict Zod** — `CLASSIFIER_OUTPUT_SCHEMA` is `.strict()`, so any extra field the model invents (e.g. `{"execute_arbitrary_code":"..."}`) is rejected by `LlmRouter.generateObject<T>()`.
+4. **Domain + path guards** — every `target_domains[].domain_slug` must be in `allowedDomains`; every `page_paths[*]` must pass both the `@opencoo/shared/wiki-write` shape guard (no `..`, no `wiki-` prefix, lowercase) and a `picomatch` glob match against the binding's `allowed_paths`.
+
+Failure in any layer throws a `validation`-class typed error (`BindingConfigError`, `LlmProviderError`, `ClassifierValidationError`, `ClassifierPathError`) so the Scanner pipeline (PR 16+) can DLQ uniformly. There is no retry — adversarial signals get DLQ'd, not re-prompted.
+
+### Injection corpus
+
+`tests/classifier/injection-corpus/` contains five EN + five PL adversarial fixtures plus matching `expected/*.json` outcome files. The driver test (`tests/classifier/injection.test.ts`) runs each fixture against a deterministic `MockLlmClient` whose response is the worst-case (fully-pwned) model output and asserts the orchestrator routes to DLQ via the recorded typed error.
+
+Adding a corpus entry: drop a `.txt` fixture in `injection-corpus/{en,pl}/` and a matching `expected/<locale>-<basename>.json` file. The discovery walk picks it up; no driver edits required.
+
+To run only the corpus:
+
+```bash
+pnpm test:injection
+```
+
+To run the corpus against a real LLM (OpenRouter, gated to keep CI cheap):
+
+```bash
+RUN_REAL_LLM=1 OPENROUTER_API_KEY=sk-or-... pnpm test:injection
+```
+
+In real-LLM mode the assertion changes to "the output either conforms to the binding OR the orchestrator throws a validation error." Both outcomes are passing walls; the failure case is silent acceptance of an attacker-controlled path or domain. Default model is `moonshotai/kimi-k2.6` (the OpenRouter budget cap is calibrated for it); override with `RUN_REAL_LLM_MODEL=...` per run, or set `OPENROUTER_DEFAULT_MODEL=...` in a repo-root `.env` (auto-loaded by `tests/setup.ts`).
+
 ## Pinned versions
 
 Pinned at branch start (2026-04-25):
@@ -169,6 +200,7 @@ Pinned at branch start (2026-04-25):
 - `bullmq@5.76.1`
 - `ioredis@5.10.1`
 - `pg@8.20.0`
+- `picomatch@4.0.3` (classifier path-guard)
 - `ioredis-mock@8.13.1` (devDep)
 
 ## Boundary rules enforced
