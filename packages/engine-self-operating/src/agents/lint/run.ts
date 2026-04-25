@@ -289,11 +289,12 @@ export async function runLint(
   //    HTTP-backed McpToolClient, the previous serial loop took
   //    one round trip per page (up to 50 sequentially); the
   //    batched form caps at WIKI_READ_PAGE_CONCURRENCY in flight.
-  //    Deterministic ordering (indexSearch returns sorted +
-  //    `pathToBody` Map preserves order) so contradictionInputs
-  //    is identical across runs. (copilot #22 PERF)
+  //    Deterministic ordering: indexSearch returns sorted, and
+  //    `Promise.all` resolves to results in input-array order,
+  //    so pushing into `contradictionInputs` batch-by-batch
+  //    preserves the sampledPaths order. (copilot #22 PERF)
   const sampledPaths = wikiPaths.slice(0, CONTRADICTIONS_PAGE_CAP);
-  const pathToBody = new Map<string, string>();
+  const contradictionInputs: PageBody[] = [];
   for (let i = 0; i < sampledPaths.length; i += WIKI_READ_PAGE_CONCURRENCY) {
     const batch = sampledPaths.slice(i, i + WIKI_READ_PAGE_CONCURRENCY);
     const bodies = await Promise.all(
@@ -304,14 +305,13 @@ export async function runLint(
       ),
     );
     for (let j = 0; j < batch.length; j++) {
-      pathToBody.set(batch[j]!, bodies[j]!);
+      contradictionInputs.push({
+        domainSlug: args.domainSlug,
+        path: batch[j]!,
+        body: bodies[j]!,
+      });
     }
   }
-  const contradictionInputs: PageBody[] = sampledPaths.map((path) => ({
-    domainSlug: args.domainSlug,
-    path,
-    body: pathToBody.get(path)!,
-  }));
 
   // 5. Load tool-call observations for the automation_drift
   //    detector. Window: last N days, status='success' only
