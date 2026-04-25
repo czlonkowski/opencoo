@@ -15,7 +15,8 @@ import type { PipelineDefinition } from "../src/types.js";
 
 const stub: PipelineDefinition = {
   name: "scanner",
-  async run(_ctx) {
+  async run(ctx) {
+    void ctx;
     return undefined;
   },
 };

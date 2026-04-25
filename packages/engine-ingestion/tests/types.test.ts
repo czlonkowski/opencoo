@@ -20,7 +20,8 @@ describe("PipelineDefinition + PipelineContext shape-lock", () => {
   it("PipelineDefinition has name + run + optional schedule + optional concurrency", () => {
     const def: PipelineDefinition = {
       name: "scanner",
-      async run(_ctx) {
+      async run(ctx) {
+        void ctx;
         return undefined;
       },
     };
@@ -31,7 +32,8 @@ describe("PipelineDefinition + PipelineContext shape-lock", () => {
     const def: PipelineDefinition = {
       name: "scanner-scheduled",
       schedule: "0 */4 * * *",
-      async run(_ctx) {
+      async run(ctx) {
+        void ctx;
         return undefined;
       },
     };
@@ -42,7 +44,8 @@ describe("PipelineDefinition + PipelineContext shape-lock", () => {
     const def: PipelineDefinition = {
       name: "compiler",
       concurrency: 1, // domain-bound, single-writer per architecture §16.2
-      async run(_ctx) {
+      async run(ctx) {
+        void ctx;
         return undefined;
       },
     };
