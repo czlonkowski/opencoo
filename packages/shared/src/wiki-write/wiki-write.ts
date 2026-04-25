@@ -43,8 +43,17 @@ function buildCommitMessage(
       trailerLines.push(`Co-authored-by: ${co.name} <${co.email}>`);
     }
   }
+  // `Worldview-Impact` lines (plan #72): one per LLM-emitted bullet,
+  // emitted between Co-authored-by and Opencoo-Instance so the
+  // PR 19+ Worldview compiler can grep them out of git log without
+  // brittle line-counting. Empty / undefined = trailer omitted.
+  if (input.worldviewImpact !== undefined && input.worldviewImpact.length > 0) {
+    for (const impact of input.worldviewImpact) {
+      trailerLines.push(`Worldview-Impact: ${impact}`);
+    }
+  }
   // `Opencoo-Instance` trailer always last so consumers find it at a
-  // stable position regardless of coAuthor count.
+  // stable position regardless of coAuthor / worldviewImpact count.
   trailerLines.push(`Opencoo-Instance: ${instanceId}`);
 
   const parts = [firstLine];

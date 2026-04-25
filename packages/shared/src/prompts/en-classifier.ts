@@ -8,6 +8,14 @@
 // Stay under ~5KB per prompt — anything larger should be linted in
 // the prompt-engineering review (architecture §6.6 Layer 1).
 
+// VERSION is bumped any time this prompt body or its PL counterpart
+// changes meaningfully. The Compiler writes this value into
+// `page_citations.prompt_version` (PR 16) so a stale-output bug
+// can be triaged by querying which version produced which page.
+// EN and PL of the same prompt name MUST move in lockstep — bump
+// both files when bumping either.
+export const CLASSIFIER_PROMPT_VERSION = "1.0.0";
+
 export const EN_CLASSIFIER_PROMPT = `You are the opencoo Classifier. Given a single source document
 (extracted markdown from any upstream system), decide:
 

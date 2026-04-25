@@ -59,12 +59,19 @@ const singleLineString = z
   .min(1)
   .refine((s) => !/[\n\r]/.test(s), "must not contain newline or carriage-return");
 
-// Trailer-shaped line detector. Case-insensitive match on the two
-// trailer prefixes opencoo emits (`Co-authored-by:` and
-// `Opencoo-Instance:`). Body prose legitimately spans multiple lines
-// and blank-line paragraph breaks, so we don't ban `\n`; we only ban
-// lines that look like trailers.
-const TRAILER_LINE = /^(Co-authored-by|Opencoo-Instance):\s/i;
+// Trailer-shaped line detector. Case-insensitive match on the
+// trailer prefixes opencoo emits (`Co-authored-by:`,
+// `Opencoo-Instance:`, `Worldview-Impact:`). Body prose
+// legitimately spans multiple lines and blank-line paragraph
+// breaks, so we don't ban `\n`; we only ban lines that look like
+// trailers a downstream audit grep would mistake for ours.
+//
+// `:(?:\s|$)` matches both `Key: value` and a bare `Key:` at
+// end-of-line — audit greppers treat both as trailer-shaped
+// (copilot #18). The previous `:\s` form let `Co-authored-by:`
+// (no trailing space) slip through.
+const TRAILER_LINE =
+  /^(Co-authored-by|Opencoo-Instance|Worldview-Impact):(?:\s|$)/i;
 
 export const WikiAuthorSchema = z.object({
   name: singleLineString,
@@ -72,13 +79,18 @@ export const WikiAuthorSchema = z.object({
 });
 export type WikiAuthor = z.infer<typeof WikiAuthorSchema>;
 
-// Full entrypoint input. Three refinements beyond the field Zod:
+// Full entrypoint input. Refinements beyond the field Zod:
 //   1. `operations.length >= 1` — empty batch is a caller bug.
 //   2. No duplicate `path` across operations — ambiguity is a caller
 //      bug; fail loud rather than adopt silent last-write-wins.
 //   3. `description` single-line (covered by `singleLineString`);
 //      `body` may be multi-line but cannot contain a trailer-shaped
-//      line (`Co-authored-by:` / `Opencoo-Instance:`).
+//      line (`Co-authored-by:` / `Opencoo-Instance:` /
+//      `Worldview-Impact:`).
+//   4. `worldviewImpact` (PR 16, plan #72) — at most 20 entries,
+//      each ≤200 chars, single-line. The compiler sources these
+//      from the LLM's `worldview_impact` array; one bullet =
+//      one trailer line in the commit message.
 export const WikiWriteInputSchema = z
   .object({
     domainSlug: z.string().min(1).max(64),
@@ -88,13 +100,17 @@ export const WikiWriteInputSchema = z
       .string()
       .refine(
         (s) => !s.split("\n").some((line) => TRAILER_LINE.test(line)),
-        "body must not contain trailer-shaped lines (Co-authored-by: / Opencoo-Instance:)",
+        "body must not contain trailer-shaped lines (Co-authored-by: / Opencoo-Instance: / Worldview-Impact:)",
       )
       .optional(),
     author: WikiAuthorSchema,
     coAuthors: z.array(WikiAuthorSchema).optional(),
     caller: WikiWriteCallerSchema,
     operations: z.array(WikiOperationSchema).min(1),
+    worldviewImpact: z
+      .array(singleLineString.max(200))
+      .max(20)
+      .optional(),
   })
   .superRefine((value, ctx) => {
     const seen = new Set<string>();
