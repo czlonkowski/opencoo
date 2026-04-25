@@ -22,7 +22,7 @@ export class InMemoryAutomationAdapter implements AutomationAdapter {
   private nextId = 1;
 
   get deployments(): readonly CapturedDeployment[] {
-    return [...this.captured];
+    return this.captured;
   }
 
   async deployWorkflow(
