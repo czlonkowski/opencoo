@@ -65,7 +65,13 @@ const singleLineString = z
 // legitimately spans multiple lines and blank-line paragraph
 // breaks, so we don't ban `\n`; we only ban lines that look like
 // trailers a downstream audit grep would mistake for ours.
-const TRAILER_LINE = /^(Co-authored-by|Opencoo-Instance|Worldview-Impact):\s/i;
+//
+// `:(?:\s|$)` matches both `Key: value` and a bare `Key:` at
+// end-of-line — audit greppers treat both as trailer-shaped
+// (copilot #18). The previous `:\s` form let `Co-authored-by:`
+// (no trailing space) slip through.
+const TRAILER_LINE =
+  /^(Co-authored-by|Opencoo-Instance|Worldview-Impact):(?:\s|$)/i;
 
 export const WikiAuthorSchema = z.object({
   name: singleLineString,
