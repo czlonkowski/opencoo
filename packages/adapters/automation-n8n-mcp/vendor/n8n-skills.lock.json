@@ -1,0 +1,7 @@
+{
+  "source": "github.com/czlonkowski/n8n-skills",
+  "tag": "v0.1.0-placeholder",
+  "sha": "0000000000000000000000000000000000000000",
+  "fetchedAt": "2026-04-25T00:00:00Z",
+  "note": "Placeholder pin for v0.1 phase-a. Real release pinning happens at orchestrator merge time via tools/vendor-n8n-skills.ts (PR 38)."
+}

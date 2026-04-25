@@ -1,0 +1,7 @@
+{
+  "slug": "heartbeat-digest",
+  "version": "0.1.0",
+  "sha": "vendor-placeholder-heartbeat-digest",
+  "summary": "Compose a daily heartbeat digest from a list of pages and post it to a configured channel.",
+  "body": "# heartbeat-digest\n\nSelect the top N most-recently-updated wiki pages (default 5) and render a markdown digest. The digest must lead with the highest-priority item.\n\n## Inputs\n- `wiki_paths` (string[]) — paths to read, in priority order.\n- `max_items` (integer, default 5) — cap on digest length.\n\n## Output\n- `digest_md` (string) — fully rendered markdown.\n"
+}

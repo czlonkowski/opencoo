@@ -1,0 +1,7 @@
+{
+  "slug": "lint-pages",
+  "version": "0.1.0",
+  "sha": "vendor-placeholder-lint-pages",
+  "summary": "Scan a domain for stale pages, orphans, and missing cross-references.",
+  "body": "# lint-pages\n\nWalk every wiki page under a domain and flag pages that have not been updated in `staleness_days`, pages with no inbound link from `index.md`, and pages whose internal links resolve to 404.\n\n## Inputs\n- `domain_slug` (string) — domain to lint.\n- `staleness_days` (integer, default 30).\n\n## Output\n- `findings` (object[]) — `{kind, path, detail}` per finding.\n"
+}

@@ -1,0 +1,36 @@
+{
+  "name": "@opencoo/automation-n8n-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AutomationAdapter for n8n — deploys (never activates) workflows via the n8n REST API. Bundles a vendored snapshot of czlonkowski/n8n-skills so the Builder agent has a stable BuilderSkill catalog at v0.1.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/mock-n8n-api.d.ts",
+      "default": "./dist/testing/mock-n8n-api.js"
+    }
+  },
+  "files": [
+    "dist/**",
+    "vendor/**"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@opencoo/shared": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "~5.7.2",
+    "vitest": "^3.0.5"
+  }
+}

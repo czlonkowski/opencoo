@@ -1,0 +1,7 @@
+{
+  "slug": "dispatch-task",
+  "version": "0.1.0",
+  "sha": "vendor-placeholder-dispatch-task",
+  "summary": "Create a task in the configured OutputAdapter (Asana / Linear / Jira) from a structured proposal.",
+  "body": "# dispatch-task\n\nGiven `{title, notes, due_on, assignee_gid}`, call the OutputAdapter's `write` and persist the returned `external_id` on the originating record.\n\n## Inputs\n- `title` (string).\n- `notes` (string).\n- `due_on` (date, optional).\n- `assignee_gid` (string, optional).\n\n## Output\n- `external_id` (string) — id assigned by the upstream task tracker.\n"
+}
