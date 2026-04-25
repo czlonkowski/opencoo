@@ -27,7 +27,6 @@ import { describe, expect, it } from "vitest";
 
 import { ConsoleLogger } from "@opencoo/shared/logger";
 import { LlmRouter, type LlmProvider } from "@opencoo/shared/llm-router";
-import { MockLlmClient } from "@opencoo/shared/llm-router/testing";
 
 import {
   AgentDefinitionRegistry,
