@@ -58,6 +58,18 @@ export interface AgentInvocation {
   readonly instanceId: string;
   readonly trigger: AgentTrigger;
   readonly inputs: Record<string, unknown>;
+  /** Caller's gitea PAT, if this invocation came from an
+   *  authenticated user (Chat agent path). Propagated
+   *  verbatim into AgentRunContext.callerPat — agents that
+   *  need PAT-scoped MCP tooling consume it via
+   *  `createPatScopedMcpClient(base, ctx.callerPat!)`.
+   *  Reader agents on the scheduled cadence (Heartbeat,
+   *  Lint) leave this undefined; the Chat agent body throws
+   *  ChatPatRequiredError on undefined-or-empty (Q2). The
+   *  harness does NOT validate — whatever the caller passes
+   *  reaches the body unchanged so each agent can apply its
+   *  own contract. */
+  readonly callerPat?: string;
   /** The agent's body — receives the loaded instance + the
    *  spotlighted memory string + the LlmRouter and returns
    *  the JSON output to persist. v0.1 routes against the
@@ -78,6 +90,10 @@ export interface AgentRunContext {
   readonly spotlightedMemory: readonly string[];
   readonly router: LlmRouter;
   readonly logger: Logger;
+  /** Caller's gitea PAT verbatim from AgentInvocation.callerPat.
+   *  See AgentInvocation.callerPat for the full propagation
+   *  contract; the harness does no validation. */
+  readonly callerPat?: string;
   /** Tool-dispatch helper that runs the deny-list check
    *  before invoking the caller's tool. Every tool call the
    *  agent makes flows through this. */
@@ -155,6 +171,13 @@ export async function invokeAgent(
     spotlightedMemory,
     router: args.router,
     logger: args.logger,
+    // Propagate verbatim. Only attach the key when the caller
+    // supplied one — under exactOptionalPropertyTypes, an
+    // explicit `callerPat: undefined` differs from an absent
+    // key. Agents that read this field via `?? someDefault`
+    // see the same semantics either way; this keeps the
+    // shape clean.
+    ...(args.callerPat !== undefined ? { callerPat: args.callerPat } : {}),
     async callTool<R>(name: string, fn: () => Promise<R>): Promise<R> {
       assertToolAllowed(name);
       const t0 = clock().getTime();
