@@ -102,5 +102,19 @@ ruleTester.run("no-update-append-only", noUpdateAppendOnly, {
         { messageId: "deleteAppendOnly", data: { table: "llmUsageDebug" } },
       ],
     },
+    {
+      name: "PR 28 — update on adminAuditLog flags updateAppendOnly (audit log is append-only per THREAT-MODEL §2 invariant 8)",
+      code: `db.update(adminAuditLog).set({ action: 'tampered' });`,
+      errors: [
+        { messageId: "updateAppendOnly", data: { table: "adminAuditLog" } },
+      ],
+    },
+    {
+      name: "PR 28 — delete on adminAuditLog flags deleteAppendOnly",
+      code: `db.delete(adminAuditLog);`,
+      errors: [
+        { messageId: "deleteAppendOnly", data: { table: "adminAuditLog" } },
+      ],
+    },
   ],
 });

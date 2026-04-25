@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { getTableConfig, type PgTable } from "drizzle-orm/pg-core";
 
 import {
+  adminAuditLog,
   agentRuns,
   erasureLog,
   llmUsageDebug,
@@ -20,6 +21,8 @@ const APPEND_ONLY_TABLES: ReadonlyArray<{ name: string; table: PgTable }> = [
   { name: "miner_suppressions", table: minerSuppressions },
   { name: "agent_runs", table: agentRuns },
   { name: "llm_usage_debug", table: llmUsageDebug },
+  // PR 28 / plan #128 — admin-API audit log.
+  { name: "admin_audit_log", table: adminAuditLog },
 ];
 
 // Any column name matching this regex is a potential mutation-timestamp
