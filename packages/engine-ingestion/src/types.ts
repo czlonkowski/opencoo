@@ -48,10 +48,17 @@ export interface PipelineDefinition {
  * Dependency bundle a pipeline receives. Constructed once at engine
  * boot in `start()` and passed to each `run()` invocation.
  *
- * `llmRouter` is optional — pipelines that don't make LLM calls
- * (Scanner, Lint's pure-static-analysis pass) leave it unset; the
- * engine harness fills it in only when at least one registered
- * pipeline declares it needs LLM.
+ * `llmRouter` is optional. When the engine is configured with LLM
+ * access (composition root in PR 30 wires up an LlmRouter from
+ * @opencoo/shared/llm-router), the harness populates this field
+ * for every pipeline run. Pipelines that don't make LLM calls
+ * (Scanner, the static-analysis half of Lint) tolerate it being
+ * absent — they simply ignore the field.
+ *
+ * Note: there is no `needsLlm` opt-in mechanism on
+ * PipelineDefinition. Wiring is all-or-nothing at the engine
+ * level: if an LlmRouter is configured it's available to every
+ * pipeline; otherwise no pipeline sees one.
  */
 export interface PipelineContext {
   readonly db: Pool;
