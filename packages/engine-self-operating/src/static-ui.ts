@@ -40,7 +40,10 @@ export interface StaticUiOptions {
 /** Resolve whether the URL path looks like an SPA route (no file
  *  extension, not /api/). Exported for direct unit testing. */
 export function isSpaFallbackPath(urlPath: string): boolean {
-  if (urlPath.startsWith("/api/")) return false;
+  // Bare `/api` AND `/api/...` both belong to the API surface;
+  // serving the SPA index.html on either would surprise a
+  // client probing the API root (copilot #20).
+  if (urlPath === "/api" || urlPath.startsWith("/api/")) return false;
   // The pathname's last segment carries the extension (or not).
   // We check the WHOLE pathname for any `.` after the last `/` —
   // matches `*.js`, `*.css`, `*.html`, `*.png`, `*.json`, etc.
