@@ -50,6 +50,37 @@ async function seedRefreshToken(
   });
 }
 
+interface MakeFixtureOptions {
+  /** Override config — defaults to `{ folderId: TEST_FOLDER }`. */
+  readonly config?: Partial<DriveBindingConfig> & { folderId: string };
+  /** Wrap the store before passing to the adapter — used by the
+   *  rotation-friendly test to count `read` calls. */
+  readonly wrapStore?: (store: CredentialStore) => CredentialStore;
+}
+
+interface DriveTestFixture {
+  readonly store: CredentialStore;
+  readonly credentialId: CredentialId;
+  readonly sim: ReturnType<typeof createMockDriveSimulator>;
+  readonly adapter: ReturnType<typeof createGoogleDriveAdapter>;
+}
+
+async function makeFixture(
+  opts: MakeFixtureOptions = {},
+): Promise<DriveTestFixture> {
+  const baseStore = new InMemoryCredentialStore({ logger: silentLogger() });
+  const credentialId = await seedRefreshToken(baseStore);
+  const store = opts.wrapStore !== undefined ? opts.wrapStore(baseStore) : baseStore;
+  const sim = createMockDriveSimulator();
+  const adapter = createGoogleDriveAdapter({
+    credentialStore: store,
+    credentialId,
+    config: opts.config ?? { folderId: TEST_FOLDER },
+    makeDrive: makeMockDrive({ state: sim.state }),
+  });
+  return { store, credentialId, sim, adapter };
+}
+
 // ---------------------------------------------------------------------------
 // Shared sourceAdapterContract — polling
 // ---------------------------------------------------------------------------
@@ -182,23 +213,13 @@ describe("source-drive — binding-config schema", () => {
 
 describe("source-drive — adapter wiring", () => {
   it("slug is 'drive'", async () => {
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
-    const credentialId = await seedRefreshToken(store);
-    const sim = createMockDriveSimulator();
-    const adapter = createGoogleDriveAdapter({
-      credentialStore: store,
-      credentialId,
-      config: { folderId: TEST_FOLDER },
-      makeDrive: makeMockDrive({ state: sim.state }),
-    });
+    const { adapter } = await makeFixture();
     expect(adapter.slug).toBe(DRIVE_ADAPTER_SLUG);
     expect(adapter.slug).toBe("drive");
   });
 
   it("filters out files outside the binding's folderId", async () => {
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
-    const credentialId = await seedRefreshToken(store);
-    const sim = createMockDriveSimulator();
+    const { sim, adapter } = await makeFixture();
     sim.seedFile({
       fileId: "in-folder",
       folderId: TEST_FOLDER,
@@ -211,12 +232,6 @@ describe("source-drive — adapter wiring", () => {
       revision: "rev-1",
       bytes: Buffer.from("other"),
     });
-    const adapter = createGoogleDriveAdapter({
-      credentialStore: store,
-      credentialId,
-      config: { folderId: TEST_FOLDER },
-      makeDrive: makeMockDrive({ state: sim.state }),
-    });
     const result = await adapter.scan({ cursor: null });
     expect(result.documents.map((d) => d.sourceDocId)).toEqual([
       "in-folder",
@@ -224,9 +239,7 @@ describe("source-drive — adapter wiring", () => {
   });
 
   it("filters out mime types not in the whitelist (defense-in-depth)", async () => {
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
-    const credentialId = await seedRefreshToken(store);
-    const sim = createMockDriveSimulator();
+    const { sim, adapter } = await makeFixture();
     sim.seedFile({
       fileId: "doc-allowed",
       folderId: TEST_FOLDER,
@@ -241,12 +254,6 @@ describe("source-drive — adapter wiring", () => {
       revision: "rev-1",
       bytes: Buffer.from("nope"),
     });
-    const adapter = createGoogleDriveAdapter({
-      credentialStore: store,
-      credentialId,
-      config: { folderId: TEST_FOLDER },
-      makeDrive: makeMockDrive({ state: sim.state }),
-    });
     const result = await adapter.scan({ cursor: null });
     expect(result.documents.map((d) => d.sourceDocId)).toEqual([
       "doc-allowed",
@@ -254,40 +261,24 @@ describe("source-drive — adapter wiring", () => {
   });
 
   it("emits sourceRef in the form 'drive:<fileId>'", async () => {
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
-    const credentialId = await seedRefreshToken(store);
-    const sim = createMockDriveSimulator();
+    const { sim, adapter } = await makeFixture();
     sim.seedFile({
       fileId: "1XYZabc",
       folderId: TEST_FOLDER,
       revision: "rev-1",
       bytes: Buffer.from("ok"),
     });
-    const adapter = createGoogleDriveAdapter({
-      credentialStore: store,
-      credentialId,
-      config: { folderId: TEST_FOLDER },
-      makeDrive: makeMockDrive({ state: sim.state }),
-    });
     const result = await adapter.scan({ cursor: null });
     expect(result.documents[0]?.sourceRef).toBe("drive:1XYZabc");
   });
 
   it("bootstraps the cursor via getStartPageToken on first scan (cursor=null)", async () => {
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
-    const credentialId = await seedRefreshToken(store);
-    const sim = createMockDriveSimulator();
+    const { sim, adapter } = await makeFixture();
     sim.seedFile({
       fileId: "doc-1",
       folderId: TEST_FOLDER,
       revision: "rev-1",
       bytes: Buffer.from("ok"),
-    });
-    const adapter = createGoogleDriveAdapter({
-      credentialStore: store,
-      credentialId,
-      config: { folderId: TEST_FOLDER },
-      makeDrive: makeMockDrive({ state: sim.state }),
     });
     const result = await adapter.scan({ cursor: null });
     expect(result.nextCursor).not.toBe(null);
@@ -327,31 +318,23 @@ describe("source-drive — credentials sourcing (THREAT-MODEL §3.6 invariant 11
   });
 
   it("reads the refresh token from the credentialStore on every scan (rotation-friendly)", async () => {
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
-    const credentialId = await seedRefreshToken(store);
     let readCount = 0;
-    const wrappedStore: CredentialStore = {
-      ...store,
-      async read(id) {
-        readCount += 1;
-        return store.read(id);
-      },
-      write: (input) => store.write(input),
-      rotate: (id, plaintext) => store.rotate(id, plaintext),
-      delete: (id) => store.delete(id),
-    };
-    const sim = createMockDriveSimulator();
+    const { sim, adapter } = await makeFixture({
+      wrapStore: (store) => ({
+        read: (id) => {
+          readCount += 1;
+          return store.read(id);
+        },
+        write: (input) => store.write(input),
+        rotate: (id, plaintext) => store.rotate(id, plaintext),
+        delete: (id) => store.delete(id),
+      }),
+    });
     sim.seedFile({
       fileId: "doc-1",
       folderId: TEST_FOLDER,
       revision: "rev-1",
       bytes: Buffer.from("ok"),
-    });
-    const adapter = createGoogleDriveAdapter({
-      credentialStore: wrappedStore,
-      credentialId,
-      config: { folderId: TEST_FOLDER },
-      makeDrive: makeMockDrive({ state: sim.state }),
     });
     await adapter.scan({ cursor: null });
     await adapter.scan({ cursor: "1" });
