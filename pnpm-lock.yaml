@@ -214,12 +214,24 @@ importers:
       ai:
         specifier: ~6.0.168
         version: 6.0.168(zod@4.3.6)
+      bullmq:
+        specifier: 5.76.1
+        version: 5.76.1
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2(@electric-sql/pglite@0.4.4)(@opentelemetry/api@1.9.0)(@types/pg@8.20.0)(pg@8.20.0)
       drizzle-zod:
         specifier: 0.8.3
         version: 0.8.3(drizzle-orm@0.45.2(@electric-sql/pglite@0.4.4)(@opentelemetry/api@1.9.0)(@types/pg@8.20.0)(pg@8.20.0))(zod@4.3.6)
+      fastify:
+        specifier: 5.8.5
+        version: 5.8.5
+      ioredis:
+        specifier: 5.10.1
+        version: 5.10.1
+      pg:
+        specifier: 8.20.0
+        version: 8.20.0
       zod:
         specifier: 4.3.6
         version: 4.3.6
@@ -230,9 +242,15 @@ importers:
       '@types/node':
         specifier: ^22.10.5
         version: 22.19.17
+      '@types/pg':
+        specifier: 8.20.0
+        version: 8.20.0
       drizzle-kit:
         specifier: 0.31.10
         version: 0.31.10
+      ioredis-mock:
+        specifier: 8.13.1
+        version: 8.13.1(@types/ioredis-mock@8.2.7(ioredis@5.10.1))(ioredis@5.10.1)
       typescript:
         specifier: ~5.7.2
         version: 5.7.3
