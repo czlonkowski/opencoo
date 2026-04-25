@@ -23,9 +23,10 @@ describe("@opencoo/shared/prompts — module shape", () => {
     expect(typeof loadPrompt).toBe("function");
   });
 
-  it("PROMPT_NAMES is a non-empty const tuple including 'classifier'", () => {
+  it("PROMPT_NAMES is a non-empty const tuple including 'classifier' and 'compiler'", () => {
     expect(PROMPT_NAMES.length).toBeGreaterThan(0);
     expect(PROMPT_NAMES).toContain("classifier");
+    expect(PROMPT_NAMES).toContain("compiler");
   });
 
   it("PROMPT_LOCALES includes 'en', 'pl', and 'auto'", () => {
@@ -77,6 +78,55 @@ describe("loadPrompt — bundled prompts", () => {
   it("fallbackApplied is false for explicit en/pl", () => {
     expect(loadPrompt({ name: "classifier", locale: "en" }).fallbackApplied).toBe(false);
     expect(loadPrompt({ name: "classifier", locale: "pl" }).fallbackApplied).toBe(false);
+  });
+});
+
+describe("loadPrompt — bundled compiler prompts (PR 16 / plan #72)", () => {
+  it("returns the English compiler prompt for locale='en'", () => {
+    const p = loadPrompt({ name: "compiler", locale: "en" });
+    expect(typeof p.body).toBe("string");
+    expect(p.body.length).toBeGreaterThan(0);
+    expect(p.locale).toBe("en");
+    expect(p.name).toBe("compiler");
+  });
+
+  it("returns the Polish compiler prompt for locale='pl'", () => {
+    const p = loadPrompt({ name: "compiler", locale: "pl" });
+    expect(typeof p.body).toBe("string");
+    expect(p.body.length).toBeGreaterThan(0);
+    expect(p.locale).toBe("pl");
+  });
+
+  it("compiler prompt anchors merged_body schema and worldview_impact field", () => {
+    const en = loadPrompt({ name: "compiler", locale: "en" });
+    expect(en.body.toLowerCase()).toContain("merged_body");
+    expect(en.body.toLowerCase()).toContain("worldview_impact");
+    // Spotlighting contract carries through to the compiler too.
+    expect(en.body.toLowerCase()).toContain("source_content");
+  });
+});
+
+describe("loadPrompt — version field (PR 16 / plan #72)", () => {
+  it("LoadedPrompt carries a non-empty `version` string", () => {
+    const p = loadPrompt({ name: "classifier", locale: "en" });
+    expect(typeof p.version).toBe("string");
+    expect(p.version.length).toBeGreaterThan(0);
+  });
+
+  it("the version is the same shape (semver-ish) for en + pl of the same prompt name", () => {
+    const en = loadPrompt({ name: "classifier", locale: "en" });
+    const pl = loadPrompt({ name: "classifier", locale: "pl" });
+    // EN and PL of the same prompt name move in lockstep — they
+    // are different bodies of the same logical prompt, so they
+    // must share a version string. Diverging versions would let
+    // an EN bugfix ship without its PL counterpart.
+    expect(pl.version).toBe(en.version);
+  });
+
+  it("version persists through the auto-locale fallback path", () => {
+    const auto = loadPrompt({ name: "classifier", locale: "auto" });
+    const en = loadPrompt({ name: "classifier", locale: "en" });
+    expect(auto.version).toBe(en.version);
   });
 });
 
