@@ -144,7 +144,7 @@ export function registerMarketplaceUpdatesRoutes(
         userId: ctx.userId,
         metadata: { marketplace_update_id: id },
         sourceIp: req.ip,
-        userAgent: extractUserAgent(req.headers["user-agent"]),
+        userAgent: req.headers["user-agent"],
       });
 
       return reply.code(200).send({
@@ -154,9 +154,4 @@ export function registerMarketplaceUpdatesRoutes(
       });
     },
   );
-}
-
-function extractUserAgent(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) return value[0] ?? null;
-  return value ?? null;
 }

@@ -14,7 +14,7 @@
  * operator gets a clear signal that the queue moved while they
  * weren't looking. Decision Q8.
  */
-import { eq, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -160,7 +160,7 @@ export function registerAutomationCandidatesRoutes(
           ...(rationale !== undefined ? { rationale } : {}),
         },
         sourceIp: req.ip,
-        userAgent: extractUserAgent(req.headers["user-agent"]),
+        userAgent: req.headers["user-agent"],
       });
 
       return reply.code(200).send({
@@ -170,15 +170,4 @@ export function registerAutomationCandidatesRoutes(
       });
     },
   );
-
-  // Avoid an unused-locals warning when the import is only
-  // referenced inside the .where() — eq is reserved for future
-  // multi-condition updates that compose better with eq() than
-  // sql``.
-  void eq;
-}
-
-function extractUserAgent(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) return value[0] ?? null;
-  return value ?? null;
 }

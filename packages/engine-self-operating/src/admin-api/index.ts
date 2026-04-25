@@ -28,7 +28,6 @@ import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 import type { Logger } from "@opencoo/shared/logger";
 
-import { writeAuditLog } from "./audit-log.js";
 import { buildVerifyAdmin, type GiteaClient } from "./auth.js";
 import { issueCsrfToken } from "./csrf.js";
 import { attachDebugBannerHook } from "./debug-banner.js";
@@ -99,12 +98,6 @@ export async function registerAdminApi(
   // Debug banner: registered LAST so it sees every JSON
   // response regardless of which route built it.
   attachDebugBannerHook(args.app, { llmDebugLog: args.llmDebugLog });
-
-  // Reference writeAuditLog so the eslint-no-unused-imports
-  // rule is happy — the route-level audit writes use it
-  // directly; this re-export is for tests that want to check
-  // the plugin shape.
-  void writeAuditLog;
 }
 
 /**

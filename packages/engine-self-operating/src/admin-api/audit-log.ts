@@ -64,15 +64,27 @@ export interface WriteAuditLogArgs {
   readonly userId: string;
   readonly metadata: Record<string, unknown>;
   readonly sourceIp?: string | null;
-  readonly userAgent?: string | null;
+  /** Accepts the raw shape Fastify hands callers via
+   *  `req.headers["user-agent"]` — string | string[] (rare,
+   *  duplicated headers) | undefined. Normalised + truncated
+   *  internally. The explicit `undefined` is required under
+   *  `exactOptionalPropertyTypes: true` so callers can pass a
+   *  header value that may legitimately be missing. */
+  readonly userAgent?: string | readonly string[] | null | undefined;
 }
 
-/** Truncate the User-Agent header to 256 bytes — operators don't
- *  need the full forensic trail and an attacker-supplied UA
- *  shouldn't blow the row size. */
-function truncateUserAgent(ua: string | null | undefined): string | null {
-  if (typeof ua !== "string") return null;
-  return ua.length > 256 ? ua.slice(0, 256) : ua;
+/** Normalise + truncate the User-Agent header. Accepts the raw
+ *  Fastify shape (string | string[] | undefined): picks the
+ *  first entry from an array (some upstreams send duplicate
+ *  headers), then caps at 256 bytes — operators don't need the
+ *  full forensic trail and an attacker-supplied UA shouldn't
+ *  blow the row size. */
+function truncateUserAgent(
+  ua: string | readonly string[] | null | undefined,
+): string | null {
+  const value = Array.isArray(ua) ? ua[0] : ua;
+  if (typeof value !== "string") return null;
+  return value.length > 256 ? value.slice(0, 256) : value;
 }
 
 /**

@@ -53,14 +53,9 @@ export function registerAuditLogReadRoutes(
       userId: ctx.userId,
       metadata: { limit, offset, returned_count: rows.length },
       sourceIp: req.ip,
-      userAgent: extractUserAgent(req.headers["user-agent"]),
+      userAgent: req.headers["user-agent"],
     });
 
     return reply.code(200).send({ rows });
   });
-}
-
-function extractUserAgent(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) return value[0] ?? null;
-  return value ?? null;
 }

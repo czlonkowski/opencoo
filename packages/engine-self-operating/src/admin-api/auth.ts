@@ -31,7 +31,7 @@
  */
 import { createHash } from "node:crypto";
 
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
@@ -240,34 +240,6 @@ export function buildVerifyAdmin(
   };
 }
 
-/**
- * App-level helper to attach the preHandler under the
- * `/api/admin/*` path scope. The preHandler runs on every
- * matching request that registered `preHandler: verifyAdmin`
- * directly OR routed through `app.addHook('preHandler', …)`.
- * v0.1 favours per-route opt-in so the `_csrf` issuance + the
- * audit-log read endpoint can attach it explicitly.
- */
-export function asPreHandler(
-  fn: (req: FastifyRequest, reply: FastifyReply) => Promise<void>,
-): (
-  req: FastifyRequest,
-  reply: FastifyReply,
-) => Promise<void> {
-  return fn;
-}
-
-/** @internal Re-export the module-level cache state for tests
- *  that need to assert TTL behaviour. */
-export function __debugCacheSize(): number {
-  return cache.size;
-}
-
-/** Shared symbol so other admin-api modules can reference the
- *  Fastify decoration without round-tripping through the type
- *  declaration. */
-export const ADMIN_CONTEXT_KEY = "adminContext" as const;
-
 /** Type-narrow request → require adminContext after the
  *  preHandler ran. Throws if invoked on an unauth'd request. */
 export function requireAdminContext(req: FastifyRequest): AdminContext {
@@ -278,22 +250,4 @@ export function requireAdminContext(req: FastifyRequest): AdminContext {
     );
   }
   return ctx;
-}
-
-/** @internal — surfaced so other modules (e.g. tests) can
- *  decorate the same fastify instance without duplicating the
- *  hook registration logic. */
-export type FastifyHookHandler = (
-  req: FastifyRequest,
-  reply: FastifyReply,
-) => Promise<void>;
-
-/** Convenience: declare a preHandler scoped to one Fastify
- *  instance. Used by the admin-api plugin to register the hook
- *  on the `/api/admin/*` Fastify scope. */
-export function attachVerifyAdmin(
-  app: FastifyInstance,
-  preHandler: FastifyHookHandler,
-): void {
-  app.addHook("preHandler", preHandler);
 }
