@@ -27,6 +27,8 @@
  * is a v0.2 concern.
  */
 
+import { createHash } from "node:crypto";
+
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
@@ -156,7 +158,7 @@ export async function runScanner(args: RunScannerArgs): Promise<ScannerResult> {
       continue;
     }
 
-    const enqueuedForBinding: number[] = [];
+    let enqueuedForBinding = 0;
     for (const doc of scanResult.documents) {
       const contentLen = doc.contentBytes.byteLength;
       if (contentLen > INLINE_CONTENT_CAP_BYTES) {
@@ -184,7 +186,7 @@ export async function runScanner(args: RunScannerArgs): Promise<ScannerResult> {
           contentBase64: doc.contentBytes.toString("base64"),
           fetchedAt: doc.fetchedAt.toISOString(),
         });
-        enqueuedForBinding.push(1);
+        enqueuedForBinding += 1;
       } catch (err) {
         // Stop processing this binding — at-least-once: we'll
         // re-scan from the previous cursor next run, and the
@@ -203,7 +205,7 @@ export async function runScanner(args: RunScannerArgs): Promise<ScannerResult> {
       }
     }
 
-    totalEnqueued += enqueuedForBinding.length;
+    totalEnqueued += enqueuedForBinding;
 
     // Persist new cursor + last_scanned_at — only after every
     // enqueue for this binding succeeded.
@@ -232,9 +234,9 @@ async function upsertIntake(
   bindingId: string,
   doc: SourceChangedDocument,
 ): Promise<string | null> {
-  const contentHash = await import("node:crypto").then((c) =>
-    c.createHash("sha256").update(doc.contentBytes).digest("hex"),
-  );
+  const contentHash = createHash("sha256")
+    .update(doc.contentBytes)
+    .digest("hex");
   const result = (await db.execute(sql`
     INSERT INTO ingestion_intake (binding_id, source_doc_id, source_revision, content_hash)
     VALUES (${bindingId}::uuid, ${doc.sourceDocId}, ${doc.sourceRevision}, ${contentHash})
