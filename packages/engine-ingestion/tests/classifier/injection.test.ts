@@ -44,8 +44,16 @@ import { BindingConfigError } from "../../src/classifier/binding-guard.js";
 import { freshClassifierDb } from "./_pglite-fixture.js";
 
 const RUN_REAL_LLM = process.env["RUN_REAL_LLM"] === "1";
+// Model resolution order:
+//   1. RUN_REAL_LLM_MODEL — explicit per-run override
+//   2. OPENROUTER_DEFAULT_MODEL — set in repo-root .env (loaded
+//      by tests/setup.ts via dotenv)
+//   3. moonshotai/kimi-k2.6 — the user-named default; the $100
+//      OpenRouter budget cap is calibrated for this model
 const REAL_LLM_MODEL =
-  process.env["RUN_REAL_LLM_MODEL"] ?? "openai/gpt-4o-mini";
+  process.env["RUN_REAL_LLM_MODEL"] ??
+  process.env["OPENROUTER_DEFAULT_MODEL"] ??
+  "moonshotai/kimi-k2.6";
 const REAL_LLM_API_KEY = process.env["OPENROUTER_API_KEY"] ?? "";
 
 const __filename = fileURLToPath(import.meta.url);
