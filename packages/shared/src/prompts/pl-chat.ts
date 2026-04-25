@@ -45,7 +45,7 @@ oprzeć na źródle.
 
 Ogranicz "citations" do 20 pozycji. Jeśli twoja odpowiedź
 opiera się na więcej niż 20 stronach, odpowiadasz na zbyt
-szerokie pytanie — zaw zaw wokół najczęściej cytowanego
+szerokie pytanie — zawęź odpowiedź do najczęściej cytowanego
 podzbioru.
 
 Nie wymyślaj ścieżek wiki. Nie odwołuj się do stron spoza tego,
