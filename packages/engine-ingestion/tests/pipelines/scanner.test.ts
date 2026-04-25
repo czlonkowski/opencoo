@@ -15,6 +15,7 @@ import type {
 
 import {
   INLINE_CONTENT_CAP_BYTES,
+  SCANNER_CLASSIFY_QUEUE_SLUG,
   runScanner,
   type ScannerClassifyJob,
   type ScannerEnqueue,
@@ -85,6 +86,19 @@ function makeAdapter(
     },
   };
 }
+
+describe("SCANNER_CLASSIFY_QUEUE_SLUG — canonical queue name (copilot #19 followup)", () => {
+  it("matches the 'ingestion.scanner.classify' name the harness wires the worker to", () => {
+    // Same shape as REVIEW_DISPATCH_QUEUE_SLUG: the constant
+    // names the FULL queue (multi-dot prefix bypasses
+    // buildIngestionQueue, which rejects dotted slugs, and is
+    // constructed via new Queue(...) in the composition root).
+    // If the constant drifts from the canonical name, the
+    // Compilation Worker (PR 30 wiring) listens on the wrong
+    // queue and Scanner-emitted jobs sit dead.
+    expect(SCANNER_CLASSIFY_QUEUE_SLUG).toBe("ingestion.scanner.classify");
+  });
+});
 
 describe("runScanner — happy path", () => {
   it("enqueues one classify job per new document and advances the cursor", async () => {
