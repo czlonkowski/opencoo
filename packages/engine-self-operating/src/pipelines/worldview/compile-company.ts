@@ -146,7 +146,11 @@ export async function compileCompanyWorldview(
     };
   }
 
-  throw new WorldviewOverflowError(0, WORLDVIEW_BODY_MAX_BYTES);
+  // We don't have access to the rejected body bytes from the
+  // Zod issue (same limitation as compile-domain.ts:135) — pass
+  // `undefined` so the formatted error reads "(attempted bytes
+  // unknown)" rather than the misleading "(attempted 0)".
+  throw new WorldviewOverflowError(undefined, WORLDVIEW_BODY_MAX_BYTES);
 }
 
 async function tryGenerate(args: {
