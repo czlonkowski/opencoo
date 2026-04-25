@@ -25,11 +25,24 @@ const SCHEMA_VERSION = "1.0.0";
 // `&`/`*`/`!`/`|`/`>` are reserved indicators.
 const YAML_SPECIAL_RE = /[:&*!|>'"#%@`{}[\],?]/;
 
+// Patterns that match YAML 1.2 IMPLICIT TYPE coercions — without
+// quoting, downstream parsers (js-yaml, gray-matter) read these as
+// non-strings (number, bool, null, date), breaking any consumer
+// that expects the field to stay a string. Always quote when any
+// of these match. (copilot #18)
+const YAML_NUMERIC_RE = /^-?\d+(\.\d+)?$/;
+const YAML_BOOL_NULL_RE = /^(true|false|yes|no|on|off|null|~)$/i;
+const YAML_DATE_RE = /^\d{4}-\d{2}-\d{2}/;
+
 function yamlQuoteIfNeeded(value: string): string {
   if (value === "") return '""';
-  if (!YAML_SPECIAL_RE.test(value) && !/^\s|\s$/.test(value)) {
-    return value;
-  }
+  const needsQuoting =
+    YAML_SPECIAL_RE.test(value) ||
+    /^\s|\s$/.test(value) ||
+    YAML_NUMERIC_RE.test(value) ||
+    YAML_BOOL_NULL_RE.test(value) ||
+    YAML_DATE_RE.test(value);
+  if (!needsQuoting) return value;
   // Double-quoted string with backslash-escaped embedded quotes.
   const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   return `"${escaped}"`;
@@ -54,14 +67,18 @@ export function buildFrontmatter(args: BuildFrontmatterArgs): string {
       "buildFrontmatter: title must not contain newline or carriage return",
     );
   }
+  // Every scalar value runs through yamlQuoteIfNeeded — defense in
+  // depth so a future field whose value happens to be "1.0" or
+  // "true" doesn't silently become a number/bool downstream.
+  // (copilot #18, advisory broader fix)
   const lines = [
     "---",
     `title: ${yamlQuoteIfNeeded(args.title)}`,
-    `page_path: ${args.pagePath}`,
-    `domain_slug: ${args.domainSlug}`,
-    `compiled_at: ${args.compiledAt.toISOString()}`,
-    `prompt_version: ${args.promptVersion}`,
-    `schema_version: ${SCHEMA_VERSION}`,
+    `page_path: ${yamlQuoteIfNeeded(args.pagePath)}`,
+    `domain_slug: ${yamlQuoteIfNeeded(args.domainSlug)}`,
+    `compiled_at: ${yamlQuoteIfNeeded(args.compiledAt.toISOString())}`,
+    `prompt_version: ${yamlQuoteIfNeeded(args.promptVersion)}`,
+    `schema_version: ${yamlQuoteIfNeeded(SCHEMA_VERSION)}`,
     "---",
   ];
   return lines.join("\n") + "\n";

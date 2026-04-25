@@ -37,7 +37,11 @@ describe("buildFrontmatter — shape", () => {
     expect(out).toContain("title: Q3 Strategy");
     expect(out).toContain("page_path: strategy/q3-2026.md");
     expect(out).toContain("domain_slug: test-domain");
-    expect(out).toContain("compiled_at: 2026-04-25T12:00:00.000Z");
+    // compiled_at matches the YAML implicit-date pattern, so the
+    // broader fix in copilot #18 quotes it. Versions like "1.0.0"
+    // are NOT implicit-typed (two dots disqualifies the numeric
+    // pattern) and stay unquoted.
+    expect(out).toContain('compiled_at: "2026-04-25T12:00:00.000Z"');
     expect(out).toContain("prompt_version: 1.0.0");
     expect(out).toContain("schema_version: 1.0.0");
   });
