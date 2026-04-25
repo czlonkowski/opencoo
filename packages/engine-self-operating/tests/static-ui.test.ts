@@ -16,7 +16,11 @@ import { describe, expect, it } from "vitest";
 import { buildServer } from "@opencoo/shared/engine-scaffold";
 import { ConsoleLogger } from "@opencoo/shared/logger";
 
-import { isSpaFallbackPath, registerStaticUi } from "../src/static-ui.js";
+import {
+  isPathWithinRoot,
+  isSpaFallbackPath,
+  registerStaticUi,
+} from "../src/static-ui.js";
 
 function silentLogger(): ConsoleLogger {
   return new ConsoleLogger({
@@ -169,6 +173,33 @@ describe("registerStaticUi — happy path with bundled dist", () => {
     await app.close();
   });
 
+  it("blocks path traversal — '/../secret.md' must NOT serve a file outside the dist root (copilot #20 SECURITY)", async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "selfop-traversal-"));
+    const ui = path.join(tmpRoot, "ui");
+    fs.mkdirSync(ui);
+    fs.writeFileSync(path.join(ui, "index.html"), "<title>opencoo</title>");
+    fs.writeFileSync(path.join(ui, "main.js"), "console.log('SPA');");
+    // Sibling of `ui/` — what an attacker would try to read.
+    const secretPath = path.join(tmpRoot, "secret.md");
+    fs.writeFileSync(secretPath, "TOP_SECRET_TOKEN=abc123");
+
+    const app = buildServer({ probes: {} });
+    await registerStaticUi(app, { uiDistPath: ui, logger: silentLogger() });
+
+    // The literal path `/../secret.md` would, under
+    // `path.normalize('/../secret.md')`, become `/secret.md` —
+    // bypassing a naive `..` startsWith check. The fix uses
+    // resolved-path-within-root semantics; this test pins the
+    // contract: the secret content must NOT appear in the
+    // response body.
+    const response = await app.inject({
+      method: "GET",
+      url: "/../secret.md",
+    });
+    expect(response.body).not.toContain("TOP_SECRET_TOKEN");
+    await app.close();
+  });
+
   it("/health remains 200 from the engine-scaffold buildServer routes", async () => {
     const ui = makeUiDist();
     const app = buildServer({ probes: {} });
@@ -177,5 +208,46 @@ describe("registerStaticUi — happy path with bundled dist", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ status: "ok" });
     await app.close();
+  });
+});
+
+describe("isPathWithinRoot — defense-in-depth predicate (copilot #20)", () => {
+  // Independently of @fastify/static's URL normalization, the
+  // allowedPath predicate is opencoo's last line of defense
+  // against path-traversal serving a file outside the dist
+  // root. The previous implementation used `path.normalize` +
+  // `.startsWith("..")` which is bypassed by absolute paths
+  // (`/../secret` normalizes to `/secret` — no leading `..`).
+  // The fix resolves against the dist root and checks the
+  // relative result instead.
+
+  it("accepts plain in-root paths", () => {
+    const root = "/srv/ui";
+    expect(isPathWithinRoot(root, "main.js")).toBe(true);
+    expect(isPathWithinRoot(root, "/main.js")).toBe(true);
+    expect(isPathWithinRoot(root, "icons/icon.png")).toBe(true);
+    expect(isPathWithinRoot(root, "/index.html")).toBe(true);
+  });
+
+  it("rejects '/../secret' (the previous-impl bypass)", () => {
+    const root = "/srv/ui";
+    expect(isPathWithinRoot(root, "/../secret")).toBe(false);
+    expect(isPathWithinRoot(root, "/../../etc/passwd")).toBe(false);
+  });
+
+  it("rejects unanchored '../' prefix", () => {
+    const root = "/srv/ui";
+    expect(isPathWithinRoot(root, "../secret")).toBe(false);
+    expect(isPathWithinRoot(root, "../../etc/passwd")).toBe(false);
+  });
+
+  it("rejects mid-path traversal that resolves outside root", () => {
+    const root = "/srv/ui";
+    expect(isPathWithinRoot(root, "icons/../../secret")).toBe(false);
+  });
+
+  it("accepts mid-path traversal that resolves back inside root", () => {
+    const root = "/srv/ui";
+    expect(isPathWithinRoot(root, "icons/../main.js")).toBe(true);
   });
 });
