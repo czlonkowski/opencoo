@@ -204,10 +204,14 @@ export function buildWebhookReceiver(
       };
     }
 
-    // Step 7: ok-path. Skip scanner enqueue when the delivery is a
-    // duplicate (the upstream provider re-sent us the SAME event,
-    // not a new one).
-    if (writeResult.created) {
+    // Step 7: ok-path. Enqueue the scanner job iff this delivery is
+    // either (a) brand new OR (b) the first valid-signature delivery
+    // for an event we'd previously seen with a bad signature
+    // (sticky-true upgrade, copilot #16). The dedupe-only path
+    // (`created:false && firstValidDelivery:false`) is a true
+    // duplicate — the upstream provider re-sent us the SAME event
+    // and we already dispatched a scanner job for it.
+    if (writeResult.created || writeResult.firstValidDelivery) {
       await options.scannerQueue.add("intake.scanner", {
         webhookId: writeResult.webhookId,
         bindingId,
