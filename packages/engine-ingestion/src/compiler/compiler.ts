@@ -155,9 +155,10 @@ export async function compile(args: CompileArgs): Promise<CompileResult> {
   const ops: WikiOperation[] = [];
   const writtenPaths: string[] = [];
   const aggregatedImpact: string[] = [];
-  let promptVersionForCitations = "";
+  // Every mergePage call resolved against the same compiler prompt,
+  // so all per-page promptVersion strings are identical; pick any.
+  const promptVersionForCitations = perPage[0]?.merged.promptVersion ?? "";
   for (const p of perPage) {
-    promptVersionForCitations = p.merged.promptVersion;
     if (p.merged.mergedBody === p.existingBody) {
       args.wikiDeps.logger.info("compiler.no-op", {
         domain_slug: args.domainSlug,
