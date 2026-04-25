@@ -182,7 +182,12 @@ describe("agents-readers — Heartbeat + Lint never call wikiWrite (LOAD-BEARING
       instanceId: heartbeatInstanceId,
       trigger: "scheduled",
       inputs: {},
-      run: (ctx) => runHeartbeat(ctx, { mcp, domainSlug: "test-domain" }),
+      run: (ctx) =>
+        runHeartbeat(ctx, {
+          db: fixture.db as unknown as Parameters<typeof runHeartbeat>[1]["db"],
+          mcp,
+          domainSlug: "test-domain",
+        }),
     });
     expect(heartbeatResult.status).toBe("success");
 

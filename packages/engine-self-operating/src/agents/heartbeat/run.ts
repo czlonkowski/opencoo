@@ -17,8 +17,11 @@ import { spotlight } from "@opencoo/shared/spotlight";
 import { loadPrompt } from "@opencoo/shared/prompts";
 import type { DomainId } from "@opencoo/shared/db";
 
+import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
+
 import type { AgentRunContext } from "../../agent-harness/index.js";
 import type { McpToolClient } from "../../mcp-tool-client/index.js";
+import { assertDomainSlugInScope } from "../scope-check.js";
 import {
   indexSearch,
   worldviewRead,
@@ -29,12 +32,18 @@ import {
   type HeartbeatOutput,
 } from "./types.js";
 
+type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
+
 export interface RunHeartbeatArgs {
+  /** Postgres handle — used for the domainSlug × scopeDomainIds
+   *  cross-check at run-time entry. */
+  readonly db: Db;
   readonly mcp: McpToolClient;
   /** Wiki/MCP slug for the domain whose worldview + index this
-   *  briefing summarises. Caller (engine wiring) joins
-   *  `domains.id` → `domains.slug` to provide both this and the
-   *  domainId routing key in `ctx.instance.scopeDomainIds[0]`. */
+   *  briefing summarises. The body resolves slug → id via the
+   *  database and asserts the id is in the instance's
+   *  scopeDomainIds before doing any further work — a slug
+   *  outside scope throws DomainScopeMismatchError (DLQ). */
   readonly domainSlug: string;
   /** Optional clock for deterministic test fetched-at metadata. */
   readonly now?: () => Date;
@@ -56,7 +65,17 @@ export async function runHeartbeat(
       `heartbeat: instance ${ctx.instance.id} has empty scopeDomainIds — nothing to summarise`,
     );
   }
-  const domainId = scope[0]! as DomainId;
+
+  // Cross-check: domainSlug must resolve to an id in scope
+  // BEFORE any LLM call or MCP read. Throws
+  // DomainScopeMismatchError (validation → DLQ) on mismatch
+  // or unknown slug.
+  const resolvedDomainId = await assertDomainSlugInScope({
+    db: args.db,
+    domainSlug: args.domainSlug,
+    scopeDomainIds: scope,
+  });
+  const domainId = resolvedDomainId as DomainId;
 
   // Tool call 1: read the per-domain worldview synthesis.
   const worldviewBody = await ctx.callTool("worldview.read", () =>

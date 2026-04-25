@@ -338,7 +338,12 @@ describe("runHeartbeat — body wires McpToolClient via ctx.callTool", () => {
       instanceId,
       trigger: "scheduled",
       inputs: {},
-      run: (ctx) => runHeartbeat(ctx, { mcp, domainSlug: "test-domain" }),
+      run: (ctx) =>
+        runHeartbeat(ctx, {
+          db: fixture.db as unknown as Parameters<typeof runHeartbeat>[1]["db"],
+          mcp,
+          domainSlug: "test-domain",
+        }),
     });
 
     expect(result.status).toBe("success");
@@ -388,7 +393,12 @@ describe("runHeartbeat — body wires McpToolClient via ctx.callTool", () => {
       instanceId,
       trigger: "scheduled",
       inputs: {},
-      run: (ctx) => runHeartbeat(ctx, { mcp, domainSlug: "test-domain" }),
+      run: (ctx) =>
+        runHeartbeat(ctx, {
+          db: fixture.db as unknown as Parameters<typeof runHeartbeat>[1]["db"],
+          mcp,
+          domainSlug: "test-domain",
+        }),
     });
 
     expect(result.status).toBe("failed");
