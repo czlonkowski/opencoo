@@ -77,8 +77,11 @@ export interface CompileResult {
   /** Page paths that produced a wiki write. Subset of args.pagePaths;
    *  paths that were no-ops are absent. */
   readonly pagePathsWritten: readonly string[];
-  /** Aggregated, normalised worldview_impact bullets across all
-   *  pages this commit touched. Empty when nothing was written. */
+  /** The worldview_impact bullets that LANDED in the commit:
+   *  aggregated across pages, normalised, capped at the wikiWrite
+   *  Zod max of 20. Empty when nothing was written (skip-write
+   *  no-op). Matches what an audit grep over git log would find
+   *  for this commit (copilot #18). */
   readonly worldviewImpact: readonly string[];
 }
 
@@ -179,19 +182,23 @@ export async function compile(args: CompileArgs): Promise<CompileResult> {
   }
 
   // Phase 3 — single wikiWrite for the whole batch, or skip
-  // entirely when every page was a no-op.
+  // entirely when every page was a no-op. The list of bullets
+  // that ACTUALLY land in the commit is computed here and
+  // returned to the caller so CompileResult.worldviewImpact
+  // matches what the audit grep would find (copilot #18).
   let commitSha: string | null = null;
+  let landedImpact: string[] = [];
   if (ops.length > 0) {
     const normalisedImpact = normaliseWorldviewImpact(aggregatedImpact);
     // Cap at 20 to match the wikiWrite Zod max (and the prompt's
     // per-call ≤20 rule). When N pages each emit 5+ bullets the
     // aggregate can overflow; truncate deterministically and log.
-    const cappedImpact = normalisedImpact.slice(0, 20);
-    if (cappedImpact.length < normalisedImpact.length) {
+    landedImpact = normalisedImpact.slice(0, 20);
+    if (landedImpact.length < normalisedImpact.length) {
       args.wikiDeps.logger.warn("compiler.worldview_impact.truncated", {
         domain_slug: args.domainSlug,
         original_count: normalisedImpact.length,
-        kept_count: cappedImpact.length,
+        kept_count: landedImpact.length,
       });
     }
     const writeInput: WikiWriteInput = {
@@ -201,8 +208,8 @@ export async function compile(args: CompileArgs): Promise<CompileResult> {
       author: args.author,
       caller: { kind: "engine" },
       operations: ops,
-      ...(cappedImpact.length > 0
-        ? { worldviewImpact: cappedImpact }
+      ...(landedImpact.length > 0
+        ? { worldviewImpact: landedImpact }
         : {}),
     };
     const result = await wikiWrite(args.wikiDeps, writeInput);
@@ -237,6 +244,6 @@ export async function compile(args: CompileArgs): Promise<CompileResult> {
   return {
     commitSha,
     pagePathsWritten: writtenPaths,
-    worldviewImpact: aggregatedImpact,
+    worldviewImpact: landedImpact,
   };
 }

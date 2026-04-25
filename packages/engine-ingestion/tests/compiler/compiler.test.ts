@@ -160,10 +160,55 @@ describe("compile — skip-write no-op (Q6)", () => {
     expect(writeSpy).not.toHaveBeenCalled();
     expect(result.commitSha).toBeNull(); // no commit happened
     expect(result.pagePathsWritten).toEqual([]);
+    // CompileResult.worldviewImpact reflects what landed in the
+    // commit — no commit means no bullets (copilot #18).
+    expect(result.worldviewImpact).toEqual([]);
     // Citations still get appended for the no-op case (we did
     // process the source, just didn't change the page).
     const citations = await f.db.select().from(pageCitations);
     expect(citations).toHaveLength(1);
+  });
+});
+
+describe("compile — CompileResult.worldviewImpact reflects what landed (copilot #18)", () => {
+  it("returns the normalised + capped list (matches the trailers wiki-write actually emitted)", async () => {
+    // The model emits a messy bullet (leading whitespace + tabs)
+    // and a duplicate-spacing bullet. The compiler normalises both
+    // before passing to wikiWrite; the returned worldviewImpact
+    // should match the normalised form, not the raw LLM output.
+    const mock = new MockLlmClient();
+    mock.register({
+      match: { model: "gpt-4o-mini", promptIncludes: "opencoo Compiler" },
+      response: {
+        text: JSON.stringify({
+          merged_body: "# Q3\n\nNew motion.\n",
+          worldview_impact: [
+            "  bullet  one  ",
+            "bullet\ttwo\twith\ttabs",
+          ],
+        }),
+        tokensIn: 1,
+        tokensOut: 1,
+      },
+    });
+    const f = await makeFixture(mock);
+    const result = await compile({
+      router: f.router,
+      domainId: f.domainId as Parameters<typeof compile>[0]["domainId"],
+      domainSlug: "test-domain",
+      bindingId: f.bindingId as Parameters<typeof compile>[0]["bindingId"],
+      sourceRef: "drive:doc-1",
+      sourceContent: "x",
+      pagePaths: ["strategy/q3.md"],
+      locale: "en",
+      wikiDeps: f.wikiDeps,
+      author: COMPILER_AUTHOR,
+      db: f.db as unknown as Parameters<typeof compile>[0]["db"],
+    });
+    expect(result.worldviewImpact).toEqual([
+      "bullet one",
+      "bullet two with tabs",
+    ]);
   });
 });
 
