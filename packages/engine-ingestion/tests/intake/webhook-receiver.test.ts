@@ -297,3 +297,88 @@ describe("webhook receiver — body size limit", () => {
     await app.close();
   });
 });
+
+// (copilot #16 Comments 3+4) — sticky-true signature upgrade path
+// from the receiver's perspective: a bad-signature delivery for an
+// event-id followed by a valid retry must enqueue the scanner job
+// the second time (firstValidDelivery=true), even though
+// `created:false`. Without this, providers' built-in retry of
+// transient verify failures would silently drop the event.
+describe("webhook receiver — Q12+sig-upgrade interaction (copilot #16)", () => {
+  it("bad-sig then valid retry → scanner queue receives the upgraded delivery", async () => {
+    const { app, bindingId, scannerQueue, dlqQueue, db } = await makeFixture();
+    const body = '{"event":"push"}';
+
+    // 1st: bad signature → 401 + DLQ + signature_ok=false in DB +
+    // NO scanner enqueue.
+    const r1 = await app.inject({
+      method: "POST",
+      url: `/webhooks/${bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        "x-signature": "sha256=" + "0".repeat(64),
+        "x-event-id": "evt-retry",
+        "x-provider": "gitea",
+      },
+      payload: body,
+    });
+    expect(r1.statusCode).toBe(401);
+    expect(scannerQueue.add).not.toHaveBeenCalled();
+    expect(dlqQueue.add).toHaveBeenCalledTimes(1);
+
+    // 2nd: provider retries with the right secret — receiver MUST
+    // upgrade the row AND enqueue the scanner (firstValidDelivery
+    // path), even though the row was created on the first delivery
+    // (`created:false`).
+    const r2 = await app.inject({
+      method: "POST",
+      url: `/webhooks/${bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        "x-signature": `sha256=${signHex(SECRET_PLAINTEXT, body)}`,
+        "x-event-id": "evt-retry",
+        "x-provider": "gitea",
+      },
+      payload: body,
+    });
+    expect(r2.statusCode).toBe(200);
+    const json = r2.json() as {
+      accepted: boolean;
+      deliveryCount: number;
+    };
+    expect(json.accepted).toBe(true);
+    expect(json.deliveryCount).toBe(2);
+
+    // The scanner queue MUST have received the job for the upgraded
+    // delivery — that's the bug we fixed.
+    expect(scannerQueue.add).toHaveBeenCalledTimes(1);
+
+    // DB state: signature_ok flipped, binding_id set.
+    const rows = await db.execute(`SELECT signature_ok, binding_id FROM webhook_events`);
+    expect(rows.rows).toHaveLength(1);
+    const row = rows.rows[0] as { signature_ok: boolean; binding_id: string };
+    expect(row.signature_ok).toBe(true);
+    expect(row.binding_id).toBe(bindingId);
+
+    await app.close();
+  });
+
+  it("valid then valid (already-flipped) → scanner enqueued ONCE, second is a true duplicate", async () => {
+    const { app, bindingId, scannerQueue } = await makeFixture();
+    const body = '{"x":1}';
+    const headers = {
+      "content-type": "application/json",
+      "x-signature": `sha256=${signHex(SECRET_PLAINTEXT, body)}`,
+      "x-event-id": "evt-dup-valid",
+      "x-provider": "gitea",
+    };
+
+    await app.inject({ method: "POST", url: `/webhooks/${bindingId}`, headers, payload: body });
+    await app.inject({ method: "POST", url: `/webhooks/${bindingId}`, headers, payload: body });
+
+    // Second valid delivery is a TRUE duplicate (no upgrade) — scanner
+    // must NOT be enqueued again.
+    expect(scannerQueue.add).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+});
