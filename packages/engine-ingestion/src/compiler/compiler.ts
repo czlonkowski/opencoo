@@ -23,6 +23,7 @@
  * + alerted but does NOT roll back the wiki commit.
  */
 
+import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 import type { LlmRouter } from "@opencoo/shared/llm-router";
@@ -317,7 +318,6 @@ async function fetchReviewRole(
   db: Db,
   domainId: DomainId,
 ): Promise<string | null> {
-  const { sql } = await import("drizzle-orm");
   const result = (await db.execute(
     sql`SELECT review_role FROM domains WHERE id = ${domainId}::uuid`,
   )) as unknown as ExecResult<{ review_role: string | null }>;
