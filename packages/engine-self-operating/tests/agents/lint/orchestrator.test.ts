@@ -159,6 +159,93 @@ describe("runLint — end-to-end orchestrator", () => {
     expect(orphanScopes).toContain("test-domain:orphan.md");
   });
 
+  // Same security-adjacent contract as Heartbeat: the agent
+  // reads from `args.domainSlug` (caller-supplied) but routes
+  // the contradictions LLM call against
+  // `ctx.instance.scopeDomainIds[0]`. A miswired caller — or
+  // attacker-influenced args — could otherwise lint domain-A's
+  // wiki content while billing under domain-B's llm_policy.
+  // The body must throw `DomainScopeMismatchError` (validation
+  // → DLQ) BEFORE any LLM call or DB query for bindings.
+  it("throws DomainScopeMismatchError when domainSlug resolves to an id NOT in scopeDomainIds (copilot #22)", async () => {
+    const fixture = await freshAgentDb();
+    await fixture.raw.query(
+      `INSERT INTO domains (slug, name) VALUES ('other-domain', 'Other')`,
+    );
+    const { instanceId } = await seedAgentInstance(fixture, {
+      definitionSlug: "lint",
+      memory: { type: "none" },
+    });
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(LINT_DEFINITION);
+    const mcp = new InMemoryMcpToolClient();
+    const router = makeRouter(
+      fakeProvider({ version: "v1", contradictions: [] }),
+      fixture.db,
+    );
+    const result = await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "scheduled",
+      inputs: {},
+      run: (ctx) =>
+        runLint(ctx, {
+          db: fixture.db as unknown as Parameters<typeof runLint>[1]["db"],
+          mcp,
+          domainSlug: "other-domain",
+        }),
+    });
+    expect(result.status).toBe("failed");
+    const rows = await fixture.raw.query<{
+      error_class: string;
+      output: { name: string };
+    }>(
+      `SELECT error_class::text AS error_class, output FROM agent_runs WHERE id = $1`,
+      [result.runId],
+    );
+    expect(rows.rows[0]?.error_class).toBe("validation");
+    expect(rows.rows[0]?.output?.name).toBe("DomainScopeMismatchError");
+  });
+
+  it("throws DomainScopeMismatchError when the domain slug does not exist (copilot #22)", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedAgentInstance(fixture, {
+      definitionSlug: "lint",
+      memory: { type: "none" },
+    });
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(LINT_DEFINITION);
+    const mcp = new InMemoryMcpToolClient();
+    const router = makeRouter(
+      fakeProvider({ version: "v1", contradictions: [] }),
+      fixture.db,
+    );
+    const result = await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "scheduled",
+      inputs: {},
+      run: (ctx) =>
+        runLint(ctx, {
+          db: fixture.db as unknown as Parameters<typeof runLint>[1]["db"],
+          mcp,
+          domainSlug: "ghost-domain",
+        }),
+    });
+    expect(result.status).toBe("failed");
+    const rows = await fixture.raw.query<{ output: { name: string } }>(
+      `SELECT output FROM agent_runs WHERE id = $1`,
+      [result.runId],
+    );
+    expect(rows.rows[0]?.output?.name).toBe("DomainScopeMismatchError");
+  });
+
   it("returns an empty findings array when the domain has no bindings, no pages, no citations", async () => {
     const fixture = await freshAgentDb();
     const { instanceId } = await seedAgentInstance(fixture, {
