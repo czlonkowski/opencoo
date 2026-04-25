@@ -71,8 +71,16 @@ export async function recordIntake(
         ingestionIntake.sourceDocId,
         ingestionIntake.sourceRevision,
       ],
-      // No-op: write the same source_doc_id back so RETURNING fires.
-      set: { sourceDocId: sql`excluded.source_doc_id` },
+      // True no-op: write the EXISTING source_doc_id back to itself.
+      // We need a non-empty SET clause so RETURNING fires on the
+      // conflict path (ON CONFLICT DO NOTHING would skip RETURNING,
+      // forcing a second SELECT to find the existing id under
+      // contention). Writing the table value (not `excluded`) makes
+      // the no-op intent unambiguous — `excluded.source_doc_id` is
+      // functionally identical here (the conflict target equals it
+      // by definition) but reads as "rewrite from the new value",
+      // which it isn't (copilot #16 Comment 6).
+      set: { sourceDocId: ingestionIntake.sourceDocId },
     })
     .returning({
       id: ingestionIntake.id,
