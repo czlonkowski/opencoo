@@ -81,10 +81,13 @@ describe("loadEngineConfig — _FILE convention", () => {
     expect(config.giteaUrl).toBe("https://gitea-from-file.test");
   });
 
-  it("inline var wins when both DATABASE_URL and DATABASE_URL_FILE are set", () => {
-    // Inline var takes precedence — `_FILE` is the secret-mounting
-    // path; setting both is a misconfig but the inline value is the
-    // human-edited one and we honour it.
+  it("_FILE wins when both DATABASE_URL and DATABASE_URL_FILE are set (Docker-secrets convention)", () => {
+    // Repo convention from .env.example + loadEncryptionKey:
+    //   `_FILE` variants take precedence — the Docker-secrets
+    //   pattern stashes the real secret on a tmpfs path and the
+    //   inline var is typically a development fallback. Setting
+    //   both is a misconfig, but in production the safe answer is
+    //   to honour the file-mounted secret over a stale inline.
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "engine-cfg-"));
     const dbFile = path.join(tmp, "db");
     fs.writeFileSync(dbFile, "postgres://from-file/opencoo");
@@ -94,7 +97,7 @@ describe("loadEngineConfig — _FILE convention", () => {
       REDIS_URL: "redis://localhost:6379",
       GITEA_URL: "https://gitea.test",
     });
-    expect(config.databaseUrl).toBe("postgres://inline/opencoo");
+    expect(config.databaseUrl).toBe("postgres://from-file/opencoo");
   });
 });
 
