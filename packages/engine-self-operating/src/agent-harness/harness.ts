@@ -35,7 +35,6 @@ import { loadInstanceById, type AgentInstance } from "./instances.js";
 import {
   loadInstanceMemory,
   type InstanceMemory,
-  type MemoryEntry,
 } from "./memory.js";
 import {
   completeRun,
@@ -142,7 +141,6 @@ export async function invokeAgent(
       fetchedAt: entry.startedAt,
     }),
   );
-  void (memoryEntries as readonly MemoryEntry[]); // type witness
 
   const { runId } = await startRun({
     db: args.db,

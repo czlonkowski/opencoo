@@ -18,6 +18,8 @@
  * lockstep with the in-memory definitions.
  */
 
+import { sql } from "drizzle-orm";
+
 import type { Logger } from "@opencoo/shared/logger";
 
 /**
@@ -99,7 +101,6 @@ export interface SyncDefinitionsDb {
 export async function syncDefinitions(
   args: SyncDefinitionsArgs,
 ): Promise<void> {
-  const { sql } = await import("drizzle-orm");
   const now = (args.now ?? ((): Date => new Date()))();
   for (const def of args.registry.list()) {
     await args.db.execute(sql`
