@@ -246,6 +246,84 @@ describe("runLint — end-to-end orchestrator", () => {
     expect(rows.rows[0]?.output?.name).toBe("DomainScopeMismatchError");
   });
 
+  // Wiki-reads for the contradictions detector are dispatched
+  // in batches of WIKI_READ_PAGE_CONCURRENCY rather than
+  // sequentially. With 50 pages and a slow McpToolClient, the
+  // sequential loop took 50 round trips serially; batched
+  // concurrent reads cap each wave at 4 in flight.
+  // (copilot #22 PERF)
+  //
+  // Test shape: instrument the McpToolClient to record the
+  // moment each readResource is dispatched (relative to when
+  // the previous one completed). With sequential dispatch, the
+  // dispatch-time of read N+1 is strictly AFTER the resolve-
+  // time of read N. With batched concurrent dispatch, the
+  // first WIKI_READ_PAGE_CONCURRENCY reads are all dispatched
+  // before ANY of them resolve.
+  it("dispatches sampled-page reads concurrently in bounded batches (copilot #22)", async () => {
+    const fixture = await freshAgentDb();
+    await seedBinding(fixture, {
+      adapterSlug: "asana",
+      allowedPaths: ["projects/q3.md"],
+    });
+    const { instanceId } = await seedAgentInstance(fixture, {
+      definitionSlug: "lint",
+      memory: { type: "none" },
+    });
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(LINT_DEFINITION);
+
+    // Tracking client: records dispatch + resolve order so the
+    // test can observe "more than 1 in flight at once".
+    let inFlight = 0;
+    let maxInFlight = 0;
+    class TrackingMcp extends InMemoryMcpToolClient {
+      override async readResource(uri: string): Promise<string> {
+        inFlight++;
+        if (inFlight > maxInFlight) maxInFlight = inFlight;
+        // Yield a few microtasks so a sequential caller can't
+        // accidentally race past us synchronously.
+        await new Promise((r) => setTimeout(r, 5));
+        const body = await super.readResource(uri);
+        inFlight--;
+        return body;
+      }
+    }
+    const mcp = new TrackingMcp();
+    // Seed 8 pages so the cap of 4 has room to fire.
+    for (let i = 0; i < 8; i++) {
+      mcp.setResource(`wiki://test-domain/p${i}.md`, `body ${i}`);
+    }
+
+    const router = makeRouter(
+      fakeProvider({ version: "v1", contradictions: [] }),
+      fixture.db,
+    );
+
+    await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "scheduled",
+      inputs: {},
+      run: (ctx) =>
+        runLint(ctx, {
+          db: fixture.db as unknown as Parameters<typeof runLint>[1]["db"],
+          mcp,
+          domainSlug: "test-domain",
+        }),
+    });
+
+    // Sequential dispatch would observe maxInFlight === 1 (one
+    // in flight at a time). Batched concurrent dispatch with
+    // cap = 4 lands at 4. Anything > 1 proves concurrency;
+    // the assertion ≤ 4 proves the cap holds.
+    expect(maxInFlight).toBeGreaterThan(1);
+    expect(maxInFlight).toBeLessThanOrEqual(4);
+  });
+
   it("returns an empty findings array when the domain has no bindings, no pages, no citations", async () => {
     const fixture = await freshAgentDb();
     const { instanceId } = await seedAgentInstance(fixture, {
