@@ -1,0 +1,36 @@
+{
+  "name": "@opencoo/output-asana",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OutputAdapter for Asana — creates tasks via the Asana API. Implements `OutputAdapter` from @opencoo/shared/output-adapter.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/mock-asana-tasks.d.ts",
+      "default": "./dist/testing/mock-asana-tasks.js"
+    }
+  },
+  "files": [
+    "dist/**"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:contract": "vitest run -t 'outputAdapterContract'"
+  },
+  "dependencies": {
+    "@opencoo/shared": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "~5.7.2",
+    "vitest": "^3.0.5"
+  }
+}

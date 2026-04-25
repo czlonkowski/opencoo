@@ -1,0 +1,283 @@
+/**
+ * output-asana adapter tests (PR 24 / plan #115).
+ *
+ * Layers:
+ *   1. Shared `outputAdapterContract` — runs the 8 assertions
+ *      against the adapter wired with `makeMockAsanaApi`.
+ *   2. Adapter-specific tests covering payload schema strict
+ *      validation, error classification per status code,
+ *      credential-store resolution.
+ */
+import { describe, expect, it } from "vitest";
+
+import { outputAdapterContract } from "@opencoo/shared/adapter-contract-tests";
+import {
+  InMemoryCredentialStore,
+  type CredentialStore,
+} from "@opencoo/shared/credential-store";
+import type { CredentialId } from "@opencoo/shared/db";
+import { ConsoleLogger } from "@opencoo/shared/logger";
+import { OutputAdapterError } from "@opencoo/shared/output-adapter";
+
+import {
+  ASANA_OUTPUT_ADAPTER_SLUG,
+  asanaOutputCredentialSchema,
+  asanaTaskPayloadSchema,
+  createAsanaOutputAdapter,
+  type AsanaTaskPayload,
+} from "../src/index.js";
+import {
+  createMockAsanaApiState,
+  makeMockAsanaApi,
+} from "../src/testing/mock-asana-tasks.js";
+
+function silentLogger(): ConsoleLogger {
+  return new ConsoleLogger({ stream: { write: (): boolean => true } });
+}
+
+async function seedToken(
+  store: CredentialStore,
+): Promise<CredentialId> {
+  return store.write({
+    name: "asana-test-pat",
+    schemaRef: "asana-pat/v1",
+    plaintext: Buffer.from("asana_test_pat_12345"),
+  });
+}
+
+const VALID_PAYLOAD: AsanaTaskPayload = {
+  title: "Q3 deck reminder",
+  notes: "Sales asked for Q3 deck status.",
+  projectGid: "1214005588882595",
+};
+
+// ---------------------------------------------------------------------------
+// Shared outputAdapterContract — 8 assertions
+// ---------------------------------------------------------------------------
+
+outputAdapterContract<AsanaTaskPayload>({
+  backendName: "output-asana",
+  makeAdapter: async () => {
+    const state = createMockAsanaApiState();
+    const adapter = createAsanaOutputAdapter({
+      makeApi: () => makeMockAsanaApi(state),
+    });
+    // The contract suite passes a NULL_CREDENTIAL_STORE shim
+    // for credential resolution — the mock API ignores the
+    // token bytes anyway. The contract's `programUpstream`
+    // callback flips state.behavior; the mock honors it.
+    return {
+      adapter,
+      validPayload: VALID_PAYLOAD,
+      // Over-keyed payload — the schema's .strict() rejects
+      // the extra `__smuggled` key BEFORE the API call.
+      overKeyedPayload: {
+        ...VALID_PAYLOAD,
+        // @ts-expect-error — this extra key violates the strict schema; the test asserts behavior at runtime
+        __smuggled: "agent-injected-field",
+      } as AsanaTaskPayload,
+      programUpstream: (behavior) => {
+        if (behavior.kind === "ok") {
+          state.behavior = { kind: "ok" };
+        } else if (behavior.kind === "http-error") {
+          state.behavior = {
+            kind: "http-error",
+            status: behavior.status,
+            ...(behavior.retryAfterSeconds !== undefined
+              ? { retryAfterSeconds: behavior.retryAfterSeconds }
+              : {}),
+          };
+        } else {
+          state.behavior = { kind: "transient" };
+        }
+      },
+      inspectCalls: () => state.calls.map((c) => ({ payload: c })),
+      cleanup: async () => undefined,
+    };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Adapter-specific tests
+// ---------------------------------------------------------------------------
+
+describe("output-asana — payload schema", () => {
+  it("requires title, notes, projectGid", () => {
+    expect(() =>
+      asanaTaskPayloadSchema.parse({ projectGid: "p", notes: "n" }),
+    ).toThrow();
+    expect(() =>
+      asanaTaskPayloadSchema.parse({ title: "t", notes: "n" }),
+    ).toThrow();
+  });
+
+  it("accepts optional dueOn (YYYY-MM-DD) and assigneeGid", () => {
+    expect(
+      asanaTaskPayloadSchema.parse({
+        ...VALID_PAYLOAD,
+        dueOn: "2026-04-30",
+        assigneeGid: "u-1",
+      }),
+    ).toMatchObject({ dueOn: "2026-04-30", assigneeGid: "u-1" });
+  });
+
+  it("rejects malformed dueOn", () => {
+    expect(() =>
+      asanaTaskPayloadSchema.parse({
+        ...VALID_PAYLOAD,
+        dueOn: "April 30 2026",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects extra keys (.strict — assertion 8)", () => {
+    const bad = {
+      ...VALID_PAYLOAD,
+      __smuggled: "x",
+    };
+    expect(() => asanaTaskPayloadSchema.parse(bad)).toThrow();
+  });
+
+  it("caps notes at 32 KB", () => {
+    const tooLong = {
+      ...VALID_PAYLOAD,
+      notes: "x".repeat(32_769),
+    };
+    expect(() => asanaTaskPayloadSchema.parse(tooLong)).toThrow();
+  });
+});
+
+describe("output-asana — credential schema", () => {
+  it("declares the secret asanaPersonalAccessToken field", () => {
+    expect(asanaOutputCredentialSchema.type).toBe("object");
+    const field =
+      asanaOutputCredentialSchema.properties["asanaPersonalAccessToken"];
+    expect(field?.type).toBe("string");
+    expect(field?.secret).toBe(true);
+  });
+
+  it("requires asanaPersonalAccessToken", () => {
+    expect(asanaOutputCredentialSchema.required).toContain(
+      "asanaPersonalAccessToken",
+    );
+  });
+});
+
+describe("output-asana — adapter wiring", () => {
+  it("slug is 'asana'", () => {
+    const state = createMockAsanaApiState();
+    const adapter = createAsanaOutputAdapter({
+      makeApi: () => makeMockAsanaApi(state),
+    });
+    expect(adapter.slug).toBe(ASANA_OUTPUT_ADAPTER_SLUG);
+    expect(adapter.slug).toBe("asana");
+  });
+
+  it("write() resolves the access token from CredentialStore + passes through to API", async () => {
+    const state = createMockAsanaApiState();
+    const adapter = createAsanaOutputAdapter({
+      makeApi: () => makeMockAsanaApi(state),
+    });
+    const store = new InMemoryCredentialStore({ logger: silentLogger() });
+    const credentialId = await seedToken(store);
+    const result = await adapter.write({
+      credentialStore: store,
+      credentialId,
+      payload: VALID_PAYLOAD,
+    });
+    expect(result.externalId).toMatch(/^asana-task-\d+$/);
+    expect(state.calls).toHaveLength(1);
+    expect(state.calls[0]?.accessToken.toString("utf8")).toBe(
+      "asana_test_pat_12345",
+    );
+    expect(state.calls[0]?.title).toBe(VALID_PAYLOAD.title);
+    expect(state.calls[0]?.projectGid).toBe(VALID_PAYLOAD.projectGid);
+  });
+
+  it("classifies HTTP 429 as upstream-quota with retryAfterSeconds", async () => {
+    const state = createMockAsanaApiState();
+    state.behavior = {
+      kind: "http-error",
+      status: 429,
+      retryAfterSeconds: 60,
+    };
+    const adapter = createAsanaOutputAdapter({
+      makeApi: () => makeMockAsanaApi(state),
+    });
+    const store = new InMemoryCredentialStore({ logger: silentLogger() });
+    const credentialId = await seedToken(store);
+    try {
+      await adapter.write({
+        credentialStore: store,
+        credentialId,
+        payload: VALID_PAYLOAD,
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(OutputAdapterError);
+      const e = err as OutputAdapterError;
+      expect(e.errorClass).toBe("upstream-quota");
+      expect(e.retryAfterSeconds).toBe(60);
+    }
+  });
+
+  it("classifies HTTP 503 as transient", async () => {
+    const state = createMockAsanaApiState();
+    state.behavior = { kind: "http-error", status: 503 };
+    const adapter = createAsanaOutputAdapter({
+      makeApi: () => makeMockAsanaApi(state),
+    });
+    const store = new InMemoryCredentialStore({ logger: silentLogger() });
+    const credentialId = await seedToken(store);
+    try {
+      await adapter.write({
+        credentialStore: store,
+        credentialId,
+        payload: VALID_PAYLOAD,
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect((err as OutputAdapterError).errorClass).toBe("transient");
+    }
+  });
+
+  it("classifies HTTP 400 as validation (4xx other)", async () => {
+    const state = createMockAsanaApiState();
+    state.behavior = { kind: "http-error", status: 400 };
+    const adapter = createAsanaOutputAdapter({
+      makeApi: () => makeMockAsanaApi(state),
+    });
+    const store = new InMemoryCredentialStore({ logger: silentLogger() });
+    const credentialId = await seedToken(store);
+    try {
+      await adapter.write({
+        credentialStore: store,
+        credentialId,
+        payload: VALID_PAYLOAD,
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect((err as OutputAdapterError).errorClass).toBe("validation");
+    }
+  });
+
+  it("classifies a transient (network drop) shape from the SDK as transient", async () => {
+    const state = createMockAsanaApiState();
+    state.behavior = { kind: "transient" };
+    const adapter = createAsanaOutputAdapter({
+      makeApi: () => makeMockAsanaApi(state),
+    });
+    const store = new InMemoryCredentialStore({ logger: silentLogger() });
+    const credentialId = await seedToken(store);
+    try {
+      await adapter.write({
+        credentialStore: store,
+        credentialId,
+        payload: VALID_PAYLOAD,
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect((err as OutputAdapterError).errorClass).toBe("transient");
+    }
+  });
+});
