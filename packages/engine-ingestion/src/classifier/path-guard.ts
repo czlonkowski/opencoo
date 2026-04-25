@@ -74,9 +74,9 @@ export function validateAllowedPath(
 
   // Layer 2 — glob match. picomatch is the canonical glob library
   // (planner Q4); a path matches the binding when ANY pattern
-  // accepts it.
-  const matchers = allowedPaths.map((p) => picomatch(p, PICOMATCH_OPTS));
-  const matched = matchers.some((m) => m(path));
+  // accepts it. `.some` short-circuits on the first hit so we don't
+  // compile every matcher when an earlier pattern already accepts.
+  const matched = allowedPaths.some((p) => picomatch(p, PICOMATCH_OPTS)(path));
   if (!matched) {
     throw new ClassifierPathError(
       `path '${path}' does not match any allowed_paths glob (allowed: ${JSON.stringify(allowedPaths)})`,
