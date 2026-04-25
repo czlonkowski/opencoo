@@ -119,9 +119,11 @@ export function buildWebhookReceiver(
       return { accepted: false, reason: "binding not found" };
     }
 
-    // Step 2: confirm the adapter is registered.
-    const adapter = options.adapterRegistry.get(binding.adapterSlug);
-    if (adapter === undefined) {
+    // Step 2: confirm the adapter is registered. We don't need the
+    // adapter object itself in this PR — PR 23+ widens the surface
+    // to call adapter.verifyWebhook / adapter.fetchPayload through
+    // it; today we just gate on registration.
+    if (options.adapterRegistry.get(binding.adapterSlug) === undefined) {
       // The binding references an adapter slug that isn't wired —
       // operator config bug. DLQ for triage; reply 500.
       await options.dlqQueue.add("intake.dlq", {
