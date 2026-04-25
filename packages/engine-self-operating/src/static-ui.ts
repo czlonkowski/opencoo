@@ -112,7 +112,22 @@ function verifyUiDist(
     });
     return null;
   }
-  const stats = statSync(abs);
+  // statSync can race with the existsSync check above (TOCTOU)
+  // — the directory could be removed between the two calls. The
+  // boot-tolerant contract (Q10) requires graceful degradation,
+  // so any stat failure logs + returns null rather than letting
+  // the throw bubble up and crash the engine boot. (copilot #20)
+  let stats;
+  try {
+    stats = statSync(abs);
+  } catch (err) {
+    logger.warn("static_ui.disabled", {
+      reason: "UI_DIST_PATH stat failed (likely TOCTOU race)",
+      path: abs,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
   if (!stats.isDirectory()) {
     logger.warn("static_ui.disabled", {
       reason: "UI_DIST_PATH is not a directory",
