@@ -5,11 +5,16 @@
  *
  * # GATE 3 — manual activation only
  *
- * This file deliberately does NOT mention activation. The
- * AutomationAdapter port has no `activate` method (TYPE-LEVEL);
- * the source-grep test in tests/automation-loop/gate-3-source-grep.test.ts
- * asserts no `'activated'` literal appears in this file
- * (defense-in-depth). The prompt tells the LLM the same.
+ * This file only handles deployment. The AutomationAdapter
+ * port has no `activate` method (TYPE-LEVEL — adding one is a
+ * compile-time error). As defense-in-depth, the source-grep
+ * test in tests/automation-loop/gate-3-source-grep.test.ts
+ * enforces the source-level guard: it strips comments first,
+ * then asserts no `activate(d)?` / `enable(d)?` / `toggle(d)?`
+ * verb appears in the executable code that remains. Comments
+ * (including this one) are explicitly OK to mention activation
+ * by name — the docstring's purpose is to explain the gate. The
+ * prompt tells the LLM the same.
  *
  * # Flow
  *
