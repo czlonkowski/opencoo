@@ -32,6 +32,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
+import * as ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -47,9 +48,37 @@ const N8N_MCP_SRC_DIR = resolve(
 const FORBIDDEN_VERB_REGEX = /activate(d)?|enable(d)?|toggle(d)?/;
 
 function stripComments(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/\/\/.*$/gm, "");
+  // Token-aware comment strip — using the TS scanner. The prior
+  // regex-based stripper would consume `//` sequences inside
+  // string/template literals (e.g. URLs like `https://.../act`),
+  // which created two failure modes: (a) comment-style content
+  // inside a string could disappear from analysis (false
+  // negative — a deliberate bypass), and (b) trailing `// foo`
+  // text inside an unterminated string could corrupt the
+  // tokenization of subsequent code. The scanner respects
+  // string/template/regex literals natively.
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.ESNext,
+    /* skipTrivia */ false,
+    ts.LanguageVariant.Standard,
+    source,
+  );
+  const parts: string[] = [];
+  let token = scanner.scan();
+  while (token !== ts.SyntaxKind.EndOfFileToken) {
+    if (
+      token === ts.SyntaxKind.SingleLineCommentTrivia ||
+      token === ts.SyntaxKind.MultiLineCommentTrivia
+    ) {
+      // Preserve newlines so line numbers stay stable for any
+      // failure messages that reference them.
+      parts.push(scanner.getTokenText().replace(/[^\n]/g, ""));
+    } else {
+      parts.push(scanner.getTokenText());
+    }
+    token = scanner.scan();
+  }
+  return parts.join("");
 }
 
 function walkTs(dir: string): string[] {

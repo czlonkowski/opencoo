@@ -27,6 +27,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
+import * as ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -405,6 +406,37 @@ describe("automation-n8n-mcp — error taxonomy", () => {
 // Source-grep regression — `active: false` literal count
 // ---------------------------------------------------------------------------
 
+// Token-aware comment strip — using the TS scanner. The prior
+// regex stripper would consume `//` sequences inside string /
+// template / regex literals (e.g. URLs like `https://.../act`),
+// creating both false-negative bypass paths (a string literal
+// shaped like a comment could disappear from analysis) and
+// tokenization-corruption hazards. The scanner respects
+// string/template/regex literals natively. Newlines are kept so
+// failure-message line numbers stay stable.
+function stripComments(source: string): string {
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.ESNext,
+    /* skipTrivia */ false,
+    ts.LanguageVariant.Standard,
+    source,
+  );
+  const parts: string[] = [];
+  let token = scanner.scan();
+  while (token !== ts.SyntaxKind.EndOfFileToken) {
+    if (
+      token === ts.SyntaxKind.SingleLineCommentTrivia ||
+      token === ts.SyntaxKind.MultiLineCommentTrivia
+    ) {
+      parts.push(scanner.getTokenText().replace(/[^\n]/g, ""));
+    } else {
+      parts.push(scanner.getTokenText());
+    }
+    token = scanner.scan();
+  }
+  return parts.join("");
+}
+
 describe("automation-n8n-mcp — Gate 3 source-grep (single body-build site)", () => {
   it("the literal `active: false` appears in exactly ONE place in src/**/*.ts", () => {
     const HERE = dirname(fileURLToPath(import.meta.url));
@@ -413,12 +445,7 @@ describe("automation-n8n-mcp — Gate 3 source-grep (single body-build site)", (
     let totalMatches = 0;
     const offenders: string[] = [];
     for (const f of files) {
-      const source = readFileSync(f, "utf8");
-      // Strip comments — they may legitimately reference Gate 3
-      // by name.
-      const codeOnly = source
-        .replace(/\/\*[\s\S]*?\*\//g, "")
-        .replace(/\/\/.*$/gm, "");
+      const codeOnly = stripComments(readFileSync(f, "utf8"));
       const m = codeOnly.match(/active\s*:\s*false/g);
       if (m && m.length > 0) {
         totalMatches += m.length;
@@ -441,10 +468,7 @@ describe("automation-n8n-mcp — Gate 3 source-grep (single body-build site)", (
     const srcDir = resolve(HERE, "../src");
     const files = walkTs(srcDir);
     for (const f of files) {
-      const source = readFileSync(f, "utf8");
-      const codeOnly = source
-        .replace(/\/\*[\s\S]*?\*\//g, "")
-        .replace(/\/\/.*$/gm, "");
+      const codeOnly = stripComments(readFileSync(f, "utf8"));
       expect(
         codeOnly.toLowerCase(),
         `forbidden activation verb in ${f}`,

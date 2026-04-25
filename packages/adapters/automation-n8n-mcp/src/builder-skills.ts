@@ -42,8 +42,17 @@ function loadVendoredSkills(): readonly BuilderSkill[] {
   let entries: string[];
   try {
     entries = readdirSync(VENDOR_DIR);
-  } catch {
-    return [];
+  } catch (err) {
+    // Fail loud — the adapter ships with a vendored catalog and
+    // a missing/unreadable directory means a packaging or deploy
+    // bug (e.g. `vendor/**` not in the published `files` list).
+    // Silently returning [] would mask this and let Builder run
+    // with no skills, producing empty deployment proposals.
+    const detail = err instanceof Error ? `: ${err.message}` : "";
+    throw new Error(
+      `automation-n8n-mcp: failed to read vendored BuilderSkill catalog at ${VENDOR_DIR}${detail}. ` +
+        `Expected vendor/n8n-skills/ to be present at runtime; this usually indicates a packaging/deploy issue.`,
+    );
   }
   for (const name of entries.sort()) {
     if (!name.endsWith(".json")) continue;
