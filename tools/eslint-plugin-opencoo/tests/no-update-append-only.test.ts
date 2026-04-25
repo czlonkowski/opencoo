@@ -43,20 +43,25 @@ ruleTester.run("no-update-append-only", noUpdateAppendOnly, {
       name: "update on an arbitrary non-schema identifier is ignored",
       code: `someBuilder.update(foo).set({ bar: 1 });`,
     },
-    {
-      name: "update on agent_runs is allowed under the §2 invariant 8 carve-out (PR 19 / plan #87) — terminal-status transition with WHERE status='running' guard at runtime",
-      code: `db.update(agentRuns).set({ status: 'success', endedAt: new Date() }).where(eq(agentRuns.status, 'running'));`,
-    },
-    {
-      name: "delete on agent_runs is allowed under the carve-out (cleanup-pruning path)",
-      code: `db.delete(agentRuns).where(lt(agentRuns.createdAt, horizon));`,
-    },
-    {
-      name: "transaction handle: tx.update(agentRuns) is allowed under the carve-out",
-      code: `tx.update(agentRuns).set({ status: 'failed', endedAt: now });`,
-    },
   ],
   invalid: [
+    {
+      name: "update on agent_runs flags updateAppendOnly — carve-out at recorder.ts only (copilot #21)",
+      code: `db.update(agentRuns).set({ status: 'success' });`,
+      errors: [{ messageId: "updateAppendOnly", data: { table: "agentRuns" } }],
+    },
+    {
+      name: "delete on agent_runs flags deleteAppendOnly — never allowed in engine code",
+      code: `db.delete(agentRuns).where(true);`,
+      errors: [
+        { messageId: "deleteAppendOnly", data: { table: "agentRuns" } },
+      ],
+    },
+    {
+      name: "transaction handle: tx.update(agentRuns) flags too — only the inline-disabled completeRun() call site is sanctioned",
+      code: `tx.update(agentRuns).set({ status: 'failed' });`,
+      errors: [{ messageId: "updateAppendOnly", data: { table: "agentRuns" } }],
+    },
     {
       name: "delete on page_citations flags deleteAppendOnly",
       code: `db.delete(pageCitations);`,
