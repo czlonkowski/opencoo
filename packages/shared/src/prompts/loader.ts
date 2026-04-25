@@ -49,6 +49,16 @@ import {
   EN_BUILDER_PROMPT,
 } from "./en-builder.js";
 import { PL_BUILDER_PROMPT } from "./pl-builder.js";
+import {
+  EN_WORLDVIEW_DOMAIN_PROMPT,
+  WORLDVIEW_DOMAIN_PROMPT_VERSION,
+} from "./en-worldview-domain.js";
+import { PL_WORLDVIEW_DOMAIN_PROMPT } from "./pl-worldview-domain.js";
+import {
+  EN_WORLDVIEW_COMPANY_PROMPT,
+  WORLDVIEW_COMPANY_PROMPT_VERSION,
+} from "./en-worldview-company.js";
+import { PL_WORLDVIEW_COMPANY_PROMPT } from "./pl-worldview-company.js";
 
 export const PROMPT_NAMES = [
   "classifier",
@@ -58,6 +68,8 @@ export const PROMPT_NAMES = [
   "chat",
   "surfacer",
   "builder",
+  "worldview-domain",
+  "worldview-company",
 ] as const;
 export type PromptName = (typeof PROMPT_NAMES)[number];
 
@@ -84,6 +96,8 @@ const REGISTRY: {
     chat: EN_CHAT_PROMPT,
     surfacer: EN_SURFACER_PROMPT,
     builder: EN_BUILDER_PROMPT,
+    "worldview-domain": EN_WORLDVIEW_DOMAIN_PROMPT,
+    "worldview-company": EN_WORLDVIEW_COMPANY_PROMPT,
   },
   pl: {
     classifier: PL_CLASSIFIER_PROMPT,
@@ -93,6 +107,8 @@ const REGISTRY: {
     chat: PL_CHAT_PROMPT,
     surfacer: PL_SURFACER_PROMPT,
     builder: PL_BUILDER_PROMPT,
+    "worldview-domain": PL_WORLDVIEW_DOMAIN_PROMPT,
+    "worldview-company": PL_WORLDVIEW_COMPANY_PROMPT,
   },
 };
 
@@ -112,6 +128,8 @@ const VERSIONS: { readonly [N in PromptName]: string } = {
   chat: CHAT_PROMPT_VERSION,
   surfacer: SURFACER_PROMPT_VERSION,
   builder: BUILDER_PROMPT_VERSION,
+  "worldview-domain": WORLDVIEW_DOMAIN_PROMPT_VERSION,
+  "worldview-company": WORLDVIEW_COMPANY_PROMPT_VERSION,
 };
 
 export interface LoadPromptArgs {

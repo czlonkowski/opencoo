@@ -92,6 +92,34 @@ export {
   type DeployWorkflowResult,
 } from "./automation-adapter/index.js";
 
+// Worldview compilation pipeline (PR 22 / plan #106). Per-domain
+// + company-aggregator compilers with the load-bearing
+// sovereignty pin (company-compile reads ONLY 'worldview.md'
+// from non-aggregator domains) + 24KB token cap with 1 retry.
+export {
+  DEBOUNCE_DELAY_2_EVENTS_MS,
+  DEBOUNCE_DELAY_3_EVENTS_MS,
+  DEBOUNCE_DELAY_4_PLUS_EVENTS_MS,
+  SOVEREIGN_AGGREGATOR_INPUT_PATH,
+  SovereigntySpyWikiAdapter,
+  WORLDVIEW_BODY_MAX_BYTES,
+  WORLDVIEW_OUTPUT_SCHEMA,
+  WorldviewOverflowError,
+  WorldviewSovereigntyError,
+  compileCompanyWorldview,
+  compileDomainWorldview,
+  decideWorldviewDebounce,
+  utf8ByteLength,
+  type CompileCompanyArgs,
+  type CompileCompanyResult,
+  type CompileDomainArgs,
+  type CompileDomainResult,
+  type SovereigntySpyOptions,
+  type WorldviewDebounceArgs,
+  type WorldviewDebounceDecision,
+  type WorldviewOutput,
+} from "./pipelines/worldview/index.js";
+
 export {
   AUTOMATION_DRIFT_WINDOW_DAYS,
   CONTRADICTIONS_OUTPUT_SCHEMA,

@@ -347,3 +347,62 @@ describe("loadPrompt — builder prompts (PR 21 / plan #102)", () => {
     expect(body).toMatch(/nigdy nie (aktyw|włącz)|nie (aktywuj|włączaj)/);
   });
 });
+
+describe("loadPrompt — worldview-domain prompts (PR 22 / plan #106)", () => {
+  it("PROMPT_NAMES includes 'worldview-domain'", () => {
+    expect(PROMPT_NAMES).toContain("worldview-domain");
+  });
+
+  it("returns en/pl bodies and a non-empty version", () => {
+    const en = loadPrompt({ name: "worldview-domain", locale: "en" });
+    const pl = loadPrompt({ name: "worldview-domain", locale: "pl" });
+    expect(en.body.length).toBeGreaterThan(0);
+    expect(pl.body.length).toBeGreaterThan(0);
+    expect(en.version).toBe(pl.version);
+  });
+
+  it("anchors spotlighting + 24KB cap + compress-further wording", () => {
+    const en = loadPrompt({ name: "worldview-domain", locale: "en" });
+    const body = en.body.toLowerCase();
+    expect(body).toContain("source_content");
+    expect(body).toMatch(/24[, ]?000|24kb/);
+    expect(body).toMatch(/compress further|compress|kompresuj/);
+  });
+
+  it("Polish worldview-domain prompt also anchors spotlighting + cap", () => {
+    const pl = loadPrompt({ name: "worldview-domain", locale: "pl" });
+    const body = pl.body.toLowerCase();
+    expect(body).toContain("source_content");
+    expect(body).toMatch(/niezaufan|nie wykonuj/);
+    expect(body).toMatch(/24[ ,]?000|24kb/);
+  });
+});
+
+describe("loadPrompt — worldview-company prompts (PR 22 / plan #106)", () => {
+  it("PROMPT_NAMES includes 'worldview-company'", () => {
+    expect(PROMPT_NAMES).toContain("worldview-company");
+  });
+
+  it("returns en/pl bodies", () => {
+    const en = loadPrompt({ name: "worldview-company", locale: "en" });
+    const pl = loadPrompt({ name: "worldview-company", locale: "pl" });
+    expect(en.body.length).toBeGreaterThan(0);
+    expect(pl.body.length).toBeGreaterThan(0);
+    expect(en.version).toBe(pl.version);
+  });
+
+  it("anchors sovereignty (only worldview.md inputs) + spotlighting", () => {
+    const en = loadPrompt({ name: "worldview-company", locale: "en" });
+    const body = en.body.toLowerCase();
+    expect(body).toContain("source_content");
+    expect(body).toMatch(/worldview\.md/);
+    expect(body).toMatch(/sovereignty|llm[- ]policy|boundary/);
+  });
+
+  it("Polish worldview-company prompt also anchors sovereignty", () => {
+    const pl = loadPrompt({ name: "worldview-company", locale: "pl" });
+    const body = pl.body.toLowerCase();
+    expect(body).toContain("source_content");
+    expect(body).toMatch(/suwerenność|polityk/);
+  });
+});

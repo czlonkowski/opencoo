@@ -36,6 +36,13 @@
       "when": 1777097256839,
       "tag": "0004_sources_bindings_last_scan_cursor",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1777120143437,
+      "tag": "0005_domains_is_aggregator",
+      "breakpoints": true
     }
   ]
 }

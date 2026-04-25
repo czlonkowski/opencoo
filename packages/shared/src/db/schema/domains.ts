@@ -35,6 +35,15 @@ export const domains = pgTable(
     }),
     retentionDays: integer("retention_days"),
     worldviewEnabled: boolean("worldview_enabled").notNull().default(true),
+    /**
+     * `true` for the (at most one) aggregator domain that
+     * compiles `company.md` from every other domain's
+     * `worldview.md` (architecture §9.6 / plan #106).
+     * Sovereignty constraint: the company-compile pipeline
+     * MUST NOT read non-`worldview.md` paths from domains
+     * where this is `false`. Test-pinned via a readPage spy.
+     */
+    isAggregator: boolean("is_aggregator").notNull().default(false),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
