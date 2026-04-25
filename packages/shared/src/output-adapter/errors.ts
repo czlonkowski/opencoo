@@ -66,9 +66,9 @@ export class OutputAdapterValidationError extends OutputAdapterError {
 /**
  * HTTP status → OutputAdapterError mapping. Concrete adapters
  * call this from their fetch error path. Pulls `Retry-After`
- * from headers when present (Asana sends seconds; the helper
- * also tolerates an HTTP-date but we don't bother parsing —
- * Asana doesn't return that form).
+ * from headers when present and parses the seconds form (the
+ * shape Asana uses); HTTP-date `Retry-After` values are NOT
+ * parsed — `parseRetryAfter` returns `undefined` for those.
  */
 export function classifyHttpError(args: {
   readonly status: number;

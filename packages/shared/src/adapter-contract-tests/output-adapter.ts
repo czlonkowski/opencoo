@@ -10,16 +10,19 @@
  * `@opencoo/shared/output-adapter`; the contract sits next to
  * it. Adapter packages already depend on shared.
  *
- * # 8 assertions (plan #115 + the PR 24 override)
+ * # 9 assertions (plan #115 + PR 24 overrides + Copilot triage)
  *
  *   1. slug — non-empty stable string.
  *   2. payloadSchema is a Zod schema (.parse exists).
  *   3. credentialSchema is JSON-Schema-shaped (type='object',
- *      properties is a record).
+ *      properties is a record) AND marks at least one field
+ *      with `secret: true` (so the Management UI knows what
+ *      to mask + persist via CredentialStore).
  *   4. write(valid payload, valid credentials) → returns
  *      OutputWriteResult with non-empty externalId.
  *   5. write(payload that fails Zod) → throws
- *      OutputAdapterError(validation) BEFORE any external call.
+ *      OutputAdapterError with `errorClass='validation'`
+ *      BEFORE any external call.
  *   6. write(429 from upstream) → throws
  *      OutputAdapterError(upstream-quota) with retryAfterSeconds.
  *   7. write(5xx/network from upstream) → throws
@@ -28,9 +31,16 @@
  *      passing an over-keyed payload throws
  *      OutputAdapterError(validation) BEFORE any external call;
  *      the schema MUST be Zod `.strict()`.
+ *   9. **no-raw-credentials-in-result** (PR 24 Copilot triage) —
+ *      the seeded credential's secret bytes never appear in
+ *      `JSON.stringify(OutputWriteResult)`. Defends against an
+ *      adapter that accidentally embeds credentials in the
+ *      returned `externalUrl` / `externalId`.
  */
 import { describe, expect, it } from "vitest";
 
+import type { CredentialStore } from "../credential-store/index.js";
+import type { CredentialId } from "../db/brands.js";
 import type { OutputAdapter } from "../output-adapter/index.js";
 
 // ---------------------------------------------------------------------------
@@ -39,6 +49,20 @@ import type { OutputAdapter } from "../output-adapter/index.js";
 
 export interface OutputAdapterHandle<TPayload> {
   readonly adapter: OutputAdapter<TPayload>;
+  /** A real (in-memory) CredentialStore seeded with a credential
+   *  the adapter resolves on every write(). Carrying this on the
+   *  handle (rather than a NULL store inside the suite) lets
+   *  assertion 9 actually exercise the resolve-via-store path
+   *  AND assert the secret bytes never leak into
+   *  OutputWriteResult. */
+  readonly credentialStore: CredentialStore;
+  readonly credentialId: CredentialId;
+  /** A unique substring present in the seeded credential's
+   *  plaintext bytes. Assertion 9 checks `JSON.stringify(result)`
+   *  does NOT contain this substring — a regression where the
+   *  adapter accidentally returned credential bytes in
+   *  OutputWriteResult would surface here. */
+  readonly secretMarker: string;
   /** A valid payload the adapter accepts. */
   readonly validPayload: TPayload;
   /** An over-keyed payload the schema must reject (assertion 8).
@@ -113,14 +137,20 @@ export function outputAdapterContract<TPayload>(
       }
     });
 
-    // 3. credentialSchema is JSON-Schema-shaped
-    it("credentialSchema is type='object' with a properties record", async () => {
+    // 3. credentialSchema is JSON-Schema-shaped + marks at least
+    //    one field as secret (the Management UI relies on the
+    //    `secret: true` flag to mask + route through CredentialStore).
+    it("credentialSchema is type='object' with a properties record AND flags at least one secret field", async () => {
       const handle = await options.makeAdapter();
       try {
         const cs = handle.adapter.credentialSchema;
         expect(cs.type).toBe("object");
         expect(typeof cs.properties).toBe("object");
         expect(cs.properties).not.toBe(null);
+        const secretFields = Object.entries(cs.properties).filter(
+          ([, field]) => field.secret === true,
+        );
+        expect(secretFields.length).toBeGreaterThan(0);
       } finally {
         await handle.cleanup();
       }
@@ -147,9 +177,17 @@ export function outputAdapterContract<TPayload>(
       const handle = await options.makeAdapter();
       try {
         handle.programUpstream({ kind: "ok" });
-        await expect(
-          fakeWriteWithRawPayload(handle, {} as unknown as TPayload),
-        ).rejects.toThrow();
+        // The thrown error MUST carry errorClass='validation' —
+        // a plain Error or a transient/upstream-quota class
+        // would let agents and the BullMQ retry layer
+        // misclassify the failure.
+        try {
+          await fakeWriteWithRawPayload(handle, {} as unknown as TPayload);
+          throw new Error("expected throw");
+        } catch (err) {
+          const e = err as { errorClass?: string };
+          expect(e.errorClass).toBe("validation");
+        }
         // No upstream call was made.
         expect(handle.inspectCalls().length).toBe(0);
       } finally {
@@ -215,11 +253,35 @@ export function outputAdapterContract<TPayload>(
         );
         expect(parseResult.success).toBe(false);
         // The adapter's write() also rejects (via the same
-        // schema). No upstream call lands.
-        await expect(
-          fakeWriteWithRawPayload(handle, handle.overKeyedPayload),
-        ).rejects.toThrow();
+        // schema) with errorClass='validation' specifically —
+        // not a generic Error, not transient. No upstream call
+        // lands.
+        try {
+          await fakeWriteWithRawPayload(handle, handle.overKeyedPayload);
+          throw new Error("expected throw");
+        } catch (err) {
+          const e = err as { errorClass?: string };
+          expect(e.errorClass).toBe("validation");
+        }
         expect(handle.inspectCalls().length).toBe(0);
+      } finally {
+        await handle.cleanup();
+      }
+    });
+
+    // 9. no-raw-credentials-in-result (Copilot triage on PR 24)
+    it("OutputWriteResult never embeds raw credential bytes (no-leak regression guard)", async () => {
+      const handle = await options.makeAdapter();
+      try {
+        handle.programUpstream({ kind: "ok" });
+        const result = await fakeWrite(handle);
+        // The seeded credential's secret marker MUST NOT appear
+        // anywhere in the JSON-stringified result. An adapter
+        // accidentally embedding the credential in `externalUrl`
+        // (e.g. by formatting an URL with the bearer token)
+        // would surface here.
+        const rendered = JSON.stringify(result);
+        expect(rendered).not.toContain(handle.secretMarker);
       } finally {
         await handle.cleanup();
       }
@@ -227,10 +289,10 @@ export function outputAdapterContract<TPayload>(
   });
 }
 
-// Helpers — the contract suite calls write() with a
-// fake CredentialStore + credentialId since the adapter under
-// test is responsible for resolving the credential. The
-// fixture's mock-upstream is what actually runs.
+// Helpers — the contract suite calls write() with the fixture's
+// real seeded CredentialStore + credentialId. The adapter is
+// responsible for resolving credentials through the store; that
+// resolution is what assertion 9 then audits for leakage.
 async function fakeWrite<TPayload>(
   handle: OutputAdapterHandle<TPayload>,
 ): Promise<import("../output-adapter/index.js").OutputWriteResult> {
@@ -241,27 +303,9 @@ async function fakeWriteWithRawPayload<TPayload>(
   handle: OutputAdapterHandle<TPayload>,
   payload: TPayload,
 ): Promise<import("../output-adapter/index.js").OutputWriteResult> {
-  // The contract suite runs the adapter against a NULL-ish
-  // CredentialStore + credentialId — concrete adapters that
-  // need credentials for the upstream call source them via
-  // the fixture's `programUpstream` setup. We pass through a
-  // sentinel so the type checks; the fixture ignores it.
   return handle.adapter.write({
-    credentialStore: NULL_CREDENTIAL_STORE,
-    credentialId: "" as never,
+    credentialStore: handle.credentialStore,
+    credentialId: handle.credentialId,
     payload,
   });
 }
-
-const NULL_CREDENTIAL_STORE = {
-  read: async () => ({
-    name: "",
-    schemaRef: "",
-    plaintext: Buffer.from(""),
-  }),
-  write: async () => "" as never,
-  rotate: async () => undefined,
-  delete: async () => undefined,
-} as unknown as import(
-  "../credential-store/index.js"
-).CredentialStore;

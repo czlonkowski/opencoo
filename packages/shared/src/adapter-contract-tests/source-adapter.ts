@@ -522,9 +522,12 @@ function runWebhookAssertions(
       for (const ev of first) {
         expect(typeof ev.eventId).toBe("string");
         expect(ev.eventId.length).toBeGreaterThan(0);
-        // The doc's basic shape carries through too.
-        expect(typeof ev.doc.sourceDocId).toBe("string");
-        expect(typeof ev.doc.sourceRef).toBe("string");
+        // Webhook-emitted docs must satisfy the same contract
+        // shape as polling-mode changed docs (non-empty
+        // sourceDocId, fetchedAt populated, contentBytes a
+        // Buffer ≤ 1 MiB) — empty IDs would silently break
+        // intake dedupe.
+        expectChangedDocShape(ev.doc);
       }
     } finally {
       await handle.cleanup();

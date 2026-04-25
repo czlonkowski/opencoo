@@ -22,7 +22,7 @@ export const asanaTaskPayloadSchema = z
      *  `due_on` field. */
     dueOn: z
       .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/, "due_on must be YYYY-MM-DD")
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "dueOn must be YYYY-MM-DD")
       .optional(),
     /** Optional Asana user gid for assignment. */
     assigneeGid: z.string().min(1).optional(),

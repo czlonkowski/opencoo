@@ -78,6 +78,11 @@ async function makeFixture(opts: MakeFixtureOptions = {}): Promise<{
 // Shared outputAdapterContract — 8 assertions
 // ---------------------------------------------------------------------------
 
+// Unique secret marker present in the seeded credential bytes —
+// assertion 9 (no-raw-credentials-in-result) checks the marker
+// never appears in JSON.stringify(OutputWriteResult).
+const CONTRACT_SECRET_MARKER = "asana_test_pat_contract_secret_marker_xyz";
+
 outputAdapterContract<AsanaTaskPayload>({
   backendName: "output-asana",
   makeAdapter: async () => {
@@ -85,12 +90,17 @@ outputAdapterContract<AsanaTaskPayload>({
     const adapter = createAsanaOutputAdapter({
       makeApi: () => makeMockAsanaApi(state),
     });
-    // The contract suite passes a NULL_CREDENTIAL_STORE shim
-    // for credential resolution — the mock API ignores the
-    // token bytes anyway. The contract's `programUpstream`
-    // callback flips state.behavior; the mock honors it.
+    const store = new InMemoryCredentialStore({ logger: silentLogger() });
+    const credentialId = await store.write({
+      name: "asana-contract-pat",
+      schemaRef: "asana-pat/v1",
+      plaintext: Buffer.from(CONTRACT_SECRET_MARKER),
+    });
     return {
       adapter,
+      credentialStore: store,
+      credentialId,
+      secretMarker: CONTRACT_SECRET_MARKER,
       validPayload: VALID_PAYLOAD,
       // Over-keyed payload — the schema's .strict() rejects
       // the extra `__smuggled` key BEFORE the API call.

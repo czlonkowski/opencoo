@@ -38,6 +38,7 @@ import { createHash } from "node:crypto";
 
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
+import { ValidationError } from "@opencoo/shared/errors";
 import type {
   SourceAdapter,
   SourceScanArgs,
@@ -122,12 +123,16 @@ function parseAsanaWebhookBody(body: Buffer): RawAsanaWebhookBody {
   try {
     parsed = JSON.parse(body.toString("utf8"));
   } catch (err) {
-    throw new Error(
+    // ValidationError so the receiver classifies as
+    // errorClass='validation' (THREAT-MODEL §3.1) — body-shape
+    // failures are not retried.
+    throw new ValidationError(
       `asana webhook: body is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     );
   }
   if (typeof parsed !== "object" || parsed === null) {
-    throw new Error("asana webhook: body root must be a JSON object");
+    throw new ValidationError("asana webhook: body root must be a JSON object");
   }
   // Coerce shape-checked but not strictly typed.
   return parsed as RawAsanaWebhookBody;
@@ -144,21 +149,47 @@ export function buildAsanaWebhookHelpers(): SourceWebhookHelpers {
       const at = fetchedAt ?? new Date();
       const out: SourceWebhookEvent[] = [];
       for (const ev of events) {
+        // Validate required fields BEFORE deriving an eventId —
+        // empty resource.gid + empty action would still hash to
+        // a stable id, but the resulting sourceDocId would be
+        // ambiguous and intake-dedupe would conflate distinct
+        // events. Fail closed with errorClass='validation'.
+        const resourceGid = ev.resource?.gid;
+        const resourceType = ev.resource?.resource_type;
+        const action = ev.action;
+        if (
+          typeof resourceGid !== "string" ||
+          resourceGid.length === 0 ||
+          typeof resourceType !== "string" ||
+          resourceType.length === 0 ||
+          typeof action !== "string" ||
+          action.length === 0
+        ) {
+          throw new ValidationError(
+            "asana webhook: event missing required fields (resource.gid, resource.resource_type, action)",
+          );
+        }
         const eventId = deriveEventId(ev);
-        const resourceGid = ev.resource?.gid ?? "";
-        const action = ev.action ?? "unknown";
         const sourceDocId = `${resourceGid}:${action}`;
+        const contentBytes = Buffer.from(JSON.stringify(ev), "utf8");
+        // 1 MiB ceiling mirrors the SourceAdapter contract; an
+        // event that serializes larger fails closed rather than
+        // overflowing the Compilation Worker prompt budget.
+        if (contentBytes.length > 1024 * 1024) {
+          throw new ValidationError(
+            `asana webhook: event exceeds 1 MiB ceiling (got ${contentBytes.length} bytes)`,
+          );
+        }
         out.push({
           eventId,
           doc: {
             sourceDocId,
             sourceRevision: eventId, // every event = new revision
-            sourceRef: `asana:${ev.resource?.resource_type ?? "resource"}/${resourceGid}`,
+            sourceRef: `asana:${resourceType}/${resourceGid}`,
             fetchedAt: at,
             // Inline the event JSON as bytes so the
             // Compilation Worker has the full event verbatim.
-            // 1 MiB cap mirrors the SourceAdapter contract.
-            contentBytes: Buffer.from(JSON.stringify(ev), "utf8"),
+            contentBytes,
           },
         });
       }
