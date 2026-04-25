@@ -29,12 +29,23 @@ import type { FastifyInstance } from "fastify";
 
 import type { Logger } from "@opencoo/shared/logger";
 
+/** Internal type for the `@fastify/static` plugin shape. The real
+ *  module's runtime export is the plugin function on
+ *  `mod.default`; tests inject a stub via `loadStaticPlugin` so
+ *  the import-failure code path is deterministic. */
+export type LoadStaticPlugin = () => Promise<unknown>;
+
 export interface StaticUiOptions {
   /** Absolute path to the bundled SPA's dist/ directory. When
    *  undefined or missing on disk, the engine boots but the SPA
    *  fallback returns 503. */
   readonly uiDistPath?: string;
   readonly logger: Logger;
+  /** @internal Test seam — defaults to dynamic
+   *  `import('@fastify/static')`. A stub that throws lets tests
+   *  exercise the import-failure handler deterministically
+   *  (copilot #20). */
+  readonly loadStaticPlugin?: LoadStaticPlugin;
 }
 
 /**
@@ -176,19 +187,32 @@ export async function registerStaticUi(
   // index.html-vs-404 ourselves.
   let staticPlugin;
   try {
-    const mod = await import("@fastify/static");
+    const loader =
+      options.loadStaticPlugin ??
+      (async () => import("@fastify/static"));
+    const mod = (await loader()) as { default: unknown };
     staticPlugin = mod.default;
   } catch (err) {
     options.logger.warn("static_ui.plugin_missing", {
       reason: "@fastify/static could not be loaded; SPA fallback will 503",
       error: err instanceof Error ? err.message : String(err),
     });
-    app.setNotFoundHandler((_request, reply) =>
-      reply.code(503).send({
+    // Same SPA-vs-API distinction as the boot-tolerant path
+    // above (copilot #20). /api/* requests get the standard 404;
+    // only SPA routes see the 503. Without this, a transient
+    // plugin-load failure would mask a real 404 on the API
+    // surface.
+    app.setNotFoundHandler((request, reply) => {
+      if (request.method !== "GET" || !isSpaFallbackPath(request.url)) {
+        return reply
+          .code(404)
+          .send({ status: "not_found", path: request.url });
+      }
+      return reply.code(503).send({
         status: "ui_unavailable",
         reason: "static plugin unavailable",
-      }),
-    );
+      });
+    });
     return;
   }
 
