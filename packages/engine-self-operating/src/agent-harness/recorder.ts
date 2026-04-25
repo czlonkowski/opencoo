@@ -105,10 +105,21 @@ export interface CompleteRunArgs {
 export async function completeRun(args: CompleteRunArgs): Promise<void> {
   const endedAt = args.endedAt ?? new Date();
   const errorClassValue = args.errorClass ?? null;
-  // The WHERE status='running' guard is the load-bearing
-  // safeguard from §2 invariant 8 carve-out — it's what
-  // makes the carve-out a one-time-mutation rather than an
-  // unbounded UPDATE.
+  // SOLE sanctioned UPDATE on `agent_runs` — §2 invariant 8
+  // carve-out. Two-layer safeguard:
+  //   1. SQL `WHERE status = 'running'` clause — a terminal
+  //      row hits 0 affected rows even on a buggy caller.
+  //   2. JS rowCount check below + AgentRunAlreadyTerminalError
+  //      → DLQ (validation-class).
+  // Lint disable pins the carve-out at exactly this call
+  // site: `agentRuns` is in `APPEND_ONLY_TABLES` and any
+  // other UPDATE/DELETE path lints red. This is also a
+  // forward-looking guard — if the raw-SQL form is ever
+  // refactored to `args.db.update(agentRuns)`, the
+  // `eslint-disable-next-line` keeps this single sanctioned
+  // location passing while the rest of the codebase stays
+  // protected.
+  // eslint-disable-next-line opencoo/no-update-append-only
   const result = (await args.db.execute(sql`
     UPDATE agent_runs
     SET status = ${args.status},
