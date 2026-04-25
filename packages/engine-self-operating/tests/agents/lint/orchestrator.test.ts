@@ -392,4 +392,102 @@ describe("runLint — end-to-end orchestrator", () => {
     const output = result.output as LintOutput;
     expect(output.findings).toEqual([]);
   });
+
+  // CROSS-TENANT LEAK guard (copilot #23 BLOCKING fix 3).
+  // The automation_drift detector's SQL must be scoped to the
+  // current Lint run's domain. A wiki-executive Lint pass must
+  // NOT surface findings from wiki-hr's agent runs (or any
+  // other domain). Cross-tenant runIds + tool names leaking into
+  // the current findings would expose other tenants' activity.
+  it("automation_drift findings are scoped to ctx.instance's domain — runs in OTHER domains do NOT appear (copilot #23)", async () => {
+    const fixture = await freshAgentDb();
+
+    // Seed a SECOND domain with its own agent_instance + drift run.
+    const otherDomain = await fixture.raw.query<{ id: string }>(
+      `INSERT INTO domains (slug, name) VALUES ('other-domain', 'Other')
+       RETURNING id`,
+    );
+    const otherDomainId = otherDomain.rows[0]!.id;
+    const otherInstance = await fixture.raw.query<{ id: string }>(
+      `INSERT INTO agent_instances
+         (definition_slug, name, scope_domain_ids, memory, locale, enabled)
+       VALUES ('lint', 'other-lint', $1::uuid[], '{"type":"none"}'::jsonb, 'en', true)
+       RETURNING id`,
+      [[otherDomainId]],
+    );
+    const otherInstanceId = otherInstance.rows[0]!.id;
+    // The OTHER domain's agent run records a drift call. If the
+    // detector leaks cross-tenant, this run id will surface in
+    // the current-domain findings.
+    await fixture.raw.query(
+      `INSERT INTO agent_runs
+         (definition_slug, instance_id, trigger, status, tool_calls,
+          started_at, ended_at, created_at)
+       VALUES ('lint', $1::uuid, 'scheduled', 'success', $2::jsonb,
+               NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day',
+               NOW() - INTERVAL '1 day')`,
+      [
+        otherInstanceId,
+        JSON.stringify([
+          { name: "wiki.delete_repo", args: {}, durationMs: 1 }, // OTHER tenant drift
+        ]),
+      ],
+    );
+
+    // The CURRENT domain (test-domain from freshAgentDb) gets
+    // its own Lint instance + its OWN drift run with a distinct
+    // tool name so we can distinguish.
+    const { instanceId } = await seedAgentInstance(fixture, {
+      definitionSlug: "lint",
+      memory: { type: "none" },
+    });
+    await fixture.raw.query(
+      `INSERT INTO agent_runs (definition_slug, instance_id, trigger, status,
+                                tool_calls, started_at, ended_at, created_at)
+       VALUES ('lint', $1::uuid, 'scheduled', 'success', $2::jsonb,
+               NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day',
+               NOW() - INTERVAL '1 day')`,
+      [
+        instanceId,
+        JSON.stringify([
+          { name: "wiki.write_page", args: {}, durationMs: 1 }, // current-tenant drift
+        ]),
+      ],
+    );
+
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(LINT_DEFINITION);
+    const mcp = new InMemoryMcpToolClient();
+    const router = makeRouter(
+      fakeProvider({ version: "v1", contradictions: [] }),
+      fixture.db,
+    );
+
+    const result = await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "scheduled",
+      inputs: {},
+      run: (ctx) =>
+        runLint(ctx, {
+          db: fixture.db as unknown as Parameters<typeof runLint>[1]["db"],
+          mcp,
+          domainSlug: "test-domain",
+          definitions,
+        }),
+    });
+    expect(result.status).toBe("success");
+    const output = result.output as LintOutput;
+    const drifts = output.findings.filter(
+      (f) => f.kind === "automation_drift",
+    );
+    const driftToolNames = drifts.map((f) => f.detail?.toolName);
+    // Current-tenant drift surfaces.
+    expect(driftToolNames).toContain("wiki.write_page");
+    // Cross-tenant drift MUST NOT surface.
+    expect(driftToolNames).not.toContain("wiki.delete_repo");
+  });
 });
