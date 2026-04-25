@@ -15,7 +15,11 @@ import { z } from "zod";
 export const HEARTBEAT_ALERT_SCHEMA = z
   .object({
     priority: z.number().int().min(1).max(5),
-    title: z.string().min(1).max(200),
+    // Caps match the en + pl heartbeat prompts. `title ≤80`
+    // is the prompt's stated bound; body is 2-3 sentences per
+    // prompt but sentence-count isn't enforced at the schema
+    // layer — only non-empty.
+    title: z.string().min(1).max(80),
     body: z.string().min(1),
     citations: z.array(z.string().min(1)).min(1),
   })
@@ -24,7 +28,11 @@ export const HEARTBEAT_ALERT_SCHEMA = z
 export const HEARTBEAT_OUTPUT_SCHEMA = z
   .object({
     version: z.literal("v1"),
-    summary: z.string().min(1).max(500),
+    // 200-char cap matches the en + pl prompt body's stated
+    // bound for the executive-summary line. A wider schema
+    // would let a verbose LLM payload through; downstream
+    // channel renderers expect the cap.
+    summary: z.string().min(1).max(200),
     alerts: z.array(HEARTBEAT_ALERT_SCHEMA).max(5),
   })
   .strict()
