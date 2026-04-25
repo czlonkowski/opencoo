@@ -11,10 +11,17 @@
  */
 import type { PipelineDefinition } from "./pipeline.js";
 
-export class PipelineRegistry {
-  private readonly byName = new Map<string, PipelineDefinition>();
+/**
+ * Generic over the pipeline definition shape so engine-ingestion
+ * (which narrows `PipelineContext` with a `wikiAdapter` field)
+ * can store its own narrower `PipelineDefinition` type while
+ * still satisfying the base contract. Defaults to the base
+ * `PipelineDefinition` for engines that don't extend the context.
+ */
+export class PipelineRegistry<T extends { name: string } = PipelineDefinition> {
+  private readonly byName = new Map<string, T>();
 
-  register(definition: PipelineDefinition): void {
+  register(definition: T): void {
     if (this.byName.has(definition.name)) {
       throw new Error(
         `engine-scaffold: duplicate pipeline name '${definition.name}' — registry rejects re-registration`,
@@ -23,13 +30,13 @@ export class PipelineRegistry {
     this.byName.set(definition.name, definition);
   }
 
-  get(name: string): PipelineDefinition | undefined {
+  get(name: string): T | undefined {
     return this.byName.get(name);
   }
 
   /** Insertion-order list; downstream consumers (start, smoke
    *  harness) can iterate deterministically. */
-  list(): ReadonlyArray<PipelineDefinition> {
+  list(): ReadonlyArray<T> {
     return [...this.byName.values()];
   }
 

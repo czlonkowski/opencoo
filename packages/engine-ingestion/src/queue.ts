@@ -1,39 +1,29 @@
 /**
- * BullMQ queue factory — one queue per pipeline at the convention
- * `ingestion.<slug>` (architecture.md §6.5 DLQ convention; the
- * companion DLQ for `ingestion.scanner` is `ingestion.scanner.dead`).
+ * Engine-ingestion BullMQ queue helper. Thin wrapper over
+ * `buildEngineQueue` from `@opencoo/shared/engine-scaffold` that
+ * pins `INGESTION_QUEUE_PREFIX = 'ingestion'` so concrete pipelines
+ * call `buildIngestionQueue('scanner', ...)` and get
+ * `ingestion.scanner` back (architecture.md §6.5 DLQ convention).
  *
- * v0.1 only owns queue construction; concrete pipelines (PRs 14-17)
- * own the worker layer, retry policy, and DLQ wiring.
+ * Multi-dot queue names (`ingestion.scanner.classify`,
+ * `ingestion.dlq.intake`, `ingestion.review.dispatch`) bypass this
+ * helper and are constructed via `new Queue(...)` directly because
+ * dotted slugs are rejected here.
  */
-import { Queue, type ConnectionOptions, type QueueOptions } from "bullmq";
+import type { Queue } from "bullmq";
 
-export const INGESTION_QUEUE_PREFIX = "ingestion";
+import {
+  buildEngineQueue,
+  type BuildEngineQueueOptions,
+} from "@opencoo/shared/engine-scaffold";
 
-export interface BuildIngestionQueueOptions {
-  readonly connection: ConnectionOptions;
-}
+export const INGESTION_QUEUE_PREFIX = "ingestion" as const;
 
-/**
- * Construct a BullMQ Queue named `ingestion.<slug>`. Validates the
- * slug at construction so a malformed input fails loud at boot
- * instead of producing a queue with a degenerate name.
- */
+export type BuildIngestionQueueOptions = BuildEngineQueueOptions;
+
 export function buildIngestionQueue(
   slug: string,
   options: BuildIngestionQueueOptions,
 ): Queue {
-  if (slug.length === 0) {
-    throw new Error("buildIngestionQueue: slug must be non-empty");
-  }
-  if (slug.includes(".")) {
-    throw new Error(
-      `buildIngestionQueue: slug must not contain '.', got ${JSON.stringify(slug)} (the dot is reserved as the prefix separator and would collide with DLQ naming)`,
-    );
-  }
-  const name = `${INGESTION_QUEUE_PREFIX}.${slug}`;
-  const queueOpts: QueueOptions = {
-    connection: options.connection,
-  };
-  return new Queue(name, queueOpts);
+  return buildEngineQueue(INGESTION_QUEUE_PREFIX, slug, options);
 }

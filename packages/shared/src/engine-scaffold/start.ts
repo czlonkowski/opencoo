@@ -66,11 +66,14 @@ export interface StartConfig {
   readonly port: number;
 }
 
-export interface StartedEngine<TConfig extends StartConfig> {
+export interface StartedEngine<
+  TConfig extends StartConfig,
+  TRegistry extends PipelineRegistry<{ name: string }> = PipelineRegistry,
+> {
   readonly app: StartServer;
   readonly db: StartDb;
   readonly redis: StartRedis;
-  readonly registry: PipelineRegistry;
+  readonly registry: TRegistry;
   readonly config: TConfig;
   /** Tear down the engine: close the HTTP server, drain the pool,
    *  disconnect Redis. Idempotent — safe to call repeatedly or
@@ -79,11 +82,15 @@ export interface StartedEngine<TConfig extends StartConfig> {
   close(): Promise<void>;
 }
 
-export interface StartOptions<TConfig extends StartConfig> {
+export interface StartOptions<
+  TConfig extends StartConfig,
+  TRegistry extends PipelineRegistry<{ name: string }> = PipelineRegistry,
+> {
   readonly config: TConfig;
   /** Optional pre-populated registry — concrete pipelines register
-   *  before calling `start()`. */
-  readonly registry?: PipelineRegistry;
+   *  before calling `start()`. Engine packages that narrow their
+   *  PipelineDefinition pass their own typed registry instance. */
+  readonly registry?: TRegistry;
   readonly dbFactory: (config: TConfig) => StartDb;
   readonly redisFactory: (config: TConfig) => StartRedis;
   /** Optional probe-map extender. Receives the default {postgres,
@@ -135,10 +142,14 @@ async function teardown(
   }
 }
 
-export async function startEngine<TConfig extends StartConfig>(
-  options: StartOptions<TConfig>,
-): Promise<StartedEngine<TConfig>> {
-  const registry = options.registry ?? new PipelineRegistry();
+export async function startEngine<
+  TConfig extends StartConfig,
+  TRegistry extends PipelineRegistry<{ name: string }> = PipelineRegistry,
+>(
+  options: StartOptions<TConfig, TRegistry>,
+): Promise<StartedEngine<TConfig, TRegistry>> {
+  const registry =
+    options.registry ?? (new PipelineRegistry() as unknown as TRegistry);
   const db = options.dbFactory(options.config);
   const redis = options.redisFactory(options.config);
 
