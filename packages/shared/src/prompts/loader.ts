@@ -39,6 +39,16 @@ import {
   EN_CHAT_PROMPT,
 } from "./en-chat.js";
 import { PL_CHAT_PROMPT } from "./pl-chat.js";
+import {
+  EN_SURFACER_PROMPT,
+  SURFACER_PROMPT_VERSION,
+} from "./en-surfacer.js";
+import { PL_SURFACER_PROMPT } from "./pl-surfacer.js";
+import {
+  BUILDER_PROMPT_VERSION,
+  EN_BUILDER_PROMPT,
+} from "./en-builder.js";
+import { PL_BUILDER_PROMPT } from "./pl-builder.js";
 
 export const PROMPT_NAMES = [
   "classifier",
@@ -46,6 +56,8 @@ export const PROMPT_NAMES = [
   "heartbeat",
   "lint",
   "chat",
+  "surfacer",
+  "builder",
 ] as const;
 export type PromptName = (typeof PROMPT_NAMES)[number];
 
@@ -70,6 +82,8 @@ const REGISTRY: {
     heartbeat: EN_HEARTBEAT_PROMPT,
     lint: EN_LINT_PROMPT,
     chat: EN_CHAT_PROMPT,
+    surfacer: EN_SURFACER_PROMPT,
+    builder: EN_BUILDER_PROMPT,
   },
   pl: {
     classifier: PL_CLASSIFIER_PROMPT,
@@ -77,6 +91,8 @@ const REGISTRY: {
     heartbeat: PL_HEARTBEAT_PROMPT,
     lint: PL_LINT_PROMPT,
     chat: PL_CHAT_PROMPT,
+    surfacer: PL_SURFACER_PROMPT,
+    builder: PL_BUILDER_PROMPT,
   },
 };
 
@@ -94,6 +110,8 @@ const VERSIONS: { readonly [N in PromptName]: string } = {
   heartbeat: HEARTBEAT_PROMPT_VERSION,
   lint: LINT_PROMPT_VERSION,
   chat: CHAT_PROMPT_VERSION,
+  surfacer: SURFACER_PROMPT_VERSION,
+  builder: BUILDER_PROMPT_VERSION,
 };
 
 export interface LoadPromptArgs {

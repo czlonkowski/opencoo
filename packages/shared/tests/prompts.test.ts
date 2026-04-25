@@ -285,3 +285,65 @@ describe("loadPrompt — chat prompts (PR 20 part B / plan #97)", () => {
     expect(pl.version).toBe(en.version);
   });
 });
+
+describe("loadPrompt — surfacer prompts (PR 21 / plan #102)", () => {
+  it("PROMPT_NAMES includes 'surfacer'", () => {
+    expect(PROMPT_NAMES).toContain("surfacer");
+  });
+
+  it("returns en/pl bodies and a non-empty version", () => {
+    const en = loadPrompt({ name: "surfacer", locale: "en" });
+    const pl = loadPrompt({ name: "surfacer", locale: "pl" });
+    expect(en.body.length).toBeGreaterThan(0);
+    expect(pl.body.length).toBeGreaterThan(0);
+    expect(en.version).toBe(pl.version);
+  });
+
+  it("anchors spotlighting + 'proposed' Gate 1 wording (no 'approved' from agent)", () => {
+    const en = loadPrompt({ name: "surfacer", locale: "en" });
+    const body = en.body.toLowerCase();
+    expect(body).toContain("source_content");
+    expect(body).toMatch(/propos/);
+    // The agent must NOT pretend to approve / activate / deploy.
+    expect(body).toMatch(/do not (approve|activate|deploy)|never (approve|activate)/);
+  });
+
+  it("Polish surfacer prompt also anchors spotlighting", () => {
+    const pl = loadPrompt({ name: "surfacer", locale: "pl" });
+    const body = pl.body.toLowerCase();
+    expect(body).toContain("source_content");
+    expect(body).toMatch(/propon|kandydat|sugest/);
+    expect(body).toMatch(/niezaufan|nie wykonuj/);
+  });
+});
+
+describe("loadPrompt — builder prompts (PR 21 / plan #102)", () => {
+  it("PROMPT_NAMES includes 'builder'", () => {
+    expect(PROMPT_NAMES).toContain("builder");
+  });
+
+  it("returns en/pl bodies and a non-empty version", () => {
+    const en = loadPrompt({ name: "builder", locale: "en" });
+    const pl = loadPrompt({ name: "builder", locale: "pl" });
+    expect(en.body.length).toBeGreaterThan(0);
+    expect(pl.body.length).toBeGreaterThan(0);
+    expect(en.version).toBe(pl.version);
+  });
+
+  it("anchors spotlighting + Gate 3 (no activation / never enable workflows)", () => {
+    const en = loadPrompt({ name: "builder", locale: "en" });
+    const body = en.body.toLowerCase();
+    expect(body).toContain("source_content");
+    // Builder produces a 'deployed' workflow; activation is
+    // manual operator action in n8n. The prompt must say so.
+    expect(body).toMatch(/never (activate|enable|toggle)|do not (activate|enable|toggle)/);
+    expect(body).toMatch(/manual|operator|n8n/);
+  });
+
+  it("Polish builder prompt also anchors Gate 3", () => {
+    const pl = loadPrompt({ name: "builder", locale: "pl" });
+    const body = pl.body.toLowerCase();
+    expect(body).toContain("source_content");
+    expect(body).toMatch(/nigdy nie (aktyw|włącz)|nie (aktywuj|włączaj)/);
+  });
+});
