@@ -76,6 +76,14 @@ ruleTester.run("no-feature-env-vars", noFeatureEnvVars, {
       name: "GITEA_URL_FILE is in the default allow-list (Docker secrets convention)",
       code: `const p = process.env.GITEA_URL_FILE;`,
     },
+    {
+      name: "UI_DIST_PATH is in the default allow-list (engine-self-operating, plan #82)",
+      code: `const p = process.env.UI_DIST_PATH;`,
+    },
+    {
+      name: "UI_DIST_PATH_FILE is in the default allow-list (Docker secrets convention)",
+      code: `const p = process.env.UI_DIST_PATH_FILE;`,
+    },
   ],
   invalid: [
     {
