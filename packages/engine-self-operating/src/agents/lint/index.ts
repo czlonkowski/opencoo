@@ -48,7 +48,7 @@ export {
 } from "./detectors/prompt-version-drift.js";
 export {
   CONTRADICTIONS_OUTPUT_SCHEMA,
-  CONTRADICTIONS_PAIR_CAP,
+  CONTRADICTIONS_PAGE_CAP,
   detectContradictions,
   type ContradictionsArgs,
   type PageBody,

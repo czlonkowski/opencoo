@@ -31,7 +31,7 @@ import { assertDomainSlugInScope } from "../scope-check.js";
 import { indexSearch, wikiReadPage } from "../tools/index.js";
 
 import {
-  CONTRADICTIONS_PAIR_CAP,
+  CONTRADICTIONS_PAGE_CAP,
   detectContradictions,
   type PageBody,
 } from "./detectors/contradictions.js";
@@ -104,7 +104,7 @@ export async function runLintCore(args: RunLintCoreArgs): Promise<LintOutput> {
       router: args.router,
       domainId: args.domainId,
       locale: args.locale,
-      pages: args.contradictionInputs.slice(0, CONTRADICTIONS_PAIR_CAP),
+      pages: args.contradictionInputs.slice(0, CONTRADICTIONS_PAGE_CAP),
       fetchedAt: args.now,
     })),
   );
@@ -234,7 +234,7 @@ export async function runLint(
   // 4. Sample the first N pages for the contradictions detector.
   //    Deterministic ordering (indexSearch returns sorted) so
   //    test runs are reproducible.
-  const sampledPaths = wikiPaths.slice(0, CONTRADICTIONS_PAIR_CAP);
+  const sampledPaths = wikiPaths.slice(0, CONTRADICTIONS_PAGE_CAP);
   const contradictionInputs: PageBody[] = [];
   for (const path of sampledPaths) {
     const body = await ctx.callTool("wiki.read_page", () =>

@@ -1,13 +1,16 @@
 /**
  * `contradictions` detector — the only LLM-backed Lint detector.
- * Samples up to N page pairs from the input, asks the LLM
- * (lint prompt, thinker tier) which pairs carry factually
- * contradictory claims, and surfaces each as a finding.
+ * Samples up to N pages from the input, asks the LLM (lint
+ * prompt, thinker tier) which pages carry factually
+ * contradictory claims with each other, and surfaces each
+ * detected contradiction as a finding.
  *
- * Per Q7 (architecture): cap at 50 page-pair samples per run
- * so cost stays bounded. The orchestrator decides which pairs
- * to sample (v0.1: deterministic — first N pairs of the
- * sorted page list); the detector trusts the cap.
+ * Per Q7 (architecture): cap at 50 pages per run so cost stays
+ * bounded. v0.1 sends ALL sampled pages to a single LLM call
+ * — the model picks pairs internally — so the cap bounds the
+ * prompt size, not the number of pairwise comparisons. (The
+ * earlier name `CONTRADICTIONS_PAIR_CAP` was misleading; the
+ * impl never iterates pairwise.)
  *
  * The LLM call is a single prompt that includes ALL the
  * sampled page bodies (each spotlighted in its own
@@ -25,11 +28,13 @@ import type { DomainId } from "@opencoo/shared/db";
 import type { LintFinding } from "../types.js";
 
 /**
- * Architectural cap. The orchestrator should stop pairing
- * before this — but if it doesn't, we slice here so a buggy
- * caller can't blow the per-run budget.
+ * Architectural cap on the max number of PAGES analysed in a
+ * single contradictions pass (Q7). The orchestrator slices the
+ * sampled-paths list to this length before reading bodies, and
+ * the detector slices defensively too so a buggy caller can't
+ * blow the per-run budget.
  */
-export const CONTRADICTIONS_PAIR_CAP = 50;
+export const CONTRADICTIONS_PAGE_CAP = 50;
 
 const CONTRADICTION_RECORD = z
   .object({
@@ -69,7 +74,7 @@ export interface ContradictionsArgs {
 export async function detectContradictions(
   args: ContradictionsArgs,
 ): Promise<readonly LintFinding[]> {
-  const sampled = args.pages.slice(0, CONTRADICTIONS_PAIR_CAP);
+  const sampled = args.pages.slice(0, CONTRADICTIONS_PAGE_CAP);
   if (sampled.length < 2) return [];
 
   const prompt = loadPrompt({ name: "lint", locale: args.locale });

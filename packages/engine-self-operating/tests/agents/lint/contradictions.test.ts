@@ -11,7 +11,7 @@ import { LlmRouter, type LlmProvider } from "@opencoo/shared/llm-router";
 import type { DomainId } from "@opencoo/shared/db";
 
 import {
-  CONTRADICTIONS_PAIR_CAP,
+  CONTRADICTIONS_PAGE_CAP,
   detectContradictions,
 } from "../../../src/agents/lint/detectors/contradictions.js";
 import { freshAgentDb } from "../../agent-harness/_pglite-fixture.js";
@@ -125,8 +125,8 @@ describe("detectContradictions — LLM-backed pair analysis", () => {
     expect(called).toBe(0);
   });
 
-  it("CONTRADICTIONS_PAIR_CAP is the architectural bound from Q7", () => {
-    expect(CONTRADICTIONS_PAIR_CAP).toBe(50);
+  it("CONTRADICTIONS_PAGE_CAP is the architectural bound from Q7 — pages, not pairs", () => {
+    expect(CONTRADICTIONS_PAGE_CAP).toBe(50);
   });
 
   it("DLQs as validation when the LLM emits a malformed payload (Zod-strict reject)", async () => {
