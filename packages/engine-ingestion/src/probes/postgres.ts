@@ -6,24 +6,24 @@
  * `query` method (mocked with `vi.fn` in tests, real `pg.Pool` in
  * prod). Avoiding pglite here keeps the probe path dependency-free.
  */
-import type { Pool } from "pg";
-
 import type { ProbeResult } from "./types.js";
 
 /**
- * Subset of `pg.Pool` we actually use. Letting the parameter type
- * be a structural minimum keeps the test mock simple — vi.fn
- * doesn't need to satisfy the full Pool surface.
+ * Subset of `pg.Pool` we actually use. `pg.Pool.query` has many
+ * overloads; the structural minimum here lets test stubs satisfy
+ * the parameter without reproducing the full `Pool` type, and a
+ * real `pg.Pool` already satisfies it via TypeScript's structural
+ * typing — no union needed at the parameter site.
  */
 export interface PostgresProbeTarget {
   query(text: string): Promise<unknown>;
 }
 
 export async function postgresProbe(
-  pool: PostgresProbeTarget | Pool,
+  pool: PostgresProbeTarget,
 ): Promise<ProbeResult> {
   try {
-    await (pool as PostgresProbeTarget).query("SELECT 1");
+    await pool.query("SELECT 1");
     return { ok: true };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);

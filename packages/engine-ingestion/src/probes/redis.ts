@@ -2,21 +2,23 @@
  * RedisProbe — PING against the injected ioredis client. Catches
  * connection / auth / proxy errors and returns a structured result.
  */
-import type { Redis } from "ioredis";
-
 import type { ProbeResult } from "./types.js";
 
-/** Structural subset of `ioredis.Redis` we use — keeps the test
- *  stub small. */
+/**
+ * Structural subset of `ioredis.Redis` we use. A real `ioredis.Redis`
+ * already satisfies this shape via TypeScript's structural typing,
+ * so the parameter site doesn't need a `RedisProbeTarget | Redis`
+ * union — the minimum surface accepts both.
+ */
 export interface RedisProbeTarget {
   ping(): Promise<string>;
 }
 
 export async function redisProbe(
-  redis: RedisProbeTarget | Redis,
+  redis: RedisProbeTarget,
 ): Promise<ProbeResult> {
   try {
-    const reply = await (redis as RedisProbeTarget).ping();
+    const reply = await redis.ping();
     if (reply !== "PONG") {
       return {
         ok: false,
