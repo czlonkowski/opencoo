@@ -155,21 +155,28 @@ export async function startEngine<
 ): Promise<StartedEngine<TConfig, TRegistry>> {
   const registry =
     options.registry ?? (new PipelineRegistry() as unknown as TRegistry);
-  const db = options.dbFactory(options.config);
-  const redis = options.redisFactory(options.config);
 
-  const baseProbes: ProbeMap = {
-    postgres: () => postgresProbe(db),
-    redis: () => redisProbe(redis),
-  };
-  const probes =
-    options.probeExtender !== undefined
-      ? options.probeExtender(baseProbes)
-      : baseProbes;
-
-  const app = await (options.serverFactory ?? defaultServerFactory)(probes);
-
+  // Resource safety (copilot #20): every step that can leave a
+  // partially-constructed resource alive runs inside the same
+  // try block. On any failure we tear down whatever we've built
+  // so far — `teardown()` skips undefined slots — and rethrow
+  // the ORIGINAL error so the caller sees the cause, not a
+  // cleanup-noise wrapper.
+  let db: StartDb | undefined;
+  let redis: StartRedis | undefined;
+  let app: StartServer | undefined;
   try {
+    db = options.dbFactory(options.config);
+    redis = options.redisFactory(options.config);
+    const baseProbes: ProbeMap = {
+      postgres: () => postgresProbe(db as StartDb),
+      redis: () => redisProbe(redis as StartRedis),
+    };
+    const probes =
+      options.probeExtender !== undefined
+        ? options.probeExtender(baseProbes)
+        : baseProbes;
+    app = await (options.serverFactory ?? defaultServerFactory)(probes);
     await app.listen({ host: "0.0.0.0", port: options.config.port });
   } catch (err) {
     await teardown(app, db, redis);
