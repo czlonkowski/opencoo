@@ -28,3 +28,38 @@ export {
   type StartRedis,
   type StartServer,
 } from "./start.js";
+
+// Agent harness surface (PR 19, plan #87). The composition root
+// (PR 30 CLI) wires concrete agents (PR 20+) onto this harness.
+export {
+  AgentDefinitionRegistry,
+  AgentDenyListError,
+  AgentInstanceNotFoundError,
+  AgentRunAlreadyTerminalError,
+  EXACT_DENY_TOOLS,
+  DENY_PREFIXES,
+  assertToolAllowed,
+  completeRun,
+  invokeAgent,
+  isDenied,
+  loadInstanceById,
+  loadInstanceBySlugAndName,
+  loadInstanceMemory,
+  startRun,
+  syncDefinitions,
+  type AgentDefinition,
+  type AgentInstance,
+  type AgentInvocation,
+  type AgentInvocationResult,
+  type AgentRunContext,
+  type AgentTrigger,
+  type CompleteRunArgs,
+  type ErrorClass,
+  type InstanceMemory,
+  type MemoryEntry,
+  type StartRunArgs,
+  type StartRunResult,
+  type SyncDefinitionsArgs,
+  type SyncDefinitionsDb,
+  type TerminalStatus,
+} from "./agent-harness/index.js";
