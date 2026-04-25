@@ -54,31 +54,33 @@ function readWithFile(
 }
 
 /**
+ * Required-variant of `readWithFile`. Throws a uniform "missing var"
+ * error message naming both the inline and `_FILE` env-var names so
+ * misconfigured deploys see exactly which knob to set.
+ */
+function requireWithFile(
+  env: Record<string, string | undefined>,
+  name: string,
+): string {
+  const value = readWithFile(env, name);
+  if (value === undefined) {
+    throw new Error(
+      `engine-ingestion config: ${name} (or ${name}_FILE) is required`,
+    );
+  }
+  return value;
+}
+
+/**
  * Parse + validate engine config. Pure function — pass `process.env`
  * (or a stub for tests). Throws on missing required vars.
  */
 export function loadEngineConfig(
   env: Record<string, string | undefined>,
 ): EngineConfig {
-  const databaseUrl = readWithFile(env, "DATABASE_URL");
-  const redisUrl = readWithFile(env, "REDIS_URL");
-  const giteaUrl = readWithFile(env, "GITEA_URL");
-
-  if (databaseUrl === undefined) {
-    throw new Error(
-      "engine-ingestion config: DATABASE_URL (or DATABASE_URL_FILE) is required",
-    );
-  }
-  if (redisUrl === undefined) {
-    throw new Error(
-      "engine-ingestion config: REDIS_URL (or REDIS_URL_FILE) is required",
-    );
-  }
-  if (giteaUrl === undefined) {
-    throw new Error(
-      "engine-ingestion config: GITEA_URL (or GITEA_URL_FILE) is required",
-    );
-  }
+  const databaseUrl = requireWithFile(env, "DATABASE_URL");
+  const redisUrl = requireWithFile(env, "REDIS_URL");
+  const giteaUrl = requireWithFile(env, "GITEA_URL");
 
   const portRaw = env["PORT"];
   const port = portRaw === undefined ? 8080 : Number(portRaw);
