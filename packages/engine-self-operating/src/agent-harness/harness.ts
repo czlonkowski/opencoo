@@ -83,6 +83,14 @@ export interface AgentInvocation {
 export interface AgentRunContext {
   readonly definition: AgentDefinition;
   readonly instance: AgentInstance;
+  /** UUID of the active agent_runs row. Agents that persist
+   *  side rows keyed by run id (e.g. Surfacer →
+   *  automation_candidates.surfacer_run_id, Builder →
+   *  automation_deployments.builder_run_id) read this. The
+   *  recorder INSERTed the row before this body executes; the
+   *  harness wires the same id into completeRun on
+   *  terminalization. (PR 21 / plan #102) */
+  readonly runId: string;
   /** Memory entries already spotlighted (each entry's body
    *  is wrapped in a <source_content> envelope). The agent
    *  body concatenates them into its prompt without
@@ -168,6 +176,7 @@ export async function invokeAgent(
   const ctx: AgentRunContext = {
     definition,
     instance,
+    runId,
     spotlightedMemory,
     router: args.router,
     logger: args.logger,
