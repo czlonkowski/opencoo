@@ -23,7 +23,7 @@ export const CLASSIFIER_OUTPUT_SCHEMA = z
   .object({
     version: z.literal("v1"),
     language: z.enum(["en", "pl", "other"]),
-    summary: z.string().min(1).max(2000),
+    summary: z.string().min(1).max(200),
     target_domains: z.array(TARGET_DOMAIN_SCHEMA).min(1),
     pipelines: z
       .array(z.enum(["compile.single-source", "compile.roll-up"]))
