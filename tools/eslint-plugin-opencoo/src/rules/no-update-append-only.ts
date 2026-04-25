@@ -32,6 +32,12 @@ const APPEND_ONLY_TABLES = new Set([
   "erasureLog",
   "minerSuppressions",
   "llmUsageDebug",
+  // PR 28 / plan #128 — admin-API audit log. Append-only per
+  // THREAT-MODEL §2 invariant 8 + §3.13. The writer in
+  // `engine-self-operating/src/admin-api/audit-log.ts` only
+  // INSERTs; any future code path that tries to UPDATE/DELETE
+  // it lints red here.
+  "adminAuditLog",
 ]);
 
 type MessageIds = "updateAppendOnly" | "deleteAppendOnly";

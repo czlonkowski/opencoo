@@ -1,0 +1,185 @@
+/**
+ * Admin API plugin — `/api/admin/*` review-dashboard surface
+ * (PR 28 / plan #128, THREAT-MODEL §3.13).
+ *
+ * Mount via `serverFactory` swap in `start.ts`:
+ *
+ *   const userServerFactory = async (probes, config, logger) => {
+ *     const app = await defaultServerFactory(probes, config, logger);
+ *     await registerAdminApi(app, {db, giteaClient, ...});
+ *     return app;
+ *   };
+ *
+ * Order of registration matters:
+ *   1. `_csrf` issuance route — verifyAdmin only (no CSRF gate
+ *      yet; this is where the operator gets the token).
+ *   2. State-changing route handlers — verifyAdmin + requireCsrf.
+ *   3. Read-only listing routes — verifyAdmin only.
+ *   4. Debug-banner onSend hook (after all routes so it sees
+ *      every JSON response).
+ *
+ * The plugin does NOT register a notFoundHandler — the
+ * existing `static-ui.ts` setNotFoundHandler differentiates
+ * `/api/*` from SPA routes (verified). Unknown `/api/admin/*`
+ * paths fall through to that handler and return 404.
+ */
+import type { FastifyInstance } from "fastify";
+import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
+
+import type { Logger } from "@opencoo/shared/logger";
+
+import { writeAuditLog } from "./audit-log.js";
+import { buildVerifyAdmin, type GiteaClient } from "./auth.js";
+import { issueCsrfToken } from "./csrf.js";
+import { attachDebugBannerHook } from "./debug-banner.js";
+import { registerAuditLogReadRoutes } from "./routes/audit-log-read.js";
+import { registerAutomationCandidatesRoutes } from "./routes/automation-candidates.js";
+import { registerLintFindingsRoutes } from "./routes/lint-findings.js";
+import { registerMarketplaceUpdatesRoutes } from "./routes/marketplace-updates.js";
+import { registerSourceBindingsRoutes } from "./routes/source-bindings.js";
+
+type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
+
+export interface RegisterAdminApiArgs {
+  readonly app: FastifyInstance;
+  readonly db: Db;
+  readonly giteaClient: GiteaClient;
+  readonly adminTeamSlug: string;
+  readonly sessionHmacKey: Buffer;
+  readonly logger: Logger;
+  /** Whether `LLM_DEBUG_LOG=1` is set at boot. The onSend hook
+   *  injects the `_llmDebugLogActive: true` banner into JSON
+   *  responses iff this is true. */
+  readonly llmDebugLog: boolean;
+}
+
+export async function registerAdminApi(
+  args: RegisterAdminApiArgs,
+): Promise<void> {
+  const verifyAdmin = buildVerifyAdmin({
+    db: args.db,
+    giteaClient: args.giteaClient,
+    adminTeamSlug: args.adminTeamSlug,
+    sessionHmacKey: args.sessionHmacKey,
+    logger: args.logger,
+  });
+
+  // Every route under /api/admin/* MUST authenticate.
+  // We attach the preHandler at the route level (via the
+  // explicit `preHandler` option on each route) so the order
+  // of authn → CSRF → handler is unambiguous in the route
+  // declaration.
+  // Register the CSRF-issue endpoint with verifyAdmin only.
+  args.app.get(
+    "/api/admin/_csrf",
+    { preHandler: verifyAdmin },
+    async (req, reply) => {
+      const issued = issueCsrfToken(reply);
+      return reply.code(200).send({
+        csrfToken: issued.csrfToken,
+        // Reflect the resolved username — handy for the SPA's
+        // top-bar without needing a separate /me call.
+        username: req.adminContext?.username ?? null,
+      });
+    },
+  );
+
+  // Wrap every route registrar with verifyAdmin so the auth
+  // gate runs uniformly. Using addHook on the app would
+  // intercept /health + /ready too — we don't want that.
+  // Instead, we attach verifyAdmin per route.
+  const guardedApp = makeGuardedApp(args.app, verifyAdmin);
+
+  registerSourceBindingsRoutes({ app: guardedApp, db: args.db });
+  registerLintFindingsRoutes({ app: guardedApp, db: args.db });
+  registerAutomationCandidatesRoutes({ app: guardedApp, db: args.db });
+  registerMarketplaceUpdatesRoutes({ app: guardedApp, db: args.db });
+  registerAuditLogReadRoutes({ app: guardedApp, db: args.db });
+
+  // Debug banner: registered LAST so it sees every JSON
+  // response regardless of which route built it.
+  attachDebugBannerHook(args.app, { llmDebugLog: args.llmDebugLog });
+
+  // Reference writeAuditLog so the eslint-no-unused-imports
+  // rule is happy — the route-level audit writes use it
+  // directly; this re-export is for tests that want to check
+  // the plugin shape.
+  void writeAuditLog;
+}
+
+/**
+ * Wrap a Fastify instance so every `app.get` / `app.post` /
+ * `app.put` registration prepends `verifyAdmin` to the
+ * preHandler chain. Routes that ALSO require CSRF declare
+ * `preHandler: requireCsrf` directly; the wrapper composes
+ * the two so verifyAdmin always runs first.
+ *
+ * This avoids the `addHook('preHandler', verifyAdmin)`
+ * footgun: a top-level addHook would intercept `/health`,
+ * `/ready`, the static UI, and the SPA fallback — none of
+ * which should be auth-gated.
+ */
+function makeGuardedApp(
+  app: FastifyInstance,
+  verifyAdmin: (req: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => Promise<void>,
+): FastifyInstance {
+  type RouteFn = (
+    path: string,
+    options: { preHandler?: unknown } | unknown,
+    handler?: unknown,
+  ) => unknown;
+
+  const wrap = (orig: RouteFn): RouteFn => {
+    return (path, optionsOrHandler, maybeHandler) => {
+      let opts: { preHandler?: unknown };
+      let handler: unknown;
+      if (typeof optionsOrHandler === "function") {
+        opts = {};
+        handler = optionsOrHandler;
+      } else {
+        opts = (optionsOrHandler as { preHandler?: unknown }) ?? {};
+        handler = maybeHandler;
+      }
+      const existing = opts.preHandler;
+      const chained = existing === undefined
+        ? verifyAdmin
+        : Array.isArray(existing)
+          ? [verifyAdmin, ...existing]
+          : [verifyAdmin, existing];
+      const merged = { ...opts, preHandler: chained };
+      return (orig as (...a: unknown[]) => unknown).call(
+        app,
+        path,
+        merged,
+        handler,
+      );
+    };
+  };
+
+  // Build a thin proxy that intercepts the http verbs we use.
+  // Other Fastify methods (addHook, register, etc.) pass through.
+  const proxy: FastifyInstance = new Proxy(app, {
+    get(target, prop, receiver) {
+      if (prop === "get" || prop === "post" || prop === "put" || prop === "delete" || prop === "patch") {
+        const orig = Reflect.get(target, prop, receiver) as RouteFn;
+        return wrap(orig.bind(target));
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  return proxy;
+}
+
+export type { GiteaClient, GiteaWhoamiResult, AdminContext } from "./auth.js";
+export { AUDIT_LOG_ACTIONS, type AuditAction } from "./audit-log.js";
+export {
+  computePayloadHash,
+  issueSovereigntyDiffToken,
+  verifySovereigntyDiffToken,
+  SOVEREIGNTY_TOKEN_TTL_MS,
+  type SovereigntyDiffPayload,
+  type VerifyResult,
+  type VerifyFailureReason,
+} from "./sovereignty-token.js";
+export { CSRF_COOKIE, CSRF_HEADER, extractCsrfCookie } from "./csrf.js";
+export { DEBUG_BANNER_FIELD } from "./debug-banner.js";

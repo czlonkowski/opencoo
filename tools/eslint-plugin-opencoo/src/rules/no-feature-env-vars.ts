@@ -36,6 +36,16 @@ const DEFAULT_ALLOW_LIST = [
   // (PR 18, plan #82)
   "UI_DIST_PATH",
   "UI_DIST_PATH_FILE",
+  // Admin-API auth + sovereignty-diff signing (PR 28 / plan #128,
+  // THREAT-MODEL §3.13). All three follow the same Docker-secrets
+  // _FILE convention so production deploys can stash credentials
+  // on tmpfs instead of env.
+  "ADMIN_TEAM_SLUG",
+  "ADMIN_TEAM_SLUG_FILE",
+  "SESSION_HMAC_KEY",
+  "SESSION_HMAC_KEY_FILE",
+  "GITEA_BASE_URL",
+  "GITEA_BASE_URL_FILE",
 ];
 
 function isIdentifier(
