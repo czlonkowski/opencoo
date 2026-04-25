@@ -33,6 +33,8 @@
  * DI — no env reads, no LLM, no wiki writes. boundary rules all
  * pass by construction.
  */
+import { createHash } from "node:crypto";
+
 import Fastify, { type FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import type { PgDatabase } from "drizzle-orm/pg-core";
@@ -166,7 +168,6 @@ export function buildWebhookReceiver(
     // Compute payload hash (SHA-256 hex of the raw body) regardless
     // of signature outcome — operators need this to dedupe even
     // failed deliveries.
-    const { createHash } = await import("node:crypto");
     const payloadHash = `sha256:${createHash("sha256")
       .update(rawBody)
       .digest("hex")}`;
