@@ -25,7 +25,18 @@ import type { Logger } from "@opencoo/shared/logger";
 import { ValidationError } from "@opencoo/shared/errors";
 import { z } from "zod";
 
-export const REVIEW_DISPATCH_QUEUE_SLUG = "review.dispatch" as const;
+/**
+ * Canonical full queue name the dispatcher worker subscribes to.
+ * Keep byte-for-byte consistent with the docstring, README, and
+ * the Compiler-side dispatch hook — Compiler-emitted jobs sit
+ * dead on the wrong queue if this drifts (copilot #19).
+ *
+ * Multi-dot prefix bypasses `buildIngestionQueue` (which rejects
+ * dotted slugs) and is constructed directly via `new Queue(...)`
+ * — same shape as `ingestion.dlq.intake` from PR 14.
+ */
+export const REVIEW_DISPATCH_QUEUE_SLUG =
+  "ingestion.review.dispatch" as const;
 
 /**
  * Job payload the Compiler emits. Includes the commit sha so the
