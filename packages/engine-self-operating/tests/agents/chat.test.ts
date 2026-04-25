@@ -34,6 +34,7 @@ import {
   CHAT_DEFINITION,
   CHAT_OUTPUT_SCHEMA,
   ChatPatRequiredError,
+  normalizeCallerPat,
   runChat,
   type ChatOutput,
 } from "../../src/agents/chat/index.js";
@@ -229,6 +230,75 @@ describe("runChat — strict callerPat assertion (Q2)", () => {
     const err = new ChatPatRequiredError();
     expect(err.errorClass).toBe("validation");
     expect(err.name).toBe("ChatPatRequiredError");
+  });
+});
+
+describe("normalizeCallerPat — local trim for downstream use (copilot #23 fix 4)", () => {
+  // Whitespace-padded PATs pass the strict empty check
+  // (`"  realtoken  ".trim().length > 0`) but fail Bearer auth
+  // if propagated unchanged. Chat trims for its OWN downstream
+  // use; the harness's verbatim contract (ctx.callerPat
+  // reaches the body unchanged) stays intact.
+  it("strips leading + trailing whitespace", () => {
+    expect(normalizeCallerPat("  ghp_alice_secret  ")).toBe(
+      "ghp_alice_secret",
+    );
+  });
+
+  it("leaves clean PATs unchanged", () => {
+    expect(normalizeCallerPat("ghp_clean")).toBe("ghp_clean");
+  });
+
+  it("does not mutate inner whitespace (a real PAT has no internal spaces, but the helper is dumb-trim)", () => {
+    expect(normalizeCallerPat("  ghp_a b  ")).toBe("ghp_a b");
+  });
+});
+
+describe("runChat — whitespace-padded PAT path (copilot #23 fix 4)", () => {
+  it("succeeds end-to-end when ctx.callerPat has surrounding whitespace; harness propagation stays verbatim", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedAgentInstance(fixture, {
+      definitionSlug: "chat",
+      memory: { type: "none" },
+    });
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(CHAT_DEFINITION);
+
+    const mcp = new InMemoryMcpToolClient();
+    mcp.setResource("worldview://test-domain", "# wv");
+    mcp.setResource("wiki://test-domain/index.md", "# index");
+
+    const router = makeRouter(
+      fakeProvider({ version: "v1", answer: "ok", citations: [] }),
+      fixture.db,
+    );
+
+    let ctxCallerPatObserved: string | undefined;
+    const result = await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "http",
+      inputs: {},
+      callerPat: "  ghp_padded  ",
+      run: async (ctx) => {
+        ctxCallerPatObserved = ctx.callerPat;
+        return runChat(ctx, {
+          db: fixture.db as unknown as Parameters<typeof runChat>[1]["db"],
+          mcp,
+          domainSlug: "test-domain",
+          question: "what's in the index?",
+        });
+      },
+    });
+
+    expect(result.status).toBe("success");
+    // Harness contract: ctx.callerPat reaches the body
+    // verbatim — Chat normalizes locally rather than at the
+    // harness layer.
+    expect(ctxCallerPatObserved).toBe("  ghp_padded  ");
   });
 });
 
