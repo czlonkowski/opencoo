@@ -46,6 +46,10 @@
       "types": "./dist/source-adapter/index.d.ts",
       "default": "./dist/source-adapter/index.js"
     },
+    "./output-adapter": {
+      "types": "./dist/output-adapter/index.d.ts",
+      "default": "./dist/output-adapter/index.js"
+    },
     "./wiki-write": {
       "types": "./dist/wiki-write/index.d.ts",
       "default": "./dist/wiki-write/index.js"
@@ -69,6 +73,10 @@
     "./adapter-contract-tests/wiki-adapter": {
       "types": "./dist/adapter-contract-tests/wiki-adapter.d.ts",
       "default": "./dist/adapter-contract-tests/wiki-adapter.js"
+    },
+    "./adapter-contract-tests/output-adapter": {
+      "types": "./dist/adapter-contract-tests/output-adapter.d.ts",
+      "default": "./dist/adapter-contract-tests/output-adapter.js"
     },
     "./adapter-contract-tests/source-adapter": {
       "types": "./dist/adapter-contract-tests/source-adapter.d.ts",

@@ -81,14 +81,44 @@ import type {
  * source. The fixture interprets these against its own
  * mock-source mechanics.
  */
-export interface SourceAdapterFixtureOptions {
-  readonly backendName: string;
-  readonly mode: "polling" | "webhook";
-  /** Build a fresh adapter pre-seeded with `seedDocuments`.
-   *  The handle returns the adapter + a `simulate` callback the
-   *  test uses to mutate the underlying source between scans
-   *  (e.g. add a doc, bump a revision, remove a doc). */
-  readonly makeAdapter: () => Promise<SourceAdapterHandle>;
+/**
+ * Discriminated-union shape so TypeScript ENFORCES the
+ * webhook fixture when `mode === 'webhook'` and ENFORCES its
+ * absence when `mode === 'polling'`. Adapter test files that
+ * pass `mode: 'webhook'` without `webhookFixture` fail to
+ * type-check at the call site of `sourceAdapterContract({...})`.
+ */
+export type SourceAdapterFixtureOptions =
+  | {
+      readonly backendName: string;
+      readonly mode: "polling";
+      readonly makeAdapter: () => Promise<SourceAdapterHandle>;
+    }
+  | {
+      readonly backendName: string;
+      readonly mode: "webhook";
+      readonly makeAdapter: () => Promise<SourceAdapterHandle>;
+      /** PR 24 / plan #115 — required for webhook-mode adapters
+       *  so the HMAC + replay assertions run against real bytes. */
+      readonly webhookFixture: WebhookFixtureBundle;
+    };
+
+export interface WebhookFixtureBundle {
+  /** A valid webhook body the adapter knows how to parse. */
+  readonly body: Buffer;
+  /** Secret bytes — the same bytes the receiver would resolve
+   *  from the CredentialStore in production. */
+  readonly secret: Buffer;
+  /** Valid signature for `(body, secret)`. The contract suite
+   *  flips bytes / drops the field to force the negative
+   *  paths. */
+  readonly validSignature: string;
+  /** Header bag the adapter's `extractSignature` walks. The
+   *  suite passes this verbatim to `extractSignature(headers)`. */
+  readonly headers: Readonly<Record<string, string>>;
+  /** Header key the adapter looks up. Used by the suite to
+   *  build a "missing" headers variant by deleting the key. */
+  readonly signatureHeaderName: string;
 }
 
 export interface SimulatedDocSeed {
@@ -153,13 +183,13 @@ export function sourceAdapterContract(
     if (options.mode === "polling") {
       runPollingAssertions(options);
     } else {
-      runWebhookStubs();
+      runWebhookAssertions(options);
     }
   });
 }
 
 function runPollingAssertions(
-  options: SourceAdapterFixtureOptions,
+  options: Extract<SourceAdapterFixtureOptions, { mode: "polling" }>,
 ): void {
   // 1. slug
   it("slug is a non-empty stable string", async () => {
@@ -370,19 +400,137 @@ function runPollingAssertions(
   });
 }
 
-function runWebhookStubs(): void {
-  // TODO: flesh out when PR 24 (Asana) / PR 27 (Fireflies)
-  // land their webhook receivers. The shape is documented in
-  // architecture §10 and §3.1: HMAC-verify or DLQ; replay
-  // dedupe via event_id. This section runs for adapter
-  // packages that declare `mode: 'webhook'`.
-  it.skip("HMAC missing → ValidationError (TODO: PR 24 Asana / PR 27 Fireflies)", () => {
-    /* deferred */
+function runWebhookAssertions(
+  options: Extract<SourceAdapterFixtureOptions, { mode: "webhook" }>,
+): void {
+  // PR 24 / plan #115: the 3 stubs are now full assertions.
+  // The webhook receiver (engine-ingestion, PR 14) consumes:
+  //   adapter.webhook.verifier
+  //   adapter.webhook.extractSignature(headers)
+  //   adapter.webhook.parseEvents({ body, fetchedAt })
+  // Plus the receiver layer dedupes replays via the
+  // `webhook_events` UNIQUE index on (binding_id, event_id).
+
+  // 1. webhook helpers exposed
+  it("adapter.webhook is set with verifier + extractSignature + parseEvents", async () => {
+    const handle = await options.makeAdapter();
+    try {
+      const wh = handle.adapter.webhook;
+      expect(wh).toBeDefined();
+      if (wh === undefined) return;
+      expect(typeof wh.verifier.verify).toBe("function");
+      expect(typeof wh.extractSignature).toBe("function");
+      expect(typeof wh.parseEvents).toBe("function");
+    } finally {
+      await handle.cleanup();
+    }
   });
-  it.skip("HMAC invalid → ValidationError (TODO: PR 24 Asana / PR 27 Fireflies)", () => {
-    /* deferred */
+
+  // 2. valid body+signature → ok
+  it("verifier returns ok=true for a correct body + signature pair", async () => {
+    const fixture = options.webhookFixture;
+    const handle = await options.makeAdapter();
+    try {
+      const wh = handle.adapter.webhook;
+      if (wh === undefined) throw new Error("adapter.webhook undefined");
+      const result = wh.verifier.verify({
+        body: fixture.body,
+        secret: fixture.secret,
+        signature: fixture.validSignature,
+      });
+      expect(result.ok).toBe(true);
+    } finally {
+      await handle.cleanup();
+    }
   });
-  it.skip("replayed event_id → no second intake row (TODO: PR 24 Asana / PR 27 Fireflies)", () => {
-    /* deferred */
+
+  // 3. webhook/hmac-missing-rejects-with-validation
+  it("HMAC missing → verify({signature: undefined}) returns ok=false (validation-class at receiver)", async () => {
+    const fixture = options.webhookFixture;
+    const handle = await options.makeAdapter();
+    try {
+      const wh = handle.adapter.webhook;
+      if (wh === undefined) throw new Error("adapter.webhook undefined");
+      // The receiver builds `signature` from
+      // adapter.webhook.extractSignature(headers). When the
+      // header is absent, extractSignature returns undefined;
+      // the verifier sees that as "missing" and returns
+      // ok:false.
+      const headersWithoutSig: Record<string, string> = {
+        ...fixture.headers,
+      };
+      delete headersWithoutSig[fixture.signatureHeaderName];
+      const sig = wh.extractSignature(headersWithoutSig);
+      expect(sig).toBeUndefined();
+      const result = wh.verifier.verify({
+        body: fixture.body,
+        secret: fixture.secret,
+        signature: sig,
+      });
+      expect(result.ok).toBe(false);
+      // The receiver translates ok:false into
+      // ValidationError(WebhookSignatureError) — that mapping
+      // is in engine-ingestion, not in the adapter, but the
+      // shape contract says ok:false MUST happen here.
+    } finally {
+      await handle.cleanup();
+    }
+  });
+
+  // 4. webhook/hmac-invalid-rejects-with-validation
+  it("HMAC tampered → verify({signature: bytes-flipped}) returns ok=false", async () => {
+    const fixture = options.webhookFixture;
+    const handle = await options.makeAdapter();
+    try {
+      const wh = handle.adapter.webhook;
+      if (wh === undefined) throw new Error("adapter.webhook undefined");
+      // Flip the last hex character of the signature; even
+      // one bit's worth of mismatch must fail verification.
+      const tampered =
+        fixture.validSignature.slice(0, -1) +
+        (fixture.validSignature.slice(-1) === "0" ? "1" : "0");
+      expect(tampered).not.toBe(fixture.validSignature);
+      const result = wh.verifier.verify({
+        body: fixture.body,
+        secret: fixture.secret,
+        signature: tampered,
+      });
+      expect(result.ok).toBe(false);
+    } finally {
+      await handle.cleanup();
+    }
+  });
+
+  // 5. webhook/replayed-event-id-deduped
+  it("parseEvents emits a stable eventId — replays produce the same id (receiver-layer dedupe)", async () => {
+    const fixture = options.webhookFixture;
+    const handle = await options.makeAdapter();
+    try {
+      const wh = handle.adapter.webhook;
+      if (wh === undefined) throw new Error("adapter.webhook undefined");
+      // The adapter is idempotent: parseEvents on the same
+      // body twice yields the same eventId(s). The
+      // receiver-layer UNIQUE constraint on (binding_id,
+      // event_id) makes the second insert a no-op.
+      const first = wh.parseEvents({ body: fixture.body });
+      const second = wh.parseEvents({ body: fixture.body });
+      expect(first.length).toBeGreaterThan(0);
+      expect(second.map((e) => e.eventId)).toEqual(
+        first.map((e) => e.eventId),
+      );
+      // Each event MUST have a non-empty stable id.
+      for (const ev of first) {
+        expect(typeof ev.eventId).toBe("string");
+        expect(ev.eventId.length).toBeGreaterThan(0);
+        // Webhook-emitted docs must satisfy the same contract
+        // shape as polling-mode changed docs (non-empty
+        // sourceDocId, fetchedAt populated, contentBytes a
+        // Buffer ≤ 1 MiB) — empty IDs would silently break
+        // intake dedupe.
+        expectChangedDocShape(ev.doc);
+      }
+    } finally {
+      await handle.cleanup();
+    }
   });
 }

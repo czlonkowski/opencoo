@@ -1,17 +1,26 @@
 /**
- * `OutputChannelAdapter` — port for delivery of agent JSON
- * payloads to a downstream system (Slack, email, Asana,
- * webhooks). Concrete adapters land alongside the SourceAdapter
- * cohort in PR 23+. v0.1 ships only the port shape + the
- * `MockOutputChannelAdapter` test fixture.
+ * `OutputChannelAdapter` — engine-internal port for delivery
+ * of agent JSON payloads to a downstream channel post-LLM
+ * (Slack, email, Asana, webhooks).
  *
- * Per Q10 (architecture §9.4 + THREAT-MODEL §3.5):
- * `output_channel_deliver` is NOT a tool the LLM invokes. The
- * agent body returns a JSON payload via the harness
- * (`agent_runs.output`); the engine's post-run hook then routes
- * it to the configured channel. Keeping delivery out-of-band
- * means a prompt-injection attack on the agent cannot redirect
- * the payload to a different audience.
+ * # Naming note — distinct from `OutputAdapter`
+ *
+ * This port is the engine-internal Q10 binding-enforcement
+ * surface (architecture §9.4, THREAT-MODEL §3.5). The
+ * `OutputChannelRegistry` cross-checks the agent's invocation
+ * against `agent_instances.output_channel_ids[]` BEFORE
+ * dispatching, so a prompt-injection attack on the agent
+ * cannot redirect the payload to a different audience.
+ *
+ * `OutputAdapter<TPayload>` (`@opencoo/shared/output-adapter`,
+ * PR 24 / plan #115) is the broader architectural port for
+ * "writes to external systems" — concrete adapter packages
+ * (`@opencoo/output-asana`, future Slack / email) implement
+ * THAT. In v0.1 the two are decoupled; a future bridge package
+ * will fan an `OutputChannelAdapter.deliver` call out to one
+ * or more `OutputAdapter.write` calls. Keeping them separate
+ * preserves Q10 binding enforcement at the engine layer
+ * independently of where the actual external write lives.
  *
  * Each delivery carries:
  *   - `payload` — the agent's JSON output (already validated
