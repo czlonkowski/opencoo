@@ -54,6 +54,7 @@ const HEARTBEAT_DEF: AgentDefinition = {
   description: "Daily heartbeat report",
   outputSchemaName: "HeartbeatOutput",
   defaultMemory: { type: "none" },
+  toolNames: ["worldview.read", "index.search"],
 };
 
 describe("invokeAgent — happy path", () => {

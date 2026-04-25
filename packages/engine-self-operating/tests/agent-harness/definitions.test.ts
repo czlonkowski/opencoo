@@ -25,6 +25,7 @@ const HEARTBEAT_DEF: AgentDefinition = {
   description: "Daily heartbeat report",
   outputSchemaName: "HeartbeatOutput",
   defaultMemory: { type: "run-history", count: 5 },
+  toolNames: ["worldview.read", "index.search"],
 };
 
 const LINT_DEF: AgentDefinition = {
@@ -33,6 +34,7 @@ const LINT_DEF: AgentDefinition = {
   description: "Weekly lint pass",
   outputSchemaName: "LintFindings",
   defaultMemory: { type: "none" },
+  toolNames: ["worldview.read", "index.search", "wiki.read_page"],
 };
 
 describe("AgentDefinitionRegistry", () => {

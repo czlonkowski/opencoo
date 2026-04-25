@@ -224,6 +224,7 @@ describe("agents-readers — Heartbeat + Lint never call wikiWrite (LOAD-BEARING
           db: fixture.db as unknown as Parameters<typeof runLint>[1]["db"],
           mcp,
           domainSlug: "test-domain",
+          definitions,
         }),
     });
     expect(lintResult.status).toBe("success");

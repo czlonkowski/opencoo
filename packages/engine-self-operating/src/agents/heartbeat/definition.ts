@@ -17,4 +17,8 @@ export const HEARTBEAT_DEFINITION: AgentDefinition = {
     "Daily proactive briefing. Read-only — emits ≤5 alerts, leads with priority-1.",
   outputSchemaName: "HeartbeatOutput",
   defaultMemory: { type: "run-history", count: 5 },
+  // Read-only tool surface. The automation_drift Lint detector
+  // (plan #97 Q6) flags any past tool_calls[].name not in this
+  // set — evidence of a tool slipped in without being declared.
+  toolNames: ["worldview.read", "index.search"],
 };

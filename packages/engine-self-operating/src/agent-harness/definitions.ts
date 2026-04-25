@@ -45,6 +45,16 @@ export interface AgentDefinition {
    *  new agent_instance row when it's seeded with no
    *  explicit memory config. */
   readonly defaultMemory: Record<string, unknown>;
+  /** The closed set of tool names the agent is allowed to
+   *  invoke via `ctx.callTool`. Used by the
+   *  `automation_drift` Lint detector (plan #97 Q6) to flag
+   *  past runs whose `tool_calls[].name` is not in this set —
+   *  evidence of a removed tool that's still being invoked,
+   *  or a new tool slipped in without being declared. The
+   *  detector treats the definition as the source of truth;
+   *  the harness's deny-list is a destructive-tool floor and
+   *  the definition is the per-agent ceiling. */
+  readonly toolNames: readonly string[];
 }
 
 /**

@@ -64,7 +64,7 @@ function makeRouter(provider: LlmProvider, db: unknown): LlmRouter {
 }
 
 describe("runLint — end-to-end orchestrator", () => {
-  it("fans out to all 5 detectors and surfaces their findings via agent_runs.output", async () => {
+  it("fans out to all 6 detectors and surfaces their findings via agent_runs.output", async () => {
     const fixture = await freshAgentDb();
 
     // 1. Wildcard binding (will trigger wildcard-bindings).
@@ -105,6 +105,25 @@ describe("runLint — end-to-end orchestrator", () => {
     const definitions = new AgentDefinitionRegistry();
     definitions.register(LINT_DEFINITION);
 
+    // 6. Automation-drift trigger: pre-seed a successful past
+    //    run whose tool_calls include a name not in the lint
+    //    definition's allowed toolNames. The Lint definition
+    //    allows {worldview.read, index.search, wiki.read_page};
+    //    this run records a fictitious 'wiki.write_page' call
+    //    that the new detector should flag.
+    await fixture.raw.query(
+      `INSERT INTO agent_runs (definition_slug, instance_id, trigger, status, tool_calls, started_at, ended_at, created_at)
+       VALUES ('lint', $1::uuid, 'scheduled', 'success', $2::jsonb,
+               NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day')`,
+      [
+        instanceId,
+        JSON.stringify([
+          { name: "worldview.read", args: {}, durationMs: 1 },
+          { name: "wiki.write_page", args: {}, durationMs: 1 }, // drift
+        ]),
+      ],
+    );
+
     // Contradictions LLM mock — emit one finding so we can assert
     // the detector fired.
     const router = makeRouter(
@@ -137,6 +156,7 @@ describe("runLint — end-to-end orchestrator", () => {
           db: fixture.db as unknown as Parameters<typeof runLint>[1]["db"],
           mcp,
           domainSlug: "test-domain",
+          definitions,
         }),
     });
 
@@ -150,6 +170,14 @@ describe("runLint — end-to-end orchestrator", () => {
     expect(kinds.has("orphans")).toBe(true);
     expect(kinds.has("prompt_version_drift")).toBe(true);
     expect(kinds.has("contradictions")).toBe(true);
+    expect(kinds.has("automation_drift")).toBe(true);
+
+    // The drift finding cites the offending tool name + run.
+    const drift = output.findings.find((f) => f.kind === "automation_drift");
+    expect(drift?.detail).toMatchObject({
+      definitionSlug: "lint",
+      toolName: "wiki.write_page",
+    });
 
     // The orphan we seeded is the one Lint should call out
     // (and NOT index.md / worldview.md / etc., which are exempt).
@@ -313,6 +341,7 @@ describe("runLint — end-to-end orchestrator", () => {
           db: fixture.db as unknown as Parameters<typeof runLint>[1]["db"],
           mcp,
           domainSlug: "test-domain",
+          definitions,
         }),
     });
 
@@ -355,6 +384,7 @@ describe("runLint — end-to-end orchestrator", () => {
           db: fixture.db as unknown as Parameters<typeof runLint>[1]["db"],
           mcp,
           domainSlug: "test-domain",
+          definitions,
         }),
     });
 
