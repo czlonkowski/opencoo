@@ -10,7 +10,10 @@ import { describe, expect, it, vi } from "vitest";
 import { ConsoleLogger } from "@opencoo/shared/logger";
 import { ValidationError } from "@opencoo/shared/errors";
 
-import { runReviewDispatcher } from "../../src/pipelines/review-dispatcher.js";
+import {
+  REVIEW_DISPATCH_QUEUE_SLUG,
+  runReviewDispatcher,
+} from "../../src/pipelines/review-dispatcher.js";
 
 function silentLogger(): ConsoleLogger {
   return new ConsoleLogger({
@@ -25,6 +28,16 @@ const VALID_PAYLOAD = {
   pagePaths: ["strategy/q3.md"],
   sourceRef: "drive:doc-1",
 };
+
+describe("REVIEW_DISPATCH_QUEUE_SLUG — canonical queue name (copilot #19)", () => {
+  it("matches the 'ingestion.review.dispatch' name the docstring + README + Compiler hook all reference", () => {
+    // The composition root (PR 30) wires the dispatcher worker to
+    // the queue named by this constant. If the constant drifts
+    // from the canonical name, jobs the Compiler emits sit dead
+    // because the worker is listening on the wrong queue.
+    expect(REVIEW_DISPATCH_QUEUE_SLUG).toBe("ingestion.review.dispatch");
+  });
+});
 
 describe("runReviewDispatcher — happy path", () => {
   it("returns dispatched:true with the routing role + commit sha", async () => {
