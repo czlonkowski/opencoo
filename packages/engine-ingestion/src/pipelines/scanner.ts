@@ -159,6 +159,7 @@ export async function runScanner(args: RunScannerArgs): Promise<ScannerResult> {
     }
 
     let enqueuedForBinding = 0;
+    let bindingFailed = false;
     for (const doc of scanResult.documents) {
       const contentLen = doc.contentBytes.byteLength;
       if (contentLen > INLINE_CONTENT_CAP_BYTES) {
@@ -188,24 +189,27 @@ export async function runScanner(args: RunScannerArgs): Promise<ScannerResult> {
         });
         enqueuedForBinding += 1;
       } catch (err) {
-        // Stop processing this binding — at-least-once: we'll
-        // re-scan from the previous cursor next run, and the
-        // intake row stays for the dedupe to re-check.
+        // Skip the rest of THIS binding (cursor not advanced
+        // → next cron run retries, intake UNIQUE dedupes the
+        // docs we already enqueued). Sibling bindings are
+        // unaffected (copilot #19) — a transient Redis hiccup
+        // on one binding must not take down the whole scan.
         args.logger.error("scanner.enqueue_failed", {
           binding_id: binding.id,
           intake_id: intakeId,
           error: err instanceof Error ? err.message : String(err),
         });
-        // Do NOT advance the cursor when an enqueue fails.
-        return {
-          bindingsScanned: bindings.indexOf(binding),
-          documentsEnqueued: totalEnqueued,
-          documentsSkipped: totalSkipped,
-        };
+        bindingFailed = true;
+        break;
       }
     }
 
     totalEnqueued += enqueuedForBinding;
+
+    // If this binding's enqueue failed, skip the cursor advance
+    // (at-least-once: next cron run retries from the previous
+    // cursor) and move on to the next binding.
+    if (bindingFailed) continue;
 
     // Persist new cursor + last_scanned_at — only after every
     // enqueue for this binding succeeded.
