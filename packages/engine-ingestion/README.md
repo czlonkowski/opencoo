@@ -63,7 +63,7 @@ const engine = await start({ registry });
 | `LOG_LEVEL` | no | `info` | One of `debug`/`info`/`warn`/`error`. |
 | `NODE_ENV` | no | `development` | One of `development`/`test`/`staging`/`production`. |
 
-`_FILE` variants (`DATABASE_URL_FILE`, `REDIS_URL_FILE`, `GITEA_URL_FILE`) read the value from disk, stripping a single trailing newline. Inline `X` wins when both are set.
+`_FILE` variants (`DATABASE_URL_FILE`, `REDIS_URL_FILE`, `GITEA_URL_FILE`) read the value from disk, stripping a single trailing newline run. **The `_FILE` form wins when both are set** — Docker-secrets convention, matching `.env.example` and `loadEncryptionKey` in `@opencoo/shared`. Setting both is a misconfig, but in production the safe answer is to honour the file-mounted secret over a possibly-stale inline.
 
 These are the only env vars the engine reads. Everything else (per-domain LLM policy, source bindings, schedules) lives in Postgres and is edited via the management UI (UI-first principle). The `no-feature-env-vars` ESLint rule enforces this — adding a new env read requires a rule allowlist update.
 
