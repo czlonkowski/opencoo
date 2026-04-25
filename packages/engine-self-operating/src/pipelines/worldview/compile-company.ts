@@ -61,13 +61,12 @@ export interface CompileCompanyArgs {
   /** The aggregator's own domainId — used to route the LLM
    *  call (its llm_policy applies). */
   readonly aggregatorDomainId: DomainId;
-  /** Aggregator's own slug — sometimes the aggregator IS one
-   *  of the input domains (single-domain deployment); the
-   *  spy wrapper allows reads from this slug. */
-  readonly aggregatorDomainSlug: DomainSlug;
   /** Slugs of every NON-aggregator domain to fold into the
    *  company.md. The compiler reads ONLY 'worldview.md' from
-   *  each. */
+   *  each. The aggregator's own slug is enforced by the
+   *  `SovereigntySpyWikiAdapter` wrapper (constructed at the
+   *  engine boot path with its own `aggregatorOwnSlug` arg);
+   *  this function does not need it. */
   readonly nonAggregatorDomainSlugs: readonly DomainSlug[];
   readonly locale: "en" | "pl" | "auto";
   readonly fetchedAt?: Date;

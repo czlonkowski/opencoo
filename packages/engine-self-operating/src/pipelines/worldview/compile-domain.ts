@@ -128,11 +128,12 @@ export async function compileDomainWorldview(
     };
   }
 
-  // Still over cap — give up. The original payload's bytes are
-  // what we report; the retry payload would have been
-  // similarly oversized.
+  // Still over cap — give up. We surface `observedBytes` if the
+  // upstream LlmProviderError happened to carry it, else
+  // `undefined` (the error formatter prints "unknown" rather
+  // than a misleading 0).
   throw new WorldviewOverflowError(
-    result.observedBytes ?? 0,
+    result.observedBytes,
     WORLDVIEW_BODY_MAX_BYTES,
   );
 }
@@ -191,12 +192,13 @@ function isWorldviewOverflowZodError(err: unknown): boolean {
 }
 
 function extractObservedBytes(err: unknown): number | undefined {
-  // We don't have direct access to the rejected body bytes
-  // from inside the Zod issue (Zod passes the full input to
-  // the refinement but the issue.message is what we surface).
-  // The retry path's caller logs this as "approximate"; v0.1
-  // returns undefined and the WorldviewOverflowError reports
-  // 0 in that case (the message text still names the cap).
+  // The Zod refinement that fires for over-cap bodies doesn't
+  // surface the rejected body's byte count on the issue object
+  // (only its message). We *could* re-parse `err.cause` and
+  // walk the issue path back to the input, but Zod doesn't
+  // attach the raw input to its issues at runtime — so v0.1
+  // returns undefined here and `WorldviewOverflowError`
+  // formats the field as "unknown" rather than 0.
   void err;
   return undefined;
 }

@@ -11,16 +11,26 @@ import { OpencooError, type OpencooErrorOptions } from "@opencoo/shared/errors";
  * lifts the cap), retry won't recover.
  */
 export class WorldviewOverflowError extends OpencooError {
-  readonly attemptedBytes: number;
+  /** Observed bytes of the rejected body, when the pipeline was
+   *  able to extract them. `undefined` means "we know it was
+   *  over the cap (Zod refinement fired) but we don't have the
+   *  raw byte count" — see compile-domain/compile-company for
+   *  the source of that limitation. Don't substitute a 0 in
+   *  log lines; that misleads operators. */
+  readonly attemptedBytes: number | undefined;
   readonly capBytes: number;
 
   constructor(
-    attemptedBytes: number,
+    attemptedBytes: number | undefined,
     capBytes: number,
     options?: OpencooErrorOptions,
   ) {
+    const attemptedFragment =
+      attemptedBytes === undefined
+        ? "(attempted bytes unknown)"
+        : `(attempted ${attemptedBytes})`;
     super(
-      `worldview pipeline: body still exceeds ${capBytes} bytes after retry (attempted ${attemptedBytes}) — compress further or lift the cap`,
+      `worldview pipeline: body still exceeds ${capBytes} bytes after retry ${attemptedFragment} — compress further or lift the cap`,
       "validation",
       options,
     );

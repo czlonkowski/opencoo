@@ -105,7 +105,6 @@ describe("compileCompanyWorldview — sovereignty + token-cap", () => {
       router,
       wikiAdapter: spy,
       aggregatorDomainId: fixture.domainId as DomainId,
-      aggregatorDomainSlug: "company" as DomainSlug,
       nonAggregatorDomainSlugs: [
         "exec" as DomainSlug,
         "hr" as DomainSlug,
@@ -152,7 +151,6 @@ describe("compileCompanyWorldview — sovereignty + token-cap", () => {
       router,
       wikiAdapter: spy,
       aggregatorDomainId: fixture.domainId as DomainId,
-      aggregatorDomainSlug: "company" as DomainSlug,
       nonAggregatorDomainSlugs: ["exec" as DomainSlug],
       locale: "en",
     });
@@ -191,7 +189,6 @@ describe("compileCompanyWorldview — sovereignty + token-cap", () => {
         router,
         wikiAdapter: spy,
         aggregatorDomainId: fixture.domainId as DomainId,
-        aggregatorDomainSlug: "company" as DomainSlug,
         nonAggregatorDomainSlugs: ["exec" as DomainSlug],
         locale: "en",
       }),
@@ -223,7 +220,6 @@ describe("compileCompanyWorldview — sovereignty + token-cap", () => {
       router,
       wikiAdapter: spy,
       aggregatorDomainId: fixture.domainId as DomainId,
-      aggregatorDomainSlug: "company" as DomainSlug,
       nonAggregatorDomainSlugs: [
         "exec" as DomainSlug,
         "virgin" as DomainSlug,
