@@ -1,4 +1,5 @@
 export * from "./enums.js";
+export * from "./admin-audit-log.js";
 export * from "./agent-definitions.js";
 export * from "./agent-instances.js";
 export * from "./agent-runs.js";
