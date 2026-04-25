@@ -166,6 +166,43 @@ const TABLES_DDL = `
     prompt_version text,
     created_at timestamp with time zone DEFAULT now() NOT NULL
   );
+
+  -- users (FK target for automation_candidates.reviewed_by;
+  -- minimal shape — real schema has more columns).
+  CREATE TABLE users (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    email text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+  );
+
+  -- automation_candidates (PR 21 / plan #102 — Surfacer + Builder).
+  CREATE TABLE automation_candidates (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    surfacer_run_id uuid NOT NULL REFERENCES agent_runs(id) ON DELETE RESTRICT,
+    source_page_refs jsonb NOT NULL,
+    proposal jsonb NOT NULL,
+    status automation_candidate_status NOT NULL DEFAULT 'proposed',
+    rationale text,
+    reviewed_by uuid REFERENCES users(id) ON DELETE RESTRICT,
+    reviewed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+  );
+
+  -- automation_deployments (Builder writes here at deploy time).
+  CREATE TABLE automation_deployments (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    candidate_id uuid NOT NULL REFERENCES automation_candidates(id) ON DELETE RESTRICT,
+    builder_run_id uuid NOT NULL REFERENCES agent_runs(id) ON DELETE RESTRICT,
+    n8n_workflow_id text NOT NULL UNIQUE,
+    skills_used_snapshot jsonb NOT NULL,
+    status automation_deployment_status NOT NULL DEFAULT 'deployed',
+    deployed_at timestamp with time zone DEFAULT now() NOT NULL,
+    activated_at timestamp with time zone,
+    last_observed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+  );
 `;
 
 export interface AgentFixture {
