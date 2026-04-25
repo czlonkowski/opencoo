@@ -1,0 +1,55 @@
+/* =============================================================
+   opencoo · app.css
+   App-level surface CSS for the Management UI. Imports the
+   design-system tokens via colors_and_type.css; nothing here
+   defines new colors or font families — every visual references
+   a CSS var per design_system/README.md.
+   ============================================================= */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+button {
+  font-family: inherit;
+}
+
+a {
+  color: inherit;
+}
+
+/* Heartbeat pulse — the SINGLE animation loop in the system.
+   Reserved for the operate glyph (--advisory). Everything else
+   is one-shot ease-out via --ease-write or --ease-transform. */
+@keyframes opencoo-heartbeat {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+}
+
+.heartbeat-glyph {
+  animation: opencoo-heartbeat var(--heartbeat-dur) var(--ease-write) infinite;
+}
+
+/* Hide focus rings only on mouse interactions; keyboard nav
+   keeps a visible outline. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}

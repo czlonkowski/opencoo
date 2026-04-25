@@ -1,0 +1,95 @@
+{
+  "_comment": "PR 29 / plan #131 — pl.json placeholder per §17 Resolved (UI i18n). Real translations land in v0.2; en strings duplicated for forward-compat so unset keys don't fall back to undefined.",
+  "app": {
+    "title": "opencoo",
+    "tagline": "self-hosted",
+    "version": "v0.1"
+  },
+  "nav": {
+    "domains": "domains",
+    "sources": "sources",
+    "llmPolicy": "llm policy",
+    "prompts": "prompts",
+    "logout": "log out"
+  },
+  "auth": {
+    "patPrompt": "Paste your Gitea personal access token",
+    "patHelper": "Token stays in this tab only — clears on close. Required scope: read:user, read:org.",
+    "patSubmit": "Sign in",
+    "patEmpty": "Token is required.",
+    "loadingUser": "Resolving identity…",
+    "loginFailed": "Sign-in failed.",
+    "forbidden": "Your account is not in the admin team.",
+    "loggedInAs": "{{username}}"
+  },
+  "csrf": {
+    "retrying": "Refreshing CSRF token and retrying…"
+  },
+  "domains": {
+    "title": "Domains",
+    "subtitle": "Knowledge surfaces compiled by opencoo.",
+    "empty": "No domains yet — bind a source to get started.",
+    "columns": {
+      "slug": "slug",
+      "name": "name",
+      "class": "class",
+      "locale": "locale",
+      "aggregator": "aggregator"
+    }
+  },
+  "sources": {
+    "title": "Sources",
+    "subtitle": "Bindings that ingest into a domain.",
+    "empty": "No bindings yet.",
+    "columns": {
+      "binding": "binding",
+      "type": "type",
+      "domain": "domain",
+      "reviewMode": "review mode",
+      "status": "status"
+    },
+    "status": {
+      "ok": "ok",
+      "paused": "paused",
+      "alert": "alert"
+    }
+  },
+  "llmPolicy": {
+    "title": "LLM policy",
+    "subtitle": "Per-domain provider/model assignments. Diff-and-confirm before apply.",
+    "preview": "Preview diff",
+    "apply": "Apply",
+    "cancel": "Cancel",
+    "empty": "Select a domain to view its policy.",
+    "noChanges": "No changes to apply.",
+    "diffTitle": "Sovereignty diff",
+    "diffHelp": "Server-computed diff. Token expires in {{seconds}}s.",
+    "diffExpired": "Token expired. Re-preview to continue.",
+    "tokenMismatch": "The proposed policy changed since preview. Re-preview to continue.",
+    "applied": "Applied. New policy is active for new pipeline runs."
+  },
+  "prompts": {
+    "title": "Prompts",
+    "subtitle": "Versioned prompts shipped with this build.",
+    "columns": {
+      "name": "name",
+      "locale": "locale",
+      "version": "version"
+    },
+    "empty": "No prompts loaded."
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "loading": "Loading…",
+    "retry": "Retry",
+    "error": "Something went wrong."
+  },
+  "credentialForm": {
+    "secretHelp": "Stored encrypted at rest. Server never echoes it back.",
+    "required": "Required."
+  },
+  "debug": {
+    "bannerLabel": "LLM_DEBUG_LOG=1 — prompts and responses are mirrored to llm_usage_debug. Disable in production."
+  }
+}

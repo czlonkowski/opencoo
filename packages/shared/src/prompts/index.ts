@@ -12,3 +12,7 @@ export {
   type PromptLocale,
   type PromptName,
 } from "./loader.js";
+export {
+  PROMPT_VERSION_MANIFEST,
+  PROMPT_NAMES_FROM_MANIFEST,
+} from "./version-manifest.js";
