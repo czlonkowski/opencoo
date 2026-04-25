@@ -37,6 +37,40 @@ export interface StaticUiOptions {
   readonly logger: Logger;
 }
 
+/**
+ * Resolve whether `pathName` (a static-asset path the @fastify/static
+ * plugin would otherwise serve) stays within `root`. The previous
+ * implementation used `path.normalize(pathName).startsWith("..")`
+ * which is bypassed by absolute paths — `path.normalize("/../secret")`
+ * returns `"/secret"`, not `"../secret"`, so the naive prefix check
+ * passes. (copilot #20 SECURITY)
+ *
+ * The fix anchors the candidate against the dist root via
+ * `path.resolve` then asks `path.relative` whether the resolved
+ * path is reachable from inside the root WITHOUT traversal. A
+ * `..`-only result (or one whose first segment is `..`) means
+ * the candidate escaped; an absolute relative path means the
+ * candidate is on a different drive (Windows) or otherwise
+ * unrelated to the root.
+ *
+ * Exported for direct unit testing — the closure inside
+ * `registerStaticUi` calls it.
+ */
+export function isPathWithinRoot(root: string, pathName: string): boolean {
+  const resolvedRoot = path.resolve(root);
+  // Trim leading separator(s) so `path.resolve` treats the
+  // candidate as relative to the root, not as a fresh absolute
+  // path. Without this, `/../secret` would resolve to `/secret`
+  // (the OS root) every time.
+  const relativeCandidate = pathName.replace(/^[/\\]+/, "");
+  const resolvedCandidate = path.resolve(resolvedRoot, relativeCandidate);
+  const rel = path.relative(resolvedRoot, resolvedCandidate);
+  if (rel === "..") return false;
+  if (rel.startsWith(`..${path.sep}`)) return false;
+  if (path.isAbsolute(rel)) return false;
+  return true;
+}
+
 /** Resolve whether the URL path looks like an SPA route (no file
  *  extension, not /api/). Exported for direct unit testing. */
 export function isSpaFallbackPath(urlPath: string): boolean {
@@ -146,11 +180,12 @@ export async function registerStaticUi(
   await app.register(staticPlugin, {
     root: installed.uiDistPath,
     wildcard: false,
-    allowedPath: (pathName) => {
-      // Reject any path that would escape the dist root.
-      const normalised = path.normalize(pathName);
-      return !normalised.startsWith("..");
-    },
+    // Defense-in-depth path-traversal guard (copilot #20).
+    // @fastify/static normalises URLs upstream, but we
+    // belt-and-suspenders the predicate here so any future
+    // refactor that reaches this code path stays safe.
+    allowedPath: (pathName) =>
+      isPathWithinRoot(installed.uiDistPath, pathName),
   });
 
   app.setNotFoundHandler((request, reply) => {

@@ -11,6 +11,7 @@ export {
 } from "./config.js";
 
 export {
+  isPathWithinRoot,
   isSpaFallbackPath,
   registerStaticUi,
   type StaticUiOptions,
