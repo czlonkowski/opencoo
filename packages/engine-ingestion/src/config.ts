@@ -5,13 +5,17 @@
  * `DATABASE_URL`, `REDIS_URL`, `GITEA_URL`, `PORT`, `LOG_LEVEL`,
  * `NODE_ENV`, plus their `_FILE` Docker-secrets variants. Each
  * `_FILE` variant is read from disk with trailing-newline strip;
- * the inline `X` env var WINS when both are set (the inline value
- * is the human-edited one and `_FILE` is just the secret-mounting
- * path).
+ * the `_FILE` form WINS when both are set (Docker-secrets pattern,
+ * documented in .env.example and matching `loadEncryptionKey` from
+ * @opencoo/shared). Setting both is a misconfig, but production
+ * secrets are typically file-mounted via tmpfs and the inline var
+ * is the development fallback — honouring the file is the safe
+ * answer.
  *
  * Validation is Zod-based; missing required vars and malformed
- * values throw at boot. The engine harness (start()) catches and
- * exits non-zero so misconfigured deploys never silently start.
+ * values throw at boot. Callers (composition root or CLI) catch
+ * the throw and exit non-zero — the loader itself never calls
+ * process.exit.
  */
 import fs from "node:fs";
 import { z } from "zod";
@@ -33,22 +37,25 @@ const ConfigSchema = z.object({
 export type EngineConfig = z.infer<typeof ConfigSchema>;
 
 /**
- * Read a value with the standard `<NAME>` / `<NAME>_FILE` precedence:
- * inline env var wins; otherwise read the file at `_FILE` and strip
- * trailing newlines. Returns `undefined` when neither is set.
+ * Read a value with the repo-wide `<NAME>` / `<NAME>_FILE` precedence
+ * (Docker-secrets convention, .env.example:11): the `_FILE` variant
+ * WINS when both are set. Reads the file at `_FILE` and strips a
+ * single trailing newline run. Falls through to the inline env var
+ * when `_FILE` is unset/empty. Returns `undefined` when neither is
+ * set.
  */
 function readWithFile(
   env: Record<string, string | undefined>,
   name: string,
 ): string | undefined {
-  const inline = env[name];
-  if (typeof inline === "string" && inline.length > 0) {
-    return inline;
-  }
   const filePath = env[`${name}_FILE`];
   if (typeof filePath === "string" && filePath.length > 0) {
     const raw = fs.readFileSync(filePath, "utf8");
     return raw.replace(/\r?\n+$/, "");
+  }
+  const inline = env[name];
+  if (typeof inline === "string" && inline.length > 0) {
+    return inline;
   }
   return undefined;
 }
