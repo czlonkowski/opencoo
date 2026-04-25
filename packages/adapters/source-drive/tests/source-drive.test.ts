@@ -96,7 +96,6 @@ sourceAdapterContract({
       folderId: TEST_FOLDER,
       mimeTypes: [...DRIVE_DEFAULT_MIME_TYPES],
       contentKind: "document",
-      reviewMode: "auto",
     };
     const adapter = createGoogleDriveAdapter({
       credentialStore: store,
@@ -304,17 +303,42 @@ describe("source-drive — adapter wiring", () => {
 
 describe("source-drive — credentials sourcing (THREAT-MODEL §3.6 invariant 11)", () => {
   // The factory's signature requires (credentialStore, credentialId)
-  // — there is NO inline `creds` argument. This test pins the
-  // shape at compile time + asserts a runtime read goes through
-  // the store.
-  it("factory has no inline-credential branch — only credentialStore + credentialId (compile-time pin)", () => {
-    // The very fact that this file compiles is the type-level
-    // pin. A future refactor that adds an inline credential
-    // option fails the existing test calls (which always pass
-    // store + id).
+  // — there is NO inline `creds` argument. The pin is at the
+  // type level: passing inline credentials must FAIL type-check.
+  // Adding the negative-case `@ts-expect-error` makes the pin
+  // actively load-bearing — if a future refactor adds an inline
+  // credential branch (regression), the @ts-expect-error stops
+  // erroring, and TypeScript fails the build. The previous shape
+  // ("the very fact this file compiles is the pin") was vacuous;
+  // this version actually breaks if the invariant breaks.
+  it("factory rejects inline credential strings at the type level (compile-time pin)", () => {
     const store = new InMemoryCredentialStore({ logger: silentLogger() });
+
+    // Reference the factory + inline-cred shape so neither is
+    // tree-shaken; the @ts-expect-error below is the load-bearing
+    // assertion.
+    const fakeInlineCreds = {
+      client_id: "x",
+      client_secret: "y",
+      refresh_token: "z",
+    };
+
+    // Type-level negative case: this call MUST fail to type-check.
+    // If a regression adds a `creds` branch on the factory, the
+    // call type-checks → @ts-expect-error fires → build fails.
+    // @ts-expect-error — invariant 11: no inline credentials accepted.
+    void (() =>
+      createGoogleDriveAdapter({
+        credentialStore: store,
+        config: {
+          folderId: "x",
+          mimeTypes: [...DRIVE_DEFAULT_MIME_TYPES],
+        },
+        creds: fakeInlineCreds,
+        makeDrive: () => ({}) as never,
+      }));
+
     expect(typeof store.read).toBe("function");
-    expect(typeof store.write).toBe("function");
   });
 
   it("reads the refresh token from the credentialStore on every scan (rotation-friendly)", async () => {

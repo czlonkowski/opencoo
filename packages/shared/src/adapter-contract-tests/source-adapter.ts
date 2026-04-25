@@ -292,18 +292,31 @@ function runPollingAssertions(
     }
   });
 
-  // 7. content-bytes ceiling
-  it("every document's contentBytes.length is ≤ 1 MiB", async () => {
+  // 7. content-bytes ceiling — actively seeded oversize file
+  // must be filtered (the adapter MUST drop it, not propagate it
+  // and rely on a downstream check). A vacuous "every emitted
+  // doc ≤ 1 MiB" assertion would silently pass against an
+  // adapter that never seeds an oversize file in its tests.
+  it("an oversize source doc (> 1 MiB) is filtered out before emission", async () => {
     const handle = await options.makeAdapter();
     try {
+      const oversize = Buffer.alloc(ONE_MIB + 1, 0x61); // 1MiB + 1 byte
       handle.seed([
         {
           sourceDocId: "doc-small",
           sourceRevision: "rev-a",
-          contentBytes: Buffer.from("small"),
+          contentBytes: Buffer.from("small body"),
+        },
+        {
+          sourceDocId: "doc-oversize",
+          sourceRevision: "rev-a",
+          contentBytes: oversize,
         },
       ]);
       const result = await handle.adapter.scan({ cursor: null });
+      const ids = result.documents.map((d) => d.sourceDocId);
+      expect(ids).toContain("doc-small");
+      expect(ids).not.toContain("doc-oversize");
       for (const d of result.documents) {
         expect(d.contentBytes.length).toBeLessThanOrEqual(ONE_MIB);
       }

@@ -31,10 +31,7 @@ import type {
   SourceScanResult,
 } from "@opencoo/shared/source-adapter";
 
-import {
-  driveBindingConfigSchema,
-  type DriveBindingConfig,
-} from "./binding-config.js";
+import { driveBindingConfigSchema } from "./binding-config.js";
 import type { DriveLikeApi } from "./drive-api.js";
 
 /** Per-adapter-instance content size ceiling. Matches the
@@ -50,7 +47,12 @@ export type MakeDrive = (refreshToken: Buffer) => DriveLikeApi;
 export interface CreateDriveAdapterArgs {
   readonly credentialStore: CredentialStore;
   readonly credentialId: CredentialId;
-  readonly config: DriveBindingConfig | unknown;
+  /** Persisted JSON from `sources_bindings.config` — accepted as
+   *  `unknown` and validated through `driveBindingConfigSchema`
+   *  inside the factory. (`DriveBindingConfig | unknown` would
+   *  collapse to `unknown` anyway; declaring it as `unknown`
+   *  makes the intent clear to readers.) */
+  readonly config: unknown;
   readonly makeDrive: MakeDrive;
   readonly now?: () => Date;
 }

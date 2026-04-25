@@ -50,14 +50,11 @@ export const driveBindingConfigSchema = z
     contentKind: z
       .enum(["document", "n8n-workflow", "skill-bundle"])
       .default("document"),
-    /**
-     * Operator review mode for the binding's intake. Default
-     * `auto` — the engine ingests without per-doc review. NOTE:
-     * `auto` requires the redaction guard (PR 12) wired into
-     * the ingestion path; without it, untrusted Drive bytes
-     * reach the wiki unredacted.
-     */
-    reviewMode: z.enum(["auto", "review"]).default("auto"),
+    // Note: review_mode lives on the `sources_bindings.review_mode`
+    // column (shared schema, `reviewMode` enum: auto | approve |
+    // review) — NOT in this JSON config blob. The engine reads it
+    // from the column; this binding-config schema deliberately
+    // does not redeclare it to avoid a second source of truth.
   })
   .strict();
 
