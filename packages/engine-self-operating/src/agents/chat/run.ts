@@ -38,6 +38,21 @@ import { CHAT_OUTPUT_SCHEMA, type ChatOutput } from "./types.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
+/**
+ * Trim leading + trailing whitespace from a callerPat. Pure
+ * function exposed for unit-testing the contract; the body
+ * applies it AFTER the strict empty check so the wrapper
+ * carries the cleaned token while the harness's verbatim
+ * propagation of `ctx.callerPat` is preserved.
+ *
+ * Copilot #23 fix 4. Production `Authorization: Bearer <pat>`
+ * header injection (PR 23+ HttpMcpToolClient) uses the
+ * trimmed value; gitea-mcp rejects whitespace-padded tokens.
+ */
+export function normalizeCallerPat(pat: string): string {
+  return pat.trim();
+}
+
 export interface RunChatArgs {
   readonly db: Db;
   /** Base McpToolClient — the body wraps this with
@@ -56,15 +71,22 @@ export async function runChat(
   args: RunChatArgs,
 ): Promise<ChatOutput> {
   // Q2: strict callerPat check at run-time entry. `undefined`
-  // OR whitespace-only fails closed; trim() comparison rather
-  // than `?? ''` so a real PAT pinned with `   secret   `
-  // would survive (the production gitea-mcp Bearer token
-  // accepts surrounding whitespace, but the EMPTY check is
-  // strict).
-  const pat = ctx.callerPat;
-  if (pat === undefined || pat.trim().length === 0) {
+  // OR whitespace-only fails closed.
+  //
+  // Copilot #23 fix 4: a whitespace-padded PAT
+  // (`"  realtoken  "`) passes the strict empty check but
+  // would fail Bearer auth at gitea-mcp if propagated
+  // unchanged. Normalize via `normalizeCallerPat` AFTER the
+  // empty check so the wrapper carries the cleaned token.
+  // The harness's verbatim contract (ctx.callerPat reaches
+  // the body unchanged) is preserved — Chat normalizes
+  // locally for its own downstream use, not at the harness
+  // layer.
+  const rawPat = ctx.callerPat;
+  if (rawPat === undefined || rawPat.trim().length === 0) {
     throw new ChatPatRequiredError();
   }
+  const pat = normalizeCallerPat(rawPat);
 
   const now = args.now ?? ((): Date => new Date());
   const scope = ctx.instance.scopeDomainIds;

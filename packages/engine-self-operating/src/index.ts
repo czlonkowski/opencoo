@@ -45,6 +45,7 @@ export {
   CHAT_DEFINITION,
   CHAT_OUTPUT_SCHEMA,
   ChatPatRequiredError,
+  normalizeCallerPat,
   runChat,
   type ChatOutput,
   type RunChatArgs,

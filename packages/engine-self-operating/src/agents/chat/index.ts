@@ -6,5 +6,5 @@
  */
 export { CHAT_DEFINITION } from "./definition.js";
 export { ChatPatRequiredError } from "./errors.js";
-export { runChat, type RunChatArgs } from "./run.js";
+export { normalizeCallerPat, runChat, type RunChatArgs } from "./run.js";
 export { CHAT_OUTPUT_SCHEMA, type ChatOutput } from "./types.js";
