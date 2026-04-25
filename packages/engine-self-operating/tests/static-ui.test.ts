@@ -44,6 +44,15 @@ describe("isSpaFallbackPath — Q6 heuristic", () => {
     expect(isSpaFallbackPath("/api/runs")).toBe(false);
     expect(isSpaFallbackPath("/api/runs/abc-123")).toBe(false);
   });
+
+  it("treats bare /api (no trailing slash) as NOT SPA either (copilot #20)", () => {
+    // The previous predicate only looked for `/api/` so a request
+    // to bare `/api` would have been served `index.html` via the
+    // SPA fallback. /api is the API root by convention; serving
+    // SPA HTML there is surprising and would trip up clients
+    // that probe for the API surface.
+    expect(isSpaFallbackPath("/api")).toBe(false);
+  });
 });
 
 describe("registerStaticUi — boot-tolerant (Q10)", () => {
@@ -147,6 +156,15 @@ describe("registerStaticUi — happy path with bundled dist", () => {
       method: "GET",
       url: "/api/unknown",
     });
+    expect(response.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("returns 404 for bare /api too — not the SPA index.html (copilot #20)", async () => {
+    const ui = makeUiDist();
+    const app = buildServer({ probes: {} });
+    await registerStaticUi(app, { uiDistPath: ui, logger: silentLogger() });
+    const response = await app.inject({ method: "GET", url: "/api" });
     expect(response.statusCode).toBe(404);
     await app.close();
   });
