@@ -148,3 +148,97 @@ describe("loadPrompt — content invariants", () => {
     expect(p.body.toLowerCase()).toMatch(/niezaufan|nie wykonuj|nie postępuj/);
   });
 });
+
+// PR 20 (plan #92, part A) — heartbeat + lint prompts join the
+// loader. Same module pattern as classifier/compiler: en/pl
+// bodies share a version, locale fallback applies.
+describe("loadPrompt — heartbeat prompts (PR 20)", () => {
+  it("PROMPT_NAMES includes 'heartbeat'", () => {
+    expect(PROMPT_NAMES).toContain("heartbeat");
+  });
+
+  it("returns the English heartbeat prompt for locale='en'", () => {
+    const p = loadPrompt({ name: "heartbeat", locale: "en" });
+    expect(typeof p.body).toBe("string");
+    expect(p.body.length).toBeGreaterThan(0);
+    expect(p.locale).toBe("en");
+    expect(p.name).toBe("heartbeat");
+  });
+
+  it("returns the Polish heartbeat prompt for locale='pl'", () => {
+    const p = loadPrompt({ name: "heartbeat", locale: "pl" });
+    expect(typeof p.body).toBe("string");
+    expect(p.body.length).toBeGreaterThan(0);
+    expect(p.locale).toBe("pl");
+  });
+
+  it("anchors spotlighting + 5-alert cap + lead-with-priority-1 + read-only contract", () => {
+    const en = loadPrompt({ name: "heartbeat", locale: "en" });
+    const body = en.body.toLowerCase();
+    expect(body).toContain("source_content");
+    // Read-only contract — the agent must not propose writes.
+    expect(body).toMatch(/read[- ]only|do not (write|modify|edit)/);
+    // Cap of 5 alerts (architecture §9.4).
+    expect(body).toMatch(/\b5\b|five/);
+    // Lead with priority-1.
+    expect(body).toMatch(/priority[- ]?1|highest priority|lead with/);
+  });
+
+  it("Polish heartbeat prompt also anchors spotlighting + read-only", () => {
+    const pl = loadPrompt({ name: "heartbeat", locale: "pl" });
+    const body = pl.body.toLowerCase();
+    expect(body).toContain("source_content");
+    // 'tylko do odczytu' or 'nie wykonuj zapisów'
+    expect(body).toMatch(/tylko do odczytu|nie zapisuj|nie modyfikuj|niezaufan/);
+  });
+
+  it("EN and PL heartbeat versions move in lockstep", () => {
+    const en = loadPrompt({ name: "heartbeat", locale: "en" });
+    const pl = loadPrompt({ name: "heartbeat", locale: "pl" });
+    expect(pl.version).toBe(en.version);
+  });
+});
+
+describe("loadPrompt — lint prompts (PR 20)", () => {
+  it("PROMPT_NAMES includes 'lint'", () => {
+    expect(PROMPT_NAMES).toContain("lint");
+  });
+
+  it("returns the English lint prompt for locale='en'", () => {
+    const p = loadPrompt({ name: "lint", locale: "en" });
+    expect(typeof p.body).toBe("string");
+    expect(p.body.length).toBeGreaterThan(0);
+    expect(p.locale).toBe("en");
+    expect(p.name).toBe("lint");
+  });
+
+  it("returns the Polish lint prompt for locale='pl'", () => {
+    const p = loadPrompt({ name: "lint", locale: "pl" });
+    expect(typeof p.body).toBe("string");
+    expect(p.body.length).toBeGreaterThan(0);
+    expect(p.locale).toBe("pl");
+  });
+
+  it("anchors spotlighting + contradictions framing + read-only contract", () => {
+    const en = loadPrompt({ name: "lint", locale: "en" });
+    const body = en.body.toLowerCase();
+    expect(body).toContain("source_content");
+    expect(body).toContain("contradict");
+    expect(body).toMatch(/read[- ]only|do not (write|modify|edit)/);
+  });
+
+  it("Polish lint prompt also anchors spotlighting + read-only", () => {
+    const pl = loadPrompt({ name: "lint", locale: "pl" });
+    const body = pl.body.toLowerCase();
+    expect(body).toContain("source_content");
+    expect(body).toMatch(/tylko do odczytu|nie zapisuj|nie modyfikuj|niezaufan/);
+    // Polish for "contradiction" — sprzeczność / niezgodność
+    expect(body).toMatch(/sprzeczn|niezgodn/);
+  });
+
+  it("EN and PL lint versions move in lockstep", () => {
+    const en = loadPrompt({ name: "lint", locale: "en" });
+    const pl = loadPrompt({ name: "lint", locale: "pl" });
+    expect(pl.version).toBe(en.version);
+  });
+});

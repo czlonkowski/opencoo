@@ -24,8 +24,23 @@ import {
   EN_COMPILER_PROMPT,
 } from "./en-compiler.js";
 import { PL_COMPILER_PROMPT } from "./pl-compiler.js";
+import {
+  EN_HEARTBEAT_PROMPT,
+  HEARTBEAT_PROMPT_VERSION,
+} from "./en-heartbeat.js";
+import { PL_HEARTBEAT_PROMPT } from "./pl-heartbeat.js";
+import {
+  EN_LINT_PROMPT,
+  LINT_PROMPT_VERSION,
+} from "./en-lint.js";
+import { PL_LINT_PROMPT } from "./pl-lint.js";
 
-export const PROMPT_NAMES = ["classifier", "compiler"] as const;
+export const PROMPT_NAMES = [
+  "classifier",
+  "compiler",
+  "heartbeat",
+  "lint",
+] as const;
 export type PromptName = (typeof PROMPT_NAMES)[number];
 
 export const PROMPT_LOCALES = ["en", "pl", "auto"] as const;
@@ -46,10 +61,14 @@ const REGISTRY: {
   en: {
     classifier: EN_CLASSIFIER_PROMPT,
     compiler: EN_COMPILER_PROMPT,
+    heartbeat: EN_HEARTBEAT_PROMPT,
+    lint: EN_LINT_PROMPT,
   },
   pl: {
     classifier: PL_CLASSIFIER_PROMPT,
     compiler: PL_COMPILER_PROMPT,
+    heartbeat: PL_HEARTBEAT_PROMPT,
+    lint: PL_LINT_PROMPT,
   },
 };
 
@@ -64,6 +83,8 @@ const REGISTRY: {
 const VERSIONS: { readonly [N in PromptName]: string } = {
   classifier: CLASSIFIER_PROMPT_VERSION,
   compiler: COMPILER_PROMPT_VERSION,
+  heartbeat: HEARTBEAT_PROMPT_VERSION,
+  lint: LINT_PROMPT_VERSION,
 };
 
 export interface LoadPromptArgs {
