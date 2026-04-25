@@ -190,6 +190,107 @@ describe("HEARTBEAT_OUTPUT_SCHEMA — strict Zod contract", () => {
   });
 });
 
+describe("runHeartbeat — domainSlug × scopeDomainIds cross-check (copilot #22)", () => {
+  // The agent reads from `args.domainSlug` (caller-supplied) but
+  // routes the LLM call against `ctx.instance.scopeDomainIds[0]`
+  // (uuid). Without a cross-check, a miswired caller — or an
+  // attacker who can influence the args object — could read
+  // domain-A wiki content while billing/policing under
+  // domain-B's llm_policy. The body must validate that the
+  // supplied slug resolves to a domainId in the instance's
+  // scope and throw `DomainScopeMismatchError` (validation,
+  // DLQ) on mismatch.
+  it("throws DomainScopeMismatchError when domainSlug resolves to an id NOT in scopeDomainIds", async () => {
+    const fixture = await freshAgentDb();
+    // Create a SECOND domain whose slug the caller will attempt
+    // to use. The instance is bound to test-domain (created by
+    // freshAgentDb) only — passing 'other-domain' must fail.
+    await fixture.raw.query(
+      `INSERT INTO domains (slug, name) VALUES ('other-domain', 'Other')`,
+    );
+    const { instanceId } = await seedAgentInstance(fixture, {
+      definitionSlug: "heartbeat",
+      memory: { type: "none" },
+    });
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(HEARTBEAT_DEFINITION);
+
+    const mcp = new InMemoryMcpToolClient();
+    mcp.setResource("wiki://other-domain/index.md", "# index");
+    mcp.setResource("worldview://other-domain", "# wv");
+    const router = makeRouter(
+      // The runtime guard fires BEFORE any LLM call, so this
+      // payload should never be reached. Provide a malformed
+      // payload to make sure we DLQ on the scope check, not on
+      // a downstream Zod parse.
+      { generate: async () => ({ text: "{}", tokensIn: 1, tokensOut: 1 }) },
+      fixture.db,
+    );
+
+    const result = await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "scheduled",
+      inputs: {},
+      run: (ctx) =>
+        runHeartbeat(ctx, {
+          db: fixture.db as unknown as Parameters<typeof runHeartbeat>[1]["db"],
+          mcp,
+          domainSlug: "other-domain",
+        }),
+    });
+    expect(result.status).toBe("failed");
+    const rows = await fixture.raw.query<{
+      error_class: string;
+      output: { name: string };
+    }>(
+      `SELECT error_class::text AS error_class, output FROM agent_runs WHERE id = $1`,
+      [result.runId],
+    );
+    expect(rows.rows[0]?.error_class).toBe("validation");
+    expect(rows.rows[0]?.output?.name).toBe("DomainScopeMismatchError");
+  });
+
+  it("throws DomainScopeMismatchError when the domain slug does not exist at all", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedAgentInstance(fixture, {
+      definitionSlug: "heartbeat",
+      memory: { type: "none" },
+    });
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(HEARTBEAT_DEFINITION);
+    const mcp = new InMemoryMcpToolClient();
+    const router = makeRouter(
+      { generate: async () => ({ text: "{}", tokensIn: 1, tokensOut: 1 }) },
+      fixture.db,
+    );
+    const result = await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "scheduled",
+      inputs: {},
+      run: (ctx) =>
+        runHeartbeat(ctx, {
+          db: fixture.db as unknown as Parameters<typeof runHeartbeat>[1]["db"],
+          mcp,
+          domainSlug: "ghost-domain",
+        }),
+    });
+    expect(result.status).toBe("failed");
+    const rows = await fixture.raw.query<{ output: { name: string } }>(
+      `SELECT output FROM agent_runs WHERE id = $1`,
+      [result.runId],
+    );
+    expect(rows.rows[0]?.output?.name).toBe("DomainScopeMismatchError");
+  });
+});
+
 describe("runHeartbeat — body wires McpToolClient via ctx.callTool", () => {
   function mockProvider(payload: HeartbeatOutput): LlmProvider {
     return {
