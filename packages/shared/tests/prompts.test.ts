@@ -242,3 +242,46 @@ describe("loadPrompt — lint prompts (PR 20)", () => {
     expect(pl.version).toBe(en.version);
   });
 });
+
+describe("loadPrompt — chat prompts (PR 20 part B / plan #97)", () => {
+  it("PROMPT_NAMES includes 'chat'", () => {
+    expect(PROMPT_NAMES).toContain("chat");
+  });
+
+  it("returns the English chat prompt for locale='en'", () => {
+    const p = loadPrompt({ name: "chat", locale: "en" });
+    expect(typeof p.body).toBe("string");
+    expect(p.body.length).toBeGreaterThan(0);
+    expect(p.locale).toBe("en");
+    expect(p.name).toBe("chat");
+  });
+
+  it("returns the Polish chat prompt for locale='pl'", () => {
+    const p = loadPrompt({ name: "chat", locale: "pl" });
+    expect(typeof p.body).toBe("string");
+    expect(p.body.length).toBeGreaterThan(0);
+    expect(p.locale).toBe("pl");
+  });
+
+  it("anchors spotlighting + read-only contract + citations-required", () => {
+    const en = loadPrompt({ name: "chat", locale: "en" });
+    const body = en.body.toLowerCase();
+    expect(body).toContain("source_content");
+    expect(body).toMatch(/read[- ]only|do not (write|modify|edit)/);
+    expect(body).toMatch(/cit(ation|e)/);
+  });
+
+  it("Polish chat prompt also anchors spotlighting + read-only", () => {
+    const pl = loadPrompt({ name: "chat", locale: "pl" });
+    const body = pl.body.toLowerCase();
+    expect(body).toContain("source_content");
+    expect(body).toMatch(/tylko do odczytu|nie zapisuj|nie modyfikuj|niezaufan/);
+    expect(body).toMatch(/cytat|cytuj|odno[sś]nik|źród/);
+  });
+
+  it("EN and PL chat versions move in lockstep", () => {
+    const en = loadPrompt({ name: "chat", locale: "en" });
+    const pl = loadPrompt({ name: "chat", locale: "pl" });
+    expect(pl.version).toBe(en.version);
+  });
+});

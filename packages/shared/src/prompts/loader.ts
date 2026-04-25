@@ -34,12 +34,18 @@ import {
   LINT_PROMPT_VERSION,
 } from "./en-lint.js";
 import { PL_LINT_PROMPT } from "./pl-lint.js";
+import {
+  CHAT_PROMPT_VERSION,
+  EN_CHAT_PROMPT,
+} from "./en-chat.js";
+import { PL_CHAT_PROMPT } from "./pl-chat.js";
 
 export const PROMPT_NAMES = [
   "classifier",
   "compiler",
   "heartbeat",
   "lint",
+  "chat",
 ] as const;
 export type PromptName = (typeof PROMPT_NAMES)[number];
 
@@ -63,12 +69,14 @@ const REGISTRY: {
     compiler: EN_COMPILER_PROMPT,
     heartbeat: EN_HEARTBEAT_PROMPT,
     lint: EN_LINT_PROMPT,
+    chat: EN_CHAT_PROMPT,
   },
   pl: {
     classifier: PL_CLASSIFIER_PROMPT,
     compiler: PL_COMPILER_PROMPT,
     heartbeat: PL_HEARTBEAT_PROMPT,
     lint: PL_LINT_PROMPT,
+    chat: PL_CHAT_PROMPT,
   },
 };
 
@@ -85,6 +93,7 @@ const VERSIONS: { readonly [N in PromptName]: string } = {
   compiler: COMPILER_PROMPT_VERSION,
   heartbeat: HEARTBEAT_PROMPT_VERSION,
   lint: LINT_PROMPT_VERSION,
+  chat: CHAT_PROMPT_VERSION,
 };
 
 export interface LoadPromptArgs {
