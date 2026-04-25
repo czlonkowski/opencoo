@@ -192,6 +192,19 @@ RUN_REAL_LLM=1 OPENROUTER_API_KEY=sk-or-... pnpm test:injection
 
 In real-LLM mode the assertion changes to "the output either conforms to the binding OR the orchestrator throws a validation error." Both outcomes are passing walls; the failure case is silent acceptance of an attacker-controlled path or domain. Default model is `moonshotai/kimi-k2.6` (the OpenRouter budget cap is calibrated for it); override with `RUN_REAL_LLM_MODEL=...` per run, or set `OPENROUTER_DEFAULT_MODEL=...` in a repo-root `.env` (auto-loaded by `tests/setup.ts`).
 
+## Compiler (PR 16, plan #72)
+
+The compiler is the second LLM-driven pipeline stage. After the Classifier returns the page paths a source belongs in, `compile()` runs a `tier:'thinker'` LLM merge per page and produces ONE atomic wikiWrite commit. Four phases:
+
+1. **Phase 1 — gather (fail-fast).** For every page path, read the existing page and call `mergePage` to get `{ merged_body, worldview_impact }`. The strict Zod schema + sentinel/frontmatter scrub guards run here. Any rejection throws BEFORE `wikiWrite` is invoked, so the wiki repo is never left in a partial multi-page state (Q7).
+2. **Phase 2 — partition.** Skip-write optimisation (Q6): when `merged_body` equals the existing page body (frontmatter stripped from the comparison so a regenerated `compiled_at` doesn't false-trigger), log `compiler.no-op` and emit no operation for that page. The page still gets a `page_citations` row — we processed the source.
+3. **Phase 3 — write.** Build ONE `wikiWrite` call containing every non-no-op replace operation, with the aggregated `worldviewImpact` bullets passed through to the new wiki-write trailer (capped at the Zod max=20 with a warn log when we truncate).
+4. **Phase 4 — citations (soft).** Append `page_citations` rows for every page processed (no-op + written alike). A failure here is logged + alerted but does NOT roll back the wiki commit (Q8) — a reconciliation pass (future PR) backfills missing citations.
+
+The compiler reuses `spotlight()` from the sibling `classifier/` subdir, so the same XML envelope wraps the source content. The compiler prompt (loaded via `@opencoo/shared/prompts` with `name:'compiler'`) instructs the model to leave the frontmatter to the system, scrub `<source_content` literals from its output, and emit `worldview_impact` bullets as deltas (not body copies). `mergePage` re-checks both contracts as belt-and-suspenders.
+
+`page_citations` real columns (verified during planning, plan #72): `(id, domain_slug, page_path, source_binding_id, source_ref, compiled_by_run_id, prompt_version, created_at)`. The opaque `source_ref` text + binding FK uniquely attribute a page to the source that produced it; `prompt_version` (sourced from the loader) lets a stale-output bug be triaged by querying which prompt revision compiled which page.
+
 ## Pinned versions
 
 Pinned at branch start (2026-04-25):
@@ -208,7 +221,7 @@ Pinned at branch start (2026-04-25):
 - **`no-feature-env-vars`**: only the 16 default-allowlisted env vars. Adding a read requires a rule update.
 - **`no-direct-llm-sdk`**: the engine never imports `@ai-sdk/*`. Any LLM call goes through `@opencoo/shared/llm-router`.
 - **`no-direct-gitea-write`**: the engine never imports from `packages/adapters/wiki-gitea/**`. The runtime composition root (PR 30 CLI) wires `wikiGiteaAdapter()` into `start()`'s context.
-- **`no-cross-engine-import`**: the engine cannot import from `packages/engine-self-operating/**` (PR 18+).
+- **`no-cross-engine-import`**: the engine cannot import from `packages/engine-self-operating/**` (PR 19+).
 - **No `pgTable` calls**: schema lives in `@opencoo/shared/db/schema` only (CLAUDE.md schema-ownership).
 
 ## Testing
