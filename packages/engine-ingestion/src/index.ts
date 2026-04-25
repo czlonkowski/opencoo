@@ -68,7 +68,7 @@ export {
 
 // Classifier surface (PR 15): orchestrator + guards + spotlight.
 // Adversarial-LLM defenses per THREAT-MODEL §3.4. The Scanner
-// pipeline (PR 16+) consumes `classify` and the typed errors for
+// pipeline (PR 18+) consumes `classify` and the typed errors for
 // DLQ routing.
 export {
   classify,
@@ -86,3 +86,23 @@ export {
   type ClassifierTargetDomain,
   type SpotlightArgs,
 } from "./classifier/index.js";
+
+// Compiler surface (PR 16, plan #72): orchestrator + LLM merge
+// + frontmatter + page-citations + worldview-impact normalisation.
+// Reads the Classifier's page_paths and produces atomic wiki commits.
+export {
+  compile,
+  CompilerValidationError,
+  buildFrontmatter,
+  mergePage,
+  normaliseWorldviewImpact,
+  recordPageCitations,
+  MERGED_PAGE_BODY_SCHEMA,
+  type CompileArgs,
+  type CompileResult,
+  type BuildFrontmatterArgs,
+  type MergePageArgs,
+  type RecordPageCitationsArgs,
+  type MergedPageBody,
+  type MergedPageBodyWire,
+} from "./compiler/index.js";
