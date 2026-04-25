@@ -3,8 +3,8 @@
  * engine post-run hook routes findings to the bound output
  * channel. v0.1 shape: 6 detectors (wildcard_bindings,
  * stale_pages, orphans, prompt_version_drift, contradictions,
- * automation_drift) — automation_drift was deferred to plan
- * #92 part B and lands here.
+ * automation_drift) — automation_drift was deferred from plan
+ * #92 part A and lands in plan #97 part B.
  */
 import type { AgentDefinition } from "../../agent-harness/index.js";
 
