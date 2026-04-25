@@ -72,14 +72,13 @@ export class OutputChannelRegistry {
    * harness's error router DLQs the run.
    */
   async deliver(invocation: OutputChannelDeliverInvocation): Promise<void> {
-    const allowedSlugs = invocation.bindings.map((b) => b.adapter_slug);
     const binding = invocation.bindings.find(
       (b) => b.adapter_slug === invocation.delivery.adapterSlug,
     );
     if (binding === undefined) {
       throw new OutputChannelMismatchError(
         invocation.delivery.adapterSlug,
-        allowedSlugs,
+        invocation.bindings.map((b) => b.adapter_slug),
       );
     }
     const adapter = this.bySlug.get(invocation.delivery.adapterSlug);
