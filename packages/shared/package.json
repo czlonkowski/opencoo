@@ -112,7 +112,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:check": "drizzle-kit check"
+    "db:check": "drizzle-kit check",
+    "fixtures:regen": "tsx scripts/regen-injection-fixtures.ts",
+    "fixtures:check": "tsx scripts/regen-injection-fixtures.ts --check"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "~3.0.71",
