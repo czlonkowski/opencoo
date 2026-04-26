@@ -97,6 +97,10 @@
     "./spotlight": {
       "types": "./dist/spotlight/index.d.ts",
       "default": "./dist/spotlight/index.js"
+    },
+    "./adapter-registry": {
+      "types": "./dist/adapter-registry/index.d.ts",
+      "default": "./dist/adapter-registry/index.js"
     }
   },
   "files": [
