@@ -10,7 +10,7 @@
 
 ## Progress snapshot (as of 2026-04-25)
 
-**Phase-a: 30 / 32 PRs merged** (plus the §0 pre-coding gate). `main` is at commit `bc1f193`; full repo 1588 passed | 2 skipped. Docker installed via colima for the wiki-gitea contract suite.
+**Phase-a: 31 / 32 PRs merged** (plus the §0 pre-coding gate). `main` is at commit `a215eb1`; full repo 1588 passed | 2 skipped + 88 prompt-injection deterministic-tier passed | 11 skipped (separate `pnpm test:injection` lane). Docker installed via colima for the wiki-gitea contract suite.
 
 | # | IMPL PR | GitHub PR | Merge commit | Title | THREAT-MODEL coverage |
 |---|---|---|---|---|---|
@@ -46,6 +46,7 @@
 | 30 | PR 28 | #31 | `3aa9b56` | Review Dashboard server-side admin-API plugin (auth + CSRF + audit-log + sovereignty-diff token primitives + state-machine guards) | §2 invariant 8 (admin_audit_log append-only), §3.13 admin authz |
 | 31 | PR 29 | #32 | `044f261` | Management UI (Vite+React 19 SPA, 4 admin tabs, 5 design-system components + Glyph trio) + LLM-policy editor + 4 new admin endpoints (`domains`, `domains-llm-policy` preview/apply with `confirmDiff: true`, `prompts`, `logout`) + version-manifest compile-time guard | §3.13 admin authz, §3.0 process-shape, sovereignty-diff editor with replay protection |
 | 32 | PR 30 | #33 | `bc1f193` | `@opencoo/cli` (6 verbs: migrate / setup / doctor / source test / source forget / recompile) + production composition root (server-factory admin-API BEFORE static-UI; vanilla-fetch GiteaClient with 5s timeout + typed errors + PAT scrub; SESSION_HMAC_KEY base64-decode validate; OPENCOO_ADMIN_PAT_FILE Docker-secrets) + adapter-registry contract in shared | §3.13 admin authz, §3.15 internet-facing surfaces, §3.6 invariant 11 (PAT never in errors / no credential values printed) |
+| 33 | PR 31 | #34 | `a215eb1` | Prompt-injection corpus (5 universal invariants + 6 per-category checks across 86 fixtures × 9 prompts × 2 locales) + generator with byte-determinism + orphan detection + CI ship-blocker job (`prompt-injection-corpus` deterministic tier) + manual-trigger real-LLM workflow | §4.2 prompt injection (phase-a ship-blocker), §3.4 spotlighting verified at every prompt's assembly |
 
 **What's complete structurally:**
 - §1.2.1 Shared foundations — **COMPLETE** (7 of 7 PRs).
@@ -55,13 +56,13 @@
 - §1.2.5 Engine-self-operating + agents + worldview — **COMPLETE** (5 of 5 PRs: PRs 18, 19, 20, 21, 22).
 - §1.2.6 SourceAdapters + `catalog-workflows` — **COMPLETE** (5 of 5 PRs: PRs 23 / 24 / 25 / 26 / 27).
 - §1.2.7 Review Dashboard + Management UI + CLI — **COMPLETE** (3 of 3 PRs: PRs 28 / 29 / 30).
-- §1.2.8 Prompt-injection corpus + phase-a e2e — **0 of 2 PRs** (PRs 31–32 pending).
+- §1.2.8 Prompt-injection corpus + phase-a e2e — **1 of 2 PRs** (PR 31 done; PR 32 pending — phase-a ship gate).
 
 **Team workflow in use:** per-PR team cycle via the `opencoo-phase-a` agent team — planner drafts plan, orchestrator approves, implementer executes TDD, simplifier refines, reviewer gates (with explicit `/security-review` on THREAT-MODEL-touching PRs). GitHub Copilot auto-review triaged before every merge. Squash-merge to main after CI green. Each PR's closed GitHub branch preserves the full TDD-ordered commit history for bisect.
 
-**Residual advisories filed across PRs 7-30** (all non-blocking, v0.2 hardening or future-PR reactivity): listed in each PR's body on GitHub. Tracked for the phase-a exit-gate `CHANGES-v0.1.md` draft.
+**Residual advisories filed across PRs 7-31** (all non-blocking, v0.2 hardening or future-PR reactivity): listed in each PR's body on GitHub. Tracked for the phase-a exit-gate `CHANGES-v0.1.md` draft.
 
-**Next PR**: PR 31 `packages/shared/prompts/__fixtures__/injection/` — **phase-a ship-blocker**. Fixtures-as-tests: every prompt under `packages/shared/prompts/{locale}/` has matching fixture set covering direct-injection, indirect-via-quoted-content, cross-domain-write, path-traversal, unicode-homoglyph, data-exfiltration (THREAT-MODEL §4.2). CI job `pnpm test:injection` FAILS when a prompt change regresses a fixture. First PR of §1.2.8.
+**Next PR**: PR 32 — phase-a e2e: ingest-to-wiki + Heartbeat + forget. Three e2e tests from PRD §5 criteria 2, 3, 9 against a compose-spun fixture Gitea + Postgres + Redis. Runs on release tags; <10 min wall-clock. Final §1.2.8 PR — **phase-a ship gate**. Should also consume `attackerOutput` from PR 31's injection fixtures (cross-domain-write / path-traversal / unicode-homoglyph) to exercise output-side enforcement at e2e level.
 
 ---
 
