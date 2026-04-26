@@ -1,0 +1,77 @@
+# Phase-a e2e ship-gate compose (PR 32 / plan #149).
+#
+# Brings up the three services the three release-tag e2e tests
+# need: postgres, redis, gitea. All images hard-pinned per
+# planner decision Q2 (3-month rotation cadence in a separate
+# PR).
+#
+# `tests/e2e/_setup/compose-controller.ts` shells `docker
+# compose -f compose.e2e.yml up -d` and waits on the named
+# health checks; the test process drives the pipelines directly
+# in-band rather than spinning up engine subprocesses (planner
+# decision Q3 + Q6 — no LLM provider is dialled, MockLlmClient
+# is wired by the test). Engines run as imported modules in the
+# same node process, which keeps wall-clock under the 10-min
+# budget without paying the engine-image build cost.
+#
+# Usage (CI):
+#   docker compose -f compose.e2e.yml up -d
+#   pnpm test:e2e
+#   docker compose -f compose.e2e.yml down -v
+#
+# Usage (local):
+#   colima start --cpu 4 --memory 4 --disk 20  # one-time
+#   pnpm test:e2e                              # boots compose, runs, tears down
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: opencoo-e2e-postgres
+    environment:
+      POSTGRES_USER: opencoo
+      POSTGRES_PASSWORD: opencoo
+      POSTGRES_DB: opencoo_e2e
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opencoo -d opencoo_e2e"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    container_name: opencoo-e2e-redis
+    ports:
+      - "56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: "no"
+
+  gitea:
+    image: gitea/gitea:1.22.6
+    container_name: opencoo-e2e-gitea
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__service__DISABLE_REGISTRATION: "false"
+      GITEA__service__REQUIRE_SIGNIN_VIEW: "false"
+      GITEA__server__ROOT_URL: http://localhost:53000/
+      GITEA__server__SSH_DOMAIN: localhost
+      GITEA__log__MODE: console
+      GITEA__log__LEVEL: warn
+    ports:
+      - "53000:3000"
+      - "52222:22"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/api/v1/version || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    restart: "no"

@@ -25,6 +25,12 @@ export default defineConfig({
       // `prompt-injection-corpus` CI job stays a distinct line
       // on the PR. (PR 31 / plan #145.)
       "**/*.injection.test.ts",
+      // Phase-a e2e ship-gate runs through its own vitest
+      // config (`vitest.e2e.config.ts`) on release tags via
+      // `release.yml`. The default `pnpm test` MUST NOT pull
+      // it in — bringing up Docker compose on every PR run
+      // would 10× the CI time. (PR 32 / plan #149.)
+      "tests/e2e/**",
     ],
     environment: "node",
     testTimeout: 10_000,
