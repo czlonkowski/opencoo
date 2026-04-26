@@ -131,6 +131,13 @@ export function registerDomainsLlmPolicyRoutes(
     { preHandler: requireCsrf },
     async (req, reply) => {
       const id = (req.params as { id: string }).id;
+      // Validate `:id` is a UUID before letting it reach the
+      // SQL `${id}::uuid` cast — bad input otherwise hits
+      // Postgres and surfaces as 500. Mirrors the PR 28 pattern
+      // on automation-candidates + marketplace-updates routes.
+      if (!z.string().uuid().safeParse(id).success) {
+        return reply.code(400).send({ error: "invalid_id" });
+      }
       const parseResult = previewSchema.safeParse(req.body);
       if (!parseResult.success) {
         return reply.code(400).send({
@@ -168,6 +175,11 @@ export function registerDomainsLlmPolicyRoutes(
     async (req, reply) => {
       const ctx = requireAdminContext(req);
       const id = (req.params as { id: string }).id;
+      // UUID-validate `:id` before SQL cast — pattern parity
+      // with PR 28 routes.
+      if (!z.string().uuid().safeParse(id).success) {
+        return reply.code(400).send({ error: "invalid_id" });
+      }
       const parseResult = applySchema.safeParse(req.body);
       if (!parseResult.success) {
         return reply.code(400).send({
