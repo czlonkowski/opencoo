@@ -1,0 +1,46 @@
+{
+  "name": "@opencoo/cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "opencoo operator CLI — `opencoo migrate / setup / doctor / source test / source forget / recompile`. Reads UI-managed config from Postgres + a minimal `.env` (DATABASE_URL / ENCRYPTION_KEY / PORT). PR 30 / plan #135.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "opencoo": "./dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@opencoo/shared": "workspace:*",
+    "@opencoo/source-asana": "workspace:*",
+    "@opencoo/source-drive": "workspace:*",
+    "@opencoo/source-fireflies": "workspace:*",
+    "@opencoo/source-n8n": "workspace:*",
+    "commander": "12.1.0",
+    "drizzle-orm": "0.45.2",
+    "pg": "8.20.0",
+    "picocolors": "1.1.1",
+    "prompts": "2.4.2",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.4.4",
+    "@types/node": "^22.10.5",
+    "@types/pg": "8.20.0",
+    "@types/prompts": "2.4.9",
+    "typescript": "~5.7.2",
+    "vitest": "^3.0.5"
+  }
+}
