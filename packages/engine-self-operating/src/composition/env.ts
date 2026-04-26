@@ -6,11 +6,14 @@
  * convention every other URL/secret in opencoo uses (the file
  * variant WINS when both are set).
  *
- * The loader fails LOUD on missing required vars — production
- * boot stops here rather than starting a half-wired engine.
- * `loadEngineConfig` from `config.ts` already validates the
- * scaffold-level vars (DATABASE_URL, REDIS_URL, PORT, …); this
- * loader handles the admin-API additions.
+ * The loader THROWS on missing required vars or invalid shapes
+ * (e.g. SESSION_HMAC_KEY not a valid base64 32-byte). Boot
+ * tolerance lives one level up: `start.ts` catches and falls
+ * back to `staticUiOnlyServerFactory` so the engine boots with
+ * admin-API DISABLED rather than half-wired. `loadEngineConfig`
+ * from `config.ts` already validates the scaffold-level vars
+ * (DATABASE_URL, REDIS_URL, PORT, …); this loader handles the
+ * admin-API additions only.
  */
 import {
   readWithFile,
@@ -25,8 +28,10 @@ export interface AdminApiCompositionEnv {
    *  this against the user's `gitea_teams`. */
   readonly adminTeamSlug: string;
   /** HMAC key for the sovereignty-diff token (PR 28). Required.
-   *  Treated as bytes, not a string — the file variant is the
-   *  recommended deploy path. */
+   *  Provisioned as `crypto.randomBytes(32).toString("base64")`
+   *  by `opencoo setup`; the loader base64-DECODES + validates
+   *  length === 32. The Buffer carries the raw 32 bytes the
+   *  sovereignty-token primitives expect. */
   readonly sessionHmacKey: Buffer;
   /** Gitea base URL for `whoami` calls (PR 28). Required. */
   readonly giteaBaseUrl: string;
@@ -60,13 +65,31 @@ export function loadAdminApiCompositionEnv(
   const llmDebugLog =
     typeof llmDebugLogRaw === "string" && llmDebugLogRaw.length > 0;
 
+  // SESSION_HMAC_KEY is provisioned by `opencoo setup` as a
+  // 32-byte random value base64-encoded (44 chars including
+  // padding). Decode + length-validate here so a deployment
+  // that fat-fingers the value (truncated paste, wrong format)
+  // fails LOUD at boot rather than silently using the base64
+  // text bytes as the HMAC key (which would invalidate every
+  // sovereignty-token issued under a different deploy that
+  // expected the decoded shape).
+  let sessionHmacKey: Buffer;
+  try {
+    sessionHmacKey = Buffer.from(sessionHmacKeyRaw, "base64");
+  } catch (err) {
+    throw new Error(
+      `${COMPOSITION_NAME}: SESSION_HMAC_KEY is not valid base64 (${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+  if (sessionHmacKey.length !== 32) {
+    throw new Error(
+      `${COMPOSITION_NAME}: SESSION_HMAC_KEY decoded to ${sessionHmacKey.length} bytes; expected 32 (base64-encoded crypto.randomBytes(32))`,
+    );
+  }
+
   return {
     adminTeamSlug,
-    // The HMAC key is binary by construction — a 32-byte random
-    // value base64-encoded in the env or file. We pass the bytes
-    // through verbatim; the verifier doesn't care about encoding
-    // as long as it's consistent.
-    sessionHmacKey: Buffer.from(sessionHmacKeyRaw, "utf8"),
+    sessionHmacKey,
     giteaBaseUrl,
     llmDebugLog,
   };

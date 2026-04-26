@@ -15,7 +15,7 @@
  *     (NOT from admin-API), confirming static-UI was registered
  *     after admin-API
  */
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ConsoleLogger } from "@opencoo/shared/logger";
 import type { FastifyInstance } from "fastify";
 
@@ -97,18 +97,18 @@ describe("productionServerFactory — registration order", () => {
     }
   });
 
-  it("calls registerAdminApi BEFORE registerStaticUi (call-order trace)", async () => {
-    // Spy at the module level by patching imports — we verify
-    // via behaviour above. This test asserts the contract via
-    // a synthetic order-trace using onRoute hook timestamps.
+  it("post-composition smoke: /health + /ready + admin paths all reachable", async () => {
+    // Behavioural smoke test — the load-bearing ordering
+    // assertion is in the test above (admin-API runs BEFORE
+    // static-UI catches the route). This test just verifies
+    // every layer is up after `productionServerFactory` returns.
+    // (An actual import-spy on `registerAdminApi` /
+    // `registerStaticUi` would require module-level mocking; the
+    // behavioural assertion already covers the invariant.)
     const probes = {
       postgres: async () => ({ ok: true }),
       redis: async () => ({ ok: true }),
     };
-    const adminRouteSeen: string[] = [];
-    const seeRoute = vi.fn((routeOpts: { url: string }) => {
-      adminRouteSeen.push(routeOpts.url);
-    });
     const app = (await productionServerFactory({
       probes,
       config: fakeConfig(),
@@ -122,15 +122,14 @@ describe("productionServerFactory — registration order", () => {
         llmDebugLog: false,
       },
     })) as unknown as FastifyInstance;
-    app.addHook("onRoute", seeRoute);
     try {
-      // The hook fires for every subsequent route registration
-      // — but admin-API + static-UI are already registered at
-      // this point. We validate via the URL list captured by
-      // probing /health, /ready, and an admin path.
       const healthRes = await app.inject({ method: "GET", url: "/health" });
+      const readyRes = await app.inject({ method: "GET", url: "/ready" });
       const csrfRes = await app.inject({ method: "GET", url: "/api/admin/_csrf" });
       expect(healthRes.statusCode).toBe(200);
+      expect(readyRes.statusCode).toBe(200);
+      // /api/admin/_csrf returns 401 when unauthenticated — proves
+      // the admin-API layer is mounted and gating.
       expect(csrfRes.statusCode).toBe(401);
     } finally {
       await app.close();

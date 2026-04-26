@@ -103,23 +103,44 @@ async function buildProductionRegistry(): Promise<
 }
 
 async function main(): Promise<void> {
-  await parseAndDispatch({
-    argv: process.argv.slice(2),
-    env: process.env,
-    cwd: process.cwd(),
-    version: VERSION,
-    stdout: process.stdout,
-    stderr: process.stderr,
-    runners: {
-      // Inject the production registry so `source test` works.
-      // Other commands use their default runners — they don't
-      // need the registry.
-      sourceTest: async (a) => {
-        const registry = await buildProductionRegistry();
-        await runSourceTest({ ...a, registry });
+  try {
+    await parseAndDispatch({
+      argv: process.argv.slice(2),
+      env: process.env,
+      cwd: process.cwd(),
+      version: VERSION,
+      stdout: process.stdout,
+      stderr: process.stderr,
+      runners: {
+        // Inject the production registry so `source test` works.
+        // Other commands use their default runners — they don't
+        // need the registry.
+        sourceTest: async (a) => {
+          const registry = await buildProductionRegistry();
+          await runSourceTest({ ...a, registry });
+        },
       },
-    },
-  });
+    });
+  } catch (error) {
+    // commander throws CommanderError objects (with code prefix
+    // `commander.`) on parse failure when `.exitOverride()` is
+    // set. Render a clean message + exit 1 instead of letting
+    // the unhandled rejection surface a stack trace.
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      typeof (error as { code: unknown }).code === "string" &&
+      ((error as { code: string }).code).startsWith("commander.") &&
+      "message" in error &&
+      typeof (error as { message: unknown }).message === "string"
+    ) {
+      process.stderr.write(`${(error as { message: string }).message}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    throw error;
+  }
 }
 
 void main();

@@ -47,6 +47,35 @@ interface GiteaTeamResponse {
   readonly organization?: { readonly username?: unknown };
 }
 
+/** Typed errors so callers can branch on classification (logging,
+ *  metrics, retry policy). All carry PAT-scrubbed messages. */
+export class GiteaUnauthorizedError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "GiteaUnauthorizedError";
+    this.status = status;
+  }
+}
+
+export class GiteaUpstreamError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "GiteaUpstreamError";
+    this.status = status;
+  }
+}
+
+export class GiteaTransientError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "GiteaTransientError";
+  }
+}
+
+const FETCH_TIMEOUT_MS = 5000;
+
 export interface CreateGiteaClientArgs {
   readonly baseUrl: string;
   /** @internal Test seam — defaults to `globalThis.fetch`. */
@@ -141,15 +170,17 @@ async function callGitea(
         authorization: `token ${pat}`,
         accept: "application/json",
       },
+      // 5-sec abort timeout — admin auth must not hang
+      // indefinitely on network stalls. Surfaces as
+      // GiteaTransientError with the PAT scrubbed.
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch (err) {
-    // Network-level failure. Don't reveal the PAT — only the
-    // URL + the underlying error class name.
+    // Network-level failure (or timeout). Don't reveal the PAT.
     const cause = err instanceof Error ? err.message : String(err);
-    // Defensive grep — even if `cause` somehow contained the
-    // PAT (it shouldn't), strip it.
-    throw new Error(
+    throw new GiteaTransientError(
       `gitea fetch failed: ${url} (${stripPat(cause, pat)})`,
+      { cause: err },
     );
   }
   if (!res.ok) {
@@ -158,8 +189,18 @@ async function callGitea(
       .text()
       .then((s) => s.slice(0, 200))
       .catch(() => "");
-    throw new Error(
-      `gitea ${path} returned ${res.status}: ${stripPat(bodyText, pat)}`,
+    const scrubbed = stripPat(bodyText, pat);
+    // Classify by status: 401/403 → Unauthorized; 5xx → Upstream;
+    // other 4xx → Upstream (caller treats as non-retryable).
+    if (res.status === 401 || res.status === 403) {
+      throw new GiteaUnauthorizedError(
+        res.status,
+        `gitea ${path} returned ${res.status}: ${scrubbed}`,
+      );
+    }
+    throw new GiteaUpstreamError(
+      res.status,
+      `gitea ${path} returned ${res.status}: ${scrubbed}`,
     );
   }
   return res;

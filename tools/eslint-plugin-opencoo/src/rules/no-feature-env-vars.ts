@@ -50,7 +50,7 @@ const DEFAULT_ALLOW_LIST = [
   "SESSION_HMAC_KEY_FILE",
   "GITEA_BASE_URL",
   "GITEA_BASE_URL_FILE",
-  // CLI `doctor` team-check fallback (PR 30 / plan #135
+  // CLI `doctor` team-check fallback (PR 30 / plan #135,
   // decision Q12). When the operator doesn't pass `--admin-pat`,
   // doctor reads this env. Allow-listed because it's an
   // operator-provided secret with the same semantics as

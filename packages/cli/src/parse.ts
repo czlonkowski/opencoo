@@ -36,7 +36,13 @@ export interface ParseAndDispatchArgs {
     readonly migrate?: (a: MigrateArgs) => Promise<void>;
     readonly setup?: (a: SetupArgs) => Promise<void>;
     readonly doctor?: (a: DoctorArgs) => Promise<void>;
-    readonly sourceTest?: (a: SourceTestArgs) => Promise<void>;
+    /** `source test` runner — the parse layer doesn't have an
+     *  AdapterRegistry to inject (that's bin.ts's job). The runner
+     *  contract here OMITS `registry`; the production wrapper in
+     *  bin.ts closes over the registry and passes it along. */
+    readonly sourceTest?: (
+      a: Omit<SourceTestArgs, "registry">,
+    ) => Promise<void>;
     readonly sourceForget?: (a: SourceForgetArgs) => Promise<void>;
     readonly recompile?: (a: RecompileArgs) => Promise<void>;
   };
@@ -122,13 +128,12 @@ export async function parseAndDispatch(
           "source test: no registry wired (bin.ts must inject `runners.sourceTest` with the production registry)",
         );
       }
+      // Registry is closed over by the bin.ts wrapper; the parse
+      // layer passes the registry-less args shape (see runner
+      // contract above).
       await fn({
         env: args.env,
         bindingId,
-        // cast through unknown — the runner brings its own
-        // registry; the parse layer doesn't know about
-        // adapter packages.
-        registry: undefined as unknown as Parameters<typeof fn>[0]["registry"],
         stdout: args.stdout,
         stderr: args.stderr,
       });

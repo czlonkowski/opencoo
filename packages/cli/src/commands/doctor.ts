@@ -167,8 +167,40 @@ async function checkMigrations(args: DoctorArgs): Promise<DoctorCheck> {
   }
 }
 
+/** Replace the PAT with `<REDACTED>` in any error message string.
+ *  Defense-in-depth: `fetch` implementations / proxies may include
+ *  request headers in error text on certain failure paths; without
+ *  this scrub a propagated `err.message` could leak the PAT.
+ *  Mirrors the engine's GiteaClient `stripPat` pattern. */
+function stripPat(message: string, pat: string): string {
+  if (pat.length === 0) return message;
+  return message.split(pat).join("<REDACTED>");
+}
+
 async function checkGiteaTeam(args: DoctorArgs): Promise<DoctorCheck> {
-  const pat = args.adminPat ?? args.env["OPENCOO_ADMIN_PAT"];
+  // Read PAT honoring the `_FILE` Docker-secrets convention used
+  // by every other secret in opencoo (matches the allow-list
+  // already pinned in `no-feature-env-vars`). `--admin-pat` flag
+  // wins; then OPENCOO_ADMIN_PAT_FILE; then OPENCOO_ADMIN_PAT.
+  let pat: string | undefined = args.adminPat;
+  if ((pat === undefined || pat.length === 0)) {
+    const patFile = args.env["OPENCOO_ADMIN_PAT_FILE"];
+    if (typeof patFile === "string" && patFile.length > 0) {
+      try {
+        const fs = await import("node:fs/promises");
+        pat = (await fs.readFile(patFile, "utf8")).trim();
+      } catch (err) {
+        return {
+          id: "gitea_team",
+          level: "error",
+          message: `gitea_team: cannot read OPENCOO_ADMIN_PAT_FILE: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    }
+  }
+  if (pat === undefined || pat.length === 0) {
+    pat = args.env["OPENCOO_ADMIN_PAT"];
+  }
   if (typeof pat !== "string" || pat.length === 0) {
     return {
       id: "gitea_team",
@@ -239,12 +271,16 @@ async function checkGiteaTeam(args: DoctorArgs): Promise<DoctorCheck> {
       message: `gitea_team: PAT is in '${teamSlug}'`,
     };
   } catch (err) {
-    // Don't leak the PAT — the message is constructed from
-    // controlled bytes only.
+    // PAT scrub before propagating — `err.message` may include
+    // request headers (some fetch implementations / proxies
+    // surface them on certain failure paths). The `pat` is a
+    // string in scope here; `stripPat` replaces all occurrences
+    // with `<REDACTED>`.
+    const raw = err instanceof Error ? err.message : String(err);
     return {
       id: "gitea_team",
       level: "error",
-      message: `gitea_team: ${err instanceof Error ? err.message : String(err)}`,
+      message: `gitea_team: ${stripPat(raw, pat)}`,
     };
   }
 }

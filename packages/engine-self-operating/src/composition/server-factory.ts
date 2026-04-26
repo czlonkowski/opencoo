@@ -11,10 +11,15 @@
  * route `/api/admin/*` requests through it before our admin
  * routes had a chance to match.
  *
- * The explicit ordering pin is verified by the test in
- * `tests/composition/server-factory.test.ts` — it asserts a
- * call-order trace via spies on both `registerAdminApi` and
- * `registerStaticUi`.
+ * The ordering invariant is verified BEHAVIOURALLY by the test
+ * in `tests/composition/server-factory.test.ts`: an unknown POST
+ * route resolves to the static-UI's `setNotFoundHandler` (status:
+ * "not_found") AND `/api/admin/_csrf` returns 401 (admin-API
+ * reachable). If admin-API was registered AFTER static-UI, the
+ * static handler would intercept `/api/admin/*` requests and the
+ * 401 wouldn't fire. (Spy-on-imports would be more direct but
+ * requires module-level mocking; the behavioural assertion
+ * already pins the load-bearing invariant.)
  */
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";

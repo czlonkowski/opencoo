@@ -203,14 +203,14 @@ export async function runRecompile(args: RecompileArgs): Promise<void> {
     }
 
     args.stdout.write(
-      pc.green(`recompile: ${pages.length} page(s) queued for recompile\n`),
+      pc.green(`recompile: ${pages.length} page(s) marked for recompile (audit-only)\n`),
     );
     for (const p of pages) {
       args.stdout.write(`  ${p.domainSlug}:${p.pagePath}\n`);
     }
     args.stdout.write(
       pc.dim(
-        "recompile: audit rows written. The engine-ingestion worker picks up the recompile on its next scheduled cycle.\n",
+        "recompile: audit rows written to erasure_log. v0.1 has no queue producer here — the engine-ingestion worker re-compiles on its next scheduled cycle (or operator restart). v0.2 wires a BullMQ producer for synchronous re-execution.\n",
       ),
     );
     return exitOk();
