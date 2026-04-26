@@ -15,7 +15,7 @@
 //   - Spotlight `fetchedAt` is a hard-coded constant per
 //     `_categories.ts` so re-runs don't perturb the timestamp.
 
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -134,6 +134,30 @@ function parseArgs(argv: readonly string[]): CliOptions {
   return { check };
 }
 
+/** Recursively walk `dir` and return every `.json` path found.
+ *  Used by `--check` mode to detect orphan fixtures that aren't
+ *  produced by the generator (a stale file from a previously-
+ *  covered cell, or a hand-edited file an operator forgot to
+ *  clean up). Returns empty array if `dir` doesn't exist. */
+async function walkJsonFiles(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) {
+      out.push(...(await walkJsonFiles(p)));
+    } else if (e.isFile() && e.name.endsWith(".json")) {
+      out.push(p);
+    }
+  }
+  return out;
+}
+
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2));
 
@@ -156,9 +180,13 @@ async function main(): Promise<void> {
   }
 
   if (opts.check) {
-    // Drift guard. For every generated path, compare bytes
-    // against the on-disk file. Any mismatch (including missing
-    // files) fails with a list of drifted paths.
+    // Drift guard. Three failure modes:
+    //   - missing on-disk: a generated path has no file.
+    //   - content drift: bytes differ.
+    //   - orphan on-disk: a `.json` under FIXTURES_ROOT exists
+    //     but isn't in `expectedPaths` (a stale fixture left from
+    //     a previously-covered cell that became skipped, or a
+    //     hand-edited file an operator forgot to clean up).
     const drift: string[] = [];
     for (const [filePath, want] of generated) {
       let got: string | undefined;
@@ -172,13 +200,20 @@ async function main(): Promise<void> {
         drift.push(`${filePath}  (content drift)`);
       }
     }
+    // Walk the FIXTURES_ROOT and compare against expectedPaths.
+    const onDisk = await walkJsonFiles(FIXTURES_ROOT);
+    for (const filePath of onDisk) {
+      if (!expectedPaths.has(filePath)) {
+        drift.push(`${filePath}  (orphan — not produced by generator; remove or regen)`);
+      }
+    }
     if (drift.length > 0) {
       console.error("FIXTURES DRIFT — re-run pnpm fixtures:regen:");
       for (const d of drift) console.error(`  ${d}`);
       process.exit(1);
     }
     console.log(
-      `OK — ${generated.size} fixtures match on-disk regeneration output.`,
+      `OK — ${generated.size} fixtures match on-disk regeneration output (no drift, no orphans).`,
     );
     return;
   }

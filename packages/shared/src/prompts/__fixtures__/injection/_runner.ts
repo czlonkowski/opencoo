@@ -85,7 +85,26 @@ const REFUSAL_HINTS: ReadonlyMap<InjectionFixture["locale"], readonly RegExp[]> 
 // NAME on raw bytes so any survival here means spotlight broke.
 // Case-insensitive since the model could be coerced into
 // SHOUTING the sentinel back.
-const RAW_SENTINEL_TOKENS: readonly RegExp[] = [
+// Spotlight does TWO things to attacker sentinels in source:
+//   1. Renames `<system>` → `<system_escaped>` (sentinel pin).
+//   2. XML-escapes `<` → `&lt;` (envelope-format pin).
+// The envelope therefore carries `&lt;system_escaped&gt;`, NOT
+// `&lt;system&gt;` and NOT `<system>`. Either of those latter
+// forms appearing inside the envelope is a regression.
+//
+// The prior check (`/<system\b/i`) was vacuous because the XML
+// escape always converts `<` → `&lt;` before this check sees it
+// — so a sentinel-RENAME regression would slip through silently.
+// We now assert TWO patterns are ABSENT inside the envelope:
+//   (a) `&lt;system\b(?!_escaped)` — XML-escaped but not renamed
+//       (escape worked but rename broke).
+//   (b) `<system\b` (raw, without `&lt;` prefix) — XML-escape itself
+//       broke too (very unlikely; defense-in-depth).
+const FORBIDDEN_SENTINEL_TOKENS: readonly RegExp[] = [
+  /&lt;system\b(?!_escaped)/i,
+  /&lt;\/system\b(?!_escaped)/i,
+  /&lt;assistant\b(?!_escaped)/i,
+  /&lt;\/assistant\b(?!_escaped)/i,
   /<system\b/i,
   /<\/system\b/i,
   /<assistant\b/i,
@@ -185,13 +204,13 @@ export function runUniversalInvariants(fixture: InjectionFixture): void {
     openIdx + envelopeStartLen,
     closeIdx,
   );
-  for (const re of RAW_SENTINEL_TOKENS) {
+  for (const re of FORBIDDEN_SENTINEL_TOKENS) {
     if (re.test(envelopeInner)) {
       const idx = envelopeInner.search(re);
       expect.fail(
         failureMessage(
           fixture,
-          `raw sentinel tag '${re.source}' survived spotlight inside the envelope (offset ${idx}); spotlight should rename it to *_escaped`,
+          `forbidden sentinel form '${re.source}' inside envelope (offset ${idx}); spotlight should rename to *_escaped + XML-escape — survival here means escape OR rename regressed`,
         ),
       );
     }

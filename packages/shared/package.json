@@ -136,6 +136,7 @@
     "@types/pg": "8.20.0",
     "drizzle-kit": "0.31.10",
     "ioredis-mock": "8.13.1",
+    "tsx": "^4.21.0",
     "typescript": "~5.7.2",
     "vitest": "^3.0.5"
   }
