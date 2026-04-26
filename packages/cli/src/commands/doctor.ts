@@ -34,7 +34,7 @@ import {
   inspectSecret,
   type RedactedSecret,
 } from "../lib/credential-redact.js";
-import { exitOk, exitRuntimeError, exitUserError } from "../lib/exit.js";
+import { exitOk, exitUserError } from "../lib/exit.js";
 import { openPool } from "../lib/db.js";
 
 export type DoctorCheckLevel = "ok" | "warn" | "error";
@@ -296,9 +296,4 @@ export async function runDoctor(args: DoctorArgs): Promise<void> {
     return exitUserError();
   }
   return exitOk();
-
-  // exitRuntimeError reserved for future paths that exceed
-  // user error scope — keep the import live so the symbol is
-  // available without re-importing in a future hotfix.
-  void exitRuntimeError;
 }
