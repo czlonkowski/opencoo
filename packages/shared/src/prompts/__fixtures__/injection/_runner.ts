@@ -166,9 +166,6 @@ export function runUniversalInvariants(fixture: InjectionFixture): void {
   ).toBe(1);
   const closeIdx =
     openIdx + envelopeStartLen + postOpener.indexOf("</source_content>");
-  const beforeEnvelope = assembled.slice(0, openIdx);
-  const afterEnvelope = assembled.slice(closeIdx + "</source_content>".length);
-  const outsideEnvelope = `${beforeEnvelope}${afterEnvelope}`;
 
   // (3) Sentinel-escape efficacy. The ENVELOPE — the bytes
   // between the production opener and the closer — must not
@@ -199,13 +196,6 @@ export function runUniversalInvariants(fixture: InjectionFixture): void {
       );
     }
   }
-  // We do NOT rely on `outsideEnvelope` for this check. Mark
-  // the variable as intentionally read so noUnusedLocals doesn't
-  // strip it — a future iteration may resurrect a body-side
-  // assertion (e.g. "no leaked attacker payload outside the
-  // envelope after a real-LLM round-trip"). For now the
-  // assignment alone is enough.
-  void outsideEnvelope;
 
   // (4) Directive-leak guard.
   // The directive must be present inside the envelope (so we
