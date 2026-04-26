@@ -1,5 +1,4 @@
 import {
-  cpSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -14,7 +13,14 @@ import { describe, expect, it } from "vitest";
 
 const THIS_DIR = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(THIS_DIR, "..");
-const SCHEMA_SRC = join(PKG_ROOT, "src");
+// Schema files MUST stay in their installed location so their
+// `import { ... } from "drizzle-orm/pg-core"` resolves via the
+// package's own `node_modules`. An earlier version of this test
+// copied the schema into a tmp workdir and then drizzle-kit's CJS
+// loader couldn't find drizzle-orm from `/tmp/...` — silently
+// produced no SQL on Linux CI runners (worked locally only via
+// pnpm install-history NODE_PATH residue).
+const SCHEMA_SRC = join(PKG_ROOT, "src", "db", "schema");
 const DRIZZLE_BIN = join(PKG_ROOT, "node_modules", ".bin", "drizzle-kit");
 
 interface SnapshotFiles {
@@ -25,7 +31,7 @@ interface SnapshotFiles {
 
 function writeStubConfig(workdir: string): string {
   const configPath = join(workdir, "drizzle.config.ts");
-  const schemaGlob = join(workdir, "src", "db", "schema", "*.ts");
+  const schemaGlob = join(SCHEMA_SRC, "*.ts");
   const outDir = join(workdir, "drizzle");
   const body = `import { defineConfig } from "drizzle-kit";
 export default defineConfig({
@@ -140,9 +146,9 @@ function collectSnapshot(workdir: string): SnapshotFiles {
 }
 
 function scaffoldWorkdir(): string {
-  const workdir = mkdtempSync(join(tmpdir(), "opencoo-drizzle-"));
-  cpSync(SCHEMA_SRC, join(workdir, "src"), { recursive: true });
-  return workdir;
+  // Tmp workdir holds only the stub config and drizzle-kit's
+  // output dir. Schema files stay in PKG_ROOT/src/db/schema/.
+  return mkdtempSync(join(tmpdir(), "opencoo-drizzle-"));
 }
 
 describe("drizzle-kit generate determinism", () => {
