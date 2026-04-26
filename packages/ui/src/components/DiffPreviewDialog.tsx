@@ -32,7 +32,7 @@
  *     in mono and disable).
  *   - timer color transition is one-shot 240ms color-only fade.
  */
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { SovereigntyDiffPreview } from "../types.js";
@@ -215,9 +215,17 @@ export function DiffPreviewDialog(
   props: DiffPreviewDialogProps,
 ): JSX.Element {
   const { t } = useTranslation();
-  const now = props.now ?? ((): number => Date.now());
+  // `now` is held in a ref so it doesn't trigger the interval-effect
+  // teardown/rebuild every second. Without the ref, the default
+  // `() => Date.now()` would be a new function on every render and
+  // the effect's dep array would re-fire each tick (the tick itself
+  // calls setState, which re-renders). Tests pass an explicit
+  // deterministic clock; production reads the ref.
+  const nowRef = useRef<() => number>(props.now ?? ((): number => Date.now()));
+  nowRef.current = props.now ?? nowRef.current;
+  const expiresAt = props.preview.expiresAt;
   const [secondsLeft, setSecondsLeft] = useState(() =>
-    Math.max(0, Math.floor((props.preview.expiresAt - now()) / 1000)),
+    Math.max(0, Math.floor((expiresAt - nowRef.current()) / 1000)),
   );
   const [submitting, setSubmitting] = useState(false);
 
@@ -225,13 +233,13 @@ export function DiffPreviewDialog(
     const tick = (): void => {
       const remaining = Math.max(
         0,
-        Math.floor((props.preview.expiresAt - now()) / 1000),
+        Math.floor((expiresAt - nowRef.current()) / 1000),
       );
       setSecondsLeft(remaining);
     };
     const id = window.setInterval(tick, 1000);
     return (): void => window.clearInterval(id);
-  }, [now, props.preview.expiresAt]);
+  }, [expiresAt]);
 
   const expired = secondsLeft === 0;
   const timerColor: string = expired

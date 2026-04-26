@@ -42,17 +42,22 @@ export function App(): JSX.Element {
         setDebugActive(r._llmDebugLogActive === true);
         setAuthError(null);
       } catch (err) {
+        // Both auth and non-auth failures must flip `authed: false`
+        // so the PatEntryModal can render the error message and let
+        // the operator retry. Prior shape only flipped on
+        // ApiAuthError → on a transient/network failure the error
+        // string was set but the modal stayed hidden.
         if (err instanceof ApiAuthError) {
           setAuthError(
             err.status === 403
               ? t("auth.forbidden")
               : t("auth.loginFailed"),
           );
-          setAuthed(false);
-          clearPat();
         } else {
           setAuthError(t("auth.loginFailed"));
         }
+        setAuthed(false);
+        clearPat();
       }
     })();
   }, [authed, t]);

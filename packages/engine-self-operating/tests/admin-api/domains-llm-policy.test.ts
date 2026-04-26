@@ -157,7 +157,7 @@ describe("admin-api llm-policy apply", () => {
         cookie: `opencoo_csrf=${cookie}`,
         "content-type": "application/json",
       },
-      payload: { proposed, token: previewBody.token },
+      payload: { proposed, token: previewBody.token, confirmDiff: true },
     });
     expect(applyRes.statusCode).toBe(200);
 
@@ -207,7 +207,7 @@ describe("admin-api llm-policy apply", () => {
         cookie: `opencoo_csrf=${cookie}`,
         "content-type": "application/json",
       },
-      payload: { proposed, token: tampered },
+      payload: { proposed, token: tampered, confirmDiff: true },
     });
     expect(res.statusCode).toBe(403);
     const body = JSON.parse(res.body) as { reason: string };
@@ -243,11 +243,49 @@ describe("admin-api llm-policy apply", () => {
         cookie: `opencoo_csrf=${cookie}`,
         "content-type": "application/json",
       },
-      payload: { proposed: tamperedProposed, token },
+      payload: { proposed: tamperedProposed, token, confirmDiff: true },
     });
     expect(res.statusCode).toBe(422);
     const body = JSON.parse(res.body) as { reason: string };
     expect(body.reason).toBe("payload_mismatch");
+  });
+
+  it("rejects apply without confirmDiff: true (400 validation_failed)", async () => {
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    const { id } = await seedDomain(f.raw, "exec", {});
+    const { csrfToken, cookie } = await getCsrf(f, "admin-pat");
+    const proposed = { thinker: { provider: "anthropic" } };
+    const previewRes = await f.app.inject({
+      method: "POST",
+      url: `/api/admin/domains/${id}/llm-policy/preview`,
+      headers: {
+        authorization: "Bearer admin-pat",
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: { proposed },
+    });
+    const { token } = JSON.parse(previewRes.body) as { token: string };
+    const res = await f.app.inject({
+      method: "POST",
+      url: `/api/admin/domains/${id}/llm-policy/apply`,
+      headers: {
+        authorization: "Bearer admin-pat",
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      // Missing confirmDiff — server MUST reject as
+      // validation_failed (the explicit "I saw the diff"
+      // acknowledgment gates the apply alongside the token).
+      payload: { proposed, token },
+    });
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body) as { error: string };
+    expect(body.error).toBe("validation_failed");
   });
 
   it("apply requires CSRF (no token → 403)", async () => {

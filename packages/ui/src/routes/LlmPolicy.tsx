@@ -10,7 +10,7 @@ import { useTranslation } from "react-i18next";
 import { Btn } from "../components/Btn.js";
 import { Card } from "../components/Card.js";
 import { DiffPreviewDialog } from "../components/DiffPreviewDialog.js";
-import { fetchAdmin } from "../lib/api.js";
+import { ApiValidationError, fetchAdmin } from "../lib/api.js";
 import type { Domain, SovereigntyDiffPreview } from "../types.js";
 
 interface DomainsResponse {
@@ -48,16 +48,36 @@ export function LlmPolicy(): JSX.Element {
     setApplyError(null);
   };
 
+  /** Parse the operator's textarea as JSON. Returns the parsed
+   *  value or `null` and sets the i18n'd error on failure. Centralises
+   *  the parse-and-error path that preview + apply both need. */
+  const parseProposed = (): unknown | null => {
+    try {
+      return JSON.parse(proposed);
+    } catch {
+      setApplyError(t("llmPolicy.invalidJson"));
+      return null;
+    }
+  };
+
+  /** Map a server `ApiValidationError` to an operator-friendly i18n
+   *  string by reading the structured `{reason}` body the server
+   *  emits — NOT the message string (which is just `Admin API
+   *  validation error (HTTP 422)` and contains no semantic info). */
+  const mapApplyError = (err: unknown): string => {
+    if (err instanceof ApiValidationError) {
+      const body = err.body as { reason?: string } | undefined;
+      if (body?.reason === "payload_mismatch") return t("llmPolicy.tokenMismatch");
+      if (body?.reason === "expired") return t("llmPolicy.diffExpired");
+    }
+    return err instanceof Error ? err.message : String(err);
+  };
+
   const previewClick = async (): Promise<void> => {
     if (selectedId === null) return;
     setApplyError(null);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(proposed);
-    } catch {
-      setApplyError("Invalid JSON.");
-      return;
-    }
+    const parsed = parseProposed();
+    if (parsed === null) return;
     try {
       const r = await fetchAdmin<SovereigntyDiffPreview>(
         `/api/admin/domains/${selectedId}/llm-policy/preview`,
@@ -65,23 +85,21 @@ export function LlmPolicy(): JSX.Element {
       );
       setPreview(r);
     } catch (err) {
-      setApplyError(err instanceof Error ? err.message : String(err));
+      setApplyError(mapApplyError(err));
     }
   };
 
   const applyClick = async (): Promise<void> => {
     if (selectedId === null || preview === null) return;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(proposed);
-    } catch {
-      setApplyError("Invalid JSON.");
-      return;
-    }
+    const parsed = parseProposed();
+    if (parsed === null) return;
     try {
       await fetchAdmin(`/api/admin/domains/${selectedId}/llm-policy/apply`, {
         method: "POST",
-        body: { proposed: parsed, token: preview.token },
+        // `confirmDiff: true` is the explicit "I saw the diff"
+        // acknowledgment the server requires (in addition to the
+        // replay-protected token) before mutating llm_policy.
+        body: { proposed: parsed, token: preview.token, confirmDiff: true },
       });
       setPreview(null);
       setAppliedNotice(t("llmPolicy.applied"));
@@ -89,16 +107,7 @@ export function LlmPolicy(): JSX.Element {
       const r = await fetchAdmin<DomainsResponse>("/api/admin/domains");
       setDomains(r.rows);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Distinguish payload_mismatch / expired into structured
-      // operator-friendly messages.
-      if (msg.includes("payload_mismatch")) {
-        setApplyError(t("llmPolicy.tokenMismatch"));
-      } else if (msg.includes("expired")) {
-        setApplyError(t("llmPolicy.diffExpired"));
-      } else {
-        setApplyError(msg);
-      }
+      setApplyError(mapApplyError(err));
     }
   };
 

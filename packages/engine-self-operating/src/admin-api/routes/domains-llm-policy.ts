@@ -37,16 +37,32 @@ import {
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
+// `proposed` MUST be a plain non-null non-array object — accepting
+// `unknown` and silently coercing to `{}` (the prior shape) would
+// let a client bug or `null` payload silently wipe `llm_policy`.
+const proposedSchema = z
+  .record(z.string(), z.unknown())
+  .refine(
+    (v): v is Record<string, unknown> =>
+      v !== null && !Array.isArray(v) && typeof v === "object",
+    "proposed must be a plain object",
+  );
+
 const previewSchema = z
   .object({
-    proposed: z.unknown(),
+    proposed: proposedSchema,
   })
   .strict();
 
+// `confirmDiff: true` is the explicit "I saw the diff" acknowledgment
+// that gates the apply. The token alone is replay-protected, but a
+// client that pre-fetched a token MUST also flag the confirm to
+// land — no silent commits.
 const applySchema = z
   .object({
-    proposed: z.unknown(),
+    proposed: proposedSchema,
     token: z.string().min(1),
+    confirmDiff: z.literal(true),
   })
   .strict();
 
@@ -63,6 +79,22 @@ interface DiffEntry {
  * → {provider, model, key}` so a top-level walk is sufficient.
  * A nested diff lands in v0.2 if the policy shape grows.
  */
+/** Recursive sorted-key serializer — two semantically identical
+ *  values with different key insertion order produce identical
+ *  output. `JSON.stringify` alone is order-sensitive: an operator
+ *  who edits `{model, provider}` to `{provider, model}` would
+ *  see false diffs (and burn a sovereignty-token round-trip).
+ *  `flatDiff` uses this for value-equality. */
+function canonicalize(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(canonicalize);
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(value as Record<string, unknown>).sort()) {
+    out[k] = canonicalize((value as Record<string, unknown>)[k]);
+  }
+  return out;
+}
+
 function flatDiff(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
@@ -75,8 +107,8 @@ function flatDiff(
   for (const k of [...keys].sort()) {
     const b = before[k];
     const a = after[k];
-    const bj = JSON.stringify(b);
-    const aj = JSON.stringify(a);
+    const bj = JSON.stringify(canonicalize(b));
+    const aj = JSON.stringify(canonicalize(a));
     if (bj !== aj) {
       out.push({ path: k, before: b ?? null, after: a ?? null });
     }
@@ -106,7 +138,7 @@ export function registerDomainsLlmPolicyRoutes(
           issues: parseResult.error.issues,
         });
       }
-      const { proposed } = parseResult.data;
+      const { proposed: after } = parseResult.data;
 
       const result = (await args.db.execute(sql`
         SELECT llm_policy FROM domains WHERE id = ${id}::uuid
@@ -117,10 +149,9 @@ export function registerDomainsLlmPolicyRoutes(
       }
 
       const before = row.llm_policy ?? {};
-      const after =
-        typeof proposed === "object" && proposed !== null && !Array.isArray(proposed)
-          ? (proposed as Record<string, unknown>)
-          : {};
+      // `after` is already validated as a non-null non-array object
+      // by `proposedSchema` — no fallback to {} (that path masked
+      // null-payload bugs that would silently wipe llm_policy).
       const diff = flatDiff(before, after);
       const { token, expiresAt } = issueSovereigntyDiffToken({
         key: args.sessionHmacKey,
@@ -144,12 +175,8 @@ export function registerDomainsLlmPolicyRoutes(
           issues: parseResult.error.issues,
         });
       }
-      const { proposed, token } = parseResult.data;
-
-      const after =
-        typeof proposed === "object" && proposed !== null && !Array.isArray(proposed)
-          ? (proposed as Record<string, unknown>)
-          : {};
+      const { proposed: after, token } = parseResult.data;
+      // `after` already validated by proposedSchema; no coercion.
 
       const verifyResult = verifySovereigntyDiffToken({
         key: args.sessionHmacKey,

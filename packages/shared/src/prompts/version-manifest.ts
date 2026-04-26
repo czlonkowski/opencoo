@@ -34,7 +34,7 @@ import { SURFACER_PROMPT_VERSION } from "./en-surfacer.js";
 import { BUILDER_PROMPT_VERSION } from "./en-builder.js";
 import { WORLDVIEW_DOMAIN_PROMPT_VERSION } from "./en-worldview-domain.js";
 import { WORLDVIEW_COMPANY_PROMPT_VERSION } from "./en-worldview-company.js";
-import { PROMPT_NAMES, type PromptName } from "./loader.js";
+import type { PromptName } from "./loader.js";
 
 export const PROMPT_VERSION_MANIFEST: Readonly<Record<PromptName, string>> = {
   classifier: CLASSIFIER_PROMPT_VERSION,
@@ -48,11 +48,16 @@ export const PROMPT_VERSION_MANIFEST: Readonly<Record<PromptName, string>> = {
   "worldview-company": WORLDVIEW_COMPANY_PROMPT_VERSION,
 };
 
-/** Type-level guard: every PromptName must have a version
- *  entry. If a future PR adds a new prompt to PROMPT_NAMES
- *  without updating the manifest, this array fails to type-
- *  check (the manifest's index signature widens to
- *  `PromptName` which constrains the keys). */
-export const PROMPT_NAMES_FROM_MANIFEST: ReadonlyArray<PromptName> = [
-  ...PROMPT_NAMES,
-];
+/** Compile-time guard: every PromptName MUST have a version
+ *  entry. If a future PR adds a new prompt to `PROMPT_NAMES`
+ *  without updating `PROMPT_VERSION_MANIFEST`, the line below
+ *  fails type-check — `manifestKeys` would be missing the new
+ *  name and the conditional type narrows to `never`. The
+ *  exported type alias is purely a tripwire; runtime callers
+ *  consume `PROMPT_VERSION_MANIFEST` directly. */
+type _ManifestCoversAllPromptNames =
+  PromptName extends keyof typeof PROMPT_VERSION_MANIFEST ? true : never;
+const _manifestCoverageGuard: _ManifestCoversAllPromptNames = true;
+void _manifestCoverageGuard;
+
+export type PromptVersionManifest = typeof PROMPT_VERSION_MANIFEST;

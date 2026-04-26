@@ -69,7 +69,10 @@ async function fetchAdminInternal(
   isRetry: boolean,
 ): Promise<Response> {
   const fetchFn = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
-  const method = opts.method ?? "GET";
+  // Normalise method casing — `MUTATING.has` is case-sensitive and
+  // a caller passing `"post"` would otherwise bypass CSRF header
+  // injection AND the auto-retry path. Cheap defensive check.
+  const method = (opts.method ?? "GET").toUpperCase();
   const headers: Record<string, string> = {
     "content-type": "application/json",
   };

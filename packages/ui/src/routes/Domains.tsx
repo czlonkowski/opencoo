@@ -59,7 +59,7 @@ export function Domains(): JSX.Element {
                 <div style={{ color: "var(--ink-3)" }}>{d.class}</div>
                 <div style={{ color: "var(--ink-3)" }}>{d.locale}</div>
                 <div style={{ color: d.isAggregator ? "var(--healthy)" : "var(--ink-3)" }}>
-                  {d.isAggregator ? "yes" : "no"}
+                  {d.isAggregator ? t("common.yes") : t("common.no")}
                 </div>
               </div>
             ))}

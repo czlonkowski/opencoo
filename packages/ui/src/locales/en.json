@@ -73,6 +73,7 @@
     "timerExpired": "expired",
     "diffExpired": "Token expired. Re-preview to continue.",
     "tokenMismatch": "The proposed policy changed since preview. Re-preview to continue.",
+    "invalidJson": "Proposed policy is not valid JSON.",
     "applied": "Applied. New policy is active for new pipeline runs."
   },
   "prompts": {
@@ -95,7 +96,9 @@
     "cancel": "Cancel",
     "loading": "Loading…",
     "retry": "Retry",
-    "error": "Something went wrong."
+    "error": "Something went wrong.",
+    "yes": "yes",
+    "no": "no"
   },
   "credentialForm": {
     "required": "required",

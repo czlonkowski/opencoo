@@ -21,8 +21,16 @@ const STORED_LOCALE_KEY = "opencoo_locale";
 
 function detectLocale(): "en" | "pl" {
   if (typeof window === "undefined") return "en";
-  const stored = window.localStorage?.getItem(STORED_LOCALE_KEY);
-  if (stored === "en" || stored === "pl") return stored;
+  // Some sandboxed/private contexts throw `SecurityError` on
+  // localStorage access. Mirror the pat-store try/catch pattern
+  // so i18n init can't crash the whole SPA when storage is
+  // unavailable.
+  try {
+    const stored = window.localStorage?.getItem(STORED_LOCALE_KEY);
+    if (stored === "en" || stored === "pl") return stored;
+  } catch {
+    // Storage access blocked — fall through to navigator language.
+  }
   const nav = window.navigator?.language ?? "en";
   return nav.toLowerCase().startsWith("pl") ? "pl" : "en";
 }

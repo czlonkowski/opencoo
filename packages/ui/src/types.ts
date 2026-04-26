@@ -36,7 +36,10 @@ export interface SovereigntyDiffPreview {
   readonly expiresAt: number;
 }
 
+/** Server response shape for `POST /api/admin/domains/:id/llm-policy/apply`.
+ *  The `id` field mirrors the server's `{ ok: true, id }` payload
+ *  shape verbatim; renaming on the wire is not done. */
 export interface LlmPolicyApplyResult {
   readonly ok: true;
-  readonly domainId: string;
+  readonly id: string;
 }

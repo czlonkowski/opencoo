@@ -6,8 +6,11 @@
 
 /* --- Webfonts ---------------------------------------------------
    Geist (sans), JetBrains Mono (mono), Instrument Serif (serif).
-   Loaded from Google Fonts CDN. If you need self-hosted files,
-   see /fonts/ — TTFs ship alongside this stylesheet where possible. */
+   v0.1: loaded from Google Fonts CDN — no self-hosted TTFs ship
+   with the build (the engine bundles only the CSS + JS). For
+   air-gapped deployments, swap the @import below with @font-face
+   declarations + add the TTFs to packages/ui/public/fonts/.
+   Tracked as v0.2 hardening. */
 @import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap');
 
 :root{
