@@ -140,9 +140,14 @@ export async function startCompose(
   }
   // `--wait` already gates on the compose healthcheck status,
   // but we re-poll to surface a helpful per-service message if
-  // a slower environment misses the compose default. Defaults:
-  // 90s for the workstation case; CI override is 300s.
-  await waitForHealthy(options.timeoutMs ?? 90_000);
+  // a slower environment misses the compose default.
+  // Defaults: 90s for the workstation case (warm caches);
+  // 300s when CI=truthy (cold image pulls + slower runner).
+  // Callers can override via `options.timeoutMs`.
+  const ciDefault = process.env["CI"] !== undefined && process.env["CI"] !== ""
+    ? 300_000
+    : 90_000;
+  await waitForHealthy(options.timeoutMs ?? ciDefault);
 }
 
 /** Tear down the compose stack — `down -v` removes anonymous

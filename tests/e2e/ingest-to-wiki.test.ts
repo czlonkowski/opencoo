@@ -146,8 +146,9 @@ function buildWikiDeps(env: E2EEnvironment): WikiWriteDeps {
   const adapter = giteaWikiAdapter({
     client,
     owner: env.giteaAdminUser,
-    // Use the empty prefix so the resolved repo is exactly
-    // `wiki-{slug}` — matches `seedForTest`'s recreate target.
+    // The Gitea adapter formats repos as `${repoPrefix}-${domainSlug}`,
+    // so `repoPrefix: "wiki"` + `domainSlug: "execs"` resolves to
+    // the `wiki-execs` repo `seedForTest` recreates.
     repoPrefix: "wiki",
     branch: "main",
   });

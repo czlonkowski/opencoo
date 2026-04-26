@@ -181,13 +181,13 @@ describe.runIf(HAS_DOCKER)(
           dryRun: true,
           stdout,
           stderr,
-          // Use the same pool we already opened — avoids
-          // dialing a second connection just for this CLI run.
-          // The CLI's source-forget calls pool.end() in its
+          // The CLI's source-forget calls `pool.end()` in its
           // finally block (production-correct: short-lived
-          // process). For the e2e suite we need a per-run
-          // throwaway pool so the shared `e.pgPool` keeps
-          // working for downstream assertions.
+          // process). For the e2e suite we want the shared
+          // `e.pgPool` to keep working for downstream
+          // assertions, so we create a per-run throwaway pool
+          // here that source-forget can safely .end() without
+          // touching the suite-wide connection.
           poolFactory: () =>
             new pg.Pool({
               connectionString: E2E_ENDPOINTS.postgresUrl,

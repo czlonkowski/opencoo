@@ -56,6 +56,15 @@ jobs:
       - name: Run phase-a e2e suite
         run: pnpm test:e2e
 
+      - name: Capture compose logs + container inspect on failure
+        if: failure()
+        run: |
+          mkdir -p tests/e2e/_artifacts
+          docker compose -f compose.e2e.yml logs --no-color --timestamps > tests/e2e/_artifacts/compose-logs.txt 2>&1 || true
+          for c in opencoo-e2e-postgres opencoo-e2e-redis opencoo-e2e-gitea; do
+            docker inspect "$c" > "tests/e2e/_artifacts/inspect-$c.json" 2>&1 || true
+          done
+
       - name: Tear down compose (best-effort)
         if: always()
         run: docker compose -f compose.e2e.yml down -v --remove-orphans
