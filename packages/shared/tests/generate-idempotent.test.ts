@@ -1,5 +1,4 @@
 import {
-  cpSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -9,12 +8,19 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 const THIS_DIR = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(THIS_DIR, "..");
-const SCHEMA_SRC = join(PKG_ROOT, "src");
+// Schema files MUST stay in their installed location so their
+// `import { ... } from "drizzle-orm/pg-core"` resolves via the
+// package's own `node_modules`. An earlier version of this test
+// copied the schema into a tmp workdir and then drizzle-kit's CJS
+// loader couldn't find drizzle-orm from `/tmp/...` — silently
+// produced no SQL on Linux CI runners (worked locally only via
+// pnpm install-history NODE_PATH residue).
+const SCHEMA_SRC = join(PKG_ROOT, "src", "db", "schema");
 const DRIZZLE_BIN = join(PKG_ROOT, "node_modules", ".bin", "drizzle-kit");
 
 interface SnapshotFiles {
@@ -25,7 +31,7 @@ interface SnapshotFiles {
 
 function writeStubConfig(workdir: string): string {
   const configPath = join(workdir, "drizzle.config.ts");
-  const schemaGlob = join(workdir, "src", "db", "schema", "*.ts");
+  const schemaGlob = join(SCHEMA_SRC, "*.ts");
   const outDir = join(workdir, "drizzle");
   const body = `import { defineConfig } from "drizzle-kit";
 export default defineConfig({
@@ -39,15 +45,42 @@ export default defineConfig({
   return configPath;
 }
 
+// Stash drizzle-kit's stdout+stderr per-workdir so collectSnapshot
+// can surface them in the error message when no SQL is produced.
+// Keyed by `workdir` (configPath's parent), unique per `mkdtempSync`
+// call, so parallel runs don't clobber each other.
+const GENERATE_OUTPUT = new Map<string, string>();
+
 function runGenerate(configPath: string): void {
-  execFileSync(DRIZZLE_BIN, ["generate", "--config", configPath, "--name", "init"], {
-    cwd: join(configPath, ".."),
-    env: {
-      ...process.env,
-      DATABASE_URL: "postgres://dummy:dummy@localhost/dummy",
+  // spawnSync (not execFileSync) so we can read stderr even on a
+  // zero-exit path. drizzle-kit silently returns 0 when it loads
+  // a schema and finds zero exported tables — exactly what
+  // happens when the user's schema files can't resolve
+  // `drizzle-orm` (their imports throw, no exports register).
+  // Without capturing stderr we'd see only the opaque
+  // "no .sql file produced" downstream.
+  const result = spawnSync(
+    DRIZZLE_BIN,
+    ["generate", "--config", configPath, "--name", "init"],
+    {
+      cwd: join(configPath, ".."),
+      env: {
+        ...process.env,
+        DATABASE_URL: "postgres://dummy:dummy@localhost/dummy",
+      },
+      encoding: "utf8",
     },
-    stdio: "pipe",
-  });
+  );
+  const workdir = join(configPath, "..");
+  GENERATE_OUTPUT.set(
+    workdir,
+    `exit=${result.status}\nstdout:\n${result.stdout ?? ""}\nstderr:\n${result.stderr ?? ""}`,
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `drizzle-kit generate exited ${result.status}\n${GENERATE_OUTPUT.get(workdir)}`,
+    );
+  }
 }
 
 interface JournalEntry {
@@ -91,7 +124,11 @@ function collectSnapshot(workdir: string): SnapshotFiles {
   const drizzleDir = join(workdir, "drizzle");
   const sqlFile = readdirSync(drizzleDir).find((f) => f.endsWith(".sql"));
   if (sqlFile === undefined) {
-    throw new Error(`no .sql file produced in ${drizzleDir}`);
+    const captured = GENERATE_OUTPUT.get(workdir) ?? "(no captured output)";
+    throw new Error(
+      `no .sql file produced in ${drizzleDir}\n` +
+        `drizzle-kit output:\n${captured}`,
+    );
   }
   return {
     sql: readFileSync(join(drizzleDir, sqlFile), "utf8"),
@@ -109,9 +146,9 @@ function collectSnapshot(workdir: string): SnapshotFiles {
 }
 
 function scaffoldWorkdir(): string {
-  const workdir = mkdtempSync(join(tmpdir(), "opencoo-drizzle-"));
-  cpSync(SCHEMA_SRC, join(workdir, "src"), { recursive: true });
-  return workdir;
+  // Tmp workdir holds only the stub config and drizzle-kit's
+  // output dir. Schema files stay in PKG_ROOT/src/db/schema/.
+  return mkdtempSync(join(tmpdir(), "opencoo-drizzle-"));
 }
 
 describe("drizzle-kit generate determinism", () => {

@@ -1,0 +1,80 @@
+name: release (phase-a e2e ship-gate)
+
+# Phase-a e2e (PR 32 / plan #149). Runs ONLY on release tags
+# and via manual `workflow_dispatch` — bringing up Docker
+# compose on every PR run would 10× the CI time and the
+# regression value is not there for non-release commits.
+#
+# Tag conventions (per CLAUDE.md "v0.1 ship sequence"):
+#   - v*           — final-release tags (`v0.1.0`, `v0.2.0`, ...)
+#   - 0.1.0-*      — phase rollups (`0.1.0-a.1`, `0.1.0-b.1`, ...)
+#
+# Manual dispatch lets the operator re-run after an infra fix
+# without re-cutting a tag.
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "0.1.0-*"
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: phase-a e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build @opencoo/eslint-plugin
+        run: pnpm --filter @opencoo/eslint-plugin build
+
+      - name: Build workspaces
+        run: pnpm build
+
+      # ubuntu-latest already ships docker; no extra setup
+      # needed. The compose controller's `--wait` + per-container
+      # health poll handles bring-up timing.
+      - name: Run phase-a e2e suite
+        run: pnpm test:e2e
+
+      - name: Capture compose logs + container inspect on failure
+        if: failure()
+        run: |
+          mkdir -p tests/e2e/_artifacts
+          docker compose -f compose.e2e.yml logs --no-color --timestamps > tests/e2e/_artifacts/compose-logs.txt 2>&1 || true
+          for c in opencoo-e2e-postgres opencoo-e2e-redis opencoo-e2e-gitea; do
+            docker inspect "$c" > "tests/e2e/_artifacts/inspect-$c.json" 2>&1 || true
+          done
+
+      - name: Tear down compose (best-effort)
+        if: always()
+        run: docker compose -f compose.e2e.yml down -v --remove-orphans
+
+      - name: Upload compose logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-logs
+          path: |
+            tests/e2e/_artifacts/**
+          if-no-files-found: ignore
+          retention-days: 7
