@@ -58,6 +58,18 @@ export interface StartOptions
   readonly dbFactory?: (config: EngineConfig) => StartDb;
   /** @internal Test seam — defaults to `new Redis(...)`. */
   readonly redisFactory?: (config: EngineConfig) => StartRedis;
+  /**
+   * v0.1 NO-OP forward-compat flag (PR 30 / plan #135 decision Q4).
+   *
+   * Engines do NOT auto-migrate at boot in v0.1 — the operator
+   * runs `opencoo migrate` explicitly per the runbook. This
+   * flag is reserved for v0.2 if auto-migrate is added: setting
+   * it to `true` will skip the v0.2 auto-migrate step. Today,
+   * passing it has no effect — the field exists so the CLI's
+   * `--skip-migrate` flag wiring (PR 30 `start` command, when
+   * added in a future PR) doesn't fail to type-check.
+   */
+  readonly skipMigrate?: boolean;
 }
 
 function defaultDbFactory(config: EngineConfig): StartDb {

@@ -2,9 +2,11 @@
  * Engine-self-operating entrypoint. Thin wrapper over `startEngine`
  * from `@opencoo/shared/engine-scaffold` that wires:
  *   - production-default pg.Pool + ioredis Redis factories,
- *   - a server factory that registers the Static UI middleware
- *     (Q4–Q6: bundled SPA + boot-tolerant + heuristic fallback)
- *     after the standard /health + /ready routes.
+ *   - a server factory that registers the admin-API (when the
+ *     PR 28 env vars are set) AND the Static UI middleware.
+ *     Order matters: admin-API → static-UI so the
+ *     setNotFoundHandler doesn't catch unknown `/api/admin/*`
+ *     paths (verified by `tests/composition/server-factory.test.ts`).
  *
  * BullMQ requirement: when ioredis is used as the BullMQ
  * connection, `maxRetriesPerRequest: null` and
@@ -13,6 +15,17 @@
  * in v0.1, but the harness shape stays in lockstep with
  * engine-ingestion so a v0.2 self-op pipeline can land without
  * boot-path churn.)
+ *
+ * # Production wiring (PR 30)
+ *
+ * When `ADMIN_TEAM_SLUG` + `SESSION_HMAC_KEY` + `GITEA_BASE_URL`
+ * are all set, `start()` constructs a real fetch-based
+ * `GiteaClient`, instantiates the admin-API plugin, and
+ * registers it BEFORE the static-ui plugin. When any of those
+ * env vars are missing, the engine STILL BOOTS — but with the
+ * admin-API disabled and a clear `admin_api.disabled` log line
+ * pointing the operator at the missing env var. This boot-
+ * tolerant behavior matches PR 18's UI_DIST_PATH treatment.
  */
 import pg from "pg";
 import { Redis } from "ioredis";
@@ -31,6 +44,13 @@ import {
   type StartServer,
 } from "@opencoo/shared/engine-scaffold";
 
+import type { GiteaClient } from "./admin-api/auth.js";
+import {
+  loadAdminApiCompositionEnv,
+  type AdminApiCompositionEnv,
+} from "./composition/env.js";
+import { createGiteaClient } from "./composition/gitea-client.js";
+import { productionServerFactory } from "./composition/server-factory.js";
 import { loadEngineConfig, type EngineConfig } from "./config.js";
 import { registerStaticUi } from "./static-ui.js";
 
@@ -64,12 +84,23 @@ export interface StartOptions
   /** @internal Test seam — receives the probe map and the resolved
    *  config so the server factory can wire the static UI from the
    *  config's uiDistPath. Defaults to a Fastify app via buildServer
-   *  with the static UI registered. */
+   *  with the static UI registered (PLUS admin-API in production
+   *  when the env vars are set). */
   readonly serverFactory?: (
     probes: ProbeMap,
     config: EngineConfig,
     logger: Logger,
   ) => Promise<StartServer> | StartServer;
+  /** @internal Test seam — defaults to `createGiteaClient`. Used
+   *  by composition tests to substitute a mock client without
+   *  the env-var dance. */
+  readonly giteaClientFactory?: (baseUrl: string) => GiteaClient;
+  /**
+   * v0.1 NO-OP forward-compat flag (PR 30 / plan #135 decision Q4).
+   * Engines do NOT auto-migrate at boot — the operator runs
+   * `opencoo migrate` explicitly. Reserved for v0.2.
+   */
+  readonly skipMigrate?: boolean;
 }
 
 function defaultDbFactory(config: EngineConfig): StartDb {
@@ -83,7 +114,13 @@ function defaultRedisFactory(config: EngineConfig): StartRedis {
   });
 }
 
-async function defaultServerFactory(
+/**
+ * Static-UI-only server factory. Used when:
+ *   - the operator hasn't set the admin-API env vars (boot-
+ *     tolerant fallback),
+ *   - tests inject this directly via `options.serverFactory`.
+ */
+async function staticUiOnlyServerFactory(
   probes: ProbeMap,
   config: EngineConfig,
   logger: Logger,
@@ -96,24 +133,79 @@ async function defaultServerFactory(
   return app as unknown as FastifyInstance & StartServer;
 }
 
+/** Try to load the admin-API env. Returns `null` (and logs)
+ *  when any required var is missing — boot continues with the
+ *  static-UI-only factory. */
+function tryLoadAdminApiEnv(
+  env: Record<string, string | undefined>,
+  logger: Logger,
+): AdminApiCompositionEnv | null {
+  try {
+    return loadAdminApiCompositionEnv(env);
+  } catch (err) {
+    logger.warn("admin_api.disabled", {
+      reason:
+        "ADMIN_TEAM_SLUG / SESSION_HMAC_KEY / GITEA_BASE_URL not all set; admin API will not register",
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
 export async function start(
   options: StartOptions = {},
 ): Promise<StartedEngine> {
-  const config =
-    options.config ?? loadEngineConfig(options.env ?? process.env);
+  const env = options.env ?? process.env;
+  const config = options.config ?? loadEngineConfig(env);
   const logger = options.logger ?? new ConsoleLogger();
 
-  // The shared `startEngine` awaits its serverFactory return, so we
-  // pass our async factory directly — no sync shim required.
-  const userServerFactory = options.serverFactory ?? defaultServerFactory;
+  // Pre-construct the pg.Pool here so we can pass it to BOTH
+  // the scaffold's dbFactory (which returns the pool to the
+  // engine harness) AND the production serverFactory (which
+  // hands the pool to the admin-API + audit-log writers).
+  // Reusing the SAME pool matters: a second pool would double
+  // the connection count and run a parallel auth handshake.
+  const dbFactoryFromOptions = options.dbFactory;
+  const pgPool: pg.Pool | null =
+    dbFactoryFromOptions === undefined
+      ? new pg.Pool({ connectionString: config.databaseUrl })
+      : null;
+  const dbFactory: (c: EngineConfig) => StartDb =
+    dbFactoryFromOptions ?? ((): StartDb => pgPool as unknown as StartDb);
+
+  const compositionEnv = tryLoadAdminApiEnv(env, logger);
+  const giteaClientFactory =
+    options.giteaClientFactory ??
+    ((baseUrl: string): GiteaClient => createGiteaClient({ baseUrl }));
+
+  // Pick the serverFactory:
+  //   - test-supplied override → use it,
+  //   - production wiring (env complete + pool present) →
+  //     productionServerFactory,
+  //   - otherwise → staticUiOnlyServerFactory (boot-tolerant).
+  const userServerFactory = options.serverFactory;
   const serverFactory = (
     probes: ProbeMap,
-  ): Promise<StartServer> | StartServer =>
-    userServerFactory(probes, config, logger);
+  ): Promise<StartServer> | StartServer => {
+    if (userServerFactory !== undefined) {
+      return userServerFactory(probes, config, logger);
+    }
+    if (compositionEnv !== null && pgPool !== null) {
+      return productionServerFactory({
+        probes,
+        config,
+        logger,
+        pgPool,
+        giteaClient: giteaClientFactory(compositionEnv.giteaBaseUrl),
+        compositionEnv,
+      });
+    }
+    return staticUiOnlyServerFactory(probes, config, logger);
+  };
 
   const baseOptions: BaseStartOptions<EngineConfig, SelfOperatingRegistry> = {
     config,
-    dbFactory: options.dbFactory ?? defaultDbFactory,
+    dbFactory,
     redisFactory: options.redisFactory ?? defaultRedisFactory,
     serverFactory,
     ...(options.registry !== undefined ? { registry: options.registry } : {}),
@@ -123,3 +215,7 @@ export async function start(
   };
   return startEngine<EngineConfig, SelfOperatingRegistry>(baseOptions);
 }
+
+// Re-export the default factories for tests that want to
+// reference them by identity.
+export { defaultDbFactory, defaultRedisFactory, staticUiOnlyServerFactory };
