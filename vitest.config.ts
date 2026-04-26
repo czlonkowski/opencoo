@@ -14,6 +14,11 @@ export default defineConfig({
       "**/dist/**",
       "tests/eslint-fixtures/**",
       "packages/gitea-wiki-mcp-server/**",
+      // packages/ui has its own vitest config (jsdom +
+      // testing-library setup). Run via `pnpm --filter
+      // @opencoo/ui test`; the root node-env vitest can't load
+      // jsdom-dependent specs.
+      "packages/ui/**",
     ],
     environment: "node",
     testTimeout: 10_000,

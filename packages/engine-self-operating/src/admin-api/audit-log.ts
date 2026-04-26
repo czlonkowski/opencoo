@@ -43,6 +43,13 @@ export const AUDIT_LOG_ACTIONS = [
   // Marketplace updates.
   "marketplace_update.accept",
   "marketplace_update.skip",
+  // Domain LLM-policy edits — the PR 29 sovereignty-diff
+  // confirm flow records one row per applied change.
+  "domain.llm_policy.apply",
+  // Logout — records the operator-initiated session-end so an
+  // audit-log read can correlate an action burst with the
+  // operator's session window.
+  "session.logout",
   // Read-only audit-log access — scope-checked but recorded
   // anyway so an operator-pulling-history pattern is itself
   // visible to the next reviewer.

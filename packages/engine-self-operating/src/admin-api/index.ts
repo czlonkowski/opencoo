@@ -33,8 +33,12 @@ import { issueCsrfToken } from "./csrf.js";
 import { attachDebugBannerHook } from "./debug-banner.js";
 import { registerAuditLogReadRoutes } from "./routes/audit-log-read.js";
 import { registerAutomationCandidatesRoutes } from "./routes/automation-candidates.js";
+import { registerDomainsLlmPolicyRoutes } from "./routes/domains-llm-policy.js";
+import { registerDomainsRoutes } from "./routes/domains.js";
 import { registerLintFindingsRoutes } from "./routes/lint-findings.js";
+import { registerLogoutRoute } from "./routes/logout.js";
 import { registerMarketplaceUpdatesRoutes } from "./routes/marketplace-updates.js";
+import { registerPromptsRoutes } from "./routes/prompts.js";
 import { registerSourceBindingsRoutes } from "./routes/source-bindings.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
@@ -94,6 +98,16 @@ export async function registerAdminApi(
   registerAutomationCandidatesRoutes({ app: guardedApp, db: args.db });
   registerMarketplaceUpdatesRoutes({ app: guardedApp, db: args.db });
   registerAuditLogReadRoutes({ app: guardedApp, db: args.db });
+  // PR 29 — read-only domains list + prompts manifest +
+  // sovereignty-diff llm-policy edit + logout.
+  registerDomainsRoutes({ app: guardedApp, db: args.db });
+  registerPromptsRoutes({ app: guardedApp });
+  registerDomainsLlmPolicyRoutes({
+    app: guardedApp,
+    db: args.db,
+    sessionHmacKey: args.sessionHmacKey,
+  });
+  registerLogoutRoute({ app: guardedApp, db: args.db });
 
   // Debug banner: registered LAST so it sees every JSON
   // response regardless of which route built it.

@@ -19,6 +19,10 @@ const DEFAULT_ALLOW_LIST = [
   "ADMIN_BOOTSTRAP_TOKEN",
   "ADMIN_BOOTSTRAP_TOKEN_FILE",
   "NODE_ENV",
+  // Standard CI env var — set by every CI provider and consumed
+  // by test tooling (Playwright's `forbidOnly`, vitest's
+  // reporter selection). PR 29.
+  "CI",
   "LLM_DEBUG_LOG",
   "LOG_LEVEL",
   "TELEMETRY_ENDPOINT",

@@ -1,0 +1,130 @@
+/* =============================================================
+   opencoo · app.css
+   App-level surface CSS for the Management UI. Imports the
+   design-system tokens via colors_and_type.css; nothing here
+   defines new colors or font families — every visual references
+   a CSS var per design_system/README.md.
+   ============================================================= */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+button {
+  font-family: inherit;
+}
+
+a {
+  color: inherit;
+}
+
+/* Heartbeat pulse — the SINGLE animation loop in the system.
+   Reserved for the operate glyph (--advisory). Everything else
+   is one-shot ease-out via --ease-write or --ease-transform. */
+@keyframes opencoo-heartbeat {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+}
+
+.heartbeat-glyph {
+  animation: opencoo-heartbeat var(--heartbeat-dur) var(--ease-write) infinite;
+}
+
+/* Hide focus rings only on mouse interactions; keyboard nav
+   keeps a visible outline. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+
+/* One-shot dialog enter — 180ms fade + 8px translate-up. Used
+   by PatEntryModal + DiffPreviewDialog. NO exit motion (per
+   the UX spec); when the consumer unmounts, the dialog
+   disappears instantly. */
+@keyframes opencoo-dialog-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.opencoo-dialog-enter {
+  animation: opencoo-dialog-enter 180ms var(--ease-write) both;
+}
+
+/* Staggered field fade-in for CredentialForm — 120ms each,
+   capped at 6 fields to avoid a long waterfall. The
+   per-field stagger delay is set as a CSS var by the
+   component. */
+@keyframes opencoo-field-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.opencoo-field-enter {
+  animation: opencoo-field-enter 120ms var(--ease-write) both;
+  animation-delay: var(--field-stagger-delay, 0ms);
+}
+
+/* PromptsDiffBanner — acknowledged row slide-out-up + banner
+   fade-out. Both are one-shot, triggered by component state. */
+@keyframes opencoo-row-slide-out-up {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+    max-height: 80px;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+    max-height: 0;
+  }
+}
+
+.opencoo-row-slide-out {
+  animation: opencoo-row-slide-out-up 160ms var(--ease-transform) both;
+}
+
+@keyframes opencoo-banner-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.opencoo-banner-fade-out {
+  animation: opencoo-banner-fade-out 200ms var(--ease-write) both;
+}
+
+/* Diff timer — color-only fade for the 30s threshold cross.
+   240ms ease-write per the UX spec. */
+.opencoo-timer-color {
+  transition: color 240ms var(--ease-write);
+}
