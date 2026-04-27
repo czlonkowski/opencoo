@@ -56,12 +56,8 @@ describe("sources_bindings.webhook_secret_credentials_id (phase-a appendix #2)",
     );
     expect(fk, "FK on webhook_secret_credentials_id missing").toBeDefined();
     expect(fk?.onDelete).toBe("restrict");
-    // Foreign-side table is `credentials`.
-    const targetTableName = fk
-      ?.reference()
-      .foreignColumns[0]?.table["_" as never] as
-      | { name?: string }
-      | undefined;
-    expect(targetTableName?.name ?? "").toMatch(/credentials/);
+    // Foreign-side column is `credentials.id`.
+    const fkRef = fk?.reference();
+    expect(fkRef?.foreignColumns[0]?.name).toBe("id");
   });
 });

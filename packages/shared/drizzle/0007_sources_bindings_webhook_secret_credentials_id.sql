@@ -1,0 +1,2 @@
+ALTER TABLE "sources_bindings" ADD COLUMN "webhook_secret_credentials_id" uuid;--> statement-breakpoint
+ALTER TABLE "sources_bindings" ADD CONSTRAINT "sources_bindings_webhook_secret_credentials_id_credentials_id_fk" FOREIGN KEY ("webhook_secret_credentials_id") REFERENCES "public"."credentials"("id") ON DELETE restrict ON UPDATE no action;

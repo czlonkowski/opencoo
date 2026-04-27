@@ -82,6 +82,18 @@ const TABLES_DDL = `
   CREATE INDEX admin_audit_log_action_created_at_idx ON admin_audit_log (action, created_at);
   CREATE INDEX admin_audit_log_user_id_created_at_idx ON admin_audit_log (user_id, created_at);
 
+  CREATE TABLE credentials (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    name text NOT NULL,
+    schema_ref text NOT NULL,
+    iv bytea NOT NULL,
+    ciphertext bytea NOT NULL,
+    aad bytea NOT NULL,
+    encryption_version integer NOT NULL DEFAULT 1,
+    rotated_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+  );
+
   CREATE TABLE sources_bindings (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
     domain_id uuid NOT NULL REFERENCES domains(id) ON DELETE RESTRICT,
@@ -91,7 +103,8 @@ const TABLES_DDL = `
     allowed_paths text[] DEFAULT '{}'::text[] NOT NULL,
     review_mode review_mode DEFAULT 'auto' NOT NULL,
     schedule_cron text,
-    credentials_id uuid,
+    credentials_id uuid REFERENCES credentials(id) ON DELETE RESTRICT,
+    webhook_secret_credentials_id uuid REFERENCES credentials(id) ON DELETE RESTRICT,
     retention_days_override integer,
     enabled boolean DEFAULT true NOT NULL,
     last_scanned_at timestamp with time zone,
