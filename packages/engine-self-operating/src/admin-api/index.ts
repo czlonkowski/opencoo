@@ -31,6 +31,7 @@ import type { Logger } from "@opencoo/shared/logger";
 import { buildVerifyAdmin, type GiteaClient } from "./auth.js";
 import { issueCsrfToken } from "./csrf.js";
 import { attachDebugBannerHook } from "./debug-banner.js";
+import { registerAdaptersRoute } from "./routes/adapters.js";
 import { registerAuditLogReadRoutes } from "./routes/audit-log-read.js";
 import { registerAutomationCandidatesRoutes } from "./routes/automation-candidates.js";
 import { registerDomainsLlmPolicyRoutes } from "./routes/domains-llm-policy.js";
@@ -93,6 +94,9 @@ export async function registerAdminApi(
   // Instead, we attach verifyAdmin per route.
   const guardedApp = makeGuardedApp(args.app, verifyAdmin);
 
+  // Phase-a appendix #2 — adapter picker for the "+ New
+  // binding" modal. Read-only; no body, no CSRF.
+  registerAdaptersRoute({ app: guardedApp });
   registerSourceBindingsRoutes({ app: guardedApp, db: args.db });
   registerLintFindingsRoutes({ app: guardedApp, db: args.db });
   registerAutomationCandidatesRoutes({ app: guardedApp, db: args.db });
