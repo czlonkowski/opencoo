@@ -76,10 +76,60 @@ async function defaultStartFactory(opts: {
   return mod.start({ env: opts.env });
 }
 
-/** Boot the engine and block until SIGTERM/SIGINT. */
+/** Boot the engine and block until SIGTERM/SIGINT.
+ *
+ * Wiring contract:
+ *   1. Construct the engine via `startFactory({env})`. The
+ *      engine's own `start.ts` opens the pg.Pool + ioredis +
+ *      Fastify listener. Failures bubble out of `runServe` so
+ *      the bin.ts catch / commander error path renders them.
+ *   2. Register SIGTERM + SIGINT listeners on `signalSource`
+ *      (defaults to `process`). Either signal triggers a
+ *      graceful shutdown: await `engine.close()` then call
+ *      `exit(0)`. Listeners are symmetrically removed in the
+ *      shutdown path so test runs don't leak handlers.
+ *   3. Return a promise that resolves AFTER shutdown completes.
+ *      Tests await this to synchronise with the close path.
+ */
 export async function runServe(args: ServeArgs): Promise<void> {
   const startFactory = args.startFactory ?? defaultStartFactory;
+  const signalSource = args.signalSource ?? process;
+  // Default exit routes through `exitOk` from lib/exit.js so the
+  // production exit-code convention (0 = success) stays
+  // consistent with migrate / setup / doctor / etc. The SIGTERM/
+  // SIGINT happy path is always a clean exit(0); other codes
+  // flow through bin.ts's catch via thrown errors.
+  const exit = args.exit ?? ((_code: number): void => {
+    exitOk();
+  });
+
   args.stdout.write(pc.dim("opencoo: starting...\n"));
-  await startFactory({ env: args.env });
+  const engine = await startFactory({ env: args.env });
   args.stdout.write(pc.green("opencoo: started\n"));
+
+  return new Promise<void>((resolve) => {
+    const shutdown = (signal: "SIGTERM" | "SIGINT"): void => {
+      args.stdout.write(pc.dim(`opencoo: ${signal} received, shutting down\n`));
+      // Symmetric listener cleanup — no leaks across test runs.
+      signalSource.removeListener("SIGTERM", onSigterm);
+      signalSource.removeListener("SIGINT", onSigint);
+      void engine
+        .close()
+        .catch((err: unknown) => {
+          args.stderr.write(
+            pc.red(
+              `opencoo: shutdown error (${err instanceof Error ? err.message : String(err)})\n`,
+            ),
+          );
+        })
+        .finally(() => {
+          exit(0);
+          resolve();
+        });
+    };
+    const onSigterm = (): void => shutdown("SIGTERM");
+    const onSigint = (): void => shutdown("SIGINT");
+    signalSource.on("SIGTERM", onSigterm);
+    signalSource.on("SIGINT", onSigint);
+  });
 }
