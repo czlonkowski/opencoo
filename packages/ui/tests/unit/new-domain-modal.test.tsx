@@ -56,8 +56,9 @@ describe("NewDomainModal", () => {
     await user.type(document.querySelector("input[name='display_name']")!, "Bad");
     await user.click(screen.getByRole("button", { name: /create/i }));
     expect(fetchImpl).not.toHaveBeenCalled();
-    // Inline error on the slug field.
-    expect(screen.getByText(/slug/i)).toBeInTheDocument();
+    // Inline error on the slug field surfaces the regex-mismatch
+    // message — distinct from any other slug-related text.
+    expect(screen.getByText(/^Slug must match/i)).toBeInTheDocument();
   });
 
   it("submits the right body shape on valid input", async () => {
