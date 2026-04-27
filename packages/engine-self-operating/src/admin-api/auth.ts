@@ -83,7 +83,11 @@ function hashPat(pat: string): string {
   return createHash("sha256").update(pat).digest("hex");
 }
 
-function extractBearer(headerValue: string | undefined): string | undefined {
+/** Pull the raw token from `Authorization: Bearer <token>`. Used
+ *  by `verifyAdmin` here AND by `extractOperatorPat` in `pat.ts`
+ *  — keeping the regex in one place avoids drift between the two
+ *  call sites that need to read the same header. */
+export function extractBearer(headerValue: string | undefined): string | undefined {
   if (typeof headerValue !== "string") return undefined;
   const match = /^Bearer\s+(\S+)$/.exec(headerValue);
   return match?.[1];

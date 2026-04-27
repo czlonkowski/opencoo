@@ -20,8 +20,13 @@
  * hashed-key form). Provisioning needs the raw PAT to
  * authenticate against Gitea — that's the §1424 sanctioned
  * exception.
+ *
+ * The Bearer-header parser itself lives in `auth.ts` so the two
+ * read-sites share one regex.
  */
 import type { FastifyRequest } from "fastify";
+
+import { extractBearer } from "./auth.js";
 
 /** Pull the raw PAT out of the `Authorization: Bearer <pat>`
  *  header. Returns undefined when the header is missing or
@@ -30,7 +35,5 @@ import type { FastifyRequest } from "fastify";
 export function extractOperatorPat(req: FastifyRequest): string | undefined {
   const raw = req.headers["authorization"];
   const value = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof value !== "string") return undefined;
-  const match = /^Bearer\s+(\S+)$/.exec(value);
-  return match?.[1];
+  return extractBearer(value);
 }
