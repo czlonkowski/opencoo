@@ -26,6 +26,7 @@
 import type { FastifyInstance } from "fastify";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
+import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { Logger } from "@opencoo/shared/logger";
 
 import { buildVerifyAdmin, type GiteaClient } from "./auth.js";
@@ -67,6 +68,11 @@ export interface RegisterAdminApiArgs {
   /** Gitea organisation under which provisioned repos are
    *  created. Sourced from `GITEA_PROVISION_ORG`. */
   readonly provisionOrg?: string;
+  /** Phase-a appendix #2 — credential store for the binding
+   *  create flow. Encrypts auth + webhook_secret halves before
+   *  the binding row INSERT. When undefined, POST
+   *  /api/admin/source-bindings returns 500. */
+  readonly credentialStore?: CredentialStore;
 }
 
 export async function registerAdminApi(
@@ -109,7 +115,13 @@ export async function registerAdminApi(
   // Phase-a appendix #2 — adapter picker for the "+ New
   // binding" modal. Read-only; no body, no CSRF.
   registerAdaptersRoute({ app: guardedApp });
-  registerSourceBindingsRoutes({ app: guardedApp, db: args.db });
+  registerSourceBindingsRoutes({
+    app: guardedApp,
+    db: args.db,
+    ...(args.credentialStore !== undefined
+      ? { credentialStore: args.credentialStore }
+      : {}),
+  });
   registerLintFindingsRoutes({ app: guardedApp, db: args.db });
   registerAutomationCandidatesRoutes({ app: guardedApp, db: args.db });
   registerMarketplaceUpdatesRoutes({ app: guardedApp, db: args.db });

@@ -1,17 +1,46 @@
 /**
- * Review Dashboard — source-bindings list (PR 28 / plan #128,
- * item type 1 of THREAT-MODEL §7.3).
+ * Review Dashboard — source-bindings routes (PR 28 list +
+ * phase-a appendix #2 create).
  *
- * Read-only at v0.1: the route returns the binding rows the
- * operator can act on (those with `review_mode = 'review'` or
- * disabled). A future PR adds the per-row approve/reject
- * action; the audit-log writer + action allowlist are already
- * provisioned here so the action wires in without a security
- * round-trip.
+ * `GET /api/admin/source-bindings` — read-only list of binding
+ *   rows the operator can act on (in review or disabled).
+ * `POST /api/admin/source-bindings` — create a new binding.
+ *   Closes the regression PR 29 introduced (architecture.md
+ *   §13 promised "Sources — list + add", PR 29 shipped only
+ *   `+ list`).
+ *
+ * The POST handler:
+ *   1. Validates `(adapter_slug, target_domain_slug)` against
+ *      the registry and `domains` table.
+ *   2. Validates `credentials` against the adapter's
+ *      JSON-Schema descriptor (mode-aware: polling = flat;
+ *      webhook = `auth` + `webhook_secret` halves).
+ *   3. Encrypts each credential half via `credentialStore.write`
+ *      — polling = one write, webhook = two writes.
+ *   4. INSERTs the binding row with `credentials_id` (and, for
+ *      webhook adapters, `webhook_secret_credentials_id`).
+ *   5. Writes the audit-log row with `caller_username`,
+ *      `adapter_slug`, `target_domain_slug` — NEVER the
+ *      credential bytes.
  */
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+
+import type { CredentialStore } from "@opencoo/shared/credential-store";
+import type { CredentialId } from "@opencoo/shared/db";
+import {
+  defaultReviewModeFor,
+  getSourceAdapterDescriptor,
+  type DomainClass,
+  type PollingCredentialSchema,
+  type SourceAdapterCredentialDescriptor,
+} from "@opencoo/shared/source-adapter";
+
+import { writeAuditLog } from "../audit-log.js";
+import { requireAdminContext } from "../auth.js";
+import { requireCsrf } from "../csrf.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
@@ -25,9 +54,24 @@ interface BindingRow {
   readonly notes: string | null;
 }
 
+const REVIEW_MODES = ["auto", "approve", "review"] as const;
+
+const createBindingSchema = z
+  .object({
+    adapter_slug: z.string().min(1),
+    target_domain_slug: z.string().min(1),
+    review_mode: z.enum(REVIEW_MODES).optional(),
+    credentials: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+
 export interface RegisterSourceBindingsRoutesArgs {
   readonly app: FastifyInstance;
   readonly db: Db;
+  /** Phase-a appendix #2 — encrypts credential halves before
+   *  the binding row INSERT. When undefined, POST returns 500
+   *  (composition-incomplete). The GET handler is unaffected. */
+  readonly credentialStore?: CredentialStore;
 }
 
 export function registerSourceBindingsRoutes(
@@ -74,4 +118,226 @@ export function registerSourceBindingsRoutes(
     }));
     return { rows };
   });
+
+  // Phase-a appendix #2 — binding create.
+  args.app.post(
+    "/api/admin/source-bindings",
+    { preHandler: requireCsrf },
+    async (req, reply) => {
+      const ctx = requireAdminContext(req);
+      const parsed = createBindingSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(422).send({
+          error: "validation_failed",
+          issues: parsed.error.issues,
+        });
+      }
+      const { adapter_slug, target_domain_slug, credentials } = parsed.data;
+
+      const descriptor = getSourceAdapterDescriptor(adapter_slug);
+      if (descriptor === undefined) {
+        return reply.code(422).send({
+          error: "unknown_adapter_slug",
+          adapter_slug,
+        });
+      }
+
+      // Resolve target domain.
+      const domainResult = (await args.db.execute(sql`
+        SELECT id::text AS id, class::text AS class
+        FROM domains
+        WHERE slug = ${target_domain_slug}
+        LIMIT 1
+      `)) as unknown as {
+        rows: Array<{ id: string; class: string }>;
+      };
+      const domain = domainResult.rows[0];
+      if (domain === undefined) {
+        return reply.code(422).send({
+          error: "unknown_target_domain_slug",
+          target_domain_slug,
+        });
+      }
+
+      // Validate credentials against the adapter's JSON Schema.
+      const credValidation = validateCredentialsAgainstSchema(
+        credentials,
+        descriptor,
+      );
+      if (!credValidation.ok) {
+        return reply.code(422).send({
+          error: "credential_schema_mismatch",
+          // Path-only diagnostics; never the value.
+          missing: credValidation.missing,
+        });
+      }
+
+      const store = args.credentialStore;
+      if (store === undefined) {
+        return reply.code(500).send({
+          error: "credential_store_unavailable",
+          reason: "Composition did not register a credentialStore",
+        });
+      }
+
+      // Encrypt each half via credentialStore.write — polling
+      // = one write, webhook = two.
+      let credentialsId: CredentialId;
+      let webhookSecretCredentialsId: CredentialId | null;
+      try {
+        if (descriptor.mode === "polling") {
+          credentialsId = await store.write({
+            name: `${adapter_slug}/${target_domain_slug}/auth`,
+            schemaRef: `source-adapter:${adapter_slug}:auth`,
+            plaintext: Buffer.from(JSON.stringify(credentials), "utf8"),
+          });
+          webhookSecretCredentialsId = null;
+        } else {
+          const webhookCreds = credentials as {
+            auth: Record<string, unknown>;
+            webhook_secret: Record<string, unknown>;
+          };
+          credentialsId = await store.write({
+            name: `${adapter_slug}/${target_domain_slug}/auth`,
+            schemaRef: `source-adapter:${adapter_slug}:auth`,
+            plaintext: Buffer.from(JSON.stringify(webhookCreds.auth), "utf8"),
+          });
+          webhookSecretCredentialsId = await store.write({
+            name: `${adapter_slug}/${target_domain_slug}/webhook_secret`,
+            schemaRef: `source-adapter:${adapter_slug}:webhook_secret`,
+            plaintext: Buffer.from(
+              JSON.stringify(webhookCreds.webhook_secret),
+              "utf8",
+            ),
+          });
+        }
+      } catch (err) {
+        req.log?.warn({
+          msg: "binding_create.credential_store_failed",
+          adapter_slug,
+          err: err instanceof Error ? err.name : "unknown",
+        });
+        return reply.code(500).send({
+          error: "credential_store_failed",
+        });
+      }
+
+      // Default review_mode if the operator omitted.
+      const effectiveReviewMode =
+        parsed.data.review_mode ??
+        defaultReviewModeFor({
+          adapterSlug: adapter_slug,
+          domainClass: domain.class as DomainClass,
+        });
+
+      // Insert binding row. Use sql.raw for the static enum
+      // literal cast and sql parameters for the dynamic ids.
+      let id: string;
+      try {
+        const credentialsIdLiteral: string = credentialsId;
+        const webhookSecretIdLiteral: string | null = webhookSecretCredentialsId;
+        const inserted = (await args.db.execute(sql`
+          INSERT INTO sources_bindings
+            (domain_id, adapter_slug, review_mode, credentials_id, webhook_secret_credentials_id)
+          VALUES (
+            ${domain.id}::uuid,
+            ${adapter_slug},
+            ${sql.raw(`'${effectiveReviewMode}'`)}::review_mode,
+            ${credentialsIdLiteral}::uuid,
+            ${webhookSecretIdLiteral === null
+              ? sql`NULL`
+              : sql`${webhookSecretIdLiteral}::uuid`}
+          )
+          RETURNING id::text AS id
+        `)) as unknown as { rows: Array<{ id: string }> };
+        const row = inserted.rows[0];
+        if (row === undefined) {
+          return reply.code(500).send({ error: "insert_returned_no_row" });
+        }
+        id = row.id;
+      } catch (err) {
+        req.log?.warn({
+          msg: "binding_create.insert_failed",
+          adapter_slug,
+          err: err instanceof Error ? err.message : String(err),
+        });
+        return reply.code(500).send({ error: "insert_failed" });
+      }
+
+      // Audit row — slug + domain + caller, NEVER credentials.
+      await writeAuditLog(args.db, {
+        action: "source_binding.create",
+        userId: ctx.userId,
+        metadata: {
+          adapter_slug,
+          target_domain_slug,
+          review_mode: effectiveReviewMode,
+          binding_id: id,
+          caller_username: ctx.username,
+        },
+        sourceIp: req.ip,
+        userAgent: req.headers["user-agent"],
+      });
+
+      return reply.code(201).send({ id });
+    },
+  );
+}
+
+/** Validate credentials against the adapter's descriptor. Walks
+ *  required fields without mentioning the field VALUES — only
+ *  paths come back so a 422 response can never leak partial
+ *  secret bytes. */
+function validateCredentialsAgainstSchema(
+  credentials: Record<string, unknown>,
+  descriptor: SourceAdapterCredentialDescriptor,
+): { readonly ok: true } | { readonly ok: false; readonly missing: string[] } {
+  const missing: string[] = [];
+  if (descriptor.mode === "polling") {
+    walkPollingSchema(descriptor.credentialSchema, credentials, "", missing);
+  } else {
+    const auth = (credentials as { auth?: unknown }).auth;
+    const webhookSecret = (credentials as { webhook_secret?: unknown })
+      .webhook_secret;
+    if (typeof auth !== "object" || auth === null) {
+      missing.push("auth");
+    } else {
+      walkPollingSchema(
+        descriptor.credentialSchema.properties.auth,
+        auth as Record<string, unknown>,
+        "auth.",
+        missing,
+      );
+    }
+    if (typeof webhookSecret !== "object" || webhookSecret === null) {
+      missing.push("webhook_secret");
+    } else {
+      walkPollingSchema(
+        descriptor.credentialSchema.properties.webhook_secret,
+        webhookSecret as Record<string, unknown>,
+        "webhook_secret.",
+        missing,
+      );
+    }
+  }
+  if (missing.length > 0) return { ok: false, missing };
+  return { ok: true };
+}
+
+function walkPollingSchema(
+  schema: PollingCredentialSchema,
+  values: Record<string, unknown>,
+  pathPrefix: string,
+  missing: string[],
+): void {
+  for (const required of schema.required) {
+    const value = values[required];
+    if (
+      value === undefined ||
+      value === null ||
+      (typeof value === "string" && value.length === 0)
+    ) {
+      missing.push(`${pathPrefix}${required}`);
+    }
+  }
 }
