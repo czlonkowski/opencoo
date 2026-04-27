@@ -90,16 +90,20 @@ export function Modal(props: ModalProps): JSX.Element {
 
   // Esc-to-close. Listen on document so the handler fires
   // regardless of where focus currently sits inside the modal.
+  // Dep on `props.onClose` only (not the whole `props` object) so
+  // the listener doesn't churn on every render — title/initialFocus
+  // changes shouldn't re-bind the global keydown handler.
+  const onClose = props.onClose;
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") {
         e.preventDefault();
-        props.onClose();
+        onClose();
       }
     };
     document.addEventListener("keydown", onKey);
     return (): void => document.removeEventListener("keydown", onKey);
-  }, [props]);
+  }, [onClose]);
 
   // Initial focus.
   useEffect(() => {

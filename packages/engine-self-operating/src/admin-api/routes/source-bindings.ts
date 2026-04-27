@@ -245,6 +245,39 @@ export function registerSourceBindingsRoutes(
           adapter_slug,
           err: err instanceof Error ? err.message : String(err),
         });
+        // Best-effort cleanup: the encrypted credential rows already
+        // committed via `credentialStore.write` above; without this
+        // they would leak as orphans (no FK from credentials → binding,
+        // and no scheduled cleanup pass for orphan credentials in v0.1).
+        // `CredentialStore.delete` is idempotent (interface.ts:31); a
+        // failure here logs and continues so the operator still gets
+        // the 500 from the original INSERT failure.
+        try {
+          await store.delete(credentialsId);
+        } catch (cleanupErr) {
+          req.log?.warn({
+            msg: "binding_create.credentials_cleanup_failed",
+            adapter_slug,
+            err:
+              cleanupErr instanceof Error
+                ? cleanupErr.message
+                : String(cleanupErr),
+          });
+        }
+        if (webhookSecretCredentialsId !== null) {
+          try {
+            await store.delete(webhookSecretCredentialsId);
+          } catch (cleanupErr) {
+            req.log?.warn({
+              msg: "binding_create.webhook_secret_cleanup_failed",
+              adapter_slug,
+              err:
+                cleanupErr instanceof Error
+                  ? cleanupErr.message
+                  : String(cleanupErr),
+            });
+          }
+        }
         return reply.code(500).send({ error: "insert_failed" });
       }
 
@@ -316,11 +349,11 @@ function walkPollingSchema(
 ): void {
   for (const required of schema.required) {
     const value = values[required];
-    if (
-      value === undefined ||
-      value === null ||
-      (typeof value === "string" && value.length === 0)
-    ) {
+    // Schema declares `type: "string"` for every leaf; reject any
+    // non-string value (number/object/array/boolean) and treat
+    // empty strings as missing. Path-only error so no value
+    // bytes leak into the 422 response.
+    if (typeof value !== "string" || value.length === 0) {
       missing.push(`${pathPrefix}${required}`);
     }
   }

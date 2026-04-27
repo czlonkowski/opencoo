@@ -22,7 +22,6 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { NewDomainModal } from "../../src/components/NewDomainModal.js";
-import { ApiValidationError } from "../../src/lib/api.js";
 
 describe("NewDomainModal", () => {
   it("renders as a modal dialog (role + aria-modal)", () => {
@@ -124,9 +123,5 @@ describe("NewDomainModal", () => {
     });
     expect(onCreated).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
-    // Suppress unused import warning by referencing the
-    // ApiValidationError class (the modal converts 409 → that
-    // class internally).
-    expect(ApiValidationError.name).toBe("ApiValidationError");
   });
 });

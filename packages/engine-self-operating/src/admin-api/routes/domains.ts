@@ -177,11 +177,26 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
           return { id, repoUrl: provisionResult.repoUrl };
         });
       } catch (err) {
-        // Provisioning or DB error. We log neither the PAT nor
-        // the raw upstream message in the response — return a
-        // sanitised error code; the engine logger captured the
-        // detail (gitea-provisioning helper scrubs the PAT
-        // from its own thrown errors).
+        // The pre-check at line ~135 narrows the slug-collision
+        // window but doesn't close it: two concurrent POSTs can
+        // both pass the SELECT and race on the UNIQUE-constrained
+        // INSERT. Postgres raises SQLSTATE 23505 (unique_violation);
+        // surface that as 409 slug_taken so the operator sees the
+        // same shape as the pre-check path, not 502 provisioning_failed.
+        const pgCode =
+          err !== null &&
+          typeof err === "object" &&
+          "code" in err &&
+          typeof (err as { code?: unknown }).code === "string"
+            ? (err as { code: string }).code
+            : null;
+        if (pgCode === "23505") {
+          return reply.code(409).send({ error: "slug_taken", slug });
+        }
+        // Genuine provisioning failure (Gitea unreachable, seed-file
+        // commit failed, etc.). PAT and upstream-message scrubbed —
+        // engine logger captured the detail (gitea-provisioning helper
+        // scrubs the PAT from its own thrown errors).
         req.log?.warn({
           msg: "domain_create.provisioning_failed",
           slug,

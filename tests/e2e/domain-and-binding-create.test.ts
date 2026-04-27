@@ -209,9 +209,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await disposeEnvironment();
-  // Don't stop compose — the broader e2e suite shares it. The
-  // wall-clock guard tracks the total. CI runs `compose down -v`
-  // at the workflow level for cleanup.
+  // Each e2e test owns its own compose lifecycle (compose-controller's
+  // start/stop are per-test, not shared). CI also runs `compose down -v`
+  // at the workflow level as belt-and-braces.
   if (HAS_DOCKER) await stopCompose();
 }, 60_000);
 
