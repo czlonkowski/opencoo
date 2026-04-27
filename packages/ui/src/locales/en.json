@@ -76,6 +76,28 @@
       "ok": "ok",
       "paused": "paused",
       "alert": "alert"
+    },
+    "newBinding": "+ New binding",
+    "create": {
+      "title": "New source binding",
+      "subtitle": "Pick an adapter, target a domain, paste credentials.",
+      "next": "Next",
+      "back": "Back",
+      "submit": "Create binding",
+      "submitting": "creating…",
+      "fields": {
+        "adapter": "adapter",
+        "targetDomain": "target domain",
+        "reviewMode": "review mode"
+      },
+      "section": {
+        "auth": "auth credentials",
+        "webhookSecret": "webhook signing secret"
+      },
+      "errors": {
+        "requiredField": "Required.",
+        "generic": "Could not create binding. Try again or check the audit log."
+      }
     }
   },
   "llmPolicy": {
