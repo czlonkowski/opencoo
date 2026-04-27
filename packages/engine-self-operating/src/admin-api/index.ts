@@ -26,15 +26,20 @@
 import type { FastifyInstance } from "fastify";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
+import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { Logger } from "@opencoo/shared/logger";
 
 import { buildVerifyAdmin, type GiteaClient } from "./auth.js";
 import { issueCsrfToken } from "./csrf.js";
 import { attachDebugBannerHook } from "./debug-banner.js";
+import { registerAdaptersRoute } from "./routes/adapters.js";
 import { registerAuditLogReadRoutes } from "./routes/audit-log-read.js";
 import { registerAutomationCandidatesRoutes } from "./routes/automation-candidates.js";
 import { registerDomainsLlmPolicyRoutes } from "./routes/domains-llm-policy.js";
-import { registerDomainsRoutes } from "./routes/domains.js";
+import {
+  registerDomainsRoutes,
+  type ProvisionDomainRepoFn,
+} from "./routes/domains.js";
 import { registerLintFindingsRoutes } from "./routes/lint-findings.js";
 import { registerLogoutRoute } from "./routes/logout.js";
 import { registerMarketplaceUpdatesRoutes } from "./routes/marketplace-updates.js";
@@ -54,6 +59,20 @@ export interface RegisterAdminApiArgs {
    *  injects the `_llmDebugLogActive: true` banner into JSON
    *  responses iff this is true. */
   readonly llmDebugLog: boolean;
+  /** Phase-a appendix #2 — provisioning callable for the
+   *  domain-create flow. The composition root passes the real
+   *  helper from `composition/gitea-provisioning.ts`; tests
+   *  inject a stub. When undefined, POST /api/admin/domains
+   *  returns 500 (composition-incomplete). */
+  readonly provisionDomainRepo?: ProvisionDomainRepoFn;
+  /** Gitea organisation under which provisioned repos are
+   *  created. Sourced from `GITEA_PROVISION_ORG`. */
+  readonly provisionOrg?: string;
+  /** Phase-a appendix #2 — credential store for the binding
+   *  create flow. Encrypts auth + webhook_secret halves before
+   *  the binding row INSERT. When undefined, POST
+   *  /api/admin/source-bindings returns 500. */
+  readonly credentialStore?: CredentialStore;
 }
 
 export async function registerAdminApi(
@@ -93,14 +112,35 @@ export async function registerAdminApi(
   // Instead, we attach verifyAdmin per route.
   const guardedApp = makeGuardedApp(args.app, verifyAdmin);
 
-  registerSourceBindingsRoutes({ app: guardedApp, db: args.db });
+  // Phase-a appendix #2 — adapter picker for the "+ New
+  // binding" modal. Read-only; no body, no CSRF.
+  registerAdaptersRoute({ app: guardedApp });
+  registerSourceBindingsRoutes({
+    app: guardedApp,
+    db: args.db,
+    ...(args.credentialStore !== undefined
+      ? { credentialStore: args.credentialStore }
+      : {}),
+  });
   registerLintFindingsRoutes({ app: guardedApp, db: args.db });
   registerAutomationCandidatesRoutes({ app: guardedApp, db: args.db });
   registerMarketplaceUpdatesRoutes({ app: guardedApp, db: args.db });
   registerAuditLogReadRoutes({ app: guardedApp, db: args.db });
-  // PR 29 — read-only domains list + prompts manifest +
-  // sovereignty-diff llm-policy edit + logout.
-  registerDomainsRoutes({ app: guardedApp, db: args.db });
+  // PR 29 read-only domains list + phase-a appendix #2 create
+  // handler. Pass through the provisioning callable + org name
+  // so the POST handler can seed Gitea. Read-only GET works
+  // even when provisioning is unwired (composition-incomplete
+  // surfaces only on POST).
+  registerDomainsRoutes({
+    app: guardedApp,
+    db: args.db,
+    ...(args.provisionDomainRepo !== undefined
+      ? { provisionDomainRepo: args.provisionDomainRepo }
+      : {}),
+    ...(args.provisionOrg !== undefined
+      ? { provisionOrg: args.provisionOrg }
+      : {}),
+  });
   registerPromptsRoutes({ app: guardedApp });
   registerDomainsLlmPolicyRoutes({
     app: guardedApp,
@@ -178,6 +218,7 @@ function makeGuardedApp(
 }
 
 export type { GiteaClient, GiteaWhoamiResult, AdminContext } from "./auth.js";
+export type { ProvisionDomainRepoFn } from "./routes/domains.js";
 export { AUDIT_LOG_ACTIONS, type AuditAction } from "./audit-log.js";
 export {
   computePayloadHash,

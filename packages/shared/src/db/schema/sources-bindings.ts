@@ -34,6 +34,19 @@ export const sourcesBindings = pgTable(
     credentialsId: uuid("credentials_id").references(() => credentials.id, {
       onDelete: "restrict",
     }),
+    /** Webhook-mode adapters (asana, fireflies) carry TWO
+     *  encrypted credentials per binding (phase-a appendix #2).
+     *  This column points at the HMAC signing secret the
+     *  inbound-webhook receiver verifies signatures against;
+     *  the existing `credentials_id` carries the auth
+     *  credentials (PAT/API key) the adapter uses to fetch
+     *  full content after a webhook fires.
+     *  Polling adapters leave this NULL. */
+    webhookSecretCredentialsId: uuid(
+      "webhook_secret_credentials_id",
+    ).references(() => credentials.id, {
+      onDelete: "restrict",
+    }),
     retentionDaysOverride: integer("retention_days_override"),
     enabled: boolean("enabled").notNull().default(true),
     lastScannedAt: timestamp("last_scanned_at", { withTimezone: true }),

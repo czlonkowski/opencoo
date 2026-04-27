@@ -1,12 +1,15 @@
 /**
- * Sources tab — list of source-binding rows from PR 28's
- * `GET /api/admin/source-bindings`.
+ * Sources tab — list of source-binding rows (PR 28 read-only) +
+ * `+ New binding` create flow (phase-a appendix #2 — closes
+ * the regression PR 29 introduced).
  */
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Badge } from "../components/Badge.js";
+import { Btn } from "../components/Btn.js";
 import { Card } from "../components/Card.js";
+import { NewSourceBindingModal } from "../components/NewSourceBindingModal.js";
 import { fetchAdmin } from "../lib/api.js";
 import type { SourceBinding } from "../types.js";
 
@@ -14,27 +17,55 @@ interface SourcesResponse {
   readonly rows: ReadonlyArray<SourceBinding>;
 }
 
-export function Sources(): JSX.Element {
+export interface SourcesProps {
+  /** @internal Test seam — defaults to globalThis.fetch. */
+  readonly fetchImpl?: typeof fetch;
+}
+
+export function Sources(props: SourcesProps = {}): JSX.Element {
   const { t } = useTranslation();
   const [rows, setRows] = useState<ReadonlyArray<SourceBinding> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [refreshNonce, setRefreshNonce] = useState(0);
+
+  const fetchOpts =
+    props.fetchImpl !== undefined
+      ? { fetchImpl: props.fetchImpl as typeof fetch }
+      : {};
 
   useEffect((): void => {
     void (async (): Promise<void> => {
       try {
-        const r = await fetchAdmin<SourcesResponse>("/api/admin/source-bindings");
+        const r = await fetchAdmin<SourcesResponse>(
+          "/api/admin/source-bindings",
+          fetchOpts,
+        );
         setRows(r.rows);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     })();
-  }, []);
+    // refetch when the create modal flips refreshNonce.
+  }, [refreshNonce]);
 
   return (
     <div style={{ padding: "24px 28px", display: "flex", flexDirection: "column", gap: 16 }}>
-      <div>
-        <h1 style={{ margin: 0 }}>{t("sources.title")}</h1>
-        <p style={{ margin: "4px 0 0", color: "var(--ink-3)" }}>{t("sources.subtitle")}</p>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 16,
+        }}
+      >
+        <div>
+          <h1 style={{ margin: 0 }}>{t("sources.title")}</h1>
+          <p style={{ margin: "4px 0 0", color: "var(--ink-3)" }}>{t("sources.subtitle")}</p>
+        </div>
+        <Btn variant="primary" onClick={(): void => setCreateOpen(true)}>
+          {t("sources.newBinding")}
+        </Btn>
       </div>
       <Card>
         {error !== null ? (
@@ -68,6 +99,18 @@ export function Sources(): JSX.Element {
           </div>
         )}
       </Card>
+      {createOpen ? (
+        <NewSourceBindingModal
+          {...(props.fetchImpl !== undefined
+            ? { fetchImpl: props.fetchImpl as typeof fetch }
+            : {})}
+          onCreated={(): void => {
+            setCreateOpen(false);
+            setRefreshNonce((n) => n + 1);
+          }}
+          onClose={(): void => setCreateOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

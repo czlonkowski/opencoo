@@ -1,10 +1,14 @@
 /**
- * Domains tab — read-only listing of every domain row.
+ * Domains tab — read-only listing + `+ New domain` create flow
+ * (phase-a appendix #2 closed the planning-bug regression PR 29
+ * introduced; the create button + modal land here).
  */
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { Btn } from "../components/Btn.js";
 import { Card } from "../components/Card.js";
+import { NewDomainModal } from "../components/NewDomainModal.js";
 import { fetchAdmin } from "../lib/api.js";
 import type { Domain } from "../types.js";
 
@@ -12,29 +16,59 @@ interface DomainsResponse {
   readonly rows: ReadonlyArray<Domain>;
 }
 
-export function Domains(): JSX.Element {
+export interface DomainsProps {
+  /** @internal Test seam — defaults to globalThis.fetch.
+   *  Threaded through fetchAdmin so the page's calls are
+   *  driven by the same mock the modal uses. */
+  readonly fetchImpl?: typeof fetch;
+}
+
+export function Domains(props: DomainsProps = {}): JSX.Element {
   const { t } = useTranslation();
   const [rows, setRows] = useState<ReadonlyArray<Domain> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [refreshNonce, setRefreshNonce] = useState(0);
+
+  const fetchOpts =
+    props.fetchImpl !== undefined
+      ? { fetchImpl: props.fetchImpl as typeof fetch }
+      : {};
 
   useEffect((): void => {
     void (async (): Promise<void> => {
       try {
-        const r = await fetchAdmin<DomainsResponse>("/api/admin/domains");
+        const r = await fetchAdmin<DomainsResponse>(
+          "/api/admin/domains",
+          fetchOpts,
+        );
         setRows(r.rows);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     })();
-  }, []);
+    // refetch when the create modal flips refreshNonce.
+  }, [refreshNonce]);
 
   return (
     <div style={{ padding: "24px 28px", display: "flex", flexDirection: "column", gap: 16 }}>
-      <div>
-        <h1 style={{ margin: 0 }}>{t("domains.title")}</h1>
-        <p style={{ margin: "4px 0 0", color: "var(--ink-3)" }}>
-          {t("domains.subtitle")}
-        </p>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 16,
+        }}
+      >
+        <div>
+          <h1 style={{ margin: 0 }}>{t("domains.title")}</h1>
+          <p style={{ margin: "4px 0 0", color: "var(--ink-3)" }}>
+            {t("domains.subtitle")}
+          </p>
+        </div>
+        <Btn variant="primary" onClick={(): void => setCreateOpen(true)}>
+          {t("domains.newDomain")}
+        </Btn>
       </div>
       <Card>
         {error !== null ? (
@@ -66,6 +100,18 @@ export function Domains(): JSX.Element {
           </div>
         )}
       </Card>
+      {createOpen ? (
+        <NewDomainModal
+          {...(props.fetchImpl !== undefined
+            ? { fetchImpl: props.fetchImpl as typeof fetch }
+            : {})}
+          onCreated={(): void => {
+            setCreateOpen(false);
+            setRefreshNonce((n) => n + 1);
+          }}
+          onClose={(): void => setCreateOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

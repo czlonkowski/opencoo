@@ -130,3 +130,26 @@ export interface SourceAdapter {
    *  asserts presence + behavior when `mode === 'webhook'`. */
   readonly webhook?: SourceWebhookHelpers;
 }
+
+// Re-exports for the binding-create flow (phase-a appendix #2).
+// The Management UI + admin-API route both consume these
+// schemas; keeping them in @opencoo/shared/source-adapter so
+// the server validator and the UI form share a single source
+// of truth (no schema drift).
+export {
+  SOURCE_ADAPTER_CREDENTIAL_SCHEMAS,
+  getSourceAdapterDescriptor,
+  type CredentialSchemaField,
+  type PollingCredentialSchema,
+  type SourceAdapterCredentialDescriptor,
+  type SourceAdapterSlug,
+  type WebhookCredentialSchema,
+} from "./credential-schemas.js";
+
+export {
+  TRANSCRIPTION_ADAPTER_SLUGS,
+  defaultReviewModeFor,
+  type DefaultReviewModeArgs,
+  type DomainClass,
+  type ReviewModeDefault,
+} from "./review-mode-defaults.js";

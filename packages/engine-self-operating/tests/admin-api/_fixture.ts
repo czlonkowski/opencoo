@@ -18,6 +18,7 @@ import { isPgEnum, type PgEnum } from "drizzle-orm/pg-core";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import * as schema from "@opencoo/shared/db/schema";
+import { InMemoryCredentialStore } from "@opencoo/shared/credential-store";
 import { ConsoleLogger } from "@opencoo/shared/logger";
 
 import {
@@ -82,6 +83,14 @@ const TABLES_DDL = `
   CREATE INDEX admin_audit_log_action_created_at_idx ON admin_audit_log (action, created_at);
   CREATE INDEX admin_audit_log_user_id_created_at_idx ON admin_audit_log (user_id, created_at);
 
+  -- The InMemoryCredentialStore used in tests does NOT write to
+  -- the credentials table — it persists rows in an in-process
+  -- Map. The test fixture therefore omits the FK from
+  -- sources_bindings.credentials_id → credentials(id) (and the
+  -- corresponding webhook_secret_credentials_id FK). The real
+  -- migration's FK is exercised by the schema test
+  -- (sources-bindings-webhook-secret.test.ts) and by the
+  -- DrizzleCredentialStore round-trip tests.
   CREATE TABLE sources_bindings (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
     domain_id uuid NOT NULL REFERENCES domains(id) ON DELETE RESTRICT,
@@ -92,6 +101,7 @@ const TABLES_DDL = `
     review_mode review_mode DEFAULT 'auto' NOT NULL,
     schedule_cron text,
     credentials_id uuid,
+    webhook_secret_credentials_id uuid,
     retention_days_override integer,
     enabled boolean DEFAULT true NOT NULL,
     last_scanned_at timestamp with time zone,
@@ -171,11 +181,43 @@ export class MockGiteaClient implements GiteaClient {
   }
 }
 
+/** Stub provisioning function the binding-create + domain-create
+ *  routes consume. Tests inject a mock that records calls + can
+ *  throw to exercise rollback paths. */
+export interface ProvisionStubCall {
+  readonly slug: string;
+  readonly domainClass: string;
+  readonly defaultLocale: string;
+  readonly pat: string;
+}
+
+export class MockProvisioner {
+  readonly calls: ProvisionStubCall[] = [];
+  /** When set, the next provision call throws this error. */
+  nextError: Error | null = null;
+  /** When set, repoUrl returned. Else deterministic baseUrl/org/slug. */
+  nextRepoUrl: string | null = null;
+
+  async provision(args: ProvisionStubCall): Promise<{ readonly repoUrl: string }> {
+    this.calls.push(args);
+    if (this.nextError !== null) {
+      const err = this.nextError;
+      this.nextError = null;
+      throw err;
+    }
+    const url = this.nextRepoUrl ?? `https://gitea.test/opencoo/${args.slug}`;
+    this.nextRepoUrl = null;
+    return { repoUrl: url };
+  }
+}
+
 export interface AdminFixture {
   readonly app: FastifyInstance;
   readonly db: AdminTestDb;
   readonly raw: PGlite;
   readonly gitea: MockGiteaClient;
+  readonly provisioner: MockProvisioner;
+  readonly credentialStore: InMemoryCredentialStore;
   readonly close: () => Promise<void>;
 }
 
@@ -199,6 +241,10 @@ export async function makeAdminFixture(
   const db: AdminTestDb = drizzle(pg, { schema });
 
   const gitea = new MockGiteaClient();
+  const provisioner = new MockProvisioner();
+  const credentialStore = new InMemoryCredentialStore({
+    logger: silentLogger(),
+  });
   const app = Fastify({ logger: false });
   await registerAdminApi({
     app,
@@ -208,6 +254,15 @@ export async function makeAdminFixture(
     sessionHmacKey: Buffer.from("test-session-hmac-key-32-bytes-x"),
     logger: silentLogger(),
     llmDebugLog: opts.llmDebugLog ?? false,
+    provisionDomainRepo: (a) =>
+      provisioner.provision({
+        slug: a.slug,
+        domainClass: a.domainClass,
+        defaultLocale: a.defaultLocale,
+        pat: a.pat,
+      }),
+    provisionOrg: "opencoo",
+    credentialStore,
   });
 
   return {
@@ -215,6 +270,8 @@ export async function makeAdminFixture(
     db,
     raw: pg,
     gitea,
+    provisioner,
+    credentialStore,
     close: async () => {
       await app.close();
       await pg.close();

@@ -157,7 +157,17 @@ async function mintAdminPat(): Promise<string> {
       method: "POST",
       body: JSON.stringify({
         name: PAT_NAME,
-        scopes: ["write:repository", "write:user", "write:admin"],
+        // `write:organization` was added in phase-a appendix #2 so
+        // the domain-create e2e test can create an org for the
+        // provisioning flow. The other tests don't exercise the
+        // org surface but the broader scope is harmless on a
+        // throwaway test PAT.
+        scopes: [
+          "write:repository",
+          "write:user",
+          "write:admin",
+          "write:organization",
+        ],
       }),
     },
   );

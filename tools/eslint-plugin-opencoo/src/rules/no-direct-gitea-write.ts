@@ -17,6 +17,16 @@ const DEFAULT_ALLOWED_PATHS = [
   // the actual transport. THREAT-MODEL §2 invariant 2 stays intact:
   // every Gitea-touching import lives in one of these named places.
   "packages/adapters/wiki-gitea/**",
+  // Domain-repo provisioning helper (phase-a appendix #2) —
+  // architecture.md §1424 sanctioned exception. Single named
+  // function (`provisionDomainRepo`) creates a fresh Gitea repo
+  // when the operator presses `+ New domain` in the Management
+  // UI; wikiWrite cannot do this because it operates on an
+  // existing repo's queue. THREAT-MODEL §3.5 documents the
+  // exception. Do NOT add other engine-self-operating files
+  // here — this allow-list entry is exception-shaped, not a
+  // license to scatter Gitea writes across the package.
+  "packages/engine-self-operating/src/composition/gitea-provisioning.ts",
 ];
 
 // Forbidden package names — direct Gitea clients.

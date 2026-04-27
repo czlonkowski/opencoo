@@ -37,6 +37,28 @@
       "class": "class",
       "locale": "locale",
       "aggregator": "aggregator"
+    },
+    "newDomain": "+ New domain",
+    "create": {
+      "title": "New domain",
+      "subtitle": "Provisions a Gitea repo and seeds index/log/schema.",
+      "submit": "Create",
+      "submitting": "creating…",
+      "fields": {
+        "slug": "slug",
+        "displayName": "display name",
+        "class": "class",
+        "locale": "default locale"
+      },
+      "help": {
+        "slug": "lowercase, digits, hyphens — starts with a letter (1–63 chars)"
+      },
+      "errors": {
+        "slugFormat": "Slug must match ^[a-z][a-z0-9-]{1,62}$.",
+        "slugTaken": "That slug is already taken.",
+        "displayNameRequired": "Display name is required.",
+        "generic": "Could not create domain. Try again or check the audit log."
+      }
     }
   },
   "sources": {
@@ -54,6 +76,28 @@
       "ok": "ok",
       "paused": "paused",
       "alert": "alert"
+    },
+    "newBinding": "+ New binding",
+    "create": {
+      "title": "New source binding",
+      "subtitle": "Pick an adapter, target a domain, paste credentials.",
+      "next": "Next",
+      "back": "Back",
+      "submit": "Create binding",
+      "submitting": "creating…",
+      "fields": {
+        "adapter": "adapter",
+        "targetDomain": "target domain",
+        "reviewMode": "review mode"
+      },
+      "section": {
+        "auth": "auth credentials",
+        "webhookSecret": "webhook signing secret"
+      },
+      "errors": {
+        "requiredField": "Required.",
+        "generic": "Could not create binding. Try again or check the audit log."
+      }
     }
   },
   "llmPolicy": {

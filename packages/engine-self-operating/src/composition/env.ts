@@ -40,6 +40,11 @@ export interface AdminApiCompositionEnv {
    *  value as truthy (operator wouldn't set `LLM_DEBUG_LOG=0`
    *  to opt OUT — they'd unset). */
   readonly llmDebugLog: boolean;
+  /** Phase-a appendix #2 — Gitea organisation that owns repos
+   *  provisioned by `POST /api/admin/domains`. Optional;
+   *  defaults to 'opencoo'. The `_FILE` Docker-secrets
+   *  convention applies. */
+  readonly giteaProvisionOrg: string;
 }
 
 /**
@@ -64,6 +69,17 @@ export function loadAdminApiCompositionEnv(
   const llmDebugLogRaw = readWithFile(env, "LLM_DEBUG_LOG");
   const llmDebugLog =
     typeof llmDebugLogRaw === "string" && llmDebugLogRaw.length > 0;
+
+  // GITEA_PROVISION_ORG is optional with a default — the
+  // existing `_FILE` Docker-secrets convention applies. v0.1
+  // ships the default 'opencoo' so a fresh `pnpm opencoo`
+  // works against the local-dev compose stack without any env
+  // wiring.
+  const provisionOrgRaw = readWithFile(env, "GITEA_PROVISION_ORG");
+  const giteaProvisionOrg =
+    typeof provisionOrgRaw === "string" && provisionOrgRaw.length > 0
+      ? provisionOrgRaw
+      : "opencoo";
 
   // SESSION_HMAC_KEY is provisioned by `opencoo setup` as a
   // 32-byte random value base64-encoded (44 chars including
@@ -92,5 +108,6 @@ export function loadAdminApiCompositionEnv(
     sessionHmacKey,
     giteaBaseUrl,
     llmDebugLog,
+    giteaProvisionOrg,
   };
 }

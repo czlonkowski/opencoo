@@ -31,7 +31,12 @@ import pg from "pg";
 import { Redis } from "ioredis";
 import type { FastifyInstance } from "fastify";
 
+import {
+  DrizzleCredentialStore,
+  loadEncryptionKey,
+} from "@opencoo/shared/credential-store";
 import { ConsoleLogger, type Logger } from "@opencoo/shared/logger";
+import { drizzle } from "drizzle-orm/node-postgres";
 import {
   PipelineRegistry,
   buildServer,
@@ -191,6 +196,25 @@ export async function start(
       return userServerFactory(probes, config, logger);
     }
     if (compositionEnv !== null && pgPool !== null) {
+      // Build the credential store the binding-create handler
+      // uses — DrizzleCredentialStore wraps the same pg pool +
+      // ENCRYPTION_KEY the rest of the engine consumes.
+      let credentialStore: import("@opencoo/shared/credential-store").CredentialStore | null = null;
+      try {
+        credentialStore = new DrizzleCredentialStore({
+          db: drizzle(pgPool) as unknown as ConstructorParameters<
+            typeof DrizzleCredentialStore
+          >[0]["db"],
+          key: loadEncryptionKey(env as NodeJS.ProcessEnv),
+          logger,
+        });
+      } catch (err) {
+        logger.warn("admin_api.binding_create_disabled", {
+          reason:
+            "ENCRYPTION_KEY missing or invalid — POST /api/admin/source-bindings will surface 500",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       return productionServerFactory({
         probes,
         config,
@@ -198,6 +222,7 @@ export async function start(
         pgPool,
         giteaClient: giteaClientFactory(compositionEnv.giteaBaseUrl),
         compositionEnv,
+        ...(credentialStore !== null ? { credentialStore } : {}),
       });
     }
     return staticUiOnlyServerFactory(probes, config, logger);

@@ -124,6 +124,8 @@ Architectural invariants. Any PR violating one without a §7 entry and explicit 
 - Do not short-circuit the queue for "urgent" writes. There is no urgent write.
 - Do not permit writes outside the domain's Gitea repo — paths are pre-validated at caller; `wikiWrite` re-validates as belt-and-suspenders.
 
+**Provisioning exception (architecture.md §1424, phase-a appendix #2).** The `+ New domain` flow needs to create a *new* Gitea repo, which `wikiWrite` cannot do — it operates on an existing repo's queue and refuses paths outside the domain. The single sanctioned exception lives at `packages/engine-self-operating/src/composition/gitea-provisioning.ts` (one named function, `provisionDomainRepo`). The ESLint `no-direct-gitea-write` rule allow-lists exactly that path — adding more files to the allow-list requires THREAT-MODEL sign-off. The helper authenticates as the *operator's* Gitea PAT (not a separate admin token); PAT bytes are scrubbed from every error path; the `POST /api/admin/domains` route wraps the call in a DB transaction so a Gitea failure rolls back the partial domain row (fail-closed). One env var: `GITEA_PROVISION_ORG` (default `opencoo`) names the org under which provisioned repos live; allow-listed in the `no-feature-env-vars` rule with the standard `_FILE` Docker-secrets variant.
+
 ### 3.6 `packages/shared/credential-store/`
 
 **Must do:**

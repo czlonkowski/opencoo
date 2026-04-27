@@ -50,6 +50,13 @@
       "when": 1777154563120,
       "tag": "0006_admin_audit_log_users_gitea_teams",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1777287854948,
+      "tag": "0007_sources_bindings_webhook_secret_credentials_id",
+      "breakpoints": true
     }
   ]
 }
