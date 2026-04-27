@@ -527,6 +527,25 @@ describe("parseAndDispatch", () => {
     });
     expect(doctor.mock.calls[0]?.[0].json).toBe(true);
   });
+
+  it("bare `opencoo` (no subcommand) dispatches to runServe", async () => {
+    const stdout = new CapturingStream();
+    const stderr = new CapturingStream();
+    const serve = vi.fn(async () => undefined);
+    await parseAndDispatch({
+      argv: [],
+      env: { DATABASE_URL: "postgres://x" },
+      cwd: "/tmp",
+      version: "0.0.0-test",
+      stdout,
+      stderr,
+      runners: { serve },
+    });
+    expect(serve).toHaveBeenCalledTimes(1);
+    expect(serve.mock.calls[0]?.[0].env).toEqual({
+      DATABASE_URL: "postgres://x",
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
