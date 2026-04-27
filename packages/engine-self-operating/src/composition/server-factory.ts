@@ -25,6 +25,7 @@ import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 
+import type { CredentialStore } from "@opencoo/shared/credential-store";
 import {
   buildServer,
   type ProbeMap,
@@ -38,6 +39,7 @@ import type { EngineConfig } from "../config.js";
 import { registerStaticUi } from "../static-ui.js";
 
 import type { AdminApiCompositionEnv } from "./env.js";
+import { provisionDomainRepo } from "./gitea-provisioning.js";
 
 export interface ProductionServerFactoryArgs {
   readonly probes: ProbeMap;
@@ -48,6 +50,13 @@ export interface ProductionServerFactoryArgs {
   readonly pgPool: Pool;
   readonly giteaClient: GiteaClient;
   readonly compositionEnv: AdminApiCompositionEnv;
+  /** Phase-a appendix #2 — credential store for the binding-
+   *  create flow. Production composition wires the
+   *  DrizzleCredentialStore here. When undefined (e.g.
+   *  ENCRYPTION_KEY missing at boot), POST
+   *  /api/admin/source-bindings returns 500 (composition-
+   *  incomplete). */
+  readonly credentialStore?: CredentialStore;
 }
 
 export async function productionServerFactory(
@@ -72,6 +81,22 @@ export async function productionServerFactory(
     sessionHmacKey: args.compositionEnv.sessionHmacKey,
     logger: args.logger,
     llmDebugLog: args.compositionEnv.llmDebugLog,
+    ...(args.credentialStore !== undefined
+      ? { credentialStore: args.credentialStore }
+      : {}),
+    provisionOrg: args.compositionEnv.giteaProvisionOrg,
+    provisionDomainRepo: async (a) => {
+      // The composition root holds the Gitea base URL; the
+      // route hands the operator's PAT verbatim.
+      return provisionDomainRepo({
+        baseUrl: args.compositionEnv.giteaBaseUrl,
+        pat: a.pat,
+        org: a.org,
+        slug: a.slug,
+        domainClass: a.domainClass,
+        defaultLocale: a.defaultLocale,
+      });
+    },
   });
 
   // 2. Static-UI LAST — its setNotFoundHandler catches unknown
