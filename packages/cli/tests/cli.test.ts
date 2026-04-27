@@ -9,6 +9,8 @@
  *   - `source forget` writes `erasure_log` rows + disables binding
  *   - `recompile` requires either selector OR --all-in-domain
  */
+import { EventEmitter } from "node:events";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -22,6 +24,7 @@ import {
   formatSecret,
   inspectSecret,
 } from "../src/lib/credential-redact.js";
+import { runServe, type ServeArgs } from "../src/commands/serve.js";
 import { runSourceForget } from "../src/commands/source-forget.js";
 import { runRecompile } from "../src/commands/recompile.js";
 import { parseAndDispatch } from "../src/parse.js";
@@ -523,5 +526,73 @@ describe("parseAndDispatch", () => {
       runners: { doctor },
     });
     expect(doctor.mock.calls[0]?.[0].json).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runServe — bare `opencoo` boot verb (PR phase-a-appendix / plan radiant-diffie)
+// ---------------------------------------------------------------------------
+
+/** Minimal test-double for the `StartedEngine` shape `runServe`
+ *  consumes. Captures `close()` invocations so the test can
+ *  assert the signal handler wired correctly. */
+interface FakeEngine {
+  readonly close: ReturnType<typeof vi.fn>;
+}
+
+function makeFakeEngine(): FakeEngine {
+  return { close: vi.fn(async () => undefined) };
+}
+
+/** Helper — drains the microtask queue so any pending listener
+ *  registrations (the `.on("SIGTERM", ...)` calls inside
+ *  runServe) settle before the test emits the signal. */
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+describe("runServe", () => {
+  it("wires SIGTERM to engine.close + exitOk(0)", async () => {
+    const stdout = new CapturingStream();
+    const stderr = new CapturingStream();
+    const engine = makeFakeEngine();
+    const startFactory = vi.fn(
+      async () => engine as unknown as Awaited<ReturnType<ServeArgs["startFactory"]>>,
+    );
+    const exit = vi.fn();
+    const signalSource = new EventEmitter();
+
+    const env = {
+      DATABASE_URL: "postgres://x",
+      REDIS_URL: "redis://y",
+      GITEA_URL: "https://gitea.test",
+      ENCRYPTION_KEY: "0".repeat(64),
+      PORT: "8080",
+    };
+
+    const serve = runServe({
+      env,
+      stdout,
+      stderr,
+      startFactory,
+      signalSource,
+      exit: exit as unknown as ServeArgs["exit"],
+    });
+
+    // Let runServe finish awaiting startFactory + register listeners.
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(startFactory).toHaveBeenCalledTimes(1);
+    expect(startFactory.mock.calls[0]?.[0]?.env).toBe(env);
+
+    // Emit SIGTERM — runServe must call engine.close() then exit(0).
+    signalSource.emit("SIGTERM");
+    await serve;
+
+    expect(engine.close).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
   });
 });
