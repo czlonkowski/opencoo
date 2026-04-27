@@ -25,7 +25,7 @@ import type { EventEmitter } from "node:events";
 
 import pc from "picocolors";
 
-import { exitOk } from "../lib/exit.js";
+import { exitOk, exitRuntimeError, isExitSentinel } from "../lib/exit.js";
 
 /** The minimal shape of a started engine that `runServe`
  *  consumes. `@opencoo/engine-self-operating`'s `StartedEngine`
@@ -104,7 +104,18 @@ export async function runServe(args: ServeArgs): Promise<void> {
   });
 
   args.stdout.write(pc.dim("opencoo: starting...\n"));
-  const engine = await startFactory({ env: args.env });
+  let engine: ServeStartedEngine;
+  try {
+    engine = await startFactory({ env: args.env });
+  } catch (err) {
+    if (isExitSentinel(err)) throw err;
+    args.stderr.write(
+      pc.red(
+        `opencoo: failed to start (${err instanceof Error ? err.message : String(err)})\n`,
+      ),
+    );
+    return exitRuntimeError();
+  }
   args.stdout.write(pc.green("opencoo: started\n"));
 
   return new Promise<void>((resolve) => {
