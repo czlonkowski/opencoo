@@ -614,4 +614,39 @@ describe("runServe", () => {
     expect(exit).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledWith(0);
   });
+
+  it("is idempotent on repeated SIGTERM (no double-close)", async () => {
+    const stdout = new CapturingStream();
+    const stderr = new CapturingStream();
+    const engine = makeFakeEngine();
+    const startFactory = vi.fn(
+      async () => engine as unknown as Awaited<ReturnType<ServeArgs["startFactory"]>>,
+    );
+    const exit = vi.fn();
+    const signalSource = new EventEmitter();
+
+    const serve = runServe({
+      env: { DATABASE_URL: "postgres://x" },
+      stdout,
+      stderr,
+      startFactory,
+      signalSource,
+      exit: exit as unknown as ServeArgs["exit"],
+    });
+
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    // Two SIGTERMs back-to-back — runServe must dispatch shutdown
+    // exactly once. (engine.close() being internally memoised in
+    // engine-scaffold is not enough: removing-then-adding the
+    // listener in shutdown is racy if both signal handlers fire
+    // before the removeListener calls run.)
+    signalSource.emit("SIGTERM");
+    signalSource.emit("SIGTERM");
+    await serve;
+
+    expect(engine.close).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledTimes(1);
+  });
 });
