@@ -99,9 +99,13 @@ export async function runServe(args: ServeArgs): Promise<void> {
   // consistent with migrate / setup / doctor / etc. The SIGTERM/
   // SIGINT happy path is always a clean exit(0); other codes
   // flow through bin.ts's catch via thrown errors.
-  const exit = args.exit ?? ((_code: number): void => {
-    exitOk();
-  });
+  const exit =
+    args.exit ??
+    ((): void => {
+      // The boot-verb happy path is always a clean exit(0); other
+      // codes flow through bin.ts's catch via thrown errors.
+      exitOk();
+    });
 
   args.stdout.write(pc.dim("opencoo: starting...\n"));
   let engine: ServeStartedEngine;
