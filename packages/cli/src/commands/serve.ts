@@ -108,12 +108,22 @@ export async function runServe(args: ServeArgs): Promise<void> {
   args.stdout.write(pc.green("opencoo: started\n"));
 
   return new Promise<void>((resolve) => {
+    // Memoise close-path dispatch. Two SIGTERMs in <1ms (e.g. an
+    // orchestrator escalating from SIGTERM → SIGINT, or a script
+    // double-firing) must not call engine.close() twice or
+    // exit(0) twice. Synchronous removeListener after the FIRST
+    // signal would also work — but memoising belt-and-braces
+    // protects against signal sources that don't honor listener
+    // removal (some test doubles, future re-wiring). Mirrors the
+    // engine-scaffold close memoisation (start.ts:186-199).
+    let closing: Promise<void> | undefined;
     const shutdown = (signal: "SIGTERM" | "SIGINT"): void => {
+      if (closing !== undefined) return;
       args.stdout.write(pc.dim(`opencoo: ${signal} received, shutting down\n`));
       // Symmetric listener cleanup — no leaks across test runs.
       signalSource.removeListener("SIGTERM", onSigterm);
       signalSource.removeListener("SIGINT", onSigint);
-      void engine
+      closing = engine
         .close()
         .catch((err: unknown) => {
           args.stderr.write(
