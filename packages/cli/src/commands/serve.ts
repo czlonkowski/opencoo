@@ -1,25 +1,15 @@
 /**
  * `opencoo` (bare, no subcommand) — long-running boot verb
- * (phase-a appendix / plan radiant-diffie). architecture.md
- * §14.5 specifies the bare verb as the unified boot path; today
- * it boots only `engine-self-operating` (no ingestion BullMQ
- * workers wired in v0.1), but the verb stays stable when phase-b
- * adds workers.
+ * (architecture.md §14.5, plan radiant-diffie). Pure orchestration
+ * around `start({env})` from `@opencoo/engine-self-operating`,
+ * which opens the pg.Pool + ioredis + Fastify listener and binds
+ * the host port. The engine module is dynamic-imported so other
+ * verbs that don't need it pay zero cold-start cost.
  *
- * `runServe` is pure orchestration around `start({env})` from
- * `@opencoo/engine-self-operating`. The engine module is
- * dynamic-imported so the CLI cold-start stays fast for the
- * other (already-wired) verbs that don't need it. `start()`
- * already opens its own pg.Pool, ioredis client, builds the
- * GiteaClient, registers admin-API + static-UI in the correct
- * order, and binds `app.listen({host:"0.0.0.0", port})`. We do
- * NOT open a second pool here — that would double connection
- * counts and run a parallel auth handshake.
- *
- * No `process.env.*` reads here: the env object threads through
- * to `start()`, which uses `requireWithFile` / `readWithFile`
- * (engine-scaffold) for every var. The `no-feature-env-vars`
- * ESLint rule (THREAT-MODEL §2 invariant 9) is non-negotiable.
+ * No `process.env.*` reads here: the env object threads through to
+ * `start()`, which uses `requireWithFile` / `readWithFile` for
+ * every var. The `no-feature-env-vars` ESLint rule (THREAT-MODEL
+ * §2 invariant 9) is non-negotiable.
  */
 import type { EventEmitter } from "node:events";
 
@@ -27,24 +17,19 @@ import pc from "picocolors";
 
 import { exitOk, exitRuntimeError, isExitSentinel } from "../lib/exit.js";
 
-/** The minimal shape of a started engine that `runServe`
- *  consumes. `@opencoo/engine-self-operating`'s `StartedEngine`
- *  satisfies this structurally (see start.ts:69-83 in shared/
- *  engine-scaffold) — we depend only on `close()` here. */
+/** Minimal `StartedEngine` shape consumed by `runServe`.
+ *  `@opencoo/engine-self-operating` satisfies it structurally. */
 export interface ServeStartedEngine {
   close(): Promise<void>;
 }
 
-/** Production `startFactory` shape — matches `start({env})` from
- *  `@opencoo/engine-self-operating`. Tests substitute via the
- *  `startFactory` test seam. */
+/** Matches `start({env})` from `@opencoo/engine-self-operating`. */
 export type ServeStartFactory = (opts: {
   readonly env: Record<string, string | undefined>;
 }) => Promise<ServeStartedEngine>;
 
-/** Subset of `EventEmitter` `runServe` consumes. `process`
- *  satisfies it; tests pass an `EventEmitter` instance to
- *  control signal emission. */
+/** Subset of `EventEmitter` `runServe` consumes — `process`
+ *  satisfies it; tests pass an `EventEmitter` to drive signals. */
 export interface ServeSignalSource {
   on(event: "SIGTERM" | "SIGINT", listener: () => void): unknown;
   removeListener(event: "SIGTERM" | "SIGINT", listener: () => void): unknown;
@@ -54,21 +39,18 @@ export interface ServeArgs {
   readonly env: Record<string, string | undefined>;
   readonly stdout: { write: (s: string) => boolean };
   readonly stderr: { write: (s: string) => boolean };
-  /** @internal Test seam — defaults to `start` from
-   *  `@opencoo/engine-self-operating` (dynamic-imported). */
+  /** @internal Test seam — defaults to dynamic-import of `start`
+   *  from `@opencoo/engine-self-operating`. */
   readonly startFactory?: ServeStartFactory;
-  /** @internal Test seam — defaults to the Node `process`
-   *  emitter. */
+  /** @internal Test seam — defaults to the Node `process` emitter. */
   readonly signalSource?: ServeSignalSource | EventEmitter;
-  /** @internal Test seam — defaults to `exitOk` from
-   *  `lib/exit.js`. Tests pass a vi.fn() to capture the code
-   *  without halting the runner. */
+  /** @internal Test seam — defaults to `exitOk`. Tests pass a
+   *  `vi.fn()` to capture the code without halting the runner. */
   readonly exit?: (code: number) => void;
 }
 
-/** Default `startFactory` — dynamic-imports
- *  `@opencoo/engine-self-operating` so the verb's cold-start
- *  cost is paid only by callers who actually boot. */
+/** @internal Default `startFactory` — dynamic-imports the engine
+ *  so the verb's cold-start cost is paid only on boot. */
 async function defaultStartFactory(opts: {
   readonly env: Record<string, string | undefined>;
 }): Promise<ServeStartedEngine> {
@@ -76,36 +58,29 @@ async function defaultStartFactory(opts: {
   return mod.start({ env: opts.env });
 }
 
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** Boot the engine and block until SIGTERM/SIGINT.
  *
- * Wiring contract:
- *   1. Construct the engine via `startFactory({env})`. The
- *      engine's own `start.ts` opens the pg.Pool + ioredis +
- *      Fastify listener. Failures bubble out of `runServe` so
- *      the bin.ts catch / commander error path renders them.
- *   2. Register SIGTERM + SIGINT listeners on `signalSource`
- *      (defaults to `process`). Either signal triggers a
- *      graceful shutdown: await `engine.close()` then call
- *      `exit(0)`. Listeners are symmetrically removed in the
- *      shutdown path so test runs don't leak handlers.
- *   3. Return a promise that resolves AFTER shutdown completes.
- *      Tests await this to synchronise with the close path.
+ *  1. `startFactory({env})` opens pg.Pool + ioredis + Fastify
+ *     listener. Failures emit a redacted stderr line and route
+ *     through `exitRuntimeError` (code 2).
+ *  2. SIGTERM + SIGINT trigger graceful shutdown: await
+ *     `engine.close()` then `exit(0)`. Listeners are symmetrically
+ *     removed in the shutdown path so test runs don't leak
+ *     handlers.
+ *  3. The returned promise resolves AFTER shutdown completes; tests
+ *     await it to synchronise with the close path.
  */
 export async function runServe(args: ServeArgs): Promise<void> {
   const startFactory = args.startFactory ?? defaultStartFactory;
   const signalSource = args.signalSource ?? process;
-  // Default exit routes through `exitOk` from lib/exit.js so the
-  // production exit-code convention (0 = success) stays
-  // consistent with migrate / setup / doctor / etc. The SIGTERM/
-  // SIGINT happy path is always a clean exit(0); other codes
-  // flow through bin.ts's catch via thrown errors.
-  const exit =
-    args.exit ??
-    ((): void => {
-      // The boot-verb happy path is always a clean exit(0); other
-      // codes flow through bin.ts's catch via thrown errors.
-      exitOk();
-    });
+  // Default exit routes through `exitOk` so the boot-verb happy
+  // path stays consistent with migrate/setup/doctor; non-zero
+  // codes flow through bin.ts's catch via thrown errors.
+  const exit = args.exit ?? ((): void => exitOk());
 
   args.stdout.write(pc.dim("opencoo: starting...\n"));
   let engine: ServeStartedEngine;
@@ -113,39 +88,26 @@ export async function runServe(args: ServeArgs): Promise<void> {
     engine = await startFactory({ env: args.env });
   } catch (err) {
     if (isExitSentinel(err)) throw err;
-    args.stderr.write(
-      pc.red(
-        `opencoo: failed to start (${err instanceof Error ? err.message : String(err)})\n`,
-      ),
-    );
+    args.stderr.write(pc.red(`opencoo: failed to start (${describeError(err)})\n`));
     return exitRuntimeError();
   }
   args.stdout.write(pc.green("opencoo: started\n"));
 
   return new Promise<void>((resolve) => {
-    // Memoise close-path dispatch. Two SIGTERMs in <1ms (e.g. an
-    // orchestrator escalating from SIGTERM → SIGINT, or a script
-    // double-firing) must not call engine.close() twice or
-    // exit(0) twice. Synchronous removeListener after the FIRST
-    // signal would also work — but memoising belt-and-braces
-    // protects against signal sources that don't honor listener
-    // removal (some test doubles, future re-wiring). Mirrors the
-    // engine-scaffold close memoisation (start.ts:186-199).
+    // Memoise the OUTER dispatch — engine.close() is itself
+    // idempotent (engine-scaffold start.ts:186-199), but two
+    // SIGTERMs in <1ms must not write the "shutting down" line,
+    // call exit(0), or resolve() twice.
     let closing: Promise<void> | undefined;
     const shutdown = (signal: "SIGTERM" | "SIGINT"): void => {
       if (closing !== undefined) return;
       args.stdout.write(pc.dim(`opencoo: ${signal} received, shutting down\n`));
-      // Symmetric listener cleanup — no leaks across test runs.
       signalSource.removeListener("SIGTERM", onSigterm);
       signalSource.removeListener("SIGINT", onSigint);
       closing = engine
         .close()
         .catch((err: unknown) => {
-          args.stderr.write(
-            pc.red(
-              `opencoo: shutdown error (${err instanceof Error ? err.message : String(err)})\n`,
-            ),
-          );
+          args.stderr.write(pc.red(`opencoo: shutdown error (${describeError(err)})\n`));
         })
         .finally(() => {
           exit(0);
