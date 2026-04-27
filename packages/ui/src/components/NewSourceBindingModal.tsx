@@ -26,6 +26,7 @@ import { useTranslation } from "react-i18next";
 import { Btn } from "./Btn.js";
 import { Field } from "./Field.js";
 import { Modal } from "./Modal.js";
+import { PickerSelect } from "./PickerSelect.js";
 import { fetchAdmin } from "../lib/api.js";
 
 const REVIEW_MODES = ["auto", "approve", "review"] as const;
@@ -94,16 +95,6 @@ const FIELDS_STYLE: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: "var(--space-4)",
-};
-
-const SELECT_STYLE: CSSProperties = {
-  fontFamily: "var(--font-sans)",
-  fontSize: "var(--fs-body)",
-  padding: "8px 10px",
-  background: "var(--paper)",
-  border: "1px solid var(--rule)",
-  borderRadius: "var(--radius-m)",
-  color: "var(--ink)",
 };
 
 const FOOTER_STYLE: CSSProperties = {
@@ -360,58 +351,6 @@ export function NewSourceBindingModal(
         />
       )}
     </Modal>
-  );
-}
-
-interface PickerOption {
-  readonly value: string;
-  readonly label: string;
-}
-
-interface PickerSelectProps {
-  readonly name: string;
-  readonly label: string;
-  readonly value: string;
-  readonly onChange: (v: string) => void;
-  readonly options: readonly PickerOption[];
-}
-
-function PickerSelect(props: PickerSelectProps): JSX.Element {
-  return (
-    <label
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 4,
-        fontFamily: "var(--font-sans)",
-        fontSize: "var(--fs-small)",
-        color: "var(--ink-2)",
-      }}
-    >
-      <span
-        style={{
-          fontFamily: "var(--font-mono)",
-          fontSize: "var(--fs-micro)",
-          color: "var(--ink-3)",
-          letterSpacing: "0.06em",
-          textTransform: "uppercase",
-        }}
-      >
-        {props.label}
-      </span>
-      <select
-        name={props.name}
-        value={props.value}
-        onChange={(e): void => props.onChange(e.target.value)}
-        style={SELECT_STYLE}
-      >
-        {props.options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-    </label>
   );
 }
 

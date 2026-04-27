@@ -22,6 +22,7 @@ import { useTranslation } from "react-i18next";
 import { Btn } from "./Btn.js";
 import { Field } from "./Field.js";
 import { Modal } from "./Modal.js";
+import { PickerSelect } from "./PickerSelect.js";
 import { ApiValidationError, fetchAdmin } from "../lib/api.js";
 
 /** Slug regex pinned to the server domains_slug_format check. */
@@ -47,16 +48,6 @@ const FOOTER_STYLE: CSSProperties = {
   display: "flex",
   justifyContent: "flex-end",
   gap: "var(--space-3)",
-};
-
-const SELECT_STYLE: CSSProperties = {
-  fontFamily: "var(--font-sans)",
-  fontSize: "var(--fs-body)",
-  padding: "8px 10px",
-  background: "var(--paper)",
-  border: "1px solid var(--rule)",
-  borderRadius: "var(--radius-m)",
-  color: "var(--ink)",
 };
 
 const FIELDS_STYLE: CSSProperties = {
@@ -149,76 +140,22 @@ export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
             ? { error: errors["display_name"] }
             : {})}
         />
-        <label
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 4,
-            fontFamily: "var(--font-sans)",
-            fontSize: "var(--fs-small)",
-            color: "var(--ink-2)",
-          }}
-        >
-          <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "var(--fs-micro)",
-              color: "var(--ink-3)",
-              letterSpacing: "0.06em",
-              textTransform: "uppercase",
-            }}
-          >
-            {t("domains.create.fields.class")}
-          </span>
-          <select
-            name="class"
-            value={domainClass}
-            onChange={(e): void => setDomainClass(
-              e.target.value as (typeof DOMAIN_CLASSES)[number],
-            )}
-            style={SELECT_STYLE}
-          >
-            {DOMAIN_CLASSES.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 4,
-            fontFamily: "var(--font-sans)",
-            fontSize: "var(--fs-small)",
-            color: "var(--ink-2)",
-          }}
-        >
-          <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "var(--fs-micro)",
-              color: "var(--ink-3)",
-              letterSpacing: "0.06em",
-              textTransform: "uppercase",
-            }}
-          >
-            {t("domains.create.fields.locale")}
-          </span>
-          <select
-            name="default_locale"
-            value={locale}
-            onChange={(e): void => setLocale(e.target.value as (typeof LOCALES)[number])}
-            style={SELECT_STYLE}
-          >
-            {LOCALES.map((l) => (
-              <option key={l} value={l}>
-                {l}
-              </option>
-            ))}
-          </select>
-        </label>
+        <PickerSelect
+          name="class"
+          label={t("domains.create.fields.class")}
+          value={domainClass}
+          onChange={(v): void =>
+            setDomainClass(v as (typeof DOMAIN_CLASSES)[number])
+          }
+          options={DOMAIN_CLASSES.map((c) => ({ value: c, label: c }))}
+        />
+        <PickerSelect
+          name="default_locale"
+          label={t("domains.create.fields.locale")}
+          value={locale}
+          onChange={(v): void => setLocale(v as (typeof LOCALES)[number])}
+          options={LOCALES.map((l) => ({ value: l, label: l }))}
+        />
         {errors["form"] !== undefined ? (
           <p
             role="alert"
