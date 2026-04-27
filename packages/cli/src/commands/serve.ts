@@ -65,8 +65,10 @@ function describeError(err: unknown): string {
 /** Boot the engine and block until SIGTERM/SIGINT.
  *
  *  1. `startFactory({env})` opens pg.Pool + ioredis + Fastify
- *     listener. Failures emit a redacted stderr line and route
- *     through `exitRuntimeError` (code 2).
+ *     listener. Failures write the upstream `Error.message` to
+ *     stderr (env-loader errors carry variable names but never
+ *     values per `composition/env.ts`) and route through `exit(2)`,
+ *     which defaults to `exitRuntimeError`.
  *  2. SIGTERM + SIGINT trigger graceful shutdown: await
  *     `engine.close()` then `exit(0)`. Listeners are symmetrically
  *     removed in the shutdown path so test runs don't leak
@@ -77,10 +79,15 @@ function describeError(err: unknown): string {
 export async function runServe(args: ServeArgs): Promise<void> {
   const startFactory = args.startFactory ?? defaultStartFactory;
   const signalSource = args.signalSource ?? process;
-  // Default exit routes through `exitOk` so the boot-verb happy
-  // path stays consistent with migrate/setup/doctor; non-zero
-  // codes flow through bin.ts's catch via thrown errors.
-  const exit = args.exit ?? ((): void => exitOk());
+  // Default exit routes 0 through `exitOk` and non-zero through
+  // `exitRuntimeError`, matching the bin.ts catch behaviour. Tests
+  // pass a `vi.fn()` to capture both paths uniformly.
+  const exit =
+    args.exit ??
+    ((code: number): void => {
+      if (code === 0) exitOk();
+      else exitRuntimeError();
+    });
 
   args.stdout.write(pc.dim("opencoo: starting...\n"));
   let engine: ServeStartedEngine;
@@ -89,7 +96,7 @@ export async function runServe(args: ServeArgs): Promise<void> {
   } catch (err) {
     if (isExitSentinel(err)) throw err;
     args.stderr.write(pc.red(`opencoo: failed to start (${describeError(err)})\n`));
-    return exitRuntimeError();
+    return exit(2);
   }
   args.stdout.write(pc.green("opencoo: started\n"));
 

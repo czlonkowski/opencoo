@@ -1,8 +1,9 @@
 # opencoo local-dev backing services (phase-a appendix / plan radiant-diffie).
 #
 # Brings up postgres + redis + gitea on standard host ports so the engine
-# (run separately via `pnpm exec opencoo`) can dial them. The engine binds
-# `PORT=8080` on the host (avoiding Gitea on 3000); see `setup.ts` defaults.
+# (run separately via `pnpm opencoo` from the workspace root) can dial them.
+# The engine binds `PORT=8080` on the host (avoiding Gitea on 3000); see
+# `setup.ts` defaults.
 #
 # Container names deliberately omit the `e2e-` prefix used by
 # `compose.e2e.yml` so the two stacks can coexist if you're testing a
@@ -10,8 +11,8 @@
 # on local dev (`docker compose up -d`).
 #
 # WARNING — local development only. `POSTGRES_PASSWORD=opencoo` is inline
-# below; this matches the `.env.example:14` default for friction-free
-# `git clone → docker compose up -d → pnpm exec opencoo` UX. Partner
+# below; this matches the `DATABASE_URL` default in `.env.example` for
+# friction-free `git clone → docker compose up -d → pnpm opencoo` UX. Partner
 # deployments require a separate compose file with `_FILE` Docker secrets
 # and a hardened password. See `THREAT-MODEL.md` and the README quickstart
 # for the production migration path (a phase-c PR ships the partner

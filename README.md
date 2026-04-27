@@ -44,8 +44,8 @@ pnpm opencoo doctor --admin-pat $OPENCOO_ADMIN_PAT            # gitea_team: ok
 # 6. boot the engine (long-running)
 pnpm opencoo                        # 'opencoo: listening on :8080'
 # in another terminal:
-curl -s http://localhost:8080/health   # {db: ok, redis: ok}
-curl -s http://localhost:8080/ready    # {gitea: ok}
+curl -s http://localhost:8080/health   # {"status":"ok"}
+curl -s http://localhost:8080/ready    # {"status":"ready","probes":{"postgres":{"ok":true},"redis":{"ok":true}}}
 open http://localhost:8080             # Management UI login form
 
 # 7. graceful shutdown — Ctrl-C in the boot terminal: clean exit 0
