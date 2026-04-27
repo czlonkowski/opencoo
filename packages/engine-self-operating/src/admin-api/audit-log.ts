@@ -46,6 +46,12 @@ export const AUDIT_LOG_ACTIONS = [
   // Domain LLM-policy edits — the PR 29 sovereignty-diff
   // confirm flow records one row per applied change.
   "domain.llm_policy.apply",
+  // Phase-a appendix #2 — domain create + binding create flows
+  // (POST /api/admin/domains, POST /api/admin/source-bindings).
+  // Metadata captures slug + class + provisioned repo URL +
+  // caller username; PAT bytes NEVER recorded.
+  "domain.create",
+  "source_binding.create",
   // Logout — records the operator-initiated session-end so an
   // audit-log read can correlate an action burst with the
   // operator's session window.
