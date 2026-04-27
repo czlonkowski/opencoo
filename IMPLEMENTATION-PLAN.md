@@ -63,7 +63,7 @@
 
 **Residual advisories filed across PRs 7-31** (all non-blocking, v0.2 hardening or future-PR reactivity): listed in each PR's body on GitHub. Tracked for the phase-a exit-gate `CHANGES-v0.1.md` draft.
 
-**Next**: phase-a is feature-complete. The phase-a appendix (bare `opencoo` boot verb + local-dev `compose.yml`, §1.2.9) closes the last gap so the system is bootable end-to-end against compose-spun postgres + redis + gitea. The §1.3 phase-a exit gate is now the active checklist — PRD §5 criteria 1–10 verification, pilot cutover sign-off, THREAT-MODEL §5 PR-checklist run on the phase-merge commit, and the `CHANGES-v0.1.md` draft. Once those land, `0.1.0-a` is ready to tag (maintainer call) and phase-b entry-gate work (§2.1) can begin.
+**Next**: phase-a is feature-complete. Two appendix PRs landed AFTER the §1.2.1–§1.2.8 set: §1.2.9 (bare `opencoo` boot verb + local-dev `compose.yml`) makes the system bootable end-to-end; §1.2.10 (domain + source-binding create flow) closes the regression PR 29 introduced — `+ New domain` / `+ New binding` modals on the Management UI now create both primitives end-to-end without operators touching psql. The §1.3 phase-a exit gate is the active checklist — PRD §5 criteria 1–10 verification, pilot cutover sign-off, THREAT-MODEL §5 PR-checklist run on the phase-merge commit, and the `CHANGES-v0.1.md` draft. Once those land, `0.1.0-a` is ready to tag (maintainer call) and phase-b entry-gate work (§2.1) can begin.
 
 ---
 
@@ -187,6 +187,16 @@ Small, reviewer-flagged scope-stretch landed AFTER the §1.2.1–§1.2.8 set so 
 |---|---|---|---|---|---|---|
 | appendix ✅ `a90f0f9` (#36) | Bare `opencoo` boot verb + local-dev `compose.yml` | PR 30 (CLI), PR 18 (engine-self-operating `start({env})`) | `cli.test.ts` runServe cases — SIGTERM wires `engine.close()` + `exit(0)`; idempotent on repeated SIGTERM; surfaces start failures via `exitRuntimeError(2)` | `runServe` is pure orchestration — dynamic-imports `start({env})` from `@opencoo/engine-self-operating`, registers SIGTERM/SIGINT, memoises shutdown; `compose.yml` brings up postgres + redis + gitea on standard host ports for local dev (partner-deploy compose with `_FILE` secrets is a phase-c PR) | `pnpm --filter @opencoo/cli test` + manual `pnpm opencoo` smoke against the compose stack | ~9 |
 
+#### 1.2.10 Phase-a appendix #2 — domain + source-binding create flow (post-36)
+
+Closes the regression PR 29 introduced: architecture.md §13 promised "Sources — list + add" but the merged Management UI shipped only `+ list`, leaving an operator unable to bind a source through the UI without psql. PRD §5 #1 ("a default domain without manual DB edits") was failing in pilot today as a result. This row adds the missing `+ add` flow on both the Domains and Sources tabs, plus the matching admin-API endpoints, the provisioning helper, and the e2e test that prevents regression.
+
+| PR | Title | Depends on | Test-first artifact | Acceptance | Verify | Files est. |
+|---|---|---|---|---|---|---|
+| appendix #2 | Domain create + binding create flow | PRs 28/29 (admin-API, UI), PR 30 (composition root), PR 36 (boot verb) | `domains-create.test.ts` (9 assertions), `source-bindings-create.test.ts` (12 assertions), `gitea-provisioning.test.ts` (7 assertions), `adapters-list.test.ts` (6), UI modal tests (11), route-button tests (6), e2e `domain-and-binding-create.test.ts` (3) | `POST /api/admin/domains` + `POST /api/admin/source-bindings` + `GET /api/admin/adapters`; `+ New domain`/`+ New binding` buttons on the Management UI; webhook adapters split credentials into auth + webhook_secret halves; `webhook_secret_credentials_id` migration (0007); fail-closed provisioning rollback; `defaultReviewModeFor` table per arch §307 + §364 | full pnpm test pass + `pnpm test:e2e -- domain-and-binding-create` against compose-spun Gitea | ~26 |
+
+§1.2.10 deferred to phase-a-appendix #3: `setup --bootstrap-domain` CLI shortcut for partners who want a one-shot domain bootstrap from the command line. Out of scope here — the Management UI flow is enough to unblock the pilot cutover.
+
 ### 1.3 Phase-a exit gate
 
 All must hold before tagging `0.1.0-a.N` and starting phase b:
@@ -195,6 +205,7 @@ All must hold before tagging `0.1.0-a.N` and starting phase b:
 - [ ] **Pilot cuts over on phase-a code.** At least one pipeline runs on opencoo in parallel with the n8n equivalent; opencoo output quality ≥ n8n baseline on reviewer sign-off. The design partner begins operating on phase-a without waiting for SkillMiner — **SkillMiner adoption is a dedicated post-cutover sub-task in phase b** (CLAUDE.md "v0.1 ship sequence"; `architecture.md` §17 Resolved "Pilot migration path"). This is the single most important exit criterion.
 - [ ] THREAT-MODEL §5 PR checklist run on the phase-merge commit — every box ticked or residual risk added to §7.
 - [ ] `CHANGES-v0.1.md` drafted with breaking-change list from pre-release to `a.N`.
+- [ ] Fresh `docker compose up -d` → operator can create one domain + one binding through the Management UI without psql, exercised by `pnpm test:e2e -- domain-and-binding-create` (phase-a appendix #2).
 
 ---
 
