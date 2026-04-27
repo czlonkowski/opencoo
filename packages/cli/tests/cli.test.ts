@@ -649,4 +649,31 @@ describe("runServe", () => {
     expect(engine.close).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledTimes(1);
   });
+
+  it("surfaces start failures via exitRuntimeError(2) + stderr", async () => {
+    const stdout = new CapturingStream();
+    const stderr = new CapturingStream();
+    const startFactory = vi.fn(async () => {
+      throw new Error("DATABASE_URL invalid");
+    });
+    const exit = captureExit();
+    const signalSource = new EventEmitter();
+
+    try {
+      await runServe({
+        env: { DATABASE_URL: "bogus" },
+        stdout,
+        stderr,
+        startFactory: startFactory as unknown as ServeArgs["startFactory"],
+        signalSource,
+        // No `exit` test seam — use the captureExit /
+        // __setProcessExit path so we hit the production
+        // exit-code routing (exitRuntimeError → ExitSentinel(2)).
+      });
+    } catch (e) {
+      if (!(e instanceof ExitSentinel)) throw e;
+    }
+    expect(exit.code).toBe(2);
+    expect(stderr.buffer).toContain("DATABASE_URL invalid");
+  });
 });
