@@ -63,7 +63,9 @@ export async function parseAndDispatch(
   // we skip the strip so the first arg is treated as a command.
   program
     .name("opencoo")
-    .description("opencoo operator CLI — bootstrap, diagnose, recompile")
+    .description(
+      "opencoo operator CLI. Run `opencoo` with no subcommand to boot the long-running engine.",
+    )
     .version(args.version)
     .exitOverride(); // throw on parse failure instead of process.exit
 

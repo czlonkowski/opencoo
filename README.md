@@ -34,15 +34,15 @@ export REDIS_URL=redis://localhost:6379
 export GITEA_URL=http://localhost:3000
 export GITEA_BASE_URL=http://localhost:3000
 export ADMIN_TEAM_SLUG=opencoo-admins
-pnpm exec opencoo setup --yes       # writes .env mode 0600 (ENCRYPTION_KEY + SESSION_HMAC_KEY generated)
-pnpm exec opencoo migrate           # apply Drizzle schema
+pnpm opencoo setup --yes            # writes .env mode 0600 (ENCRYPTION_KEY + SESSION_HMAC_KEY generated)
+pnpm opencoo migrate                # apply Drizzle schema
 
 # 5. health check
-pnpm exec opencoo doctor                                      # secrets redacted, db ok
-pnpm exec opencoo doctor --admin-pat $OPENCOO_ADMIN_PAT       # gitea_team: ok
+pnpm opencoo doctor                                           # secrets redacted, db ok
+pnpm opencoo doctor --admin-pat $OPENCOO_ADMIN_PAT            # gitea_team: ok
 
 # 6. boot the engine (long-running)
-pnpm exec opencoo                   # 'opencoo: listening on :8080'
+pnpm opencoo                        # 'opencoo: listening on :8080'
 # in another terminal:
 curl -s http://localhost:8080/health   # {db: ok, redis: ok}
 curl -s http://localhost:8080/ready    # {gitea: ok}
@@ -53,7 +53,7 @@ open http://localhost:8080             # Management UI login form
 
 Bare `opencoo` (no subcommand) is the long-running boot verb per `architecture.md` §14.5. v0.1 boots the self-operating engine (Management UI + admin API + agents); engine-ingestion's BullMQ workers wire in phase-b.
 
-The other CLI verbs (`migrate` / `setup` / `doctor` / `source test` / `source forget` / `recompile`) are documented under `pnpm exec opencoo --help`.
+The other CLI verbs (`migrate` / `setup` / `doctor` / `source test` / `source forget` / `recompile`) are documented under `pnpm opencoo --help`.
 
 ## Getting oriented
 
