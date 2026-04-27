@@ -180,37 +180,21 @@ export function registerSourceBindingsRoutes(
         });
       }
 
-      // Encrypt each half via credentialStore.write — polling
-      // = one write, webhook = two.
+      // Encrypt each half via credentialStore.write — polling =
+      // one write, webhook = two. Failures surface as a 500 with
+      // no upstream detail (the cause is logged separately).
       let credentialsId: CredentialId;
       let webhookSecretCredentialsId: CredentialId | null;
       try {
-        if (descriptor.mode === "polling") {
-          credentialsId = await store.write({
-            name: `${adapter_slug}/${target_domain_slug}/auth`,
-            schemaRef: `source-adapter:${adapter_slug}:auth`,
-            plaintext: Buffer.from(JSON.stringify(credentials), "utf8"),
-          });
-          webhookSecretCredentialsId = null;
-        } else {
-          const webhookCreds = credentials as {
-            auth: Record<string, unknown>;
-            webhook_secret: Record<string, unknown>;
-          };
-          credentialsId = await store.write({
-            name: `${adapter_slug}/${target_domain_slug}/auth`,
-            schemaRef: `source-adapter:${adapter_slug}:auth`,
-            plaintext: Buffer.from(JSON.stringify(webhookCreds.auth), "utf8"),
-          });
-          webhookSecretCredentialsId = await store.write({
-            name: `${adapter_slug}/${target_domain_slug}/webhook_secret`,
-            schemaRef: `source-adapter:${adapter_slug}:webhook_secret`,
-            plaintext: Buffer.from(
-              JSON.stringify(webhookCreds.webhook_secret),
-              "utf8",
-            ),
-          });
-        }
+        const encrypted = await encryptBindingCredentials({
+          store,
+          descriptor,
+          adapterSlug: adapter_slug,
+          targetDomainSlug: target_domain_slug,
+          credentials,
+        });
+        credentialsId = encrypted.credentialsId;
+        webhookSecretCredentialsId = encrypted.webhookSecretCredentialsId;
       } catch (err) {
         req.log?.warn({
           msg: "binding_create.credential_store_failed",
@@ -232,10 +216,12 @@ export function registerSourceBindingsRoutes(
 
       // Insert binding row. Use sql.raw for the static enum
       // literal cast and sql parameters for the dynamic ids.
+      const webhookSecretSql =
+        webhookSecretCredentialsId === null
+          ? sql`NULL`
+          : sql`${webhookSecretCredentialsId}::uuid`;
       let id: string;
       try {
-        const credentialsIdLiteral: string = credentialsId;
-        const webhookSecretIdLiteral: string | null = webhookSecretCredentialsId;
         const inserted = (await args.db.execute(sql`
           INSERT INTO sources_bindings
             (domain_id, adapter_slug, review_mode, credentials_id, webhook_secret_credentials_id)
@@ -243,10 +229,8 @@ export function registerSourceBindingsRoutes(
             ${domain.id}::uuid,
             ${adapter_slug},
             ${sql.raw(`'${effectiveReviewMode}'`)}::review_mode,
-            ${credentialsIdLiteral}::uuid,
-            ${webhookSecretIdLiteral === null
-              ? sql`NULL`
-              : sql`${webhookSecretIdLiteral}::uuid`}
+            ${credentialsId}::uuid,
+            ${webhookSecretSql}
           )
           RETURNING id::text AS id
         `)) as unknown as { rows: Array<{ id: string }> };
@@ -340,4 +324,54 @@ function walkPollingSchema(
       missing.push(`${pathPrefix}${required}`);
     }
   }
+}
+
+interface EncryptBindingCredentialsArgs {
+  readonly store: CredentialStore;
+  readonly descriptor: SourceAdapterCredentialDescriptor;
+  readonly adapterSlug: string;
+  readonly targetDomainSlug: string;
+  readonly credentials: Record<string, unknown>;
+}
+
+interface EncryptBindingCredentialsResult {
+  readonly credentialsId: CredentialId;
+  readonly webhookSecretCredentialsId: CredentialId | null;
+}
+
+/** Write credential halves into the store. Polling adapters get
+ *  one write; webhook adapters get two (auth + webhook_secret).
+ *  The plaintext bytes only exist inside the JSON.stringify
+ *  buffer the caller passes — they're consumed by the store
+ *  immediately and never returned. */
+async function encryptBindingCredentials(
+  args: EncryptBindingCredentialsArgs,
+): Promise<EncryptBindingCredentialsResult> {
+  const baseName = `${args.adapterSlug}/${args.targetDomainSlug}`;
+  const baseSchemaRef = `source-adapter:${args.adapterSlug}`;
+
+  if (args.descriptor.mode === "polling") {
+    const credentialsId = await args.store.write({
+      name: `${baseName}/auth`,
+      schemaRef: `${baseSchemaRef}:auth`,
+      plaintext: Buffer.from(JSON.stringify(args.credentials), "utf8"),
+    });
+    return { credentialsId, webhookSecretCredentialsId: null };
+  }
+
+  const webhookCreds = args.credentials as {
+    auth: Record<string, unknown>;
+    webhook_secret: Record<string, unknown>;
+  };
+  const credentialsId = await args.store.write({
+    name: `${baseName}/auth`,
+    schemaRef: `${baseSchemaRef}:auth`,
+    plaintext: Buffer.from(JSON.stringify(webhookCreds.auth), "utf8"),
+  });
+  const webhookSecretCredentialsId = await args.store.write({
+    name: `${baseName}/webhook_secret`,
+    schemaRef: `${baseSchemaRef}:webhook_secret`,
+    plaintext: Buffer.from(JSON.stringify(webhookCreds.webhook_secret), "utf8"),
+  });
+  return { credentialsId, webhookSecretCredentialsId };
 }
