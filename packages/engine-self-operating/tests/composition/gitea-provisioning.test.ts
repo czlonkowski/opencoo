@@ -92,6 +92,34 @@ describe("provisionDomainRepo — happy path", () => {
 });
 
 describe("provisionDomainRepo — idempotency", () => {
+  it("treats a 422 [SHA]: Required on a seed file as 'already provisioned, continue'", async () => {
+    const fetchImpl = vi.fn();
+    fetchImpl.mockResolvedValueOnce(
+      ok({ html_url: "https://gitea.test/opencoo/wiki-existing" }, 201),
+    );
+    // The first seed file (index.md) returns 422 with the
+    // SHA-required body Gitea emits when the file already
+    // exists.
+    fetchImpl.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ message: "[SHA]: Required" }),
+        { status: 422, headers: { "content-type": "application/json" } },
+      ),
+    );
+    fetchImpl.mockResolvedValueOnce(ok({ content: { sha: "ok" } }, 201));
+    fetchImpl.mockResolvedValueOnce(ok({ content: { sha: "ok" } }, 201));
+    const result = await provisionDomainRepo({
+      baseUrl: "https://gitea.test",
+      pat: SECRET_PAT,
+      org: "opencoo",
+      slug: "wiki-existing",
+      domainClass: "knowledge",
+      defaultLocale: "en",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result.repoUrl).toBe("https://gitea.test/opencoo/wiki-existing");
+  });
+
   it("treats a 409 on repo-create as 'already provisioned, continue'", async () => {
     const fetchImpl = vi.fn();
     // 1) repo create returns 409 (already exists).

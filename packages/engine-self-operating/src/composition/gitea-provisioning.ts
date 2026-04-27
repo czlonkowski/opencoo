@@ -142,8 +142,11 @@ export async function provisionDomainRepo(
     }
   }
 
-  // 2-4) Seed three files. Each PUT is idempotent on 409
-  //      (file already exists).
+  // 2-4) Seed three files. Each PUT is idempotent: 409 (race
+  //      between two provisioning calls) AND 422 with the
+  //      `[SHA]: Required` body (Gitea returns this when a file
+  //      already exists and the caller didn't pass `sha`) are
+  //      both treated as "already provisioned, skip".
   const seeds = buildSeedFiles({
     slug: args.slug,
     domainClass: args.domainClass,
@@ -157,7 +160,24 @@ export async function provisionDomainRepo(
       message: `[provisioning] seed ${file.path}`,
       content: Buffer.from(file.content, "utf8").toString("base64"),
     };
-    await callGitea(fetchFn, fileUrl, args.pat, "PUT", JSON.stringify(seedBody));
+    try {
+      await callGitea(fetchFn, fileUrl, args.pat, "PUT", JSON.stringify(seedBody));
+    } catch (err) {
+      // Gitea responds 422 `[SHA]: Required` for PUTs onto an
+      // existing file when the caller did not include the
+      // current blob sha. Treat that as the same idempotency
+      // signal as a 409 — provisioning is supposed to be
+      // re-runnable without surfacing benign already-seeded
+      // states as an error.
+      if (
+        err instanceof GiteaProvisioningUpstreamError &&
+        err.status === 422 &&
+        /\[SHA\]\s*:\s*Required/i.test(err.message)
+      ) {
+        continue;
+      }
+      throw err;
+    }
   }
 
   return { repoUrl };
