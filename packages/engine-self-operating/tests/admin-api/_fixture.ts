@@ -184,11 +184,42 @@ export class MockGiteaClient implements GiteaClient {
   }
 }
 
+/** Stub provisioning function the binding-create + domain-create
+ *  routes consume. Tests inject a mock that records calls + can
+ *  throw to exercise rollback paths. */
+export interface ProvisionStubCall {
+  readonly slug: string;
+  readonly domainClass: string;
+  readonly defaultLocale: string;
+  readonly pat: string;
+}
+
+export class MockProvisioner {
+  readonly calls: ProvisionStubCall[] = [];
+  /** When set, the next provision call throws this error. */
+  nextError: Error | null = null;
+  /** When set, repoUrl returned. Else deterministic baseUrl/org/slug. */
+  nextRepoUrl: string | null = null;
+
+  async provision(args: ProvisionStubCall): Promise<{ readonly repoUrl: string }> {
+    this.calls.push(args);
+    if (this.nextError !== null) {
+      const err = this.nextError;
+      this.nextError = null;
+      throw err;
+    }
+    const url = this.nextRepoUrl ?? `https://gitea.test/opencoo/${args.slug}`;
+    this.nextRepoUrl = null;
+    return { repoUrl: url };
+  }
+}
+
 export interface AdminFixture {
   readonly app: FastifyInstance;
   readonly db: AdminTestDb;
   readonly raw: PGlite;
   readonly gitea: MockGiteaClient;
+  readonly provisioner: MockProvisioner;
   readonly close: () => Promise<void>;
 }
 
@@ -212,6 +243,7 @@ export async function makeAdminFixture(
   const db: AdminTestDb = drizzle(pg, { schema });
 
   const gitea = new MockGiteaClient();
+  const provisioner = new MockProvisioner();
   const app = Fastify({ logger: false });
   await registerAdminApi({
     app,
@@ -221,6 +253,14 @@ export async function makeAdminFixture(
     sessionHmacKey: Buffer.from("test-session-hmac-key-32-bytes-x"),
     logger: silentLogger(),
     llmDebugLog: opts.llmDebugLog ?? false,
+    provisionDomainRepo: (a) =>
+      provisioner.provision({
+        slug: a.slug,
+        domainClass: a.domainClass,
+        defaultLocale: a.defaultLocale,
+        pat: a.pat,
+      }),
+    provisionOrg: "opencoo",
   });
 
   return {
@@ -228,6 +268,7 @@ export async function makeAdminFixture(
     db,
     raw: pg,
     gitea,
+    provisioner,
     close: async () => {
       await app.close();
       await pg.close();
