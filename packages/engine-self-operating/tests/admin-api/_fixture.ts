@@ -18,6 +18,7 @@ import { isPgEnum, type PgEnum } from "drizzle-orm/pg-core";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import * as schema from "@opencoo/shared/db/schema";
+import { InMemoryCredentialStore } from "@opencoo/shared/credential-store";
 import { ConsoleLogger } from "@opencoo/shared/logger";
 
 import {
@@ -220,6 +221,7 @@ export interface AdminFixture {
   readonly raw: PGlite;
   readonly gitea: MockGiteaClient;
   readonly provisioner: MockProvisioner;
+  readonly credentialStore: InMemoryCredentialStore;
   readonly close: () => Promise<void>;
 }
 
@@ -244,6 +246,9 @@ export async function makeAdminFixture(
 
   const gitea = new MockGiteaClient();
   const provisioner = new MockProvisioner();
+  const credentialStore = new InMemoryCredentialStore({
+    logger: silentLogger(),
+  });
   const app = Fastify({ logger: false });
   await registerAdminApi({
     app,
@@ -261,6 +266,7 @@ export async function makeAdminFixture(
         pat: a.pat,
       }),
     provisionOrg: "opencoo",
+    credentialStore,
   });
 
   return {
@@ -269,6 +275,7 @@ export async function makeAdminFixture(
     raw: pg,
     gitea,
     provisioner,
+    credentialStore,
     close: async () => {
       await app.close();
       await pg.close();
