@@ -58,6 +58,15 @@ const DEFAULT_ALLOW_LIST = [
   // engine procs never read it.
   "OPENCOO_ADMIN_PAT",
   "OPENCOO_ADMIN_PAT_FILE",
+  // Phase-a appendix #2 — Gitea organisation that owns
+  // domain repos provisioned by `POST /api/admin/domains`.
+  // Defaults to 'opencoo' when unset; the engine's composition
+  // root reads it once at boot and threads it into the
+  // admin-API route. Admin operator config — same blast
+  // radius as ADMIN_TEAM_SLUG; same `_FILE` Docker-secrets
+  // convention.
+  "GITEA_PROVISION_ORG",
+  "GITEA_PROVISION_ORG_FILE",
 ];
 
 function isIdentifier(

@@ -178,7 +178,7 @@ export function NewSourceBindingModal(
         });
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only fetch
+    // Mount-only fetch — fetchOpts is stable for the lifetime of this modal.
   }, []);
 
   // Recompute review_mode prefill whenever the

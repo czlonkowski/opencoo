@@ -47,7 +47,7 @@ export function Domains(props: DomainsProps = {}): JSX.Element {
         setError(err instanceof Error ? err.message : String(err));
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // refetch when the create modal flips refreshNonce.
   }, [refreshNonce]);
 
   return (
