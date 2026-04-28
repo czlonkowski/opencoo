@@ -45,11 +45,11 @@ describe("provisionDomainRepo — happy path", () => {
         201,
       ),
     );
-    // 2) PUT /api/v1/repos/opencoo/wiki-main/contents/index.md → 201
+    // 2) POST /api/v1/repos/opencoo/wiki-main/contents/index.md → 201
     fetchImpl.mockResolvedValueOnce(ok({ content: { sha: "a" } }, 201));
-    // 3) PUT /contents/log.md
+    // 3) POST /contents/log.md
     fetchImpl.mockResolvedValueOnce(ok({ content: { sha: "b" } }, 201));
-    // 4) PUT /contents/schema.md
+    // 4) POST /contents/schema.md
     fetchImpl.mockResolvedValueOnce(ok({ content: { sha: "c" } }, 201));
 
     const result = await provisionDomainRepo({
@@ -88,6 +88,17 @@ describe("provisionDomainRepo — happy path", () => {
     expect(seedUrls[0]).toMatch(/\/repos\/opencoo\/wiki-main\/contents\/index\.md$/);
     expect(seedUrls[1]).toMatch(/\/repos\/opencoo\/wiki-main\/contents\/log\.md$/);
     expect(seedUrls[2]).toMatch(/\/repos\/opencoo\/wiki-main\/contents\/schema\.md$/);
+
+    // Wire-shape regression for bug C — every seed-file fetch must
+    // be POST (Gitea's "create file" verb). PUT is the "update"
+    // endpoint and returns 422 [SHA]: Required on a fresh repo,
+    // which the previous idempotency carve-out silently swallowed
+    // → empty repo. Index 0 is the repo-create POST; indices 1-3
+    // are the seed file POSTs.
+    expect((fetchImpl.mock.calls[0]![1] as RequestInit).method).toBe("POST");
+    expect((fetchImpl.mock.calls[1]![1] as RequestInit).method).toBe("POST");
+    expect((fetchImpl.mock.calls[2]![1] as RequestInit).method).toBe("POST");
+    expect((fetchImpl.mock.calls[3]![1] as RequestInit).method).toBe("POST");
   });
 });
 
