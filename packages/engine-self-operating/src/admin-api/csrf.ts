@@ -38,30 +38,14 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 
 import type { FastifyReply, FastifyRequest } from "fastify";
 
+import { buildAdminCookieLine } from "./cookie-attrs.js";
+
 const CSRF_COOKIE_NAME = "opencoo_csrf";
 const CSRF_HEADER_NAME = "x-csrf-token";
 
 /** 256-bit token, base64url-encoded → 43 chars (no padding). */
 function newToken(): string {
   return randomBytes(32).toString("base64url");
-}
-
-function buildSetCookie(token: string): string {
-  const parts = [
-    `${CSRF_COOKIE_NAME}=${token}`,
-    "Path=/",
-    "SameSite=Strict",
-    // Note: NOT HttpOnly — the SPA must read this client-side
-    // to mirror it as the X-CSRF-Token header.
-  ];
-  // Secure only in production — browsers reject Set-Cookie ...
-  // Secure on http:// origins, which would silently break local
-  // dev on http://localhost. Partner-deploy compose sets
-  // NODE_ENV=production and terminates TLS upstream.
-  if (process.env.NODE_ENV === "production") {
-    parts.push("Secure");
-  }
-  return parts.join("; ");
 }
 
 /** Parse the `Cookie:` header and return the value of
@@ -91,7 +75,16 @@ export function issueCsrfToken(
   reply: FastifyReply,
 ): { readonly csrfToken: string } {
   const token = newToken();
-  reply.header("set-cookie", buildSetCookie(token));
+  // NOT HttpOnly — the SPA must read this client-side to mirror
+  // it as the X-CSRF-Token header on mutating requests.
+  reply.header(
+    "set-cookie",
+    buildAdminCookieLine({
+      name: CSRF_COOKIE_NAME,
+      value: token,
+      httpOnly: false,
+    }),
+  );
   return { csrfToken: token };
 }
 
