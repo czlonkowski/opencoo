@@ -208,7 +208,7 @@ describe("admin-api auth — opencoo_session cookie attributes (Path + condition
     expect(sessionLine).not.toContain("Path=/api/admin");
   });
 
-  it("opencoo_session cookie omits Secure when NODE_ENV !== 'production' (http://localhost dev)", async () => {
+  it("opencoo_session cookie omits Secure ONLY when NODE_ENV === 'development' (http://localhost dev)", async () => {
     vi.stubEnv("NODE_ENV", "development");
     const sessionLine = await fetchSessionCookieLine();
     expect(sessionLine).not.toMatch(/(?:^|;\s)Secure(?:;|$)/);
@@ -216,6 +216,12 @@ describe("admin-api auth — opencoo_session cookie attributes (Path + condition
 
   it("opencoo_session cookie sets Secure when NODE_ENV === 'production'", async () => {
     vi.stubEnv("NODE_ENV", "production");
+    const sessionLine = await fetchSessionCookieLine();
+    expect(sessionLine).toMatch(/(?:^|;\s)Secure(?:;|$)/);
+  });
+
+  it("opencoo_session cookie sets Secure when NODE_ENV is 'staging' (secure-by-default for non-dev deploys)", async () => {
+    vi.stubEnv("NODE_ENV", "staging");
     const sessionLine = await fetchSessionCookieLine();
     expect(sessionLine).toMatch(/(?:^|;\s)Secure(?:;|$)/);
   });

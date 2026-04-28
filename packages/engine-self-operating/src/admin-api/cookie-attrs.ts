@@ -56,12 +56,15 @@ export function buildAdminCookieLine(attrs: CookieAttrs): string {
     "SameSite=Strict",
   ];
   if (attrs.httpOnly) parts.push("HttpOnly");
-  // Browsers reject `Set-Cookie ... Secure` on http:// origins,
-  // so gating on production is what makes the cookies usable on
-  // http://localhost dev without weakening the production
-  // posture (partner-deploy compose terminates TLS upstream and
-  // sets NODE_ENV=production).
-  if (process.env.NODE_ENV === "production") parts.push("Secure");
+  // Secure-by-default: present UNLESS NODE_ENV === "development".
+  // Browsers reject `Set-Cookie ... Secure` on http:// origins, so
+  // local-dev needs the explicit opt-out. Staging, test, unset, and
+  // any other environment defaults to Secure so a forgotten/typo'd
+  // NODE_ENV on a non-prod-but-internet-facing deploy doesn't
+  // silently lose the flag. Partner-deploy compose still gets it
+  // (NODE_ENV=production); local dev still works
+  // (NODE_ENV=development is the explicit opt-out).
+  if (process.env.NODE_ENV !== "development") parts.push("Secure");
   if (attrs.maxAge !== undefined) parts.push(`Max-Age=${attrs.maxAge}`);
   return parts.join("; ");
 }

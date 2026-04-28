@@ -213,7 +213,7 @@ describe("admin-api csrf — opencoo_csrf cookie attributes (Path + conditional 
     expect(csrfLine).not.toContain("Path=/api/admin");
   });
 
-  it("opencoo_csrf cookie omits Secure when NODE_ENV !== 'production' (http://localhost dev)", async () => {
+  it("opencoo_csrf cookie omits Secure ONLY when NODE_ENV === 'development' (http://localhost dev)", async () => {
     vi.stubEnv("NODE_ENV", "development");
     const csrfLine = await fetchCsrfCookieLine();
     expect(csrfLine).not.toMatch(/(?:^|;\s)Secure(?:;|$)/);
@@ -221,6 +221,15 @@ describe("admin-api csrf — opencoo_csrf cookie attributes (Path + conditional 
 
   it("opencoo_csrf cookie sets Secure when NODE_ENV === 'production'", async () => {
     vi.stubEnv("NODE_ENV", "production");
+    const csrfLine = await fetchCsrfCookieLine();
+    expect(csrfLine).toMatch(/(?:^|;\s)Secure(?:;|$)/);
+  });
+
+  it("opencoo_csrf cookie sets Secure when NODE_ENV is 'staging' (secure-by-default for non-dev deploys)", async () => {
+    // Anything that isn't an explicit `development` opts INTO Secure
+    // so a forgotten/typo'd NODE_ENV on a non-prod-but-internet-facing
+    // deploy doesn't silently lose the flag (Copilot triage on PR #39).
+    vi.stubEnv("NODE_ENV", "staging");
     const csrfLine = await fetchCsrfCookieLine();
     expect(csrfLine).toMatch(/(?:^|;\s)Secure(?:;|$)/);
   });
