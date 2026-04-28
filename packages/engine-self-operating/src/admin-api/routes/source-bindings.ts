@@ -1,9 +1,17 @@
 /**
- * Review Dashboard — source-bindings routes (PR 28 list +
- * phase-a appendix #2 create).
+ * Sources tab + Review Dashboard — source-bindings routes
+ * (PR 28 list, phase-a appendix #2 create, phase-a fixup
+ * widens the list to all bindings).
  *
- * `GET /api/admin/source-bindings` — read-only list of binding
- *   rows the operator can act on (in review or disabled).
+ * `GET /api/admin/source-bindings` — read-only list of EVERY
+ *   binding row, ordered newest-first, capped at 200. Per
+ *   architecture §13 the Sources tab is "list + add" of every
+ *   binding; the needs-attention queue is the Review Dashboard's
+ *   job (§7.3, separate endpoint set). Earlier this handler
+ *   filtered to `WHERE review_mode = 'review' OR enabled = false`
+ *   and PR 40 dropped that filter — the auto-mode + enabled
+ *   bindings the operator creates through the UI now show up
+ *   in the Sources list as designed.
  * `POST /api/admin/source-bindings` — create a new binding.
  *   Closes the regression PR 29 introduced (architecture.md
  *   §13 promised "Sources — list + add", PR 29 shipped only

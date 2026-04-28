@@ -11,14 +11,14 @@
  * a needs-attention queue (that's the Review Dashboard's job per
  * §7.3). Drop the filter so all bindings show up.
  *
- * Pin matrix (4 assertions):
+ * Pin matrix (3 assertions):
  *   1. auto-mode + enabled binding IS in the response (regression
- *      for the actual UX bug)
+ *      for the actual UX bug); the assertion also checks that the
+ *      response carries `reviewMode` + `enabled` fields the UI
+ *      needs for columns / status badges.
  *   2. review-mode binding IS in the response (no regression on
  *      the prior "needs attention" rows)
  *   3. disabled binding IS in the response
- *   4. each row carries `reviewMode` + `enabled` fields so the
- *      UI can render columns / status badges
  */
 import { afterEach, describe, expect, it } from "vitest";
 
