@@ -28,12 +28,17 @@ export function registerLogoutRoute(args: RegisterLogoutRouteArgs): void {
     { preHandler: requireCsrf },
     async (req, reply) => {
       const ctx = requireAdminContext(req);
-      // Set-Cookie with Max-Age=0 clears both cookies on the
-      // /api/admin scope. Browsers treat the matching name +
-      // path as a clear directive.
+      // Set-Cookie with Max-Age=0 clears both cookies. The Path
+      // and Secure attributes MUST mirror the issuing call sites
+      // (csrf.ts / auth.ts) — browsers only clear cookies when
+      // (name, Path, Domain) match. Path=/ matches the SPA scope,
+      // and Secure is conditional on production for the same
+      // http://-dev reason as the issuance.
+      const isProd = process.env.NODE_ENV === "production";
+      const secureSuffix = isProd ? "; Secure" : "";
       reply.header("set-cookie", [
-        "opencoo_session=; Path=/api/admin; SameSite=Strict; HttpOnly; Secure; Max-Age=0",
-        "opencoo_csrf=; Path=/api/admin; SameSite=Strict; Secure; Max-Age=0",
+        `opencoo_session=; Path=/; SameSite=Strict; HttpOnly${secureSuffix}; Max-Age=0`,
+        `opencoo_csrf=; Path=/; SameSite=Strict${secureSuffix}; Max-Age=0`,
       ]);
       await writeAuditLog(args.db, {
         action: "session.logout",

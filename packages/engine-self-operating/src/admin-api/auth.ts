@@ -233,18 +233,21 @@ export function buildVerifyAdmin(
     // PAT anyway. This cookie is NOT a session bearer; it
     // carries continuity across same-tab navigation and lets
     // the SPA remember "who am I" without repeating whoami.
-    // SameSite=Strict + HttpOnly + Secure block CSRF-via-cookie
-    // and cross-site reads. Path=/api/admin scopes it tightly.
-    reply.header(
-      "set-cookie",
-      [
-        `opencoo_session=${context.userId}`,
-        "Path=/api/admin",
-        "SameSite=Strict",
-        "HttpOnly",
-        "Secure",
-      ].join("; "),
-    );
+    // SameSite=Strict + HttpOnly block cross-site reads and
+    // CSRF-via-cookie; Secure is gated on production so http://
+    // dev doesn't get its cookies rejected. Path=/ matches the
+    // SPA's path so the cookie travels with same-origin
+    // navigations.
+    const sessionCookieParts = [
+      `opencoo_session=${context.userId}`,
+      "Path=/",
+      "SameSite=Strict",
+      "HttpOnly",
+    ];
+    if (process.env.NODE_ENV === "production") {
+      sessionCookieParts.push("Secure");
+    }
+    reply.header("set-cookie", sessionCookieParts.join("; "));
 
     // The session HMAC key is here so a future refactor can
     // rotate to a signed session value without changing the
