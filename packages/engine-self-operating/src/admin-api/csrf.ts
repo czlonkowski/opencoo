@@ -5,10 +5,13 @@
  * Stateless: no server-side per-session storage. The flow:
  *   1. SPA calls `GET /api/admin/_csrf` after auth.
  *   2. Endpoint generates a 256-bit random token, sets it as a
- *      cookie `opencoo_csrf=<tok>; Path=/api/admin;
- *      SameSite=Strict; Secure`. NOT HttpOnly — the SPA must
- *      read the cookie value to mirror it as a header on
- *      mutating requests.
+ *      cookie `opencoo_csrf=<tok>; Path=/;
+ *      SameSite=Strict; Secure (production only)`. NOT HttpOnly
+ *      — the SPA must read the cookie value to mirror it as a
+ *      header on mutating requests. Path=/ so the SPA at the
+ *      root URL can enumerate the cookie via document.cookie;
+ *      SameSite=Strict + double-submit are still the CSRF
+ *      defense, the path scope is not load-bearing here.
  *   3. Endpoint also returns the token in the JSON body so the
  *      SPA can stash it in memory.
  *   4. State-changing routes register the `requireCsrf`
@@ -19,11 +22,17 @@
  *      Mismatch → 403.
  *
  * Why this works: a malicious cross-origin attacker CANNOT read
- * the cookie value because of SameSite=Strict + Secure (HTTPS-
- * only); they can't fabricate the matching header even if they
- * trick the browser into sending the cookie. The double-submit
- * forces the attacker to exfiltrate the cookie (which is
- * blocked by the cookie attributes) before they can replay.
+ * the cookie value because of SameSite=Strict (and Secure in
+ * production-over-TLS); they can't fabricate the matching
+ * header even if they trick the browser into sending the
+ * cookie. The double-submit forces the attacker to exfiltrate
+ * the cookie (which is blocked by the cookie attributes) before
+ * they can replay.
+ *
+ * Production deploys MUST run behind TLS — partner-deploy
+ * compose enforces this by terminating TLS at a reverse proxy
+ * fronting the engine; `NODE_ENV=production` flips Secure on
+ * so cookies are never sent over plaintext in production.
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
@@ -38,14 +47,21 @@ function newToken(): string {
 }
 
 function buildSetCookie(token: string): string {
-  return [
+  const parts = [
     `${CSRF_COOKIE_NAME}=${token}`,
-    "Path=/api/admin",
+    "Path=/",
     "SameSite=Strict",
-    "Secure",
     // Note: NOT HttpOnly — the SPA must read this client-side
     // to mirror it as the X-CSRF-Token header.
-  ].join("; ");
+  ];
+  // Secure only in production — browsers reject Set-Cookie ...
+  // Secure on http:// origins, which would silently break local
+  // dev on http://localhost. Partner-deploy compose sets
+  // NODE_ENV=production and terminates TLS upstream.
+  if (process.env.NODE_ENV === "production") {
+    parts.push("Secure");
+  }
+  return parts.join("; ");
 }
 
 /** Parse the `Cookie:` header and return the value of
