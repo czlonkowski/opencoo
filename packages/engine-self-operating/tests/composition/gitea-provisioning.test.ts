@@ -102,6 +102,59 @@ describe("provisionDomainRepo — happy path", () => {
   });
 });
 
+describe("provisionDomainRepo — fresh empty repo (regression for bug C)", () => {
+  it("provisionDomainRepo on a fresh empty repo seeds all three files (regression for the PUT-on-empty-repo bug)", async () => {
+    // Smoke test against a freshly created Gitea repo (no default
+    // branch yet). The bug was: PUT on contents/<path> for a repo
+    // with no commits returned 422 [SHA]: Required, which the
+    // idempotency carve-out swallowed as "already seeded" — leaving
+    // the repo empty. Helper must POST (Gitea's "Create a file"
+    // endpoint creates the default branch automatically when the
+    // repo has no commits) and the three seeds must each land.
+    const fetchImpl = vi.fn();
+    // 1) repo create POST → 201
+    fetchImpl.mockResolvedValueOnce(
+      ok({ html_url: "https://gitea.test/opencoo/fresh-repo" }, 201),
+    );
+    // 2-4) three seed POSTs → 201 each (Gitea returns the new
+    //      content sha in the body)
+    fetchImpl.mockResolvedValueOnce(ok({ content: { sha: "i1" } }, 201));
+    fetchImpl.mockResolvedValueOnce(ok({ content: { sha: "i2" } }, 201));
+    fetchImpl.mockResolvedValueOnce(ok({ content: { sha: "i3" } }, 201));
+
+    const result = await provisionDomainRepo({
+      baseUrl: "https://gitea.test",
+      pat: SECRET_PAT,
+      org: "opencoo",
+      slug: "fresh-repo",
+      domainClass: "knowledge",
+      defaultLocale: "en",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(result.repoUrl).toBe("https://gitea.test/opencoo/fresh-repo");
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+
+    // Three seed-file calls — methods MUST be POST and URLs MUST
+    // end with the expected `contents/<path>` paths.
+    const seedCalls = fetchImpl.mock.calls.slice(1);
+    expect(seedCalls).toHaveLength(3);
+    expect(String(seedCalls[0]![0])).toMatch(
+      /\/repos\/opencoo\/fresh-repo\/contents\/index\.md$/,
+    );
+    expect(String(seedCalls[1]![0])).toMatch(
+      /\/repos\/opencoo\/fresh-repo\/contents\/log\.md$/,
+    );
+    expect(String(seedCalls[2]![0])).toMatch(
+      /\/repos\/opencoo\/fresh-repo\/contents\/schema\.md$/,
+    );
+    for (const call of seedCalls) {
+      const init = call[1] as RequestInit;
+      expect(init.method).toBe("POST");
+    }
+  });
+});
+
 describe("provisionDomainRepo — idempotency", () => {
   it("treats a 422 [SHA]: Required on a seed file as 'already provisioned, continue'", async () => {
     const fetchImpl = vi.fn();
