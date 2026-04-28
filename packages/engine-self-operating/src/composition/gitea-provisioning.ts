@@ -103,9 +103,16 @@ export interface ProvisionDomainRepoResult {
 /**
  * Provision a fresh Gitea repo for a new opencoo domain. Steps:
  *   1. POST /api/v1/orgs/{org}/repos — create the repo private.
- *   2. PUT /api/v1/repos/{org}/{slug}/contents/index.md  — seed.
- *   3. PUT /api/v1/repos/{org}/{slug}/contents/log.md    — seed.
- *   4. PUT /api/v1/repos/{org}/{slug}/contents/schema.md — seed.
+ *   2. POST /api/v1/repos/{org}/{slug}/contents/index.md  — seed.
+ *   3. POST /api/v1/repos/{org}/{slug}/contents/log.md    — seed.
+ *   4. POST /api/v1/repos/{org}/{slug}/contents/schema.md — seed.
+ *
+ * Each seed POST is Gitea's "Create a file" endpoint — it creates
+ * the default branch automatically when the repo has no commits,
+ * which is the case immediately after step 1. PUT (the "Update a
+ * file" endpoint) is never used here: PUT on a fresh empty repo
+ * returns 422 [SHA]: Required, which a previous carve-out
+ * silently swallowed → empty repo (bug C).
  *
  * Returns `{repoUrl}` (Gitea's `html_url` if available, else a
  * deterministic concat of `${baseUrl}/${org}/${slug}`).
