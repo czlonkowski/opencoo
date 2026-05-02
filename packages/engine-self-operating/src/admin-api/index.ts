@@ -43,12 +43,12 @@ import {
   type ProvisionDomainRepoFn,
 } from "./routes/domains.js";
 import { registerEventsRoute } from "./routes/events.js";
+import { registerHeartbeatRoutes } from "./routes/heartbeat.js";
 import { registerLintFindingsRoutes } from "./routes/lint-findings.js";
 import { registerLogoutRoute } from "./routes/logout.js";
 import { registerMarketplaceUpdatesRoutes } from "./routes/marketplace-updates.js";
 import { registerPipelinesRoutes } from "./routes/pipelines.js";
 import { registerPromptsRoutes } from "./routes/prompts.js";
-import { registerHeartbeatRoutes } from "./routes/heartbeat.js";
 import { registerRedactionEventsRoutes } from "./routes/redaction-events.js";
 import { registerSourceBindingsRoutes } from "./routes/source-bindings.js";
 
