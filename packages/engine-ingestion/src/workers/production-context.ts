@@ -73,7 +73,10 @@ import {
   type WikiWriteDeps,
 } from "@opencoo/shared/wiki-write";
 
-import { SCANNER_CLASSIFY_QUEUE_SLUG } from "../pipelines/scanner.js";
+import {
+  SCANNER_CLASSIFY_QUEUE_SLUG,
+  type ScannerClassifyJob,
+} from "../pipelines/scanner.js";
 
 import type { IngestionRunEventEmitter, WorkerContext } from "./context.js";
 
@@ -220,22 +223,13 @@ export async function composeProductionWorkerContext(
   // 3. Producer-side enqueue handle. Multi-dot slug
   //    (`ingestion.scanner.classify`) bypasses `buildEngineQueue`
   //    by constructing `new Queue(...)` directly — same pattern
-  //    pipelines/scanner.ts already documents.
-  const enqueueQueue = new Queue<{
-    bindingId: string;
-    intakeId: string;
-    domainSlug: string;
-    sourceRef: string;
-    contentBase64: string;
-    fetchedAt: string;
-  }>(SCANNER_CLASSIFY_QUEUE_SLUG, {
-    connection: args.redisConnection,
-  });
-  const enqueue = {
-    async add(name: string, data: unknown): Promise<unknown> {
-      return enqueueQueue.add(name, data as Parameters<typeof enqueueQueue.add>[1]);
-    },
-  };
+  //    pipelines/scanner.ts already documents. The Queue's `add`
+  //    structurally satisfies the narrower `ScannerEnqueue` shape
+  //    the scanner pipeline consumes.
+  const enqueueQueue = new Queue<ScannerClassifyJob>(
+    SCANNER_CLASSIFY_QUEUE_SLUG,
+    { connection: args.redisConnection },
+  );
 
   // 4. Cleanup hook the orchestrator awaits AFTER worker drain.
   let closing: Promise<void> | undefined;
@@ -258,7 +252,7 @@ export async function composeProductionWorkerContext(
     author: args.author,
     guardAdapter: args.guardAdapter,
     adapterRegistry,
-    enqueue,
+    enqueue: enqueueQueue,
     ...(args.sseBus !== undefined ? { sseBus: args.sseBus } : {}),
     closeProducers,
   };

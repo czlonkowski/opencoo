@@ -85,12 +85,20 @@ async function loadLastFireMap(
   const out = new Map<string, Date | string | null>();
   if (instanceIds.length === 0) return out;
   // Aggregate in one query rather than N+1 — operator may have
-  // many scheduled instances.
+  // many scheduled instances. Use sql.join for parameterized IN
+  // binding so Postgres treats the ids as values (not as SQL
+  // text); ids are scheduler-internal but defence-in-depth keeps
+  // the boundary clean if an upstream ever lets an attacker shape
+  // a RegisteredSchedule.instanceId.
+  const idParams = sql.join(
+    instanceIds.map((id) => sql`${id}`),
+    sql`, `,
+  );
   const result = (await db.execute(sql`
     SELECT instance_id::text AS instance_id,
            MAX(started_at)   AS started_at
     FROM agent_runs
-    WHERE instance_id::text IN ${sql.raw(`(${instanceIds.map((id) => `'${id}'`).join(", ")})`)}
+    WHERE instance_id::text IN (${idParams})
     GROUP BY instance_id
   `)) as unknown as { rows: AgentRunStartedRow[] };
   for (const row of result.rows) {

@@ -98,13 +98,6 @@ export interface RegisteredSchedule {
   readonly scheduleCron: string;
 }
 
-interface ScheduledRow {
-  readonly id: string;
-  readonly definitionSlug: string;
-  readonly name: string;
-  readonly scheduleCron: string;
-}
-
 interface ExecResult<R> {
   readonly rows: R[];
 }
@@ -215,29 +208,23 @@ export class AgentDispatcher {
     let registered = 0;
     let skipped = 0;
     for (const row of result.rows) {
-      const scheduled: ScheduledRow = {
-        id: row.id,
+      const entry: RegisteredSchedule = {
+        instanceId: row.id,
         definitionSlug: row.definition_slug,
         name: row.name,
         scheduleCron: row.schedule_cron,
       };
-      const v = validateCron(scheduled.scheduleCron);
+      const v = validateCron(entry.scheduleCron);
       if (!v.valid) {
         this.logger.error("scheduler.invalid_cron", {
-          instance_id: scheduled.id,
-          definition_slug: scheduled.definitionSlug,
-          cron: scheduled.scheduleCron,
+          instance_id: entry.instanceId,
+          definition_slug: entry.definitionSlug,
+          cron: entry.scheduleCron,
           error: v.error ?? "unknown",
         });
         skipped += 1;
         continue;
       }
-      const entry: RegisteredSchedule = {
-        instanceId: scheduled.id,
-        definitionSlug: scheduled.definitionSlug,
-        name: scheduled.name,
-        scheduleCron: scheduled.scheduleCron,
-      };
       try {
         await this.registerOne(entry);
       } catch (err) {
@@ -246,9 +233,9 @@ export class AgentDispatcher {
         // bouncing the engine after fixing the upstream Redis
         // issue.
         this.logger.error("scheduler.register_failed", {
-          instance_id: scheduled.id,
-          definition_slug: scheduled.definitionSlug,
-          cron: scheduled.scheduleCron,
+          instance_id: entry.instanceId,
+          definition_slug: entry.definitionSlug,
+          cron: entry.scheduleCron,
           error: err instanceof Error ? err.message : String(err),
         });
         skipped += 1;
