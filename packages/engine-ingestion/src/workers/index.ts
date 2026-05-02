@@ -3,27 +3,13 @@
  *
  * Five BullMQ Workers — one per ingestion pipeline — with a
  * single boot helper (`startIngestionWorkers`) the engine wires
- * at boot when `mode: 'workers'` is set.
- *
- * Lifecycle-event emission via the optional `IngestionRunEventEmitter`
- * is wired on the BullMQ Worker's `completed` / `failed` events
- * (NOT inside the handler) so emission survives uncaught throws —
- * mirrors the SseBus.bindOutputDlq pattern for output-delivery DLQ
- * events. Error message strings are scrubbed via `scrubPat` before
- * leaving the engine boundary (THREAT-MODEL §3.6 invariant 11).
+ * at boot when `mode: 'workers'` is set. SSE run-event emission
+ * lives in `sse-bridge.ts`.
  */
 import type { ConnectionOptions, Worker } from "bullmq";
 
-import { scrubPat } from "@opencoo/shared/scrub";
-
-import {
-  startScannerWorker,
-  type ScannerWorkerDeps,
-} from "./scanner-worker.js";
-import {
-  startCompileWorker,
-  type CompileWorkerDeps,
-} from "./compile-worker.js";
+import { startScannerWorker, type ScannerWorkerDeps } from "./scanner-worker.js";
+import { startCompileWorker, type CompileWorkerDeps } from "./compile-worker.js";
 import {
   startReviewDispatchWorker,
   type ReviewDispatchWorkerDeps,
@@ -32,15 +18,9 @@ import {
   startIndexRebuildWorker,
   type IndexRebuildWorkerDeps,
 } from "./index-rebuild-worker.js";
-import {
-  startCleanupWorker,
-  type CleanupWorkerDeps,
-} from "./cleanup-worker.js";
-import type {
-  IngestionRunEvent,
-  IngestionRunEventEmitter,
-  WorkerContext,
-} from "./context.js";
+import { startCleanupWorker, type CleanupWorkerDeps } from "./cleanup-worker.js";
+import { attachRunEvents } from "./sse-bridge.js";
+import type { WorkerContext } from "./context.js";
 
 export type {
   IngestionRunEvent,
@@ -102,44 +82,26 @@ export interface IngestionWorkers {
   closeAll(timeoutMs?: number): Promise<void>;
 }
 
-function attachRunEvents(
-  worker: Worker,
-  definitionSlug: string,
-  bus: IngestionRunEventEmitter | undefined,
-): void {
-  if (bus === undefined) return;
-  worker.on("active", (job) => {
-    const event: IngestionRunEvent = {
-      runId: String(job.id ?? "unknown"),
-      definitionSlug,
-      status: "running",
-      startedAt: new Date().toISOString(),
-    };
-    bus.emitRunEvent(event);
-  });
-  worker.on("completed", (job) => {
-    const event: IngestionRunEvent = {
-      runId: String(job.id ?? "unknown"),
-      definitionSlug,
-      status: "success",
-      startedAt: new Date(job.processedOn ?? Date.now()).toISOString(),
-      endedAt: new Date(job.finishedOn ?? Date.now()).toISOString(),
-    };
-    bus.emitRunEvent(event);
-  });
-  worker.on("failed", (job, err) => {
-    const errorMessage =
-      err instanceof Error ? err.message : String(err);
-    const event: IngestionRunEvent = {
-      runId: String(job?.id ?? "unknown"),
-      definitionSlug,
-      status: "failed",
-      startedAt: new Date(job?.processedOn ?? Date.now()).toISOString(),
-      endedAt: new Date().toISOString(),
-      errorClass: scrubPat(errorMessage).slice(0, 200),
-    };
-    bus.emitRunEvent(event);
-  });
+/** Producer-side enqueue fallback. The orchestrator wires the real
+ *  `Queue` handle for `ingestion.scanner.classify` via `ctx.enqueue`;
+ *  in the test contexts that omit it (empty adapter registry → the
+ *  scanner never calls .add) a throwing stub is safer than silently
+ *  dropping jobs in production if the orchestrator forgets the wire. */
+const MISSING_ENQUEUE: ScannerWorkerDeps["enqueue"] = {
+  async add() {
+    throw new Error(
+      "scanner-worker: ctx.enqueue is undefined — orchestrator did not wire the ingestion.scanner.classify queue handle",
+    );
+  },
+};
+
+/** Spread an optional field only when defined. Avoids the
+ *  `exactOptionalPropertyTypes` clash that `{ x: undefined }` triggers. */
+function ifDefined<K extends string, V>(
+  key: K,
+  value: V | undefined,
+): Record<K, V> | Record<string, never> {
+  return value === undefined ? {} : ({ [key]: value } as Record<K, V>);
 }
 
 /**
@@ -153,89 +115,77 @@ export function startIngestionWorkers(
   args: StartIngestionWorkersArgs,
 ): IngestionWorkers {
   const { ctx, connection, autorun } = args;
+  const autorunOpt = ifDefined("autorun", autorun);
 
-  // Scanner enqueue: the orchestrator wires the producer-side
-  // Queue handle for `ingestion.scanner.classify` here. In test
-  // contexts where the adapter registry is empty (see
-  // workers.test.ts), enqueue.add is never invoked so a no-op
-  // stub is safe.
-  const scannerEnqueue: ScannerWorkerDeps["enqueue"] =
-    ctx.enqueue ?? {
-      async add() {
-        throw new Error(
-          "scanner-worker: ctx.enqueue is undefined — orchestrator did not wire the ingestion.scanner.classify queue handle",
-        );
-      },
-    };
   const scanner = startScannerWorker({
     db: ctx.db,
     logger: ctx.logger,
     adapterRegistry: ctx.adapterRegistry,
-    enqueue: scannerEnqueue,
+    enqueue: ctx.enqueue ?? MISSING_ENQUEUE,
     connection,
-    ...(autorun !== undefined ? { autorun } : {}),
+    ...autorunOpt,
   });
 
-  const compileDeps: CompileWorkerDeps = {
+  const compile = startCompileWorker({
     db: ctx.db,
     logger: ctx.logger,
     router: ctx.router,
     wikiDeps: ctx.wikiDeps,
     author: ctx.author,
     guardAdapter: ctx.guardAdapter,
-  };
-  const compile = startCompileWorker({
-    ...compileDeps,
     connection,
-    ...(args.compileConcurrency !== undefined
-      ? { concurrency: args.compileConcurrency }
-      : {}),
-    ...(autorun !== undefined ? { autorun } : {}),
+    ...ifDefined("concurrency", args.compileConcurrency),
+    ...autorunOpt,
+  } satisfies CompileWorkerDeps & {
+    connection: ConnectionOptions;
+    concurrency?: number;
+    autorun?: boolean;
   });
 
-  const reviewDispatchDeps: ReviewDispatchWorkerDeps = {
-    logger: ctx.logger,
-  };
   const reviewDispatch = startReviewDispatchWorker({
-    ...reviewDispatchDeps,
+    logger: ctx.logger,
     connection,
-    ...(autorun !== undefined ? { autorun } : {}),
+    ...autorunOpt,
+  } satisfies ReviewDispatchWorkerDeps & {
+    connection: ConnectionOptions;
+    autorun?: boolean;
   });
 
-  const indexRebuildDeps: IndexRebuildWorkerDeps = {
+  const indexRebuild = startIndexRebuildWorker({
     logger: ctx.logger,
     wikiDeps: ctx.wikiDeps,
     wikiAdapter: ctx.wikiAdapter,
     author: ctx.author,
-  };
-  const indexRebuild = startIndexRebuildWorker({
-    ...indexRebuildDeps,
     connection,
-    ...(autorun !== undefined ? { autorun } : {}),
+    ...autorunOpt,
+  } satisfies IndexRebuildWorkerDeps & {
+    connection: ConnectionOptions;
+    autorun?: boolean;
   });
 
-  const cleanupDeps: CleanupWorkerDeps = {
+  const cleanup = startCleanupWorker({
     db: ctx.db,
     logger: ctx.logger,
-  };
-  const cleanup = startCleanupWorker({
-    ...cleanupDeps,
     connection,
-    ...(autorun !== undefined ? { autorun } : {}),
+    ...autorunOpt,
+  } satisfies CleanupWorkerDeps & {
+    connection: ConnectionOptions;
+    autorun?: boolean;
   });
 
   // Wire SSE run-event emission on every worker. Listener-based
   // (not inside the handler) so emission survives uncaught throws
   // — same pattern as bindOutputDlq in sse-bus.ts.
-  attachRunEvents(scanner, "ingestion.scanner", ctx.sseBus);
-  attachRunEvents(compile, "ingestion.scanner.classify", ctx.sseBus);
-  attachRunEvents(
-    reviewDispatch,
-    "ingestion.review.dispatch",
-    ctx.sseBus,
-  );
-  attachRunEvents(indexRebuild, "ingestion.index-rebuild", ctx.sseBus);
-  attachRunEvents(cleanup, "ingestion.cleanup", ctx.sseBus);
+  const allWorkers: ReadonlyArray<readonly [Worker, string]> = [
+    [scanner, "ingestion.scanner"],
+    [compile, "ingestion.scanner.classify"],
+    [reviewDispatch, "ingestion.review.dispatch"],
+    [indexRebuild, "ingestion.index-rebuild"],
+    [cleanup, "ingestion.cleanup"],
+  ];
+  for (const [worker, slug] of allWorkers) {
+    attachRunEvents(worker, slug, ctx.sseBus);
+  }
 
   let closing: Promise<void> | undefined;
   return {
@@ -246,14 +196,8 @@ export function startIngestionWorkers(
     cleanup,
     closeAll(timeoutMs = DEFAULT_CLOSE_TIMEOUT_MS): Promise<void> {
       if (closing !== undefined) return closing;
-      const closes: Promise<void>[] = [
-        scanner.close(),
-        compile.close(),
-        reviewDispatch.close(),
-        indexRebuild.close(),
-        cleanup.close(),
-      ].map((p) =>
-        p.catch((err) => {
+      const closes = allWorkers.map(([worker]) =>
+        worker.close().catch((err) => {
           // Best-effort: log + swallow so siblings still close.
           ctx.logger.error("ingestion_workers.close_failed", {
             error: err instanceof Error ? err.message : String(err),
