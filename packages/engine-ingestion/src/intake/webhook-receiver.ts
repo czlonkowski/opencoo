@@ -287,20 +287,45 @@ export function buildWebhookReceiver(
       };
     }
 
-    // Step 7: ok-path. Enqueue the scanner job iff this delivery is
-    // either (a) brand new OR (b) the first valid-signature delivery
-    // for an event we'd previously seen with a bad signature
-    // (sticky-true upgrade, copilot #16). The dedupe-only path
-    // (`created:false && firstValidDelivery:false`) is a true
-    // duplicate — the upstream provider re-sent us the SAME event
-    // and we already dispatched a scanner job for it.
+    // Step 7: ok-path.
+    // (PR-G) If the adapter exposes parseEvents, unpack the raw body
+    // into individual SourceWebhookEvents, then optionally enrich them
+    // via enrichEvents?. Each resulting event gets its own scanner job.
+    // Backward-compat: when webhook helpers are absent, fall back to
+    // the pre-PR-G single-job enqueue path.
     if (writeResult.created || writeResult.firstValidDelivery) {
-      await options.scannerQueue.add("intake.scanner", {
-        webhookId: writeResult.webhookId,
-        bindingId,
-        provider,
-        eventId: eventId ?? null,
-      });
+      if (hasWebhookHelpers(adapterStub)) {
+        const parsedEvents = adapterStub.webhook.parseEvents({ body: rawBody });
+
+        // (PR-G) enrichEvents hook — called after parseEvents, before
+        // any scanner enqueues. Returns the (possibly augmented) event
+        // array. When undefined, behavior is identical to pre-PR-G.
+        const events =
+          adapterStub.webhook.enrichEvents !== undefined
+            ? await adapterStub.webhook.enrichEvents(parsedEvents)
+            : parsedEvents;
+
+        for (const event of events) {
+          await options.scannerQueue.add("intake.scanner", {
+            webhookId: writeResult.webhookId,
+            bindingId,
+            provider,
+            eventId: event.eventId,
+            sourceDocId: event.doc.sourceDocId,
+            sourceRevision: event.doc.sourceRevision,
+            sourceRef: event.doc.sourceRef,
+          });
+        }
+      } else {
+        // Pre-PR-G path: no parseEvents — enqueue a single binding-level
+        // scanner job. The scanner pipeline fetches all pending events.
+        await options.scannerQueue.add("intake.scanner", {
+          webhookId: writeResult.webhookId,
+          bindingId,
+          provider,
+          eventId: eventId ?? null,
+        });
+      }
     }
 
     return {

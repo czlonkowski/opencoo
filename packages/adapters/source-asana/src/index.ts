@@ -17,11 +17,21 @@ export {
   ASANA_HOOK_SECRET_HEADER,
   ASANA_SIGNATURE_HEADER,
   buildAsanaWebhookHelpers,
+  buildSnapshotEvent,
   createAsanaSourceAdapter,
   extractAsanaSignature,
   type BuildAsanaWebhookHelpersOptions,
   type CreateAsanaSourceAdapterArgs,
 } from "./adapter.js";
+
+export {
+  createAsanaClient,
+  DEFAULT_OPT_FIELDS,
+  type AsanaClient,
+  type AsanaClientArgs,
+  type AsanaTaskRow,
+  type ProjectSnapshot,
+} from "./asana-client.js";
 
 export {
   deriveEventType,

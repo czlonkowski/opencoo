@@ -11,6 +11,20 @@
  */
 import { z } from "zod";
 
+import { DEFAULT_OPT_FIELDS } from "./asana-client.js";
+
+/** Snapshot acquisition mode for Asana project state (PR-G).
+ *
+ *  - `'on-event'`  (default): after each qualifying webhook event,
+ *    the adapter immediately fetches a fresh project snapshot and
+ *    emits it as a second SourceEvent with content_kind='asana-project'.
+ *    TODO(PR-H): register 'asana-project' in CONTENT_KINDS const.
+ *  - `'periodic'`  : snapshot fetches happen on the Scanner cadence
+ *    (scan() is implemented for this mode). No per-event fetches.
+ *  - `'off'`       : no snapshot fetches. Only raw webhook events
+ *    are emitted. */
+const snapshotModeSchema = z.enum(["on-event", "periodic", "off"]).default("on-event");
+
 export const asanaBindingConfigSchema = z
   .object({
     /** Asana project gid the adapter watches. The receiver
@@ -55,12 +69,18 @@ export const asanaBindingConfigSchema = z
      *  Default false (opt-in to avoid unexpected LLM cost on
      *  high-volume projects).
      *
-     *  NOTE: currently a no-op. The helper (`summarizeAsanaEvent`
-     *  in `light-summary.ts`) is fully implemented and exported,
-     *  but the ingestion-pipeline wiring that calls it per-event
-     *  is deferred to a follow-up PR (phase-b / PR-G). Setting
-     *  this to `true` has no runtime effect until that PR lands. */
+     *  PR-G wires this in enrichEvents: when snapshotMode='on-event'
+     *  and lightSummaryEnabled=true, the summarizeAsanaEvent helper
+     *  is called per-event before the snapshot fetch. Requires
+     *  llmRouter and domainId to be supplied to the adapter factory. */
     lightSummaryEnabled: z.boolean().default(false),
+    /** Snapshot acquisition mode. See `snapshotModeSchema` above. */
+    snapshotMode: snapshotModeSchema,
+    /** Fields to fetch per task. Defaults to the PoC's six fields:
+     *  name, assignee.name, completed, due_on, modified_at,
+     *  memberships.section.name. Operators may override per binding
+     *  to add custom fields (e.g. custom_fields.{gid}.display_value). */
+    optFields: z.array(z.string()).default(() => [...DEFAULT_OPT_FIELDS]),
   })
   .strict();
 
