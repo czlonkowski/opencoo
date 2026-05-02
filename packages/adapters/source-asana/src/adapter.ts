@@ -120,15 +120,27 @@ interface RawAsanaWebhookBody {
   readonly events?: ReadonlyArray<RawAsanaEvent>;
 }
 
-export function extractAsanaSignature(
+/**
+ * Case-insensitive header lookup. Header names in `headers` may be
+ * lower-cased (Fastify normalises) or original-case (raw injection in
+ * tests); we don't want to depend on that.
+ */
+function findHeaderValue(
   headers: Readonly<Record<string, string | undefined>>,
+  headerName: string,
 ): string | undefined {
   for (const [k, v] of Object.entries(headers)) {
-    if (k.toLowerCase() === ASANA_SIGNATURE_HEADER && typeof v === "string") {
+    if (k.toLowerCase() === headerName && typeof v === "string") {
       return v;
     }
   }
   return undefined;
+}
+
+export function extractAsanaSignature(
+  headers: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  return findHeaderValue(headers, ASANA_SIGNATURE_HEADER);
 }
 
 /**
@@ -138,19 +150,12 @@ export function extractAsanaSignature(
 function detectAsanaHandshake(
   headers: Readonly<Record<string, string | undefined>>,
 ): HandshakeResult | null {
-  for (const [k, v] of Object.entries(headers)) {
-    if (
-      k.toLowerCase() === ASANA_HOOK_SECRET_HEADER &&
-      typeof v === "string" &&
-      v.length > 0
-    ) {
-      return {
-        secret: v,
-        schemaRef: "source-asana:webhook_secret",
-      };
-    }
-  }
-  return null;
+  const secret = findHeaderValue(headers, ASANA_HOOK_SECRET_HEADER);
+  if (secret === undefined || secret.length === 0) return null;
+  return {
+    secret,
+    schemaRef: "source-asana:webhook_secret",
+  };
 }
 
 /**
