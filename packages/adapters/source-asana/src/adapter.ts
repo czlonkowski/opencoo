@@ -444,26 +444,16 @@ export function buildAsanaWebhookHelpers(
     return out;
   }
 
-  // Build the SourceWebhookHelpers object.
   // enrichEvents is attached only when snapshotMode='on-event' (PR-G).
   // 'periodic' uses scan(); 'off' skips snapshots entirely.
-  // Using a mutable local then assigning is cleaner than a cast.
-  const helpers: SourceWebhookHelpers = snapshotMode === "on-event"
-    ? {
-        verifier,
-        extractSignature: extractAsanaSignature,
-        handshakeFn: detectAsanaHandshake,
-        parseEvents: parseEventsFn,
-        enrichEvents: enrichEventsImpl,
-      }
-    : {
-        verifier,
-        extractSignature: extractAsanaSignature,
-        handshakeFn: detectAsanaHandshake,
-        parseEvents: parseEventsFn,
-      };
-
-  return helpers;
+  // exactOptionalPropertyTypes: omit the key when it shouldn't be set.
+  return {
+    verifier,
+    extractSignature: extractAsanaSignature,
+    handshakeFn: detectAsanaHandshake,
+    parseEvents: parseEventsFn,
+    ...(snapshotMode === "on-event" ? { enrichEvents: enrichEventsImpl } : {}),
+  };
 }
 
 export function createAsanaSourceAdapter(

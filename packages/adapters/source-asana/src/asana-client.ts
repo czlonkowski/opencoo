@@ -160,6 +160,11 @@ export function createAsanaClient(args: AsanaClientArgs): AsanaClient {
   /**
    * Fetch one URL (a page of tasks). Handles 429 and 5xx retries.
    * All error messages are scrubbed before re-throwing.
+   *
+   * Retry policy:
+   *   - 429: up to MAX_429_ATTEMPTS, honouring Retry-After header.
+   *   - 5xx + network error: up to MAX_5XX_ATTEMPTS, exponential backoff.
+   *   - 4xx (non-429): fail immediately, no retry.
    */
   async function fetchPage(url: string, pat: string): Promise<AsanaPageResponse> {
     let rateAttempt = 0;
@@ -176,11 +181,9 @@ export function createAsanaClient(args: AsanaClientArgs): AsanaClient {
           },
         });
       } catch (err) {
-        // Network error — wrap and scrub, then retry on 5xx budget
+        // Network error: count against the 5xx (server) budget.
         serverAttempt++;
-        if (serverAttempt >= MAX_5XX_ATTEMPTS) {
-          throw scrubError(err);
-        }
+        if (serverAttempt >= MAX_5XX_ATTEMPTS) throw scrubError(err);
         await sleep(computeBackoffMs(retryDelayMs, serverAttempt));
         continue;
       }
@@ -233,10 +236,11 @@ export function createAsanaClient(args: AsanaClientArgs): AsanaClient {
         json = await response.json();
       } catch (err) {
         throw scrubError(
-          new Error(`asana-client: failed to parse JSON response: ${err instanceof Error ? err.message : String(err)}`),
+          new Error(
+            `asana-client: failed to parse JSON response: ${err instanceof Error ? err.message : String(err)}`,
+          ),
         );
       }
-
       return parseAsanaTasksResponse(json);
     }
   }
