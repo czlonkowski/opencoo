@@ -178,6 +178,18 @@ export async function runServe(args: ServeArgs): Promise<void> {
 
   args.stdout.write(pc.green("opencoo: started\n"));
 
+  /** Close one engine, logging (but swallowing) any close error so
+   *  the sibling engine still gets to drain. */
+  const closeWithLog = (
+    label: string,
+    engine: ServeStartedEngine,
+  ): Promise<void> =>
+    engine.close().catch((err: unknown) => {
+      args.stderr.write(
+        pc.red(`opencoo: ${label} shutdown error (${describeError(err)})\n`),
+      );
+    });
+
   return new Promise<void>((resolve) => {
     // Memoise the OUTER dispatch — engine.close() is itself
     // idempotent (engine-scaffold start.ts:186-199), but two
@@ -194,23 +206,9 @@ export async function runServe(args: ServeArgs): Promise<void> {
       // Close both engines in parallel — each engine's close()
       // is internally idempotent; closeAll on the workers handle
       // (when present) drains BullMQ within a 30s window.
-      const closes: Promise<unknown>[] = [
-        selfOpEngine.close().catch((err: unknown) => {
-          args.stderr.write(
-            pc.red(`opencoo: self-op shutdown error (${describeError(err)})\n`),
-          );
-        }),
-      ];
+      const closes: Promise<void>[] = [closeWithLog("self-op", selfOpEngine)];
       if (ingestionEngine !== undefined) {
-        closes.push(
-          ingestionEngine.close().catch((err: unknown) => {
-            args.stderr.write(
-              pc.red(
-                `opencoo: ingestion shutdown error (${describeError(err)})\n`,
-              ),
-            );
-          }),
-        );
+        closes.push(closeWithLog("ingestion", ingestionEngine));
       }
       closing = Promise.all(closes)
         .then(() => undefined)
