@@ -63,6 +63,7 @@ import type {
 import type { CredentialId } from "@opencoo/shared/db";
 import type { LlmRouter } from "@opencoo/shared/llm-router";
 import type { Logger } from "@opencoo/shared/logger";
+import { scrubPat } from "@opencoo/shared/scrub";
 import type { GuardAdapter } from "@opencoo/shared/adapter-contract-tests/guard";
 import type { SourceAdapter } from "@opencoo/shared/source-adapter";
 import {
@@ -81,6 +82,21 @@ import {
 import type { IngestionRunEventEmitter, WorkerContext } from "./context.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
+
+/** Scrub credential patterns + cap free-text error messages before
+ *  they reach the operator log. Round-2 fix #2: applied uniformly
+ *  to every error log site that surfaces a thrown `Error.message`
+ *  from a credential-vault read or an adapter factory call.
+ *  THREAT-MODEL §3.6 invariant 11 / §2 invariant 11. Defense in
+ *  depth — these errors realistically wouldn't carry creds (UUIDs
+ *  + decryption-failure strings), but the documented invariant
+ *  says scrub them and the rest of the codebase follows the same
+ *  pattern (see engine-ingestion/src/workers/sse-bridge.ts). */
+const ERROR_MESSAGE_MAX_LENGTH = 200;
+function safeError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return scrubPat(raw).slice(0, ERROR_MESSAGE_MAX_LENGTH);
+}
 
 /** Per-adapter factory — same shape as the shared
  *  `AdapterRegistry`'s `SourceAdapterFactory`, narrowed here to
@@ -208,7 +224,8 @@ export async function composeProductionWorkerContext(
         .catch((err: unknown) => {
           args.logger.error("adapter_registry.lookup_failed", {
             adapter_slug: slug,
-            error: err instanceof Error ? err.message : String(err),
+            // Round-2 fix #2: scrub + cap. THREAT-MODEL §3.6.
+            error: safeError(err),
           });
         });
       return undefined;
@@ -237,7 +254,8 @@ export async function composeProductionWorkerContext(
     if (closing !== undefined) return closing;
     closing = enqueueQueue.close().catch((err: unknown) => {
       args.logger.warn("production_context.queue_close_failed", {
-        error: err instanceof Error ? err.message : String(err),
+        // Round-2 fix #2: scrub + cap. THREAT-MODEL §3.6.
+        error: safeError(err),
       });
     });
     return closing;
@@ -304,7 +322,8 @@ async function resolveBindingAdapter(
     args.logger.error("adapter_registry.credential_unreadable", {
       adapter_slug: slug,
       binding_id: row.id,
-      error: err instanceof Error ? err.message : String(err),
+      // Round-2 fix #2: scrub + cap. THREAT-MODEL §3.6 invariant 11.
+      error: safeError(err),
     });
     return null;
   }
@@ -318,7 +337,8 @@ async function resolveBindingAdapter(
     args.logger.error("adapter_registry.factory_threw", {
       adapter_slug: slug,
       binding_id: row.id,
-      error: err instanceof Error ? err.message : String(err),
+      // Round-2 fix #2: scrub + cap. THREAT-MODEL §3.6 invariant 11.
+      error: safeError(err),
     });
     return null;
   }

@@ -311,7 +311,10 @@ async function tryLoadAdapter(
   } catch (err) {
     logger.warn("source_adapter_factory.skipped", {
       adapter_slug: slug,
-      error: err instanceof Error ? err.message : String(err),
+      // Round-2 fix #2: scrub + cap. THREAT-MODEL §3.6 invariant 11.
+      // Adapter import errors realistically wouldn't carry creds,
+      // but uniform scrub matches the rest of the composition root.
+      error: scrubPat(err instanceof Error ? err.message : String(err)).slice(0, 200),
     });
   }
 }
