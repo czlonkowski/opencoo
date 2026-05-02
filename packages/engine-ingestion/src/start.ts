@@ -16,6 +16,7 @@
  */
 import pg from "pg";
 import { Redis } from "ioredis";
+import type { ConnectionOptions } from "bullmq";
 
 import {
   PipelineRegistry,
@@ -28,9 +29,36 @@ import {
 
 import { loadEngineConfig, type EngineConfig } from "./config.js";
 import type { PipelineDefinition } from "./types.js";
+import {
+  startIngestionWorkers,
+  type IngestionWorkers,
+  type WorkerContext,
+} from "./workers/index.js";
 
 export type IngestionRegistry = PipelineRegistry<PipelineDefinition>;
-export type StartedEngine = BaseStartedEngine<EngineConfig, IngestionRegistry>;
+
+/** v0.1 mode flag (PR-M1, phase-a appendix #5).
+ *
+ *  - `'probes-only'` (default): the engine starts the Fastify
+ *     listener with health/ready probes. No BullMQ Workers are
+ *     constructed — useful for the plan #82 boot path before
+ *     workers existed, plus every pre-PR-M1 test.
+ *  - `'workers'`: in addition to probes, all five BullMQ Workers
+ *     are booted and bound to the queues the webhook receiver +
+ *     scanner enqueue onto. The orchestrator (CLI `serve.ts`)
+ *     uses this mode in production.
+ */
+export type IngestionStartMode = "probes-only" | "workers";
+
+export type StartedEngine = BaseStartedEngine<
+  EngineConfig,
+  IngestionRegistry
+> & {
+  /** Present iff `mode === 'workers'`. The orchestrator may
+   *  invoke `workers.closeAll()` ahead of `engine.close()` for
+   *  finer-grained shutdown ordering. */
+  readonly workers?: IngestionWorkers;
+};
 
 // Re-exports so callers can construct the typed registry + pass
 // it to `start()` from one import.
@@ -70,6 +98,22 @@ export interface StartOptions
    * added in a future PR) doesn't fail to type-check.
    */
   readonly skipMigrate?: boolean;
+  /** Boot mode (PR-M1, phase-a appendix #5). Defaults to
+   *  `'probes-only'`. When set to `'workers'`, the engine boots
+   *  all five BullMQ Workers AFTER the Fastify listener is up,
+   *  using the supplied `workerContext` (which the orchestrator
+   *  populates with the shared db/Redis/SseBus). */
+  readonly mode?: IngestionStartMode;
+  /** Required when `mode === 'workers'`. The orchestrator
+   *  constructs this once at boot and threads it down. Holds
+   *  the production WikiAdapter, GuardAdapter, LlmRouter, etc.
+   *  Optional in `probes-only` mode. */
+  readonly workerContext?: WorkerContext;
+  /** Required when `mode === 'workers'`. The shared BullMQ
+   *  connection — same Redis instance the queues use. Typically
+   *  `{ url: config.redisUrl, maxRetriesPerRequest: null,
+   *  enableReadyCheck: false }`. */
+  readonly workerConnection?: ConnectionOptions;
 }
 
 function defaultDbFactory(config: EngineConfig): StartDb {
@@ -89,6 +133,26 @@ export async function start(
 ): Promise<StartedEngine> {
   const config =
     options.config ?? loadEngineConfig(options.env ?? process.env);
+
+  const mode: IngestionStartMode = options.mode ?? "probes-only";
+
+  // Validate workers-mode prerequisites BEFORE constructing the
+  // engine. A missing workerContext at this point is a
+  // composition-root bug — fail loud at boot, don't lazy-discover
+  // it on the first dequeue.
+  if (mode === "workers") {
+    if (options.workerContext === undefined) {
+      throw new Error(
+        "engine-ingestion start: mode='workers' requires options.workerContext (orchestrator must construct the WorkerContext and pass it in)",
+      );
+    }
+    if (options.workerConnection === undefined) {
+      throw new Error(
+        "engine-ingestion start: mode='workers' requires options.workerConnection (shared BullMQ connection)",
+      );
+    }
+  }
+
   const baseOptions: BaseStartOptions<EngineConfig, IngestionRegistry> = {
     config,
     dbFactory: options.dbFactory ?? defaultDbFactory,
@@ -101,5 +165,32 @@ export async function start(
       ? { probeExtender: options.probeExtender }
       : {}),
   };
-  return startEngine<EngineConfig, IngestionRegistry>(baseOptions);
+  const baseEngine = await startEngine<EngineConfig, IngestionRegistry>(
+    baseOptions,
+  );
+
+  if (mode === "probes-only") {
+    return baseEngine;
+  }
+
+  // mode === 'workers' — boot all five Workers and bind them to
+  // the shared Redis connection. Validated above.
+  const workers = startIngestionWorkers({
+    ctx: options.workerContext as WorkerContext,
+    connection: options.workerConnection as ConnectionOptions,
+  });
+
+  // Wrap close() so SIGTERM drains workers BEFORE the HTTP
+  // listener / pg pool / Redis go away. closeAll() is idempotent
+  // internally; baseEngine.close() also memoises so double-close
+  // here is safe.
+  const baseClose = baseEngine.close.bind(baseEngine);
+  return {
+    ...baseEngine,
+    workers,
+    async close(): Promise<void> {
+      await workers.closeAll();
+      await baseClose();
+    },
+  };
 }

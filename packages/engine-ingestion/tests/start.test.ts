@@ -174,3 +174,40 @@ describe("start() — close() idempotency (copilot #15 Fix 7)", () => {
     expect(redis.disconnect).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("start() — mode flag (PR-M1, phase-a appendix #5)", () => {
+  it("defaults to 'probes-only' — no workers booted", async () => {
+    const pool = makeStubPool();
+    const redis = makeStubRedis();
+    const server = makeOkServer();
+
+    const engine = await start({
+      env: validEnv,
+      dbFactory: () => pool,
+      redisFactory: () => redis,
+      serverFactory: (probes: ProbeMap) => { void probes; return server; },
+    });
+
+    // Default mode: no `workers` handle on the engine return value.
+    expect(engine.workers).toBeUndefined();
+    await engine.close();
+  });
+
+  it("mode='workers' booted but throws without workerContext", async () => {
+    const pool = makeStubPool();
+    const redis = makeStubRedis();
+    const server = makeOkServer();
+
+    // mode: 'workers' requires a workerContext to be supplied by
+    // the orchestrator. Calling start() without one throws.
+    await expect(
+      start({
+        env: validEnv,
+        mode: "workers",
+        dbFactory: () => pool,
+        redisFactory: () => redis,
+        serverFactory: (probes: ProbeMap) => { void probes; return server; },
+      }),
+    ).rejects.toThrow(/workerContext/);
+  });
+});

@@ -256,6 +256,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@opencoo/engine-ingestion':
+        specifier: workspace:*
+        version: link:../engine-ingestion
       '@opencoo/engine-self-operating':
         specifier: workspace:*
         version: link:../engine-self-operating

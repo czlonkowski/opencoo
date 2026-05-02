@@ -31,9 +31,42 @@ export {
 export type { ProbeResult } from "./probes/types.js";
 export {
   start,
+  type IngestionStartMode,
   type StartedEngine,
   type StartOptions,
 } from "./start.js";
+
+// Workers public surface (PR-M1, phase-a appendix #5). The
+// orchestrator (CLI `serve.ts`) constructs a WorkerContext and
+// passes it into `start({ mode: 'workers', workerContext, ... })`
+// to boot the per-pipeline BullMQ Workers. Tests can also import
+// `startIngestionWorkers` directly for use-case coverage.
+export {
+  DEFAULT_CLOSE_TIMEOUT_MS,
+  MISSING_ENQUEUE,
+  MISSING_ENQUEUE_MESSAGE,
+  buildCleanupHandler,
+  buildCompilationHandler,
+  buildIndexRebuildHandler,
+  buildReviewDispatchHandler,
+  buildScannerHandler,
+  startIngestionWorkers,
+  startCleanupWorker,
+  startCompileWorker,
+  startIndexRebuildWorker,
+  startReviewDispatchWorker,
+  startScannerWorker,
+  type CleanupWorkerDeps,
+  type CompileWorkerDeps,
+  type IndexRebuildWorkerDeps,
+  type IngestionRunEvent,
+  type IngestionRunEventEmitter,
+  type IngestionWorkers,
+  type ReviewDispatchWorkerDeps,
+  type ScannerWorkerDeps,
+  type StartIngestionWorkersArgs,
+  type WorkerContext,
+} from "./workers/index.js";
 export type {
   PipelineDefinition,
   PipelineContext,
