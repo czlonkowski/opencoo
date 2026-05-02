@@ -138,6 +138,7 @@ function buildLlmPrompt(
   snapshot: AsanaProjectSnapshot,
   existingPageContent: string | null,
   sourceRef: string,
+  pagePath: string,
 ): string {
   const fetchedAt = new Date(snapshot.fetched_at);
   const snapshotJson = JSON.stringify(snapshot, null, 2);
@@ -155,9 +156,12 @@ function buildLlmPrompt(
   ];
 
   if (existingPageContent !== null && existingPageContent.trim().length > 0) {
-    lines.push("<existing_page>");
-    lines.push(existingPageContent);
-    lines.push("</existing_page>");
+    const spotlitExisting = spotlight({
+      content: existingPageContent,
+      source: `wiki:${pagePath}`,
+      fetchedAt: fetchedAt,
+    });
+    lines.push(spotlitExisting);
     lines.push("");
   }
 
@@ -259,15 +263,31 @@ export function parseAsanaProjectSections(body: string): AsanaProjectSections {
  * Pull the `## Notes` section out of an existing page (operator-controlled
  * territory — preserved verbatim). Accepts null for the new-page path so
  * callers don't have to wrap this in an `if (existing !== null)`.
+ *
+ * Uses an anchored regex `/^## Notes\s*$/m` to locate the heading — this
+ * prevents false matches against `## Notes2`, `## Notesy`, etc. The section
+ * end is found by splitting on `/^## /m` and locating the "Notes" entry by
+ * exact heading name, so any subsequent `## ` heading (including `## Notes2`)
+ * correctly terminates the section.
  */
 function extractNotesSection(existingPageContent: string | null): string | null {
   if (existingPageContent === null) return null;
-  const notesIdx = existingPageContent.indexOf("## Notes");
-  if (notesIdx === -1) return null;
-  // The Notes section runs to the next ## heading or end of file.
-  const afterNotes = notesIdx + "## Notes".length;
-  const nextHeading = existingPageContent.indexOf("\n## ", afterNotes);
-  const end = nextHeading === -1 ? existingPageContent.length : nextHeading;
+
+  // Locate the Notes heading with an exact, anchored match.
+  const notesHeadingMatch = /^## Notes\s*$/m.exec(existingPageContent);
+  if (notesHeadingMatch === null) return null;
+
+  const notesIdx = notesHeadingMatch.index;
+  const afterNotes = notesIdx + notesHeadingMatch[0].length;
+
+  // The Notes section runs to the next `## ` heading or end of file.
+  // Use an anchored regex so `## ` must start at a line boundary.
+  const nextHeadingMatch = /^## /m.exec(existingPageContent.slice(afterNotes));
+  const end =
+    nextHeadingMatch === null
+      ? existingPageContent.length
+      : afterNotes + nextHeadingMatch.index;
+
   return "## Notes\n" + existingPageContent.slice(afterNotes, end);
 }
 
@@ -373,7 +393,7 @@ export async function compileAsanaProject(
   const existingContent = existing?.content ?? null;
 
   // Build the LLM prompt with XML-spotlighted snapshot data (THREAT-MODEL §3.4).
-  const prompt = buildLlmPrompt(args.snapshot, existingContent, args.sourceRef);
+  const prompt = buildLlmPrompt(args.snapshot, existingContent, args.sourceRef, pagePath);
 
   // LLM call — Worker tier, per-domain policy enforced by the router.
   const llmResult = await args.router.generateText({
