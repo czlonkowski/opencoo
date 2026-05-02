@@ -207,7 +207,11 @@ function buildFrontmatter(args: {
 /**
  * Parse the four rewritable sections from a compiled asana-project page body.
  * Section boundaries are detected by `## <SectionName>` headings.
- * Returns empty strings for missing sections (graceful degradation).
+ *
+ * **Best-effort, no-throw by design.** Missing sections return empty strings
+ * rather than raising. Round-trip cleanness is asserted by the test suite,
+ * but downstream callers (e.g. lint, surfacer) tolerate partial pages —
+ * throwing here would break those agents on any malformed page in the wild.
  */
 export function parseAsanaProjectSections(body: string): AsanaProjectSections {
   const SECTIONS = [
@@ -217,47 +221,50 @@ export function parseAsanaProjectSections(body: string): AsanaProjectSections {
     { key: "risks", heading: "## Risks" },
   ] as const;
 
-  let currentState = "";
-  let openTasks = "";
-  let recentActivity = "";
-  let risks = "";
+  const result: Record<(typeof SECTIONS)[number]["key"], string> = {
+    currentState: "",
+    openTasks: "",
+    recentActivity: "",
+    risks: "",
+  };
 
   for (const section of SECTIONS) {
     const start = body.indexOf(section.heading);
     if (start === -1) continue;
     const contentStart = start + section.heading.length;
-    // Find the start of the next known section heading (or end of string)
+
+    // Section ends at the next known heading (## Current state / ## Open
+    // tasks / ## Recent activity / ## Risks / ## Notes), or end of body.
     let end = body.length;
-    for (const other of SECTIONS) {
-      if (other.key === section.key) continue;
-      const nextStart = body.indexOf(other.heading, contentStart);
-      if (nextStart !== -1 && nextStart < end) {
-        end = nextStart;
-      }
+    const nextHeadings = [
+      ...SECTIONS.filter((s) => s.key !== section.key).map((s) => s.heading),
+      "## Notes",
+    ];
+    for (const heading of nextHeadings) {
+      const nextStart = body.indexOf(heading, contentStart);
+      if (nextStart !== -1 && nextStart < end) end = nextStart;
     }
-    // Also stop at ## Notes if present
-    const notesStart = body.indexOf("## Notes", contentStart);
-    if (notesStart !== -1 && notesStart < end) {
-      end = notesStart;
-    }
-    const content = body.slice(contentStart, end).trim();
-    if (section.key === "currentState") currentState = content;
-    else if (section.key === "openTasks") openTasks = content;
-    else if (section.key === "recentActivity") recentActivity = content;
-    else if (section.key === "risks") risks = content;
+
+    result[section.key] = body.slice(contentStart, end).trim();
   }
 
-  return { currentState, openTasks, recentActivity, risks };
+  return result;
 }
 
 // ---------------------------------------------------------------------------
 // Extract the ## Notes section from an existing page
 // ---------------------------------------------------------------------------
 
-function extractNotesSection(existingPageContent: string): string | null {
+/**
+ * Pull the `## Notes` section out of an existing page (operator-controlled
+ * territory — preserved verbatim). Accepts null for the new-page path so
+ * callers don't have to wrap this in an `if (existing !== null)`.
+ */
+function extractNotesSection(existingPageContent: string | null): string | null {
+  if (existingPageContent === null) return null;
   const notesIdx = existingPageContent.indexOf("## Notes");
   if (notesIdx === -1) return null;
-  // The Notes section runs to the next ## heading or end of file
+  // The Notes section runs to the next ## heading or end of file.
   const afterNotes = notesIdx + "## Notes".length;
   const nextHeading = existingPageContent.indexOf("\n## ", afterNotes);
   const end = nextHeading === -1 ? existingPageContent.length : nextHeading;
@@ -302,14 +309,11 @@ export function buildAsanaProjectBody(args: BuildAsanaProjectBodyArgs): string {
       : {}),
   });
 
-  // Append ## Notes if present in the existing page
-  let notesSection = "";
-  if (args.existingPageContent !== null) {
-    const extracted = extractNotesSection(args.existingPageContent);
-    if (extracted !== null) {
-      notesSection = "\n" + extracted.trimEnd() + "\n";
-    }
-  }
+  // Preserve the operator-controlled ## Notes section from the existing page
+  // (returns null for new pages or pages without a Notes section).
+  const extractedNotes = extractNotesSection(args.existingPageContent);
+  const notesSection =
+    extractedNotes !== null ? "\n" + extractedNotes.trimEnd() + "\n" : "";
 
   // Assemble: frontmatter + "\n" + mergedBody + notesSection
   const body = frontmatter + "\n" + args.mergedBody.trimEnd() + "\n" + notesSection;
