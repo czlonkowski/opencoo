@@ -18,6 +18,9 @@
  *     two-pass classify→compile path with LLM merge.
  *   - `'n8n-workflow'` — n8n workflow JSON (PR 26). Routed to the
  *     deterministic `compileCatalogWorkflow` template; no LLM.
+ *   - `'asana-project'` — Asana project snapshot JSON (PR-H /
+ *     phase-a appendix #4). Routed to `compileAsanaProject`
+ *     template; Worker-tier LLM merge.
  *   - `'skill-bundle'` — Builder-skill `.skill` directories
  *     (PR 33+). Reserved for phase-b; the v0.1 compiler does
  *     not implement this branch.
@@ -32,6 +35,7 @@
 export const CONTENT_KINDS = [
   "document",
   "n8n-workflow",
+  "asana-project",
   "skill-bundle",
   "webhook-event",
 ] as const;
