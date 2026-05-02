@@ -35,7 +35,7 @@ describe("admin-api adapters route (phase-a appendix #2)", () => {
     }
   });
 
-  it("returns the four wired SourceAdapter descriptors", async () => {
+  it("returns the five wired SourceAdapter descriptors", async () => {
     const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
     cleanup = f.close;
     await setupAdmin(f);
@@ -53,7 +53,7 @@ describe("admin-api adapters route (phase-a appendix #2)", () => {
       }>;
     };
     const slugs = body.adapters.map((a) => a.slug).sort();
-    expect(slugs).toEqual(["asana", "drive", "fireflies", "n8n"]);
+    expect(slugs).toEqual(["asana", "drive", "fireflies", "n8n", "webhook"]);
   });
 
   it("descriptors carry the `mode` discriminator + JSON-Schema credential shape", async () => {

@@ -29,6 +29,7 @@
     "@opencoo/source-drive": "workspace:*",
     "@opencoo/source-fireflies": "workspace:*",
     "@opencoo/source-n8n": "workspace:*",
+    "@opencoo/source-webhook": "workspace:*",
     "commander": "12.1.0",
     "drizzle-orm": "0.45.2",
     "pg": "8.20.0",
