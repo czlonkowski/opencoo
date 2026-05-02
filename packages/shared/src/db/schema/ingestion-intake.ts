@@ -15,6 +15,11 @@ export const ingestionIntake = pgTable(
     status: intakeStatus("status").notNull().default("pending"),
     lastClassifierRunId: text("last_classifier_run_id"),
     errorClass: errorClass("error_class"),
+    /** Human-readable error message (free-form text). Complements
+     *  `error_class` (enum) with the actual diagnostic detail.
+     *  The GET /api/admin/source-bindings handler surfaces this as
+     *  `lastError` in preference to `error_class` where available. */
+    errorText: text("error_text"),
     createdAt: createdAt(),
   },
   (t) => [

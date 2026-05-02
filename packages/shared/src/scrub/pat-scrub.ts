@@ -35,6 +35,10 @@ const GITEA_PAT_RE = /\b[0-9a-fA-F]{40}\b/g;
 // 4. Generic high-entropy alphanumeric: ≥32 consecutive [a-zA-Z0-9].
 //    This catches JWTs (before the first dot), API keys, and any
 //    other long-form token that doesn't fit the above patterns.
+//    WARNING: the generic rule biases toward false-positive redaction;
+//    do not call scrubPat() on diagnostic identifiers like content
+//    hashes or git refs — they will be redacted even though they are
+//    not secrets.
 const GENERIC_TOKEN_RE = /[a-zA-Z0-9]{32,}/g;
 
 const REDACTED = "[REDACTED]";

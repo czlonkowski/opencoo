@@ -1,0 +1,1 @@
+ALTER TABLE "ingestion_intake" ADD COLUMN "error_text" text;

@@ -90,12 +90,21 @@ async function seedWebhookEvent(
   );
 }
 
-/** Seed an ingestion_intake row with an optional error_class. */
+/** Seed an ingestion_intake row with an optional error_class and/or error_text.
+ *
+ *  Note on production vs. test behaviour: in production `error_class` is a
+ *  Postgres enum (`'transient' | 'upstream-quota' | 'validation'`), so the
+ *  GET handler's `lastError` would be one of those three short literals unless
+ *  `error_text` is set. Tests that seed arbitrary long strings into error_class
+ *  (e.g. the PAT-scrub and truncation tests below) exercise the scrub/truncation
+ *  helper on synthetic data — they are testing the helper's correctness, not a
+ *  production code path. Production `lastError` should come from `error_text`. */
 async function seedIntakeRow(
   raw: Awaited<ReturnType<typeof makeAdminFixture>>["raw"],
   bindingId: string,
   opts: {
     readonly errorClass?: string | null;
+    readonly errorText?: string | null;
     readonly ageHours?: number;
   } = {},
 ): Promise<void> {
@@ -103,9 +112,9 @@ async function seedIntakeRow(
   const docId = `doc-${Date.now()}-${Math.random()}`;
   await raw.query(
     `INSERT INTO ingestion_intake
-       (binding_id, source_doc_id, source_revision, content_hash, status, error_class, created_at)
-     VALUES ($1::uuid, $2, 'rev1', 'ch1', 'failed', $3, NOW() - ($4 || ' hours')::interval)`,
-    [bindingId, docId, opts.errorClass ?? null, String(ageHours)],
+       (binding_id, source_doc_id, source_revision, content_hash, status, error_class, error_text, created_at)
+     VALUES ($1::uuid, $2, 'rev1', 'ch1', 'failed', $3, $4, NOW() - ($5 || ' hours')::interval)`,
+    [bindingId, docId, opts.errorClass ?? null, opts.errorText ?? null, String(ageHours)],
   );
 }
 

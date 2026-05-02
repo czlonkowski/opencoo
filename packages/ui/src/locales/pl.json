@@ -67,7 +67,6 @@
     "subtitle": "Bindings that ingest into a domain.",
     "empty": "No bindings yet.",
     "columns": {
-      "binding": "binding",
       "name": "nazwa",
       "type": "typ",
       "domain": "domena",
@@ -77,8 +76,6 @@
       "lastError": "ostatni błąd"
     },
     "status": {
-      "ok": "OK",
-      "paused": "wstrzymano",
       "healthy": "zdrowe",
       "advisory": "ostrzeżenie",
       "alert": "alert"

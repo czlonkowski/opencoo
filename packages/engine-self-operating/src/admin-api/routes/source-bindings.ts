@@ -65,13 +65,17 @@ interface BindingRow {
   readonly enabled: boolean;
   readonly lastScannedAt: string | null;
   readonly notes: string | null;
-  /** Human-readable name: `notes` if set, else `${adapterSlug} → ${domainSlug}`. */
+  /** Human-readable name: `notes` if set, else `${adapterSlug} → ${domainSlug}`.
+   *  `notes` is the current display-label convention; v0.2 should add a dedicated
+   *  `display_name` column. Operators should treat `notes` as the binding's display
+   *  label until then. */
   readonly name: string;
   readonly status: BindingStatus;
   /** ISO timestamp of the most-recent webhook_events.received_at. */
   readonly lastEventAt: string | null;
-  /** Scrubbed + 200-char-truncated error from ingestion_intake.error_class.
-   *  THREAT-MODEL §3.6 invariant 11: no credential bytes. */
+  /** Scrubbed + 200-char-truncated error message from ingestion_intake.
+   *  Prefers `error_text` (free-form message) over `error_class` (enum literal).
+   *  THREAT-MODEL §3.6 invariant 11: no credential bytes in the response. */
   readonly lastError: string | null;
 }
 
@@ -138,10 +142,10 @@ export function registerSourceBindingsRoutes(
                  AND w.received_at >= NOW() - INTERVAL '24 hours'
              ) AS sig_fail_count_24h,
              (
-               SELECT ii.error_class
+               SELECT COALESCE(ii.error_text, ii.error_class::text)
                FROM ingestion_intake ii
                WHERE ii.binding_id = b.id
-                 AND ii.error_class IS NOT NULL
+                 AND (ii.error_class IS NOT NULL OR ii.error_text IS NOT NULL)
                  AND ii.created_at >= NOW() - INTERVAL '24 hours'
                ORDER BY ii.created_at DESC
                LIMIT 1

@@ -186,6 +186,7 @@ const TABLES_DDL = `
     status text NOT NULL DEFAULT 'pending',
     last_classifier_run_id text,
     error_class text,
+    error_text text,
     created_at timestamp with time zone NOT NULL DEFAULT now()
   );
 `;
