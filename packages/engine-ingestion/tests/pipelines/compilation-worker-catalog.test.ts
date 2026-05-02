@@ -412,3 +412,91 @@ describe("runCompilationWorker — n8n-workflow contentKind dispatch (PR 26)", (
     expect(rows.rows[0]?.prompt_version).toBe("catalog-workflow:1.0");
   });
 });
+
+// ---------------------------------------------------------------------------
+// asana-project ISO 8601 date validation (fix #3)
+// ---------------------------------------------------------------------------
+
+describe("runCompilationWorker — asana-project ISO 8601 date validation (fix #3)", () => {
+  it("rejects asana-project payload with a non-ISO fetched_at string", async () => {
+    const mock = new MockLlmClient(); // no LLM calls expected — parse should fail
+    const f = await makeFixture(mock);
+    await f.raw.query(
+      `UPDATE sources_bindings SET adapter_slug = 'asana', config = $1::jsonb WHERE id = $2`,
+      [JSON.stringify({ contentKind: "asana-project" }), f.bindingId],
+    );
+
+    const invalidSnapshot = {
+      project_gid: "proj-999",
+      snapshot: [],
+      incomplete_count: 0,
+      overdue_count: 0,
+      fetched_at: "not-a-date", // invalid ISO 8601
+    };
+
+    const guard = passThroughGuard();
+    await expect(
+      runCompilationWorker({
+        db: f.db as unknown as Parameters<typeof runCompilationWorker>[0]["db"],
+        logger: silentLogger(),
+        router: f.router,
+        wikiDeps: f.wikiDeps,
+        author: COMPILER_AUTHOR,
+        guardAdapter: guard,
+        job: {
+          bindingId: f.bindingId,
+          intakeId: f.intakeId,
+          domainSlug: "test-domain",
+          sourceRef: "asana:project:proj-999",
+          contentBase64: Buffer.from(JSON.stringify(invalidSnapshot)).toString("base64"),
+          fetchedAt: "2026-05-02T10:00:00.000Z",
+        },
+      }),
+    ).rejects.toThrow(/failed shape validation/);
+  });
+
+  it("rejects asana-project payload with a non-ISO modified_at on a task", async () => {
+    const mock = new MockLlmClient();
+    const f = await makeFixture(mock);
+    await f.raw.query(
+      `UPDATE sources_bindings SET adapter_slug = 'asana', config = $1::jsonb WHERE id = $2`,
+      [JSON.stringify({ contentKind: "asana-project" }), f.bindingId],
+    );
+
+    const invalidSnapshot = {
+      project_gid: "proj-999",
+      snapshot: [
+        {
+          gid: "task-1",
+          name: "A task",
+          completed: false,
+          modified_at: "2026-01-32", // invalid date (day 32 is not a valid ISO datetime)
+          due_on: null,
+        },
+      ],
+      incomplete_count: 1,
+      overdue_count: 0,
+      fetched_at: "2026-05-02T10:00:00.000Z",
+    };
+
+    const guard = passThroughGuard();
+    await expect(
+      runCompilationWorker({
+        db: f.db as unknown as Parameters<typeof runCompilationWorker>[0]["db"],
+        logger: silentLogger(),
+        router: f.router,
+        wikiDeps: f.wikiDeps,
+        author: COMPILER_AUTHOR,
+        guardAdapter: guard,
+        job: {
+          bindingId: f.bindingId,
+          intakeId: f.intakeId,
+          domainSlug: "test-domain",
+          sourceRef: "asana:project:proj-999",
+          contentBase64: Buffer.from(JSON.stringify(invalidSnapshot)).toString("base64"),
+          fetchedAt: "2026-05-02T10:00:00.000Z",
+        },
+      }),
+    ).rejects.toThrow(/failed shape validation/);
+  });
+});

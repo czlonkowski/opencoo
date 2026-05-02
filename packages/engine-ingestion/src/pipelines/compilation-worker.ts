@@ -265,7 +265,7 @@ const asanaProjectSchema = z
           gid: z.string(),
           name: z.string(),
           completed: z.boolean(),
-          modified_at: z.string(),
+          modified_at: z.string().datetime(),
           due_on: z.string().nullable().optional(),
           assignee: z
             .object({ name: z.string() })
@@ -287,7 +287,7 @@ const asanaProjectSchema = z
     ),
     incomplete_count: z.number().int().nonnegative(),
     overdue_count: z.number().int().nonnegative(),
-    fetched_at: z.string(),
+    fetched_at: z.string().datetime(),
     // Optional project name field — emitted by AsanaClient when the
     // /projects/{gid} endpoint is available.
     name: z.string().optional(),

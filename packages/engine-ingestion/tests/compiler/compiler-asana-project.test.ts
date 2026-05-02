@@ -39,6 +39,7 @@ import {
   asanaProjectPagePath,
   compileAsanaProject,
   parseAsanaProjectSections,
+  quoteYamlString,
   type AsanaProjectSnapshot,
 } from "../../src/compiler/asana-project.js";
 import { CompilerValidationError } from "../../src/compiler/errors.js";
@@ -340,19 +341,41 @@ describe("buildAsanaProjectBody — size cap", () => {
   });
 
   it("does NOT throw when output is exactly at 40k chars", () => {
-    // Use an empty mergedBody; the full page will be well under 40k
+    // Build a mergedBody whose length, after assembly (frontmatter + "\n" +
+    // mergedBody.trimEnd() + "\n" + no-notes), totals EXACTLY 40 000 chars.
+    //
+    // With: title="Test Campaign", pagePath="projects/test-campaign-1234567890.md",
+    //        domainSlug="ops", compiledAt=2026-05-02T10:00:00.000Z,
+    //        project_gid="1234567890", existingPageContent=null
+    //
+    // frontmatter.length = 333
+    // body = frontmatter(333) + "\n"(1) + mergedBody(N) + "\n"(1) = 335 + N
+    // target: 335 + N = 40 000  →  N = 39 665
     const snapshot = makeSnapshot();
+    const mergedBody = "A".repeat(39_665);
+
+    const result = buildAsanaProjectBody({
+      snapshot,
+      title: "Test Campaign",
+      pagePath: "projects/test-campaign-1234567890.md",
+      domainSlug: "ops",
+      compiledAt: new Date("2026-05-02T10:00:00.000Z"),
+      mergedBody,
+      existingPageContent: null,
+    });
+    expect(result.length).toBe(40_000);
+    // And 40 001 chars throws
     expect(() =>
       buildAsanaProjectBody({
         snapshot,
         title: "Test Campaign",
         pagePath: "projects/test-campaign-1234567890.md",
         domainSlug: "ops",
-        compiledAt: new Date("2026-05-02T10:00:00Z"),
-        mergedBody: "Minimal content.",
+        compiledAt: new Date("2026-05-02T10:00:00.000Z"),
+        mergedBody: "A".repeat(39_666),
         existingPageContent: null,
       }),
-    ).not.toThrow();
+    ).toThrow(CompilerValidationError);
   });
 });
 
@@ -375,6 +398,92 @@ describe("parseAsanaProjectSections", () => {
     expect(sections.openTasks).toBe("");
     expect(sections.recentActivity).toBe("");
     expect(sections.risks).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// quoteYamlString — YAML scalar safety (fix #1)
+// ---------------------------------------------------------------------------
+
+describe("quoteYamlString", () => {
+  it("wraps a plain string in double quotes", () => {
+    expect(quoteYamlString("Hello World")).toBe('"Hello World"');
+  });
+
+  it("escapes double quotes inside the value", () => {
+    expect(quoteYamlString('task with "quotes"')).toBe('"task with \\"quotes\\""');
+  });
+
+  it("escapes backslashes before double quotes", () => {
+    expect(quoteYamlString("path\\to\\file")).toBe('"path\\\\to\\\\file"');
+  });
+
+  it("throws CompilerValidationError when value contains \\n", () => {
+    expect(() => quoteYamlString("title\nwith newline")).toThrow(CompilerValidationError);
+  });
+
+  it("throws CompilerValidationError when value contains \\r", () => {
+    expect(() => quoteYamlString("title\rwith CR")).toThrow(CompilerValidationError);
+  });
+
+  it("roundtrips: buildAsanaProjectBody uses quoteYamlString for title with embedded quote", () => {
+    const snapshot = makeSnapshot();
+    const body = buildAsanaProjectBody({
+      snapshot,
+      title: 'Project with "Quotes" & Backslash\\',
+      pagePath: "projects/test-1234567890.md",
+      domainSlug: "ops",
+      compiledAt: new Date("2026-05-02T10:00:00.000Z"),
+      mergedBody: "Some content.",
+      existingPageContent: null,
+    });
+    // The frontmatter should contain properly escaped YAML
+    expect(body).toContain('title: "Project with \\"Quotes\\" & Backslash\\\\"');
+  });
+
+  it("buildAsanaProjectBody throws CompilerValidationError when title contains newline", () => {
+    const snapshot = makeSnapshot();
+    expect(() =>
+      buildAsanaProjectBody({
+        snapshot,
+        title: "title\nwith newline",
+        pagePath: "projects/test-1234567890.md",
+        domainSlug: "ops",
+        compiledAt: new Date("2026-05-02T10:00:00.000Z"),
+        mergedBody: "Some content.",
+        existingPageContent: null,
+      }),
+    ).toThrow(CompilerValidationError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractNotesSection — no double newline (fix #2)
+// ---------------------------------------------------------------------------
+
+describe("extractNotesSection — no double newline (via buildAsanaProjectBody)", () => {
+  it("does not produce a double newline between ## Notes heading and content", () => {
+    const snapshot = makeSnapshot();
+    const notes = "Single line note.";
+    const existing = makeExistingPage(notes);
+
+    const body = buildAsanaProjectBody({
+      snapshot,
+      title: "Test Campaign",
+      pagePath: "projects/test-campaign-1234567890.md",
+      domainSlug: "ops",
+      compiledAt: new Date("2026-05-02T10:00:00.000Z"),
+      mergedBody: makeStubLlmResponse(snapshot),
+      existingPageContent: existing,
+    });
+
+    // The notes section must not start with a double blank line after the heading
+    expect(body).not.toContain("## Notes\n\n\n");
+    // The heading and content must be exactly separated by one newline
+    // (the existing page has "## Notes\n\n" + notes, so one blank line is fine
+    // but we must not get three consecutive newlines)
+    expect(body).toContain("## Notes\n");
+    expect(body).toContain(notes);
   });
 });
 

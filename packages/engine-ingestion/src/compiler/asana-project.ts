@@ -50,6 +50,30 @@ import { spotlight } from "@opencoo/shared/spotlight";
 import { CompilerValidationError } from "./errors.js";
 import { recordPageCitations } from "./page-citations.js";
 
+// ---------------------------------------------------------------------------
+// YAML scalar safety
+// ---------------------------------------------------------------------------
+
+/**
+ * Produce a double-quoted YAML scalar that is safe to embed in a frontmatter
+ * single-line field.
+ *
+ * - Escapes backslashes:  `\`  →  `\\`
+ * - Escapes double quotes: `"` →  `\"`
+ * - Throws CompilerValidationError for titles that contain a newline or carriage
+ *   return — they cannot appear in a single-line YAML scalar and indicate
+ *   malformed input that should be rejected before writing.
+ */
+export function quoteYamlString(value: string): string {
+  if (/[\r\n]/.test(value)) {
+    throw new CompilerValidationError(
+      `quoteYamlString: value contains a newline or carriage return, which is invalid in a single-line YAML scalar. Received: ${JSON.stringify(value)}`,
+    );
+  }
+  const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
 /** Maximum output size (characters). Fail-closed above this. */
@@ -185,10 +209,9 @@ function buildFrontmatter(args: {
   readonly snapshot: AsanaProjectSnapshot;
   readonly compiledByRunId?: AgentRunId;
 }): string {
-  const escapedTitle = args.title.replace(/"/g, '\\"');
   const lines = [
     "---",
-    `title: "${escapedTitle}"`,
+    `title: ${quoteYamlString(args.title)}`,
     `type: asana-project`,
     `last_updated: "${args.compiledAt.toISOString()}"`,
     `asana_project_gid: "${args.snapshot.project_gid}"`,
@@ -288,7 +311,8 @@ function extractNotesSection(existingPageContent: string | null): string | null 
       ? existingPageContent.length
       : afterNotes + nextHeadingMatch.index;
 
-  return "## Notes\n" + existingPageContent.slice(afterNotes, end);
+  const slice = existingPageContent.slice(afterNotes, end);
+  return "## Notes" + (slice.startsWith("\n") ? "" : "\n") + slice;
 }
 
 // ---------------------------------------------------------------------------
