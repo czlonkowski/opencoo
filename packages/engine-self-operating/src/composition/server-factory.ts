@@ -35,6 +35,7 @@ import type { Logger } from "@opencoo/shared/logger";
 
 import { registerAdminApi } from "../admin-api/index.js";
 import type { GiteaClient } from "../admin-api/auth.js";
+import { createSseBus, type SseBus } from "../admin-api/sse-bus.js";
 import type { EngineConfig } from "../config.js";
 import { registerStaticUi } from "../static-ui.js";
 
@@ -57,11 +58,29 @@ export interface ProductionServerFactoryArgs {
    *  /api/admin/source-bindings returns 500 (composition-
    *  incomplete). */
   readonly credentialStore?: CredentialStore;
+  /** Phase-a appendix #4 PR-B — optional BullMQ queue handle for the
+   *  ingestion-scanner queue. When provided, GET /api/admin/pipelines
+   *  returns live depth + failed counts instead of zeroed stats.
+   *  Read-only — no jobs are added from this side. */
+  readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>>; name?: string };
+  /** Phase-a appendix #4 PR-B — SSE bus for the Activity feed.
+   *  When undefined, `productionServerFactory` creates a fresh bus.
+   *  Exposed on the returned object so `start.ts` can thread it to
+   *  harness invocations. @internal test seam. */
+  readonly sseBus?: SseBus;
 }
+
+/** Extended return type that exposes the SSE bus so `start.ts` can
+ *  thread it into harness invocations. Uses `& { sseBus: SseBus }` rather
+ *  than an `extends` interface because `FastifyInstance.close` and
+ *  `StartServer.close` have incompatible signatures and TypeScript 5.x
+ *  rejects the interface merge (TS2320). The intersection type avoids the
+ *  conflict while keeping the structural contract. */
+export type ProductionServer = (FastifyInstance & StartServer) & { readonly sseBus: SseBus };
 
 export async function productionServerFactory(
   args: ProductionServerFactoryArgs,
-): Promise<FastifyInstance & StartServer> {
+): Promise<ProductionServer> {
   const app: FastifyInstance = buildServer({ probes: args.probes });
 
   // Wrap the existing pg pool in a Drizzle handle so the
@@ -70,6 +89,11 @@ export async function productionServerFactory(
   // matters: a second pool would run a second auth handshake
   // per-process and bloat connection counts.
   const db = drizzle(args.pgPool);
+
+  // Phase-a appendix #4 PR-B — create the SSE bus that bridges the
+  // agent-harness lifecycle events to the browser Activity feed.
+  // Use caller-supplied bus (test seam) or create a fresh one.
+  const sseBus: SseBus = args.sseBus ?? createSseBus();
 
   // 1. Admin-API FIRST — registers `/api/admin/*` routes BEFORE
   //    the static-ui setNotFoundHandler captures unknown paths.
@@ -81,8 +105,12 @@ export async function productionServerFactory(
     sessionHmacKey: args.compositionEnv.sessionHmacKey,
     logger: args.logger,
     llmDebugLog: args.compositionEnv.llmDebugLog,
+    sseBus,
     ...(args.credentialStore !== undefined
       ? { credentialStore: args.credentialStore }
+      : {}),
+    ...(args.ingestionQueue !== undefined
+      ? { ingestionQueue: args.ingestionQueue }
       : {}),
     provisionOrg: args.compositionEnv.giteaProvisionOrg,
     provisionDomainRepo: async (a) => {
@@ -111,5 +139,7 @@ export async function productionServerFactory(
     logger: args.logger,
   });
 
-  return app as unknown as FastifyInstance & StartServer;
+  // Attach the bus to the returned object so start.ts can thread
+  // it into harness invocations via AgentInvocation.sseBus.
+  return Object.assign(app, { sseBus }) as unknown as ProductionServer;
 }

@@ -39,6 +39,7 @@ import { ConsoleLogger, type Logger } from "@opencoo/shared/logger";
 import { drizzle } from "drizzle-orm/node-postgres";
 import {
   PipelineRegistry,
+  buildEngineQueue,
   buildServer,
   startEngine,
   type ProbeMap,
@@ -215,6 +216,31 @@ export async function start(
           error: err instanceof Error ? err.message : String(err),
         });
       }
+      // Phase-a appendix #4 PR-B (C2) — create a read-only BullMQ Queue
+      // handle for the ingestion-scanner queue so GET /api/admin/pipelines
+      // returns live stats. We use the same REDIS_URL the engine scaffold
+      // opens for its ioredis connection. `buildEngineQueue` validates the
+      // slug and names it `ingestion.scanner`.
+      //
+      // Design choice: engine-self-operating opens its own queue handle
+      // (read-only probe) rather than writing pipeline stats to a Postgres
+      // table. This avoids a new table + polling overhead and keeps the stats
+      // fresh with zero write-path coupling. Under 80 lines total.
+      let ingestionQueue: Parameters<typeof productionServerFactory>[0]["ingestionQueue"] | undefined;
+      try {
+        // Cast: BullMQ Queue.getJobCounts takes JobType[] (a restricted literal
+        // union), but our QueueRef interface uses string[] for testability.
+        // The runtime values ("waiting", "failed") are valid JobType members;
+        // the cast is safe.
+        ingestionQueue = buildEngineQueue("ingestion", "scanner", {
+          connection: { url: config.redisUrl, maxRetriesPerRequest: null, enableReadyCheck: false },
+        }) as unknown as Parameters<typeof productionServerFactory>[0]["ingestionQueue"];
+      } catch (err) {
+        logger.warn("admin_api.pipelines_queue_disabled", {
+          reason: "Failed to construct ingestion.scanner queue handle — GET /api/admin/pipelines will return zeroed stats",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       return productionServerFactory({
         probes,
         config,
@@ -223,6 +249,7 @@ export async function start(
         giteaClient: giteaClientFactory(compositionEnv.giteaBaseUrl),
         compositionEnv,
         ...(credentialStore !== null ? { credentialStore } : {}),
+        ...(ingestionQueue !== undefined ? { ingestionQueue } : {}),
       });
     }
     return staticUiOnlyServerFactory(probes, config, logger);

@@ -45,6 +45,7 @@ import {
 } from "./recorder.js";
 import type { AgentDefinition, AgentDefinitionRegistry } from "./definitions.js";
 import { OpencooError } from "@opencoo/shared/errors";
+import type { SseBus } from "../admin-api/sse-bus.js";
 
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
@@ -78,6 +79,15 @@ export interface AgentInvocation {
    *  PR 20+ when a concrete agent demonstrates the need. */
   readonly run: (ctx: AgentRunContext) => Promise<unknown>;
   readonly clock?: () => Date;
+  /** Optional SSE bus. When present, the harness emits `agent_run`
+   *  lifecycle events on run start, success, and failure so the
+   *  Activity feed shows runs as they unfold.
+   *
+   *  Token-level streaming from the LLM router is a larger refactor
+   *  (requires the router to call `emitToken` per-chunk). That wire-up
+   *  is deferred to PR-B.1. TODO(PR-B.1): wire llm-router streaming
+   *  → sseBus.emitToken once the router exposes a per-token hook. */
+  readonly sseBus?: SseBus;
 }
 
 export interface AgentRunContext {
@@ -130,7 +140,6 @@ export async function invokeAgent(
   args: AgentInvocation,
 ): Promise<AgentInvocationResult> {
   const clock = args.clock ?? ((): Date => new Date());
-  const startedAtMs = clock().getTime();
 
   const instance = await loadInstanceById(args.db, args.instanceId);
   const definition = args.definitions.get(instance.definitionSlug);
@@ -162,13 +171,21 @@ export async function invokeAgent(
     }),
   );
 
-  const { runId } = await startRun({
+  const { runId, startedAt } = await startRun({
     db: args.db,
     definitionSlug: instance.definitionSlug,
     instanceId: instance.id,
     trigger: args.trigger,
     inputs: args.inputs,
     now: clock,
+  });
+
+  // Emit run-start event so the Activity feed shows the run as "running".
+  args.sseBus?.emitRunEvent({
+    runId,
+    definitionSlug: instance.definitionSlug,
+    status: "running",
+    startedAt: startedAt.toISOString(),
   });
 
   const toolCalls: ToolCall[] = [];
@@ -243,6 +260,7 @@ export async function invokeAgent(
   }
 
   const endedAt = clock();
+  const latencyMs = endedAt.getTime() - startedAt.getTime();
   await completeRun({
     db: args.db,
     logger: args.logger,
@@ -253,9 +271,21 @@ export async function invokeAgent(
     tokensIn: 0,
     tokensOut: 0,
     costUsd: 0,
-    latencyMs: endedAt.getTime() - startedAtMs,
+    latencyMs,
     ...(errorClass !== undefined ? { errorClass } : {}),
     endedAt,
+  });
+
+  // Emit run-completion event so the Activity feed reflects the terminal state.
+  // costUsd is tracked in the LLM router (not yet surfaced here — TODO PR-B.1).
+  args.sseBus?.emitRunEvent({
+    runId,
+    definitionSlug: instance.definitionSlug,
+    status,
+    startedAt: startedAt.toISOString(),
+    endedAt: endedAt.toISOString(),
+    latencyMs,
+    ...(errorClass !== undefined ? { errorClass } : {}),
   });
 
   return { runId, status, output };

@@ -1,7 +1,7 @@
 /**
  * Cross-route shared types (PR 29 / plan #131).
  */
-export type Tab = "domains" | "sources" | "llmPolicy" | "prompts";
+export type Tab = "domains" | "sources" | "llmPolicy" | "prompts" | "activity";
 
 export interface Domain {
   readonly id: string;
@@ -45,6 +45,34 @@ export interface SovereigntyDiffPreview {
   }>;
   readonly token: string;
   readonly expiresAt: number;
+}
+
+/** Agent run list row (no `output` — detail only). */
+export interface AgentRun {
+  readonly id: string;
+  readonly definitionSlug: string;
+  readonly instanceId: string | null;
+  readonly trigger: string;
+  readonly skillsUsed: readonly unknown[];
+  readonly tokensIn: number;
+  readonly tokensOut: number;
+  readonly costUsd: string;
+  readonly latencyMs: number;
+  readonly status: string;
+  readonly errorClass: string | null;
+  readonly startedAt: string | null;
+  readonly endedAt: string | null;
+  readonly createdAt: string | null;
+}
+
+/** Pipeline (BullMQ queue) stat card. */
+export interface Pipeline {
+  readonly name: string;
+  readonly depth: number;
+  readonly failedCount: number;
+  readonly dlqCount: number;
+  readonly lastRunAt: string | null;
+  readonly lastFailureAt: string | null;
 }
 
 /** Server response shape for `POST /api/admin/domains/:id/llm-policy/apply`.

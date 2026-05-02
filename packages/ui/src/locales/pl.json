@@ -10,6 +10,7 @@
     "sources": "sources",
     "llmPolicy": "llm policy",
     "prompts": "prompts",
+    "activity": "activity",
     "logout": "log out"
   },
   "auth": {
@@ -156,6 +157,25 @@
     "requiredError": "Required.",
     "encryptedNote": "stored encrypted",
     "saving": "saving…"
+  },
+  "activity": {
+    "title": "Activity",
+    "tabs": {
+      "feed": "feed",
+      "runs": "runs",
+      "pipelines": "pipelines"
+    },
+    "feed": {
+      "connecting": "connecting…",
+      "live": "live",
+      "empty": "No events yet."
+    },
+    "runs": {
+      "empty": "No runs yet."
+    },
+    "pipelines": {
+      "empty": "No pipelines wired."
+    }
   },
   "debug": {
     "bannerLabel": "LLM_DEBUG_LOG=1 · prompts and responses are mirroring to llm_usage_debug"
