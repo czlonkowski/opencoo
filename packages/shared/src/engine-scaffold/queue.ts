@@ -80,9 +80,10 @@ export interface BuildEngineWorkerOptions {
  *
  * The handler signature accepts BullMQ's `Job` so callers can read
  * `job.data` (typed via the `JobData` generic) and return a typed
- * result. Errors thrown from the handler propagate to BullMQ's retry
- * machinery — the engine wires per-queue retry policy at construction
- * time via the `connection` options' default attempts/backoff.
+ * result. Errors thrown from the handler propagate to BullMQ, which
+ * applies whatever retry policy the producer side configured (per-job
+ * `attempts`/`backoff` or the `Queue`'s `defaultJobOptions`) — that
+ * policy is NOT this helper's concern.
  */
 export function buildEngineWorker<JobData = unknown, JobResult = unknown>(
   prefix: string,
