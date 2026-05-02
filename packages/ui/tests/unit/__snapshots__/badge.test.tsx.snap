@@ -1,0 +1,31 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Badge > snapshot: all five tones at 12px baseline 1`] = `
+<div>
+  <span
+    style="font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 7px; border-radius: 3px; border-style: solid; border-width: 1px; background: var(--paper-2); color: var(--ink-2); border-color: var(--rule);"
+  >
+    neutral
+  </span>
+  <span
+    style="font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 7px; border-radius: 3px; border-style: solid; border-width: 1px; background: color-mix(in oklab, var(--advisory) 28%, var(--paper)); color: var(--advisory-ink); border-color: color-mix(in oklab, var(--advisory) 40%, var(--paper));"
+  >
+    advisory
+  </span>
+  <span
+    style="font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 7px; border-radius: 3px; border-style: solid; border-width: 1px; background: color-mix(in oklab, var(--wiki) 14%, var(--paper)); color: var(--wiki); border-color: color-mix(in oklab, var(--wiki) 25%, var(--paper));"
+  >
+    wiki
+  </span>
+  <span
+    style="font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 7px; border-radius: 3px; border-style: solid; border-width: 1px; background: color-mix(in oklab, var(--alert) 14%, var(--paper)); color: var(--alert); border-color: color-mix(in oklab, var(--alert) 30%, var(--paper));"
+  >
+    alert
+  </span>
+  <span
+    style="font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 7px; border-radius: 3px; border-style: solid; border-width: 1px; background: color-mix(in oklab, var(--healthy) 14%, var(--paper)); color: var(--healthy); border-color: color-mix(in oklab, var(--healthy) 26%, var(--paper));"
+  >
+    ok
+  </span>
+</div>
+`;
