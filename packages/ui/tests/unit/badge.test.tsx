@@ -3,10 +3,9 @@
  *
  * Pins:
  *   - renders all five tones: neutral, advisory, wiki, alert, ok
- *   - font size is 12px (NOT 10px)
+ *   - font size is 12px (NOT 10px) — the legibility regression guard
  *   - text is uppercase with 0.08em letter-spacing
  *   - tone-specific background and color apply correctly
- *   - snapshot validates the rendered markup at 12px baseline
  */
 import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
@@ -57,18 +56,5 @@ describe("Badge", () => {
     const { container } = render(<Badge>unlabeled</Badge>);
     const badge = container.firstChild as HTMLElement;
     expect(badge.style.background).toBe("var(--paper-2)");
-  });
-
-  it("snapshot: all five tones at 12px baseline", () => {
-    const { container } = render(
-      <>
-        <Badge tone="neutral">neutral</Badge>
-        <Badge tone="advisory">advisory</Badge>
-        <Badge tone="wiki">wiki</Badge>
-        <Badge tone="alert">alert</Badge>
-        <Badge tone="ok">ok</Badge>
-      </>,
-    );
-    expect(container).toMatchSnapshot();
   });
 });

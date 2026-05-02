@@ -52,7 +52,6 @@ export function StatusPill(props: StatusPillProps): JSX.Element {
         display: "inline-flex",
         gap: "4px",
         alignItems: "center",
-        color: "currentColor",
       }}
     >
       <Glyph tone={props.tone} />

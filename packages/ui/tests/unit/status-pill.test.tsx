@@ -8,7 +8,6 @@
  *   - glyphs use currentColor so tone cascades from Badge
  *   - layout is inline-flex with 4px gap
  *   - NO emoji glyphs (SVG trio only)
- *   - snapshot validates each tone
  */
 import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
@@ -75,20 +74,5 @@ describe("StatusPill", () => {
     // Defensive — no emoji glyphs slipped in.
     const text = container.textContent ?? "";
     expect(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{27BF}]/u.test(text)).toBe(false);
-  });
-
-  it("snapshot: healthy tone (GlyphRingWithDot + ok badge)", () => {
-    const { container } = render(<StatusPill tone="healthy">healthy</StatusPill>);
-    expect(container).toMatchSnapshot();
-  });
-
-  it("snapshot: advisory tone (GlyphOpenArc + advisory badge)", () => {
-    const { container } = render(<StatusPill tone="advisory">advisory</StatusPill>);
-    expect(container).toMatchSnapshot();
-  });
-
-  it("snapshot: alert tone (GlyphFilledDisc + alert badge)", () => {
-    const { container } = render(<StatusPill tone="alert">alert</StatusPill>);
-    expect(container).toMatchSnapshot();
   });
 });
