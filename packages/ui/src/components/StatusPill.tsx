@@ -34,6 +34,20 @@ function mapTone(tone: StatusTone): BadgeTone {
   }
 }
 
+// Wrapper color drives the glyph via currentColor (the glyph is a sibling
+// of <Badge>, not a child, so it can't inherit Badge's color). Mapping
+// matches Badge tone foregrounds so glyph and badge text agree visually.
+function wrapperColor(tone: StatusTone): string {
+  switch (tone) {
+    case "healthy":
+      return "var(--healthy)";
+    case "advisory":
+      return "var(--advisory-ink)";
+    case "alert":
+      return "var(--alert)";
+  }
+}
+
 function Glyph(props: { tone: StatusTone }): JSX.Element {
   switch (props.tone) {
     case "healthy":
@@ -52,6 +66,7 @@ export function StatusPill(props: StatusPillProps): JSX.Element {
         display: "inline-flex",
         gap: "4px",
         alignItems: "center",
+        color: wrapperColor(props.tone),
       }}
     >
       <Glyph tone={props.tone} />

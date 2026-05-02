@@ -49,11 +49,38 @@ describe("StatusPill", () => {
     expect(circles.length).toBeGreaterThan(0);
   });
 
-  it("glyph uses currentColor so tone cascades from Badge", () => {
-    const { container } = render(<StatusPill tone="healthy">healthy</StatusPill>);
+  it("wrapper sets tone color so glyph's currentColor renders in tone", () => {
+    // Glyph is sibling of <Badge>, not child — without the wrapper setting
+    // color, currentColor would resolve to default text color, NOT the tone.
+    // This test pins the wrapper-color mechanism per tone.
+    const cases: ReadonlyArray<{
+      tone: "healthy" | "advisory" | "alert";
+      expected: string;
+    }> = [
+      { tone: "healthy", expected: "var(--healthy)" },
+      { tone: "advisory", expected: "var(--advisory-ink)" },
+      { tone: "alert", expected: "var(--alert)" },
+    ];
+    for (const c of cases) {
+      const { container } = render(
+        <StatusPill tone={c.tone}>{c.tone}</StatusPill>,
+      );
+      const pill = container.firstChild as HTMLElement;
+      expect(pill.style.color).toBe(c.expected);
+    }
+  });
+
+  it("glyph stroke/fill uses currentColor (cascade source verified above)", () => {
+    // Stroke-based glyphs: healthy (ring+dot) and advisory (open arc).
+    for (const tone of ["healthy", "advisory"] as const) {
+      const { container } = render(<StatusPill tone={tone}>{tone}</StatusPill>);
+      const svg = container.querySelector("svg");
+      expect(svg?.getAttribute("stroke")).toBe("currentColor");
+    }
+    // Fill-based glyph: alert (filled disc).
+    const { container } = render(<StatusPill tone="alert">alert</StatusPill>);
     const svg = container.querySelector("svg");
-    // currentColor is the default; check that it's not overridden
-    expect(svg?.getAttribute("stroke")).toBe("currentColor");
+    expect(svg?.getAttribute("fill")).toBe("currentColor");
   });
 
   it("layout is inline-flex with 4px gap", () => {
