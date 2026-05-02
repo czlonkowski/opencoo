@@ -8,7 +8,9 @@
  *   - Verifies every inbound POST with HMAC-SHA256 using the secret stored
  *     under `signingSecretCredentialId` in the CredentialStore.
  *   - Extracts the event_id from the payload via `eventIdField` jsonpath —
- *     this is the replay-safety anchor (UNIQUE on webhook_events).
+ *     the derived value flows into `sourceDocId` + `sourceRevision` on the
+ *     ingested document, which the intake layer dedupes via its
+ *     `(binding_id, source_doc_id, source_revision)` UNIQUE constraint.
  *   - Routes the event to a content_kind via `contentKindMap` (jsonpath →
  *     CONTENT_KIND presence checks, first match wins) or `defaultContentKind`
  *     when no map is configured.
@@ -18,8 +20,9 @@
  * explicit approval before any data flows through. The operator must
  * explicitly set `reviewMode: 'auto'` after manual sanity-check.
  *
- * THREAT-MODEL §3.6 invariant 11 — signingSecretCredentialId is a
- * vault reference, never the raw secret bytes.
+ * THREAT-MODEL §3.6 invariant 11 — the signing secret is resolved from
+ * `binding.credentialsId` at verify-time (NOT from the deprecated
+ * `signingSecretCredentialId` config field). Never raw secret bytes.
  */
 import { z } from "zod";
 
@@ -36,11 +39,22 @@ export const sourceWebhookBindingConfigSchema = z
     pathSegment: z.string().min(1),
 
     /**
-     * Reference to the HMAC signing secret in the CredentialStore.
-     * Must be a UUID (the credential's ID, not the raw secret bytes).
+     * @deprecated — Dead field. The receiver resolves the HMAC signing
+     * secret from `binding.credentialsId` (the `sources_bindings` row's
+     * `credentials_id` column, set when the binding is created via
+     * `POST /api/admin/source-bindings`). This config-level UUID is
+     * NEVER read at verify-time and exists only for forward-compat with
+     * any operator config that already has it set.
      *
-     * THREAT-MODEL §3.6 invariant 11: credentials referenced by vault ID,
-     * never by value.
+     * The signing secret lives in the `webhook_secret` half of the
+     * credential pair (see credential-schemas.ts `webhookDescriptor`).
+     * Operators do not need to supply this field — the admin API wires
+     * the correct `credentials_id` automatically on binding creation.
+     *
+     * This field will be removed in v0.2 once all existing bindings have
+     * been migrated. Until then it is accepted but ignored.
+     *
+     * THREAT-MODEL §3.6 invariant 11: vault reference, never raw bytes.
      */
     signingSecretCredentialId: z.string().uuid(),
 
@@ -54,8 +68,11 @@ export const sourceWebhookBindingConfigSchema = z
      *   - `$.payload.event_id`   — nested event_id field
      *   - `$.id`                 — root-level id field
      *
-     * THREAT-MODEL §3.1: deterministic event_id is required for the
-     * `webhook_events` UNIQUE (binding_id, event_id) replay-dedup constraint.
+     * THREAT-MODEL §3.1: deterministic event_id is required for replay
+     * safety. The derived value becomes `sourceDocId` + `sourceRevision`
+     * on the ingested document; the intake layer dedupes at
+     * `(binding_id, source_doc_id, source_revision)` UNIQUE — not at the
+     * `webhook_events` table level.
      */
     eventIdField: z.string().min(1),
 
@@ -78,12 +95,19 @@ export const sourceWebhookBindingConfigSchema = z
 
     /**
      * Fallback content_kind when `contentKindMap` is absent or no entry
-     * matches. Defaults to `'webhook-event'` — the generic thin wrapper.
+     * matches. Defaults to `'document'` — the well-supported two-pass
+     * classify→compile path that has a Compiler template in v0.1.
+     *
+     * Note: `'webhook-event'` is a valid CONTENT_KINDS member and can be
+     * set explicitly, but there is no Compiler template for it in v0.1.
+     * Operators wanting custom routing use `contentKindMap` to map
+     * individual payloads to kinds that DO have templates (e.g.
+     * `'document'`, `'n8n-workflow'`).
      *
      * Mirrors the `z.enum(CONTENT_KINDS).default(...)` pattern used in
      * source-drive and source-n8n; the resulting type is `ContentKind`.
      */
-    defaultContentKind: z.enum(CONTENT_KINDS).default("webhook-event"),
+    defaultContentKind: z.enum(CONTENT_KINDS).default("document"),
 
     /**
      * Operator review mode.

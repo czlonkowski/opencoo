@@ -203,7 +203,7 @@ const webhookDescriptor = {
           signing_secret: {
             type: "string",
             description:
-              "HMAC-SHA256 signing secret. The sender must include `X-Webhook-Signature: <hex>` on every POST; the receiver verifies HMAC against this value.",
+              "HMAC-SHA256 signing secret. The sender must include `X-Signature: <hex>` on every POST; the receiver verifies HMAC against this value.",
             secret: true,
           },
         },

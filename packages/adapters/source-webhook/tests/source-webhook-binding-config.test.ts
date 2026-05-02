@@ -2,12 +2,12 @@
  * Binding-config Zod schema tests for source-webhook (PR-I).
  *
  * Asserts:
- * - Required fields: pathSegment, signingSecretCredentialId, eventIdField
+ * - Required fields: pathSegment, signingSecretCredentialId (deprecated), eventIdField
  * - Optional fields: contentKindMap, defaultContentKind, reviewMode
  * - reviewMode defaults to 'review' (THREAT-MODEL §3.7)
  * - .strict() rejects unknown top-level fields
- * - defaultContentKind defaults to 'webhook-event'
- * - signingSecretCredentialId must be a UUID
+ * - defaultContentKind defaults to 'document' (has a Compiler template in v0.1)
+ * - signingSecretCredentialId must be a UUID (deprecated; kept for compat)
  */
 import { describe, expect, it } from "vitest";
 
@@ -98,9 +98,9 @@ describe("source-webhook binding-config schema", () => {
     ).toThrow();
   });
 
-  it("defaultContentKind defaults to 'webhook-event'", () => {
+  it("defaultContentKind defaults to 'document' (has a Compiler template in v0.1)", () => {
     const result = sourceWebhookBindingConfigSchema.parse(MINIMAL_VALID);
-    expect(result.defaultContentKind).toBe("webhook-event");
+    expect(result.defaultContentKind).toBe("document");
   });
 
   it("defaultContentKind accepts other valid CONTENT_KINDS", () => {

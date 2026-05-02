@@ -16,14 +16,19 @@
  *   4. adapter.webhook.verifier.verify({ body, secret, signature }).
  *   5. On ok=false → 401 + DLQ.
  *   6. On ok=true → adapter.webhook.parseEvents({ body }) →
- *      SourceWebhookEvent[]; dedupe via webhook_events UNIQUE
- *      (binding_id, event_id); enqueue scanner jobs.
+ *      SourceWebhookEvent[]; enqueue scanner jobs. Replay dedup
+ *      happens at the intake layer's UNIQUE
+ *      (binding_id, source_doc_id, source_revision) constraint —
+ *      the body-derived event_id flows into sourceDocId +
+ *      sourceRevision on the ingested document.
  *
  * THREAT-MODEL §3.1 (HMAC + replay):
  *   - HMAC-SHA256 via HmacSha256Verifier (reused from @opencoo/shared).
  *   - event_id extracted via eventIdField jsonpath; extraction failure
- *     throws ValidationError (fail-closed — no id = no replay dedup =
- *     no ingest).
+ *     throws ValidationError (fail-closed — no id = no sourceDocId =
+ *     no ingest). The derived event_id becomes sourceDocId +
+ *     sourceRevision on the ingested document; the intake layer dedupes
+ *     via (binding_id, source_doc_id, source_revision) UNIQUE.
  *
  * THREAT-MODEL §3.7 (review-mode default):
  *   - reviewMode defaults to 'review'. Operator must explicitly set
@@ -59,13 +64,24 @@ import { deriveEventId } from "./event-id-derivation.js";
 export const WEBHOOK_ADAPTER_SLUG = "webhook" as const;
 
 /**
- * Header name the receiver uses for generic webhook signatures.
+ * Header name the receiver uses for generic webhook signatures
+ * (inbound direction — sender → opencoo receiver).
  * Case-insensitive lookup (see extractWebhookSignature).
  *
- * Senders must include: `X-Webhook-Signature: <hex-hmac-sha256>`
- * Also accepted: `X-Webhook-Signature: sha256=<hex>` (GitHub style).
+ * Canonical inbound header: `x-signature`
+ *
+ * Senders must include: `X-Signature: <hex-hmac-sha256>`
+ * Also accepted: `X-Signature: sha256=<hex>` (GitHub style).
+ *
+ * Asymmetry note: this differs BY DESIGN from the outbound header
+ * used by PR-J's WebhookOutputAdapter (`X-OpenCoo-Signature`).
+ * Inbound uses `x-signature` because we are the receiver and
+ * external senders already set their own header conventions;
+ * outbound uses `X-OpenCoo-Signature` because opencoo is the
+ * sender and asserts its own identity. Different security models —
+ * operator-trusted inbound vs opencoo-asserted outbound.
  */
-export const WEBHOOK_SIGNATURE_HEADER = "x-webhook-signature";
+export const WEBHOOK_SIGNATURE_HEADER = "x-signature";
 
 export interface CreateSourceWebhookAdapterArgs {
   readonly credentialStore: CredentialStore;
@@ -77,8 +93,15 @@ export interface CreateSourceWebhookAdapterArgs {
  * Options for `buildWebhookHelpers`. Allows injection of
  * the config-driven knobs without exposing the full
  * SourceWebhookBindingConfig shape in tests.
+ *
+ * `signingSecretCredentialId` is accepted for backwards-compat but
+ * unused inside `buildWebhookHelpers` — the signing secret is
+ * resolved by the receiver from `binding.credentialsId`, not here.
+ * @deprecated signingSecretCredentialId — kept for API compatibility;
+ *   will be removed in v0.2.
  */
 export interface BuildWebhookHelpersOptions {
+  /** @deprecated Kept for API compat; not read at runtime. */
   readonly signingSecretCredentialId: string;
   readonly eventIdField: string;
   readonly contentKindMap?: Record<string, string>;
@@ -175,7 +198,11 @@ function parseWebhookBody(
   // Stored in metadata so the Classifier can use it for routing
   // (the adapter signals the intended kind; the Classifier may
   // confirm or override based on content analysis).
-  const defaultKind: ContentKind = config.defaultContentKind ?? "webhook-event";
+  // Default is 'document' — the only kind with a Compiler template in v0.1.
+  // 'webhook-event' is in CONTENT_KINDS for forward-compat but has no
+  // template yet; operators using that kind get events the Compiler
+  // cannot route.
+  const defaultKind: ContentKind = config.defaultContentKind ?? "document";
   const contentKind = resolveContentKind(
     payload,
     config.contentKindMap,
@@ -226,8 +253,10 @@ export function createSourceWebhookAdapter(
   // credentialStore + credentialId are part of the factory shape
   // (THREAT-MODEL §3.6 invariant 11) but unused by webhook-mode
   // adapters: the engine-ingestion receiver resolves the actual
-  // webhook signing secret via `config.signingSecretCredentialId`
-  // at verify-time, not through these args.
+  // webhook signing secret from `binding.credentialsId` (the DB
+  // column set by POST /api/admin/source-bindings) at verify-time.
+  // Note: config.signingSecretCredentialId is a deprecated dead field
+  // (see binding-config.ts) and is NOT used here.
   void args.credentialStore;
   void args.credentialId;
 

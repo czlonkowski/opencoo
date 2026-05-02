@@ -5,7 +5,9 @@
  */
 import { createHmac } from "node:crypto";
 
-export const WEBHOOK_SIGNATURE_HEADER = "x-webhook-signature";
+import { WEBHOOK_SIGNATURE_HEADER } from "../../src/adapter.js";
+
+export { WEBHOOK_SIGNATURE_HEADER };
 
 export interface MockWebhookPayload {
   readonly body: Buffer;

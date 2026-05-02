@@ -152,7 +152,7 @@ describe("source-webhook — adapter wiring", () => {
     expect(typeof adapter.webhook?.parseEvents).toBe("function");
   });
 
-  it("extractSignature reads x-webhook-signature header (case-insensitive)", async () => {
+  it("extractSignature reads x-signature header (case-insensitive)", async () => {
     const store = new InMemoryCredentialStore({ logger: silentLogger() });
     const credentialId = await seedSecret(store, fixture.secret);
     const adapter = createSourceWebhookAdapter({
@@ -170,7 +170,7 @@ describe("source-webhook — adapter wiring", () => {
     ).toBe("abc");
     expect(
       wh.extractSignature({
-        "X-Webhook-Signature": "ABC",
+        "X-Signature": "ABC",
       }),
     ).toBe("ABC");
     expect(wh.extractSignature({})).toBeUndefined();
@@ -198,7 +198,7 @@ describe("source-webhook — adapter wiring", () => {
 });
 
 describe("source-webhook — contentKindMap routing", () => {
-  it("uses defaultContentKind 'webhook-event' when no contentKindMap", async () => {
+  it("uses defaultContentKind 'document' when no contentKindMap", async () => {
     const store = new InMemoryCredentialStore({ logger: silentLogger() });
     const credentialId = await seedSecret(store, fixture.secret);
     const adapter = createSourceWebhookAdapter({

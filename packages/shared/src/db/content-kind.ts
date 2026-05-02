@@ -13,7 +13,7 @@
  *     string as the `'n8n-workflow'` content-kind value (they are
  *     deliberately one constant).
  *
- * v0.1 ships three values:
+ * v0.1 ships four values:
  *   - `'document'` — Drive docs / PDFs / arbitrary text. The
  *     two-pass classify→compile path with LLM merge.
  *   - `'n8n-workflow'` — n8n workflow JSON (PR 26). Routed to the
@@ -21,6 +21,12 @@
  *   - `'skill-bundle'` — Builder-skill `.skill` directories
  *     (PR 33+). Reserved for phase-b; the v0.1 compiler does
  *     not implement this branch.
+ *   - `'webhook-event'` — Generic inbound webhook payload (PR-I).
+ *     Forward-compat placeholder: no Compiler template exists in
+ *     v0.1. The source-webhook adapter's `defaultContentKind`
+ *     defaults to `'document'` instead; operators can set
+ *     `'webhook-event'` explicitly via `contentKindMap` to hold
+ *     events until a template ships.
  */
 
 export const CONTENT_KINDS = [
