@@ -190,9 +190,20 @@ export async function composeProductionWorkerContext(
 
   // 2. SourceAdapterRegistry — lazy resolution. The scanner
   //    invokes `registry.get(slug)` per binding scan; we cache
-  //    successful resolutions per BINDING (not per slug) so
-  //    multiple bindings of the same slug each get their own
-  //    credential resolution.
+  //    successful resolutions keyed by `slug` (one adapter
+  //    instance per slug, not per binding).
+  //
+  //    Round-3 fix #2: v0.1 expects ONE enabled binding per slug
+  //    per CLAUDE.md "Multi-project Asana bindings → never". The
+  //    resolver picks the first enabled binding deterministically
+  //    (ORDER BY created_at + LIMIT 1). If a deployment ever has
+  //    multiple bindings sharing a slug, only the first is honored
+  //    — operator-visible behavior should be to disable the
+  //    redundant bindings rather than expect both to fire. v0.2
+  //    revisits this if a real-customer trigger demands per-binding
+  //    adapter instances (would require keying the cache by
+  //    `binding_id` and changing the scanner to dispatch per
+  //    binding rather than per slug).
   const adapterCache = new Map<string, SourceAdapter>();
   const adapterRegistry = {
     /** Resolve the adapter for the FIRST enabled binding with the
