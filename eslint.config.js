@@ -135,4 +135,21 @@ export default tseslint.config(
       "opencoo/no-feature-env-vars": "off",
     },
   },
+
+  // 7. Real-LLM integration test files (`*.real-llm.test.ts`) read
+  //    `RUN_REAL_LLM` (gate flag — `=== '1'` skips the test in CI)
+  //    and `OPENROUTER_API_KEY` (provider credential). These are
+  //    CI/dev-only; no production code path touches them. The
+  //    `*.real-llm.test.ts` pattern is the canonical gating
+  //    convention: describe.skipIf(!RUN_REAL_LLM) wraps the suite,
+  //    so CI never calls the real provider. First use: PR-F
+  //    (source-asana Light-summary); future real-LLM tests follow
+  //    the same file-naming pattern and are covered here
+  //    automatically. See DECISIONS.md for the rationale entry.
+  {
+    files: ["**/*.real-llm.test.ts"],
+    rules: {
+      "opencoo/no-feature-env-vars": "off",
+    },
+  },
 );

@@ -19,6 +19,23 @@ The `users.id` column is uuid PK and `users.gitea_username` is UNIQUE — either
 
 ---
 
+## ESLint — real-LLM test files may read RUN_REAL_LLM + OPENROUTER_API_KEY
+
+The `*.real-llm.test.ts` file-naming pattern is the gating convention for tests
+that hit a real LLM provider. These files read `RUN_REAL_LLM` (gate flag — the
+suite wraps in `describe.skipIf(!RUN_REAL_LLM)` so CI never calls the provider)
+and `OPENROUTER_API_KEY` (provider credential). Both are CI/dev-only; no
+production code path reads them. Block 7 in `eslint.config.js` disables
+`opencoo/no-feature-env-vars` for this pattern — same mechanism as block 5
+(adapter sidecar URL tests) and block 6 (classifier injection corpus).
+
+The pattern is intentionally broad (`**/*.real-llm.test.ts`) so future real-LLM
+integration tests in any package are covered automatically without further
+`eslint.config.js` changes. First use: PR-F (source-asana Light-summary).
+Future real-LLM tests must follow the same file-naming convention.
+
+---
+
 ## See also
 
 - **`docs/decisions-resolved.md`** — the canonical contributor-facing list of resolved architectural decisions with one-paragraph rationale per entry. Closing an open decision above lands a paragraph there in the same PR.
