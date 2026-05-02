@@ -19,33 +19,28 @@
  * every var. The `no-feature-env-vars` ESLint rule (THREAT-MODEL
  * §2 invariant 9) is non-negotiable.
  *
- * # What this verb actually wires (PR-M1)
+ * # What this verb actually wires (PR-M2)
  *
- * Today, `runServe` boots BOTH engines in sequence:
+ * `runServe` boots BOTH engines in sequence:
  *
  *   1. `engine-self-operating.start({env})` — the management
  *      server. Failure exits the process with code 2.
- *   2. `engine-ingestion.start({env})` in `'probes-only'` mode
- *      (the engine-side default). This brings up the Fastify
- *      health/ready probes and the webhook receiver, but does
- *      NOT construct the BullMQ Workers — `mode: 'workers'`
- *      requires a fully composed `WorkerContext` (production
- *      WikiAdapter / LlmRouter / GuardAdapter /
- *      SourceAdapterRegistry / live wiki + credential wiring),
- *      and that composition root is owned by **PR-M2**, not
- *      this PR. Failure of the ingestion boot is logged to
- *      stderr and SWALLOWED — the management UI stays up and
- *      the operator can triage; we do not exit.
+ *   2. `engine-ingestion.start({env, mode: 'workers',
+ *      workerContext, workerConnection })` — production-mode
+ *      ingestion engine. The composition root attempts to build
+ *      a real `WorkerContext` (WikiAdapter via Gitea REST,
+ *      LlmRouter via Vercel AI SDK, GuardAdapter via the regex
+ *      catalog, SourceAdapterRegistry from live `sources_bindings`
+ *      rows). On any composition error (missing GITEA_URL,
+ *      ENCRYPTION_KEY, etc.) the factory falls back to
+ *      `mode: 'probes-only'` with a clear stderr line — the
+ *      management UI stays up and the operator can triage.
  *
- * Net effect after PR-M1: the operator can `pnpm opencoo` and
- * land on the management UI, the webhook receiver accepts
- * deliveries and writes them to `webhook_events`, and jobs
- * queue into Redis. Nothing dequeues them yet — workers ship
- * their boot path here but the engine boots in `'probes-only'`
- * by default. **PR-M2 flips the default ingestion factory to
- * `mode: 'workers'`** with a real WorkerContext built from the
- * shared pg.Pool / Redis / SseBus, at which point queued jobs
- * start getting drained and persisted to Gitea automatically.
+ * Net effect after PR-M2: a freshly-booted `pnpm opencoo` against
+ * a configured deployment dequeues webhook deliveries
+ * automatically — webhook → `webhook_events` row → BullMQ scanner
+ * job → ingestion_intake row → BullMQ compile job → wiki page
+ * commit, all without operator intervention.
  *
  * The boot-tolerance for the ingestion side mirrors
  * engine-self-operating's admin-API gating pattern (env
@@ -69,10 +64,13 @@ export type ServeStartFactory = (opts: {
 }) => Promise<ServeStartedEngine>;
 
 /** Matches `start({env})` from `@opencoo/engine-ingestion`. The
- *  shape is the same as the self-op factory — the orchestrator
- *  just chains both. */
+ *  PR-M2 shape extends with a `stderr` channel so the production
+ *  composition root can write fall-back-to-probes-only diagnostic
+ *  lines without dragging the orchestrator's logging into this
+ *  layer. */
 export type ServeIngestionStartFactory = (opts: {
   readonly env: Record<string, string | undefined>;
+  readonly stderr: { write: (s: string) => boolean };
 }) => Promise<ServeStartedEngine>;
 
 /** Subset of `EventEmitter` `runServe` consumes — `process`
@@ -111,22 +109,78 @@ async function defaultStartFactory(opts: {
   return mod.start({ env: opts.env });
 }
 
-/** @internal Default ingestion `startFactory`. Boots
- *  engine-ingestion in `'probes-only'` mode by default — the
- *  production WorkerContext composition root that wires
- *  WikiAdapter + GuardAdapter + LlmRouter + SourceAdapterRegistry
- *  lands in PR-M2. The fallback still gives the operator a
- *  webhook receiver + DB-backed intake table; jobs queue up in
- *  Redis and are dequeued once PR-M2 ships the production
- *  WorkerContext. */
+/** @internal Default ingestion `startFactory`. PR-M2 (phase-a
+ *  appendix #5): attempts to compose a production WorkerContext
+ *  (WikiAdapter + LlmRouter + GuardAdapter +
+ *  SourceAdapterRegistry from env) and boots
+ *  engine-ingestion in `mode: 'workers'`. On composition failure
+ *  (missing GITEA_URL / GITEA_PAT / ENCRYPTION_KEY, etc.) falls
+ *  back to `mode: 'probes-only'` with a clear stderr line — the
+ *  management UI stays up and the operator can fix the env
+ *  without restarting the management server.
+ *
+ *  The composition's pg.Pool + Redis are owned by the
+ *  WorkerContext bundle; the engine's own pg/Redis factories are
+ *  let alone (the engine's own pg.Pool services its Fastify
+ *  health probes). The closer attached to the returned engine
+ *  drains the composition resources after the workers stop. */
 async function defaultIngestionStartFactory(opts: {
   readonly env: Record<string, string | undefined>;
+  readonly stderr: { write: (s: string) => boolean };
 }): Promise<ServeStartedEngine> {
   const mod = await import("@opencoo/engine-ingestion");
-  // `mode` defaults to 'probes-only' inside the engine itself —
-  // boots without WorkerContext. PR-M2 swaps this to 'workers'
-  // once the production composition root lands.
-  return mod.start({ env: opts.env });
+  const composition = await import("../provision/production-composition.js");
+
+  // Try to compose the production WorkerContext. On any failure
+  // we fall back to probes-only — the operator gets the webhook
+  // receiver + management UI, and the failure log line names
+  // the missing ingredient.
+  let composed: Awaited<ReturnType<typeof composition.composeProductionFromEnv>> | null = null;
+  try {
+    composed = await composition.composeProductionFromEnv({ env: opts.env });
+  } catch (err) {
+    opts.stderr.write(
+      pc.yellow(
+        `opencoo: ingestion workers disabled (${describeError(err)}) — booting probes-only; webhook deliveries will queue in Redis until composition is fixed\n`,
+      ),
+    );
+    composed = null;
+  }
+
+  if (composed === null) {
+    // Fall back to probes-only — webhook receiver up, no Workers.
+    return mod.start({ env: opts.env });
+  }
+
+  const engine = await mod.start({
+    env: opts.env,
+    mode: "workers",
+    workerContext: composed.workerContext,
+    workerConnection: composed.redisConnection,
+  });
+
+  // Wrap close() so SIGTERM drains the production composition
+  // (BullMQ queue handle, pg.Pool, Redis) AFTER the workers stop.
+  // The engine's own close() already calls workers.closeAll()
+  // before its base shutdown; we only need to layer in the
+  // composition's resource cleanup on top.
+  const baseClose = engine.close.bind(engine);
+  return {
+    async close(): Promise<void> {
+      await baseClose();
+      // closeProducers releases the producer-side
+      // ingestion.scanner.classify Queue handle the composition
+      // opened. Best-effort.
+      await composed.workerContext.closeProducers().catch(() => undefined);
+      await Promise.all([
+        composed.pgPool.end().catch(() => undefined),
+        composed.redis
+          .quit()
+          .then(() => undefined)
+          .catch(() => undefined),
+      ]);
+    },
+  };
 }
 
 function describeError(err: unknown): string {
@@ -177,13 +231,18 @@ export async function runServe(args: ServeArgs): Promise<void> {
     return exit(2);
   }
 
-  // Co-boot engine-ingestion. Boot-tolerant — a missing
-  // production composition root in PR-M1 logs to stderr but
-  // doesn't abort the management UI. PR-M2 wires the production
-  // WorkerContext that closes the loop.
+  // Co-boot engine-ingestion. Boot-tolerant — a composition
+  // failure (missing GITEA_PAT / ENCRYPTION_KEY / etc.) drops the
+  // ingestion engine into `mode: 'probes-only'` instead of
+  // crashing the management UI. PR-M2 wires the production
+  // WorkerContext that closes the webhook → wiki loop when env
+  // is fully populated.
   let ingestionEngine: ServeStartedEngine | undefined;
   try {
-    ingestionEngine = await startIngestionFactory({ env: args.env });
+    ingestionEngine = await startIngestionFactory({
+      env: args.env,
+      stderr: args.stderr,
+    });
   } catch (err) {
     if (isExitSentinel(err)) throw err;
     args.stderr.write(
