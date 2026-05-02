@@ -38,6 +38,7 @@ import { z } from "zod";
 
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
+import { scrubPat } from "@opencoo/shared/scrub";
 import {
   defaultReviewModeFor,
   getSourceAdapterDescriptor,
@@ -52,6 +53,14 @@ import { requireCsrf } from "../csrf.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
+/** Status derivation (phase-a appendix #4 PR-A).
+ *  - `null`       if enabled=false (paused) OR no events ever (new binding)
+ *  - `'alert'`    if recent intake error, sig-fail, or DLQ depth > 0
+ *  - `'advisory'` if last event >24h ago on enabled binding, or >7d idle
+ *  - `'healthy'`  if events arriving normally with no failures
+ */
+type BindingStatus = "healthy" | "advisory" | "alert" | null;
+
 interface BindingRow {
   readonly id: string;
   readonly domainSlug: string;
@@ -60,6 +69,14 @@ interface BindingRow {
   readonly enabled: boolean;
   readonly lastScannedAt: string | null;
   readonly notes: string | null;
+  /** Human-readable name: `notes` if set, else `${adapterSlug} → ${domainSlug}`. */
+  readonly name: string;
+  /** 3-state health status, or null for neutral (new/paused). */
+  readonly status: BindingStatus;
+  /** ISO timestamp of the most-recent webhook_events.received_at, or null. */
+  readonly lastEventAt: string | null;
+  /** Scrubbed + truncated error string from ingestion_intake.error_class, or null. */
+  readonly lastError: string | null;
 }
 
 const REVIEW_MODES = ["auto", "approve", "review"] as const;
@@ -80,12 +97,29 @@ export interface RegisterSourceBindingsRoutesArgs {
    *  the binding row INSERT. When undefined, POST returns 500
    *  (composition-incomplete). The GET handler is unaffected. */
   readonly credentialStore?: CredentialStore;
+  /** Phase-a appendix #4 PR-A — BullMQ Queue instance for the
+   *  ingestion pipeline. Used to probe DLQ depth per binding's
+   *  queue. When undefined, DLQ depth is treated as 0 (no alert
+   *  from DLQ alone). Match the optional-injection pattern of
+   *  `credentialStore` above. */
+  readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>> };
 }
 
 export function registerSourceBindingsRoutes(
   args: RegisterSourceBindingsRoutesArgs,
 ): void {
   args.app.get("/api/admin/source-bindings", async () => {
+    // Phase-a appendix #4 PR-A: enriched query that joins
+    // webhook_events and ingestion_intake for status probing.
+    //
+    // Name derivation (no `name` column on sources_bindings):
+    //   prefer `notes` if non-null, else `${adapter_slug} → ${domain_slug}`.
+    //   A schema column for explicit name is a v0.2 enhancement.
+    //
+    // Status computation uses three sub-selects (one per signal):
+    //   1. Latest webhook_events.received_at for the binding.
+    //   2. sig-fail count in last 24h (signature_ok = false).
+    //   3. Latest non-null ingestion_intake.error_class within last 24h.
     const result = (await args.db.execute(sql`
       SELECT b.id::text AS id,
              d.slug AS domain_slug,
@@ -93,7 +127,31 @@ export function registerSourceBindingsRoutes(
              b.review_mode::text AS review_mode,
              b.enabled,
              b.last_scanned_at,
-             b.notes
+             b.notes,
+             COALESCE(b.notes, b.adapter_slug || ' → ' || d.slug) AS name,
+             (
+               SELECT w.received_at
+               FROM webhook_events w
+               WHERE w.binding_id = b.id
+               ORDER BY w.received_at DESC
+               LIMIT 1
+             ) AS last_event_at,
+             (
+               SELECT COUNT(*)::int
+               FROM webhook_events w
+               WHERE w.binding_id = b.id
+                 AND w.signature_ok = false
+                 AND w.received_at >= NOW() - INTERVAL '24 hours'
+             ) AS sig_fail_count_24h,
+             (
+               SELECT ii.error_class
+               FROM ingestion_intake ii
+               WHERE ii.binding_id = b.id
+                 AND ii.error_class IS NOT NULL
+                 AND ii.created_at >= NOW() - INTERVAL '24 hours'
+               ORDER BY ii.created_at DESC
+               LIMIT 1
+             ) AS latest_error_class
       FROM sources_bindings b
       JOIN domains d ON d.id = b.domain_id
       ORDER BY b.created_at DESC
@@ -107,22 +165,69 @@ export function registerSourceBindingsRoutes(
         enabled: boolean;
         last_scanned_at: Date | string | null;
         notes: string | null;
+        name: string;
+        last_event_at: Date | string | null;
+        sig_fail_count_24h: number;
+        latest_error_class: string | null;
       }>;
     };
-    const rows: BindingRow[] = result.rows.map((r) => ({
-      id: r.id,
-      domainSlug: r.domain_slug,
-      adapterSlug: r.adapter_slug,
-      reviewMode: r.review_mode,
-      enabled: r.enabled,
-      lastScannedAt:
-        r.last_scanned_at === null
+
+    // Probe DLQ depth once (not per-binding — v0.1 uses a shared
+    // ingestion queue; per-binding queues are v0.2). If no queue
+    // is injected, treat DLQ depth as 0.
+    let dlqDepth = 0;
+    if (args.ingestionQueue !== undefined) {
+      try {
+        const counts = await args.ingestionQueue.getJobCounts("failed");
+        dlqDepth = counts["failed"] ?? 0;
+      } catch {
+        // Non-fatal: DLQ probe failure does not block the status
+        // response. Treat as 0 so the UI doesn't flash spurious alerts.
+        dlqDepth = 0;
+      }
+    }
+
+    const rows: BindingRow[] = result.rows.map((r) => {
+      const lastEventAt =
+        r.last_event_at === null
           ? null
-          : r.last_scanned_at instanceof Date
-            ? r.last_scanned_at.toISOString()
-            : new Date(r.last_scanned_at).toISOString(),
-      notes: r.notes,
-    }));
+          : r.last_event_at instanceof Date
+            ? r.last_event_at.toISOString()
+            : new Date(r.last_event_at).toISOString();
+
+      const rawError = r.latest_error_class;
+      // Truncation pipeline: scrubPat first (removes credentials),
+      // then slice to 200 chars. (THREAT-MODEL §3.6 invariant 11)
+      const lastError =
+        rawError !== null ? scrubPat(rawError).slice(0, 200) : null;
+
+      const status = computeBindingStatus({
+        enabled: r.enabled,
+        lastEventAt,
+        sigFailCount24h: r.sig_fail_count_24h,
+        latestErrorClass: r.latest_error_class,
+        dlqDepth,
+      });
+
+      return {
+        id: r.id,
+        domainSlug: r.domain_slug,
+        adapterSlug: r.adapter_slug,
+        reviewMode: r.review_mode,
+        enabled: r.enabled,
+        lastScannedAt:
+          r.last_scanned_at === null
+            ? null
+            : r.last_scanned_at instanceof Date
+              ? r.last_scanned_at.toISOString()
+              : new Date(r.last_scanned_at).toISOString(),
+        notes: r.notes,
+        name: r.name,
+        status,
+        lastEventAt,
+        lastError,
+      };
+    });
     return { rows };
   });
 
@@ -306,6 +411,49 @@ export function registerSourceBindingsRoutes(
       return reply.code(201).send({ id });
     },
   );
+}
+
+// ─── Status computation (phase-a appendix #4 PR-A) ──────────────────────────
+
+interface ComputeBindingStatusArgs {
+  readonly enabled: boolean;
+  readonly lastEventAt: string | null;
+  readonly sigFailCount24h: number;
+  readonly latestErrorClass: string | null;
+  readonly dlqDepth: number;
+}
+
+/** Compute the 3-state health status for a source binding.
+ *
+ * Rules (verbatim from appendix #4):
+ *   null      → enabled=false (paused) OR no events ever (newly created, neutral)
+ *   'alert'   → latest ingestion_intake error_class non-null in last 24h,
+ *               OR sig-fail count in last 24h ≥ 1,
+ *               OR DLQ depth > 0.
+ *   'advisory'→ enabled=true AND last event >24h ago (stale/idle).
+ *   'healthy' → events arriving normally, no failures.
+ */
+function computeBindingStatus(args: ComputeBindingStatusArgs): BindingStatus {
+  if (!args.enabled) return null;
+  if (args.lastEventAt === null) return null; // never fired — neutral
+
+  // Alert: any failure signal present.
+  if (
+    args.latestErrorClass !== null ||
+    args.sigFailCount24h >= 1 ||
+    args.dlqDepth > 0
+  ) {
+    return "alert";
+  }
+
+  // Advisory: enabled but last event >24h ago (stale/idle).
+  const lastEventMs = new Date(args.lastEventAt).getTime();
+  const twentyFourHoursMs = 24 * 60 * 60 * 1000;
+  if (Date.now() - lastEventMs > twentyFourHoursMs) {
+    return "advisory";
+  }
+
+  return "healthy";
 }
 
 /** Validate credentials against the adapter's descriptor. Walks
