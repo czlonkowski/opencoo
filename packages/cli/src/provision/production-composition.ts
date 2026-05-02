@@ -105,9 +105,19 @@ export async function composeProductionFromEnv(
   const wikiRepoPrefix = "wiki";
   const instanceId = "opencoo";
 
+  // Single ConnectionOptions object reused for both the Redis
+  // client construction options AND the BullMQ queue handle the
+  // composition exposes — keeps the BullMQ requirements
+  // (maxRetriesPerRequest: null, enableReadyCheck: false) in one
+  // place.
+  const redisConnection: ConnectionOptions = {
+    url: redisUrl,
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+  };
+
   const pgPool = new pg.Pool({ connectionString: databaseUrl });
   const redis = new Redis(redisUrl, {
-    // BullMQ requirement.
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
   });
@@ -127,12 +137,8 @@ export async function composeProductionFromEnv(
 
   // WikiAdapter — production Gitea REST client wrapped in the
   // shared adapter shape.
-  const giteaClient = new GiteaRestClient({
-    url: giteaUrl,
-    token: giteaPat,
-  });
   const wikiAdapter = giteaWikiAdapter({
-    client: giteaClient,
+    client: new GiteaRestClient({ url: giteaUrl, token: giteaPat }),
     owner: provisionOrg,
     repoPrefix: wikiRepoPrefix,
     branch: wikiBranch,
@@ -172,11 +178,7 @@ export async function composeProductionFromEnv(
       typeof composeProductionWorkerContext
     >[0]["db"],
     logger,
-    redisConnection: {
-      url: redisUrl,
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-    },
+    redisConnection,
     redisClient: redis,
     credentialStore,
     sourceAdapterFactories,
@@ -190,16 +192,7 @@ export async function composeProductionFromEnv(
     instanceId,
   });
 
-  return {
-    workerContext,
-    redisConnection: {
-      url: redisUrl,
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-    },
-    pgPool,
-    redis,
-  };
+  return { workerContext, redisConnection, pgPool, redis };
 }
 
 /** Multi-provider dispatcher — routes every `LlmProviderCall` to
@@ -213,6 +206,30 @@ export async function composeProductionFromEnv(
  *  underlying provider's `LlmProviderError` surfaces on the
  *  first call for that provider; the per-pipeline retry policy
  *  bubbles it. */
+/** Provider-specific env-var → ProviderOptions field mapping.
+ *  Centralised so a future env-var rename doesn't require touching
+ *  the resolver below. Per-provider keys aren't new — already
+ *  standard `@ai-sdk/*` practice. */
+const PROVIDER_ENV_OPTS: Readonly<
+  Record<string, { readonly envVar: string; readonly field: "apiKey" | "baseUrl" }>
+> = {
+  openai: { envVar: "OPENAI_API_KEY", field: "apiKey" },
+  anthropic: { envVar: "ANTHROPIC_API_KEY", field: "apiKey" },
+  google: { envVar: "GOOGLE_API_KEY", field: "apiKey" },
+  ollama: { envVar: "OLLAMA_BASE_URL", field: "baseUrl" },
+};
+
+function providerOptsFromEnv(
+  env: Record<string, string | undefined>,
+  providerName: string,
+): { apiKey?: string; baseUrl?: string } {
+  const spec = PROVIDER_ENV_OPTS[providerName];
+  if (spec === undefined) return {};
+  const value = env[spec.envVar];
+  if (value === undefined || value.length === 0) return {};
+  return { [spec.field]: value };
+}
+
 function createMultiProviderDispatcher(
   env: Record<string, string | undefined>,
   logger: Logger,
@@ -221,27 +238,12 @@ function createMultiProviderDispatcher(
   // makes the dispatcher tolerant of missing optional deps.
   const cache = new Map<string, Promise<LlmProvider>>();
   const resolve = (providerName: string): Promise<LlmProvider> => {
-    let cached = cache.get(providerName);
+    const cached = cache.get(providerName);
     if (cached !== undefined) return cached;
-    cached = (async (): Promise<LlmProvider> => {
-      // Provider-specific opts. Centralised so a future env-var
-      // rename doesn't require touching this dispatcher.
-      const opts: { apiKey?: string; baseUrl?: string } = {};
-      if (providerName === "openai") {
-        const k = env["OPENAI_API_KEY"];
-        if (k !== undefined && k.length > 0) opts.apiKey = k;
-      } else if (providerName === "anthropic") {
-        const k = env["ANTHROPIC_API_KEY"];
-        if (k !== undefined && k.length > 0) opts.apiKey = k;
-      } else if (providerName === "google") {
-        const k = env["GOOGLE_API_KEY"];
-        if (k !== undefined && k.length > 0) opts.apiKey = k;
-      } else if (providerName === "ollama") {
-        const k = env["OLLAMA_BASE_URL"];
-        if (k !== undefined && k.length > 0) opts.baseUrl = k;
-      }
-      return createProvider(providerName as never, opts);
-    })().catch((err: unknown) => {
+    const pending = createProvider(
+      providerName as never,
+      providerOptsFromEnv(env, providerName),
+    ).catch((err: unknown) => {
       // Don't cache the rejection — let the next call retry the
       // import in case the operator fixes the env mid-run.
       cache.delete(providerName);
@@ -251,8 +253,8 @@ function createMultiProviderDispatcher(
       });
       throw err;
     });
-    cache.set(providerName, cached);
-    return cached;
+    cache.set(providerName, pending);
+    return pending;
   };
 
   return {
@@ -263,99 +265,74 @@ function createMultiProviderDispatcher(
   };
 }
 
+/** Try-import + register one adapter factory. A missing optional
+ *  adapter package logs + skips rather than crashing composition.
+ *  The static-string `import(...)` calls upstream keep TS module
+ *  resolution + bundler cache lookups intact; this helper only
+ *  factors out the try/catch + logging shape. */
+async function tryLoadAdapter(
+  out: Partial<Record<string, ProductionSourceAdapterFactory>>,
+  logger: Logger,
+  slug: string,
+  build: () => Promise<ProductionSourceAdapterFactory>,
+): Promise<void> {
+  try {
+    out[slug] = await build();
+  } catch (err) {
+    logger.warn("source_adapter_factory.skipped", {
+      adapter_slug: slug,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 /** Dynamic-import every shipped SourceAdapter package and adapt
- *  its factory signature to the production-context narrower shape. */
+ *  its factory signature to the production-context narrower shape.
+ *
+ *  Drive + n8n require production-only client constructors
+ *  (`makeDrive`, `makeApi`); v0.1 throws inside the produced
+ *  adapter with a "production client not wired" message rather
+ *  than silently returning a stub when the operator binds them
+ *  via the UI. */
 async function loadSourceAdapterFactories(
   logger: Logger,
 ): Promise<Readonly<Record<string, ProductionSourceAdapterFactory>>> {
   const out: Partial<Record<string, ProductionSourceAdapterFactory>> = {};
-  // Each block is a try-import — a missing optional adapter
-  // package logs + skips rather than crashing composition.
-  try {
+  await tryLoadAdapter(out, logger, "asana", async () => {
     const mod = await import("@opencoo/source-asana");
-    out["asana"] = (a: Parameters<ProductionSourceAdapterFactory>[0]) =>
-      mod.createAsanaSourceAdapter({
-        credentialStore: a.credentialStore,
-        credentialId: a.credentialId,
-        config: a.config,
-      });
-  } catch (err) {
-    logger.warn("source_adapter_factory.skipped", {
-      adapter_slug: "asana",
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-  try {
+    return (a) => mod.createAsanaSourceAdapter(a);
+  });
+  await tryLoadAdapter(out, logger, "fireflies", async () => {
     const mod = await import("@opencoo/source-fireflies");
-    out["fireflies"] = (a: Parameters<ProductionSourceAdapterFactory>[0]) =>
-      mod.createFirefliesSourceAdapter({
-        credentialStore: a.credentialStore,
-        credentialId: a.credentialId,
-        config: a.config,
-      });
-  } catch (err) {
-    logger.warn("source_adapter_factory.skipped", {
-      adapter_slug: "fireflies",
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-  try {
+    return (a) => mod.createFirefliesSourceAdapter(a);
+  });
+  await tryLoadAdapter(out, logger, "webhook", async () => {
     const mod = await import("@opencoo/source-webhook");
-    out["webhook"] = (a: Parameters<ProductionSourceAdapterFactory>[0]) =>
-      mod.createSourceWebhookAdapter({
-        credentialStore: a.credentialStore,
-        credentialId: a.credentialId,
-        config: a.config,
-      });
-  } catch (err) {
-    logger.warn("source_adapter_factory.skipped", {
-      adapter_slug: "webhook",
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-  // Drive + n8n require production-only client constructors
-  // (`makeDrive`, `makeApi`); the CLI bin.ts holds the contract
-  // that v0.1 throws on these. The composition reads the same
-  // env-gated shape — when env is missing the factory throws
-  // with the "production client not wired" message rather than
-  // silently returning a stub.
-  try {
+    return (a) => mod.createSourceWebhookAdapter(a);
+  });
+  await tryLoadAdapter(out, logger, "drive", async () => {
     const mod = await import("@opencoo/source-drive");
-    out["drive"] = (a: Parameters<ProductionSourceAdapterFactory>[0]) =>
+    return (a) =>
       mod.createGoogleDriveAdapter({
-        credentialStore: a.credentialStore,
-        credentialId: a.credentialId,
-        config: a.config,
+        ...a,
         makeDrive: () => {
           throw new Error(
             "drive: production makeDrive not wired in v0.1 — bind via UI when adapter ships",
           );
         },
       });
-  } catch (err) {
-    logger.warn("source_adapter_factory.skipped", {
-      adapter_slug: "drive",
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-  try {
+  });
+  await tryLoadAdapter(out, logger, "n8n", async () => {
     const mod = await import("@opencoo/source-n8n");
-    out["n8n"] = (a: Parameters<ProductionSourceAdapterFactory>[0]) =>
+    return (a) =>
       mod.createN8nSourceAdapter({
-        credentialStore: a.credentialStore,
-        credentialId: a.credentialId,
-        config: a.config,
+        ...a,
         makeApi: () => {
           throw new Error(
             "n8n: production makeApi not wired in v0.1 — bind via UI when adapter ships",
           );
         },
       });
-  } catch (err) {
-    logger.warn("source_adapter_factory.skipped", {
-      adapter_slug: "n8n",
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  });
   return out as Readonly<Record<string, ProductionSourceAdapterFactory>>;
 }
