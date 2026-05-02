@@ -327,6 +327,35 @@ The following paths are now registered and enumerable via `opencoo doctor`:
 
 ---
 
+## Appendix #5 (PR-M1, PR-M2, PR-M3) — Production scheduling + worker boot + pilot runbook
+
+Three PRs landed AFTER `0.1.0-a` shipped (2026-05-01) to close the "make it run on its own" gap appendix #4 surfaced — operators could *see* runs unfold via the Activity feed but the engine was inert from `pnpm opencoo` until manual BullMQ pushes. Appendix #5 unblocks pilot real-data smoke; it does not block the `0.1.0-a` tag (already cut).
+
+### Added
+
+#### Boot path
+
+- **PR-M1** (`bc23026` / #53) — co-boot `engine-ingestion` from `pnpm opencoo` in `mode: 'workers'`. New `buildEngineWorker` helper sibling to `buildEngineQueue`. New `composeProductionFromEnv` composition root in `packages/cli/src/provision/production-composition.ts` constructs a real `WorkerContext` (WikiAdapter via Gitea REST; LlmRouter with lazy-imported per-provider `@ai-sdk/*` modules; GuardAdapter via the regex catalog; SourceAdapterRegistry built from live `sources_bindings` rows). Boot-tolerant: composition failure (missing `GITEA_PAT` / `ENCRYPTION_KEY`) falls back to `mode: 'probes-only'` — management UI stays up; webhook receiver unavailable until next restart. SSE bus forwarded so per-job lifecycle events (compile / scanner / index-rebuild / cleanup) publish onto the same bus the `/api/admin/events` stream serves. SIGTERM drains both engines in parallel within ~30s.
+- **PR-M2** (`2838fdf` / #54) — production scheduler. BullMQ recurring jobs dispatch `agent_instances` rows on each row's `schedule_cron`; `nextFireAt` computed via `cron-parser`. New `opencoo agents seed` CLI verb inserts default `agent_instances` rows (one per scheduled-class agent: Heartbeat, Lint, Surfacer; Chat + Builder are on-demand and intentionally excluded), idempotent on the `(definition_slug, name)` unique. `defaultScheduleCron` populated on the three scheduled-class agent definitions. New `/api/admin/scheduler` admin-API route returns the registered schedule snapshot with `lastFireAt` from the most recent `agent_runs.started_at`. AgentDispatcher infrastructure boots with an empty `AgentRunnerRegistry` — production agent runners require `HttpMcpToolClient` (PR 23+, phase b); the rows are seeded and the route enumerates them so phase-b wiring is a registry-population PR rather than a cross-cutting refactor.
+- **PR-M3** (this PR) — `docs/pilot-runbook.md` (operator-facing runbook walking pre-flight → first boot → bind a real Asana source → real-data smoke → rollback → §5 PR-checklist verification → sign-off checklist) and `scripts/smoke-real-data.ts` (operator probe — provisions transient test domain + generic-webhook binding via raw SQL, posts an HMAC-signed fixture event, polls for the `webhook_events` and `ingestion_intake` rows landing within bounded timeouts, tears down its scaffolding before exit). Registered as `pnpm smoke:real-data`. No engine code; no schema changes; no new env vars. The runbook explicitly enumerates the `AgentRunnerRegistry` gap and other v0.1 deferrals (DLQ retry workers, per-domain LLM-policy aware scheduling, cron timezone awareness, scheduler UI, smoke `--boot` mode) so operators don't bisect non-issues.
+
+### Schema
+
+None. Appendix #5 is pure Boot orchestration + docs.
+
+### Configuration
+
+No new env vars. Appendix #5 reads only from the existing allow-list. The runbook's required-env enumeration in §1 mirrors `production-composition.ts`'s `requireWithFile` set; `tests/smoke-real-data.test.ts` pins the same set so a future drift surfaces in CI.
+
+### Residual advisories (non-blocking, tracked for the appendix #5 follow-up issue)
+
+- **`AgentRunnerRegistry` empty at boot.** Heartbeat / Lint / Surfacer scheduled rows seed correctly and the dispatcher registers their cron triggers, but no runner is wired to actually invoke the agents. Production runners need `HttpMcpToolClient`; landing in phase b alongside PR 23+. Until then, `/api/admin/scheduler` enumerates seeded schedules with `nextFireAt` populated and `lastFireAt: null`.
+- **No manual-trigger CLI for scheduled agents.** `opencoo agents seed` writes the rows; there's no `opencoo agents fire <slug>` verb. Operators trigger ad-hoc runs via `psql` (insert into `agent_runs` directly) or by awaiting the next cron tick. Tracked as a phase-b convenience.
+- **`pnpm smoke:real-data --boot` is not implemented.** The operator runs `pnpm opencoo` in another terminal first; the smoke script asserts `--boot` is passed and exits 1 with a clear message otherwise. Self-boot is a phase-c convenience.
+- **Smoke writes a plaintext credential.** The script's webhook fixture signs with a raw secret stored on the binding's `config` jsonb (not via `CredentialStore`). Against a `CredentialStore`-decrypting receiver this surfaces as a 401; the script names it explicitly. Real-Asana flow (per the runbook §3) is not affected.
+
+---
+
 ### Phase-a EXIT GATE STATUS
 
 `IMPLEMENTATION-PLAN.md` §1.3 enumerates the criteria. Status as of `d4ec0c6` (all 10 appendix-4 PRs merged):

@@ -21,7 +21,8 @@
     "lint:root": "eslint . --ignore-pattern 'tests/eslint-fixtures/**'",
     "lint:fixtures": "eslint --no-warn-ignored --no-error-on-unmatched-pattern 'tests/eslint-fixtures/**/*.{ts,tsx}'",
     "format": "prettier --write .",
-    "opencoo": "node packages/cli/dist/bin.js"
+    "opencoo": "node packages/cli/dist/bin.js",
+    "smoke:real-data": "node --experimental-strip-types scripts/smoke-real-data.ts"
   },
   "devDependencies": {
     "@opencoo/eslint-plugin": "workspace:*",
