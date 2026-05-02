@@ -282,6 +282,40 @@ describe("admin-api GET /api/admin/redaction-events — metadata list", () => {
     expect(body.events[1]!.pipeline).toBe("ingestion-older");
   });
 
+  it("clamps negative and zero ?limit= to 1 (DoS guard)", async () => {
+    const f = await makeAdminFixture();
+    cleanup = f.close;
+    f.gitea.responses.set(ADMIN_PAT, {
+      username: "alice",
+      teams: ["opencoo-admins"],
+    });
+
+    // Insert 3 events.
+    for (let i = 0; i < 3; i++) {
+      await insertRedactionEvent(f.raw, { pipeline: `q${i}` });
+    }
+
+    // ?limit=-1 must not return all rows — it must clamp to 1.
+    const resNeg = await f.app.inject({
+      method: "GET",
+      url: "/api/admin/redaction-events?limit=-1",
+      headers: { authorization: `Bearer ${ADMIN_PAT}` },
+    });
+    expect(resNeg.statusCode).toBe(200);
+    const bodyNeg = JSON.parse(resNeg.body) as { events: unknown[] };
+    expect(bodyNeg.events).toHaveLength(1);
+
+    // ?limit=0 must also clamp to 1.
+    const resZero = await f.app.inject({
+      method: "GET",
+      url: "/api/admin/redaction-events?limit=0",
+      headers: { authorization: `Bearer ${ADMIN_PAT}` },
+    });
+    expect(resZero.statusCode).toBe(200);
+    const bodyZero = JSON.parse(resZero.body) as { events: unknown[] };
+    expect(bodyZero.events).toHaveLength(1);
+  });
+
   it("respects ?limit= param (default 100)", async () => {
     const f = await makeAdminFixture();
     cleanup = f.close;

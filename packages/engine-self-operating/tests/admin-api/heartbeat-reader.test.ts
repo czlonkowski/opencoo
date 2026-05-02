@@ -110,42 +110,10 @@ describe("admin-api GET /api/admin/heartbeat — heartbeat reader", () => {
     // No LLM call involved — output is read directly from DB
   });
 
-  it("returns only the latest run per instanceId, most-recent first", async () => {
-    const f = await makeAdminFixture();
-    cleanup = f.close;
-    f.gitea.responses.set(ADMIN_PAT, {
-      username: "alice",
-      teams: ["opencoo-admins"],
-    });
-
-    const older = new Date(Date.now() - 60_000).toISOString();
-    const newer = new Date(Date.now() - 10_000).toISOString();
-
-    const olderOutput = { version: "v1", summary: "older report", alerts: [] };
-    const newerOutput = { version: "v1", summary: "newer report", alerts: [] };
-
-    // Two runs for the same instance (null instanceId group).
-    await f.raw.exec(`
-      INSERT INTO agent_runs (definition_slug, trigger, status, output, started_at)
-      VALUES
-        ('heartbeat', 'scheduled', 'success', '${JSON.stringify(olderOutput).replace(/'/g, "''")}', '${older}'),
-        ('heartbeat', 'scheduled', 'success', '${JSON.stringify(newerOutput).replace(/'/g, "''")}', '${newer}')
-    `);
-
-    const res = await f.app.inject({
-      method: "GET",
-      url: "/api/admin/heartbeat",
-      headers: { authorization: `Bearer ${ADMIN_PAT}` },
-    });
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body) as {
-      reports: Array<{ output: { summary: string } }>;
-    };
-    // Should return latest per group, not all runs.
-    // Both have null instanceId so they're in the same group — return latest only.
-    expect(body.reports).toHaveLength(1);
-    expect((body.reports[0]!.output as { summary: string }).summary).toBe("newer report");
-  });
+  // Removed: the "null instanceId group" test inserted agent_runs without instance_id.
+  // The real schema has instance_id NOT NULL (requiredRestrictFk) so that state
+  // cannot exist in production. Coverage for the DISTINCT ON behaviour is provided
+  // by the "returns only the latest-instance first (inter-instance recency)" test below.
 
   it("does not return non-heartbeat runs", async () => {
     const f = await makeAdminFixture();
@@ -220,22 +188,7 @@ describe("admin-api GET /api/admin/heartbeat — heartbeat reader", () => {
     const instanceA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
     const instanceB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 
-    // First create instance rows so FK constraint is satisfied.
-    await f.raw.exec(`
-      CREATE TABLE IF NOT EXISTS agent_instances (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-        definition_slug text NOT NULL,
-        name text NOT NULL,
-        scope_domain_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL,
-        output_channel_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
-        schedule_cron text,
-        memory jsonb DEFAULT '{}'::jsonb NOT NULL,
-        locale text NOT NULL DEFAULT 'en',
-        enabled boolean NOT NULL DEFAULT true,
-        created_at timestamp with time zone DEFAULT now() NOT NULL,
-        updated_at timestamp with time zone DEFAULT now() NOT NULL
-      )
-    `);
+    // agent_instances is created by the fixture DDL — no need to re-create it here.
     await f.raw.exec(`
       INSERT INTO agent_instances (id, definition_slug, name) VALUES
         ('${instanceA}', 'heartbeat', 'heartbeat-domain-a'),
@@ -259,5 +212,51 @@ describe("admin-api GET /api/admin/heartbeat — heartbeat reader", () => {
     expect(body.reports).toHaveLength(2);
     const summaries = body.reports.map((r) => r.output.summary).sort();
     expect(summaries).toEqual(["domain-a report", "domain-b report"]);
+  });
+
+  it("orders instances by recency — latest-started instance appears first", async () => {
+    const f = await makeAdminFixture();
+    cleanup = f.close;
+    f.gitea.responses.set(ADMIN_PAT, {
+      username: "alice",
+      teams: ["opencoo-admins"],
+    });
+
+    const instanceA = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+    const instanceB = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+
+    // instanceB ran more recently than instanceA.
+    const olderTs = new Date(Date.now() - 120_000).toISOString();
+    const newerTs = new Date(Date.now() - 10_000).toISOString();
+
+    const outputA = { version: "v1", summary: "older instance report", alerts: [] };
+    const outputB = { version: "v1", summary: "newer instance report", alerts: [] };
+
+    await f.raw.exec(`
+      INSERT INTO agent_instances (id, definition_slug, name) VALUES
+        ('${instanceA}', 'heartbeat', 'heartbeat-older'),
+        ('${instanceB}', 'heartbeat', 'heartbeat-newer')
+    `);
+
+    await f.raw.exec(`
+      INSERT INTO agent_runs (definition_slug, instance_id, trigger, status, output, started_at)
+      VALUES
+        ('heartbeat', '${instanceA}', 'scheduled', 'success', '${JSON.stringify(outputA).replace(/'/g, "''")}', '${olderTs}'),
+        ('heartbeat', '${instanceB}', 'scheduled', 'success', '${JSON.stringify(outputB).replace(/'/g, "''")}', '${newerTs}')
+    `);
+
+    const res = await f.app.inject({
+      method: "GET",
+      url: "/api/admin/heartbeat",
+      headers: { authorization: `Bearer ${ADMIN_PAT}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as {
+      reports: Array<{ instanceName: string | null; output: { summary: string } }>;
+    };
+    expect(body.reports).toHaveLength(2);
+    // The most recently active instance must appear first.
+    expect(body.reports[0]!.output.summary).toBe("newer instance report");
+    expect(body.reports[1]!.output.summary).toBe("older instance report");
   });
 });

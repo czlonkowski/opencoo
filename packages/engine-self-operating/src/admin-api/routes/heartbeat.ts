@@ -40,18 +40,25 @@ export function registerHeartbeatRoutes(
     // Fetch the latest completed heartbeat run per instance_id group.
     // NULL instance_id is treated as its own group (no-instance runs).
     // Only rows with non-null output are returned (running/failed excluded).
+    // Inner query: pick the latest completed run per instance_id group.
+    // Outer query: order groups by recency so the most recently active
+    // instance appears first in the response.
     const result = (await args.db.execute(sql`
-      SELECT DISTINCT ON (ar.instance_id)
-        ar.id::text           AS "runId",
-        ar.instance_id::text  AS "instanceId",
-        ai.name               AS "instanceName",
-        ar.started_at         AS "startedAt",
-        ar.output             AS output
-      FROM agent_runs ar
-      LEFT JOIN agent_instances ai ON ai.id = ar.instance_id
-      WHERE ar.definition_slug = 'heartbeat'
-        AND ar.output IS NOT NULL
-      ORDER BY ar.instance_id, ar.started_at DESC
+      SELECT *
+      FROM (
+        SELECT DISTINCT ON (ar.instance_id)
+          ar.id::text           AS "runId",
+          ar.instance_id::text  AS "instanceId",
+          ai.name               AS "instanceName",
+          ar.started_at         AS "startedAt",
+          ar.output             AS output
+        FROM agent_runs ar
+        LEFT JOIN agent_instances ai ON ai.id = ar.instance_id
+        WHERE ar.definition_slug = 'heartbeat'
+          AND ar.output IS NOT NULL
+        ORDER BY ar.instance_id, ar.started_at DESC
+      ) latest
+      ORDER BY "startedAt" DESC
     `)) as unknown as {
       rows: Array<Record<string, unknown>>;
     };

@@ -15,7 +15,7 @@
  *     the byte ranges, never the source bytes. §3.3.
  *   - Read-only tab: append-only invariant §2 invariant 8.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, useCallback, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { fetchAdmin } from "../lib/api.js";
@@ -107,6 +107,35 @@ function HeartbeatView(props: { fetchImpl?: typeof fetch }): JSX.Element {
   );
 }
 
+function CopyButton(props: { value: string; label: string }): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(() => {
+    void navigator.clipboard.writeText(props.value).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }, [props.value]);
+  return (
+    <button
+      onClick={handleCopy}
+      title={copied ? props.value : `Copy run ID: ${props.value}`}
+      aria-label={`Copy run ID ${props.value}`}
+      style={{
+        fontFamily: "var(--font-mono)",
+        fontSize: 11,
+        color: copied ? "var(--healthy)" : "var(--ink-3)",
+        background: "transparent",
+        border: "1px solid var(--rule)",
+        borderRadius: 3,
+        padding: "1px 6px",
+        cursor: "pointer",
+      }}
+    >
+      {props.label}
+    </button>
+  );
+}
+
 function HeartbeatCard(props: { report: HeartbeatReport }): JSX.Element {
   const { t } = useTranslation();
   const { report } = props;
@@ -149,8 +178,8 @@ function HeartbeatCard(props: { report: HeartbeatReport }): JSX.Element {
             gap: 12,
           }}
         >
-          {/* Deep-link to the underlying agent_runs.id */}
-          <span title={report.runId}>{runIdShort}</span>
+          {/* Copy the full run UUID to clipboard (Activity runs route is a PR-B addition). */}
+          <CopyButton value={report.runId} label={runIdShort} />
           {report.startedAt !== null && (
             <span>{new Date(report.startedAt).toLocaleString()}</span>
           )}

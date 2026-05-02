@@ -158,9 +158,8 @@ describe("Reports route — heartbeat sub-tab", () => {
     const fetchImpl = makeFetch({ reports: [] });
     render(<Reports fetchImpl={fetchImpl} />);
 
-    await waitFor(() => true); // wait for load
-    // Empty state renders without crash.
-    // The component renders "No heartbeat reports yet." or similar.
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    expect(await screen.findByText(/no heartbeat reports yet/i)).toBeInTheDocument();
   });
 
   it("shows instance name if available", async () => {
@@ -234,7 +233,7 @@ describe("Reports route — redaction events sub-tab", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /redaction/i }));
 
-    await waitFor(() => true);
-    // Empty state renders without crash.
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    expect(await screen.findByText(/no redaction events yet/i)).toBeInTheDocument();
   });
 });

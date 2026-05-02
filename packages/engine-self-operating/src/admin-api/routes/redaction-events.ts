@@ -45,7 +45,8 @@ export function registerRedactionEventsRoutes(
       query["limit"] !== undefined ? parseInt(query["limit"], 10) : DEFAULT_LIMIT;
     const rawOffset =
       query["offset"] !== undefined ? parseInt(query["offset"], 10) : 0;
-    const limit = Math.min(isNaN(rawLimit) ? DEFAULT_LIMIT : rawLimit, MAX_LIMIT);
+    const parsed = isNaN(rawLimit) ? DEFAULT_LIMIT : rawLimit;
+    const limit = Math.max(1, Math.min(MAX_LIMIT, parsed));
     const offset = isNaN(rawOffset) || rawOffset < 0 ? 0 : rawOffset;
 
     const pipelineFilter = query["pipeline"] ?? null;
