@@ -12,13 +12,15 @@
  *   - Sovereignty-diff confirmation before any action that changes
  *     the binding's effective LLM policy scope.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { StatusPill } from "../../components/StatusPill.js";
 import { Btn } from "../../components/Btn.js";
-import { fetchAdmin } from "../../lib/api.js";
+import { NoticeRow } from "../../components/NoticeRow.js";
+import { StatusPill } from "../../components/StatusPill.js";
+import { fetchAdmin, fetchOptsFor } from "../../lib/api.js";
 import type { SourceBinding } from "../../types.js";
+import { ReviewTableHeader } from "./ReviewTableHeader.js";
 
 // ─── Extended binding type with PR-C addition ────────────────────────────────
 
@@ -36,32 +38,6 @@ interface SourceBindingsResponse {
 export interface SourceBindingsReviewProps {
   /** @internal Test seam — defaults to globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function buildFetchOpts(
-  fetchImpl: typeof fetch | undefined,
-): { fetchImpl?: typeof fetch } {
-  return fetchImpl !== undefined ? { fetchImpl } : {};
-}
-
-function NoticeRow(props: {
-  readonly tone: "alert" | "muted";
-  readonly children: ReactNode;
-}): JSX.Element {
-  return (
-    <div
-      style={{
-        color: props.tone === "alert" ? "var(--alert)" : "var(--ink-3)",
-        fontFamily: "var(--font-sans)",
-        fontSize: 13,
-        padding: "16px 0",
-      }}
-    >
-      {props.children}
-    </div>
-  );
 }
 
 // ─── Sovereignty-diff confirmation dialog ─────────────────────────────────────
@@ -146,7 +122,7 @@ export function SourceBindingsReview(
       try {
         const r = await fetchAdmin<SourceBindingsResponse>(
           "/api/admin/source-bindings",
-          buildFetchOpts(props.fetchImpl),
+          fetchOptsFor(props.fetchImpl),
         );
         setRows(r.rows);
       } catch {
@@ -179,13 +155,13 @@ export function SourceBindingsReview(
         {
           method: "POST",
           body: { review_mode: "auto" },
-          ...buildFetchOpts(props.fetchImpl),
+          ...fetchOptsFor(props.fetchImpl),
         },
       );
       // Refresh the list after successful action.
       const r = await fetchAdmin<SourceBindingsResponse>(
         "/api/admin/source-bindings",
-        buildFetchOpts(props.fetchImpl),
+        fetchOptsFor(props.fetchImpl),
       );
       setRows(r.rows);
     } catch {
@@ -216,32 +192,15 @@ export function SourceBindingsReview(
           fontSize: 13,
         }}
       >
-        <thead>
-          <tr style={{ borderBottom: "1px solid var(--rule)" }}>
-            {[
-              t("review.sourceBindings.columns.name"),
-              t("review.sourceBindings.columns.status"),
-              t("review.sourceBindings.columns.pending"),
-              t("review.sourceBindings.columns.mode"),
-              t("review.sourceBindings.columns.actions"),
-            ].map((col) => (
-              <th
-                key={col}
-                style={{
-                  textAlign: "left",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 10,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--ink-3)",
-                  padding: "6px 8px",
-                }}
-              >
-                {col}
-              </th>
-            ))}
-          </tr>
-        </thead>
+        <ReviewTableHeader
+          columns={[
+            t("review.sourceBindings.columns.name"),
+            t("review.sourceBindings.columns.status"),
+            t("review.sourceBindings.columns.pending"),
+            t("review.sourceBindings.columns.mode"),
+            t("review.sourceBindings.columns.actions"),
+          ]}
+        />
         <tbody>
           {rows.map((binding) => (
             <tr key={binding.id} style={{ borderBottom: "1px solid var(--rule)" }}>

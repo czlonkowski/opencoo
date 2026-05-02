@@ -12,11 +12,13 @@
  * Security: all state-changing calls use existing audited endpoints
  * with CSRF tokens injected by fetchAdmin. No new endpoints.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Btn } from "../../components/Btn.js";
-import { fetchAdmin, ApiValidationError } from "../../lib/api.js";
+import { NoticeRow } from "../../components/NoticeRow.js";
+import { ApiValidationError, fetchAdmin, fetchOptsFor } from "../../lib/api.js";
+import { ReviewTableHeader } from "./ReviewTableHeader.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -47,30 +49,6 @@ export interface SurfacerCandidatesProps {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function buildFetchOpts(
-  fetchImpl: typeof fetch | undefined,
-): { fetchImpl?: typeof fetch } {
-  return fetchImpl !== undefined ? { fetchImpl } : {};
-}
-
-function NoticeRow(props: {
-  readonly tone: "alert" | "muted";
-  readonly children: ReactNode;
-}): JSX.Element {
-  return (
-    <div
-      style={{
-        color: props.tone === "alert" ? "var(--alert)" : "var(--ink-3)",
-        fontFamily: "var(--font-sans)",
-        fontSize: 13,
-        padding: "16px 0",
-      }}
-    >
-      {props.children}
-    </div>
-  );
-}
-
 function extractProposalTitle(proposal: unknown): string {
   if (
     typeof proposal === "object" &&
@@ -81,6 +59,60 @@ function extractProposalTitle(proposal: unknown): string {
     return (proposal as { title: string }).title;
   }
   return "—";
+}
+
+// ─── Action cell ──────────────────────────────────────────────────────────────
+
+interface DecisionCellProps {
+  readonly decision: RowDecision | undefined;
+  readonly onApprove: () => void;
+  readonly onReject: () => void;
+  readonly approveLabel: string;
+  readonly rejectLabel: string;
+  readonly conflictLabel: string;
+  readonly errorLabel: string;
+}
+
+function DecisionCell(props: DecisionCellProps): JSX.Element {
+  switch (props.decision) {
+    case "approved":
+    case "rejected":
+      return (
+        <span
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 11,
+            color:
+              props.decision === "approved" ? "var(--healthy)" : "var(--ink-3)",
+          }}
+        >
+          {props.decision}
+        </span>
+      );
+    case "conflict":
+      return (
+        <span style={{ fontSize: 12, color: "var(--advisory-ink)" }}>
+          {props.conflictLabel}
+        </span>
+      );
+    case "error":
+      return (
+        <span style={{ fontSize: 12, color: "var(--alert)" }}>
+          {props.errorLabel}
+        </span>
+      );
+    default:
+      return (
+        <span style={{ display: "flex", gap: 8 }}>
+          <Btn variant="primary" onClick={props.onApprove}>
+            {props.approveLabel}
+          </Btn>
+          <Btn variant="ghost" onClick={props.onReject}>
+            {props.rejectLabel}
+          </Btn>
+        </span>
+      );
+  }
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -99,7 +131,7 @@ export function SurfacerCandidates(
       try {
         const r = await fetchAdmin<AutomationCandidatesResponse>(
           "/api/admin/automation-candidates",
-          buildFetchOpts(props.fetchImpl),
+          fetchOptsFor(props.fetchImpl),
         );
         setRows(r.rows);
       } catch {
@@ -125,7 +157,7 @@ export function SurfacerCandidates(
         {
           method: "POST",
           body: { decision, ...(rationale !== undefined ? { rationale } : {}) },
-          ...buildFetchOpts(props.fetchImpl),
+          ...fetchOptsFor(props.fetchImpl),
         },
       );
       const resolved: RowDecision = decision === "approve" ? "approved" : "rejected";
@@ -153,31 +185,14 @@ export function SurfacerCandidates(
           fontSize: 13,
         }}
       >
-        <thead>
-          <tr style={{ borderBottom: "1px solid var(--rule)" }}>
-            {[
-              t("review.candidates.columns.proposal"),
-              t("review.candidates.columns.sourcePages"),
-              t("review.candidates.columns.created"),
-              t("review.candidates.columns.actions"),
-            ].map((col) => (
-              <th
-                key={col}
-                style={{
-                  textAlign: "left",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 10,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--ink-3)",
-                  padding: "6px 8px",
-                }}
-              >
-                {col}
-              </th>
-            ))}
-          </tr>
-        </thead>
+        <ReviewTableHeader
+          columns={[
+            t("review.candidates.columns.proposal"),
+            t("review.candidates.columns.sourcePages"),
+            t("review.candidates.columns.created"),
+            t("review.candidates.columns.actions"),
+          ]}
+        />
         <tbody>
           {rows.map((candidate) => {
             const rowDecision = decisions[candidate.id];
@@ -222,51 +237,19 @@ export function SurfacerCandidates(
                   {new Date(candidate.createdAt).toLocaleDateString()}
                 </td>
                 <td style={{ padding: "10px 8px" }}>
-                  {isDecided ? (
-                    <span
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 11,
-                        color:
-                          rowDecision === "approved"
-                            ? "var(--healthy)"
-                            : "var(--ink-3)",
-                      }}
-                    >
-                      {rowDecision}
-                    </span>
-                  ) : rowDecision === "conflict" ? (
-                    <span
-                      style={{ fontSize: 12, color: "var(--advisory-ink)" }}
-                    >
-                      {t("review.candidates.conflict")}
-                    </span>
-                  ) : rowDecision === "error" ? (
-                    <span
-                      style={{ fontSize: 12, color: "var(--alert)" }}
-                    >
-                      {t("common.error")}
-                    </span>
-                  ) : (
-                    <span style={{ display: "flex", gap: 8 }}>
-                      <Btn
-                        variant="primary"
-                        onClick={(): void => {
-                          void handleDecision(candidate.id, "approve");
-                        }}
-                      >
-                        {t("review.candidates.approve")}
-                      </Btn>
-                      <Btn
-                        variant="ghost"
-                        onClick={(): void => {
-                          void handleDecision(candidate.id, "reject");
-                        }}
-                      >
-                        {t("review.candidates.reject")}
-                      </Btn>
-                    </span>
-                  )}
+                  <DecisionCell
+                    decision={rowDecision}
+                    onApprove={(): void => {
+                      void handleDecision(candidate.id, "approve");
+                    }}
+                    onReject={(): void => {
+                      void handleDecision(candidate.id, "reject");
+                    }}
+                    approveLabel={t("review.candidates.approve")}
+                    rejectLabel={t("review.candidates.reject")}
+                    conflictLabel={t("review.candidates.conflict")}
+                    errorLabel={t("common.error")}
+                  />
                 </td>
               </tr>
             );

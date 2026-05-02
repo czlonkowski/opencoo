@@ -13,11 +13,13 @@
  * Security: all state-changing actions go through existing audited
  * endpoints. CSRF token is injected by fetchAdmin automatically.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Btn } from "../../components/Btn.js";
-import { fetchAdmin } from "../../lib/api.js";
+import { NoticeRow } from "../../components/NoticeRow.js";
+import { fetchAdmin, fetchOptsFor } from "../../lib/api.js";
+import { ReviewTableHeader } from "./ReviewTableHeader.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -45,32 +47,6 @@ export interface LintFindingsProps {
   readonly fetchImpl?: typeof fetch;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function buildFetchOpts(
-  fetchImpl: typeof fetch | undefined,
-): { fetchImpl?: typeof fetch } {
-  return fetchImpl !== undefined ? { fetchImpl } : {};
-}
-
-function NoticeRow(props: {
-  readonly tone: "alert" | "muted";
-  readonly children: ReactNode;
-}): JSX.Element {
-  return (
-    <div
-      style={{
-        color: props.tone === "alert" ? "var(--alert)" : "var(--ink-3)",
-        fontFamily: "var(--font-sans)",
-        fontSize: 13,
-        padding: "16px 0",
-      }}
-    >
-      {props.children}
-    </div>
-  );
-}
-
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function LintFindings(props: LintFindingsProps = {}): JSX.Element {
@@ -85,7 +61,7 @@ export function LintFindings(props: LintFindingsProps = {}): JSX.Element {
       try {
         const r = await fetchAdmin<LintFindingsResponse>(
           "/api/admin/lint-findings",
-          buildFetchOpts(props.fetchImpl),
+          fetchOptsFor(props.fetchImpl),
         );
         setRuns(r.runs);
       } catch {
@@ -116,7 +92,7 @@ export function LintFindings(props: LintFindingsProps = {}): JSX.Element {
         {
           method: "POST",
           body: { kind, path },
-          ...buildFetchOpts(props.fetchImpl),
+          ...fetchOptsFor(props.fetchImpl),
         },
       );
       setAcknowledged((prev) => new Set([...prev, key]));
@@ -135,31 +111,14 @@ export function LintFindings(props: LintFindingsProps = {}): JSX.Element {
           fontSize: 13,
         }}
       >
-        <thead>
-          <tr style={{ borderBottom: "1px solid var(--rule)" }}>
-            {[
-              t("review.lintFindings.columns.kind"),
-              t("review.lintFindings.columns.path"),
-              t("review.lintFindings.columns.detail"),
-              t("review.lintFindings.columns.actions"),
-            ].map((col) => (
-              <th
-                key={col}
-                style={{
-                  textAlign: "left",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 10,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--ink-3)",
-                  padding: "6px 8px",
-                }}
-              >
-                {col}
-              </th>
-            ))}
-          </tr>
-        </thead>
+        <ReviewTableHeader
+          columns={[
+            t("review.lintFindings.columns.kind"),
+            t("review.lintFindings.columns.path"),
+            t("review.lintFindings.columns.detail"),
+            t("review.lintFindings.columns.actions"),
+          ]}
+        />
         <tbody>
           {allFindings.map((f) => {
             const key = ackKey(f.runId, f.kind, f.path);
