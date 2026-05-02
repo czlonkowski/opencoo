@@ -204,16 +204,26 @@ export function startIngestionWorkers(
           });
         }),
       );
+      // Race the parallel-close against a watchdog timer. We hold
+      // the timer handle so the success branch can `clearTimeout`
+      // it — otherwise a fast close (<1s) leaves the timer
+      // pending and holds the event loop alive for up to
+      // `timeoutMs` (test runners with a single closeAll() call
+      // would block exit on the unreferenced timer).
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          ctx.logger.warn("ingestion_workers.close_timeout", {
+            timeout_ms: timeoutMs,
+          });
+          resolve();
+        }, timeoutMs);
+      });
       closing = Promise.race([
-        Promise.all(closes).then(() => undefined),
-        new Promise<void>((resolve) =>
-          setTimeout(() => {
-            ctx.logger.warn("ingestion_workers.close_timeout", {
-              timeout_ms: timeoutMs,
-            });
-            resolve();
-          }, timeoutMs),
-        ),
+        Promise.all(closes).then(() => {
+          if (timer !== undefined) clearTimeout(timer);
+        }),
+        timeout,
       ]);
       return closing;
     },

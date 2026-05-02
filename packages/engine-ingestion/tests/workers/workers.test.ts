@@ -306,6 +306,41 @@ describe("startIngestionWorkers", () => {
   });
 });
 
+describe("startIngestionWorkers — closeAll() drain timer", () => {
+  it("resolves promptly when every worker closes (no timer leak)", async () => {
+    // Repro for the setTimeout leak: the watchdog timer in closeAll
+    // must be cleared on the success branch. Otherwise the unhandled
+    // timer keeps the event loop alive for up to `timeoutMs` and the
+    // 100ms watchdog below would fire before closeAll() resolves.
+    const fixture = await freshPipelineDb();
+    const wikiAdapter = new InMemoryWikiAdapter();
+    const redis = new IORedisMock();
+    const handle = startIngestionWorkers({
+      ctx: makeWorkerCtx({ fixture, wikiAdapter }),
+      connection: redis as unknown as Parameters<
+        typeof startIngestionWorkers
+      >[0]["connection"],
+      autorun: false,
+    });
+
+    // Pin a 30s drain window so an un-cleared timer would leak for
+    // 30s after closeAll() resolves. The 100ms watchdog catches
+    // the race: if closeAll() doesn't resolve before the watchdog,
+    // the test rejects with a clear "did not resolve promptly" message.
+    const watchdog = new Promise<never>((_resolve, reject) => {
+      const t = setTimeout(
+        () => reject(new Error("closeAll() did not resolve promptly")),
+        100,
+      );
+      // Don't keep the test process alive on the watchdog itself.
+      t.unref?.();
+    });
+
+    await Promise.race([handle.closeAll(30_000), watchdog]);
+    redis.disconnect();
+  });
+});
+
 describe("buildScannerHandler — sse emission", () => {
   it("worker-event run emission scrubs PATs from error messages", async () => {
     // Lightweight smoke for THREAT-MODEL §3.6 invariant 11 — when
