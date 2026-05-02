@@ -17,6 +17,7 @@ import { Activity } from "./routes/Activity.js";
 import { Domains } from "./routes/Domains.js";
 import { LlmPolicy } from "./routes/LlmPolicy.js";
 import { Prompts } from "./routes/Prompts.js";
+import { Reports } from "./routes/Reports.js";
 import { Review } from "./routes/Review.js";
 import { Sources } from "./routes/Sources.js";
 import type { Tab } from "./types.js";
@@ -97,6 +98,7 @@ export function App(): JSX.Element {
     prompts: <Prompts />,
     activity: <Activity />,
     review: <Review />,
+    reports: <Reports />,
   };
 
   const titles: Record<Tab, string> = {
@@ -106,6 +108,7 @@ export function App(): JSX.Element {
     prompts: t("prompts.title"),
     activity: t("activity.title"),
     review: t("review.title"),
+    reports: t("reports.title"),
   };
 
   return (

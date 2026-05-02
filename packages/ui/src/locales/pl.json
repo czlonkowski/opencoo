@@ -12,6 +12,7 @@
     "prompts": "prompts",
     "activity": "activity",
     "review": "review",
+    "reports": "reports",
     "logout": "log out"
   },
   "auth": {
@@ -223,6 +224,21 @@
         "created": "created",
         "actions": "actions"
       }
+    }
+  },
+  "reports": {
+    "title": "Reports",
+    "tabs": {
+      "heartbeat": "heartbeat",
+      "redaction": "redaction events"
+    },
+    "heartbeat": {
+      "empty": "No heartbeat reports yet.",
+      "noInstance": "(no instance)",
+      "priorityLabel": "P{{n}}:"
+    },
+    "redaction": {
+      "empty": "No redaction events yet."
     }
   },
   "debug": {
