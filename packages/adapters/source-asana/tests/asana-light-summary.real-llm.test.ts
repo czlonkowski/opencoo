@@ -6,7 +6,7 @@
  *
  * Run locally:
  *   RUN_REAL_LLM=1 pnpm --filter @opencoo/source-asana test \
- *     src/light-summary.real-llm.test.ts
+ *     asana-light-summary.real-llm
  *
  * Requires OPENROUTER_API_KEY in the environment (the test-provisioned
  * moonshotai/kimi-k2.6 key with a $100 cap). In CI, RUN_REAL_LLM is
@@ -19,7 +19,7 @@ import { describe, it, expect } from "vitest";
 import { createOpenRouterProvider } from "@opencoo/shared/llm-router";
 import type { DomainId } from "@opencoo/shared/db";
 
-import { summarizeAsanaEvent } from "./light-summary.js";
+import { summarizeAsanaEvent } from "../src/light-summary.js";
 
 const RUN_REAL_LLM = process.env["RUN_REAL_LLM"] === "1";
 
