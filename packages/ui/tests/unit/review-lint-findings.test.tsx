@@ -43,15 +43,16 @@ function makeLintRun(overrides: Partial<{
 }
 
 function makeFetch(runs: ReturnType<typeof makeLintRun>[]): typeof fetch {
-  return vi.fn(async (input: RequestInfo) => {
+  return vi.fn(async (input: RequestInfo, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("/api/admin/lint-findings")) {
+    // GET list — must match before the acknowledge POST branch.
+    if ((init?.method ?? "GET").toUpperCase() === "GET" && url.includes("/api/admin/lint-findings")) {
       return new Response(
         JSON.stringify({ runs }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
-    // Acknowledge endpoint stub.
+    // Acknowledge POST endpoint stub.
     if (url.includes("/api/admin/lint-findings") && url.includes("acknowledge")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
@@ -139,18 +140,28 @@ describe("LintFindings — acknowledge action", () => {
   });
 
   it("fires the acknowledge action when the button is clicked", async () => {
-    const runs = [
-      makeLintRun({
-        findings: [makeFinding({ kind: "stale-page" })],
-      }),
-    ];
-    const postCalls: string[] = [];
+    const finding = makeFinding({ kind: "stale-page", path: "wiki-exec/ops/planning.md" });
+    const run = makeLintRun({ findings: [finding] });
+    const runs = [run];
+
+    interface PostCall {
+      url: string;
+      method: string;
+      body: unknown;
+    }
+    const postCalls: PostCall[] = [];
+
     const fetchImpl = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if ((init?.method ?? "GET").toUpperCase() !== "GET") {
-        postCalls.push(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method !== "GET") {
+        const body = init?.body != null
+          ? (typeof init.body === "string" ? JSON.parse(init.body) as unknown : init.body)
+          : undefined;
+        postCalls.push({ url, method, body });
       }
-      if (url.includes("/api/admin/lint-findings")) {
+      // GET list — match only GET requests to avoid shadowing the acknowledge POST.
+      if (method === "GET" && url.includes("/api/admin/lint-findings")) {
         return new Response(JSON.stringify({ runs }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -168,6 +179,14 @@ describe("LintFindings — acknowledge action", () => {
 
     // After click, a POST to the ack endpoint must have been issued.
     await waitFor(() => postCalls.length > 0);
-    expect(postCalls.some((url) => url.includes("/acknowledge"))).toBe(true);
+
+    const ackCall = postCalls.find((c) => c.url.includes("/acknowledge"));
+    expect(ackCall).toBeDefined();
+    expect(ackCall?.url).toContain(`/api/admin/lint-findings/${run.runId}/acknowledge`);
+    expect(ackCall?.method).toBe("POST");
+    // Body must use findingId = `${kind}:${path}` — not {kind, path}.
+    expect((ackCall?.body as Record<string, unknown>)["findingId"]).toBe(
+      `${finding.kind}:${finding.path}`,
+    );
   });
 });

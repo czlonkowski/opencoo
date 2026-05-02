@@ -124,10 +124,34 @@ describe("SourceBindingsReview — sovereignty-diff confirmation", () => {
     // may need to confirm the LLM policy scope before approving. The component
     // must surface a confirmation step when the binding has a review_mode that
     // would change effective LLM routing.
-    const bindings = [
-      makeBinding({ reviewMode: "review", pendingEventsCount: 2, name: "drive → wiki-hr" }),
-    ];
-    const fetchImpl = makeFetch(bindings);
+    const binding = makeBinding({ reviewMode: "review", pendingEventsCount: 2, name: "drive → wiki-hr" });
+    const bindings = [binding];
+
+    interface PostCall {
+      url: string;
+      method: string;
+      body: unknown;
+    }
+    const postCalls: PostCall[] = [];
+
+    const fetchImpl = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method !== "GET") {
+        const body = init?.body != null
+          ? (typeof init.body === "string" ? JSON.parse(init.body) as unknown : init.body)
+          : undefined;
+        postCalls.push({ url, method, body });
+      }
+      if (url.includes("/api/admin/source-bindings")) {
+        return new Response(
+          JSON.stringify({ rows: bindings }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+
     render(<SourceBindingsReview fetchImpl={fetchImpl} />);
 
     await waitFor(() => screen.getByText("drive → wiki-hr"));
@@ -147,5 +171,21 @@ describe("SourceBindingsReview — sovereignty-diff confirmation", () => {
     // The dialog must mention sovereignty / LLM policy in its title text.
     const { within } = await import("@testing-library/react");
     expect(within(dialog).getByText(/sovereignty|llm policy/i)).toBeInTheDocument();
+
+    // Click the confirm button inside the dialog to fire the POST.
+    const confirmBtn = within(dialog).getByRole("button", { name: /confirm|approve|yes/i });
+    fireEvent.click(confirmBtn);
+
+    // After confirming, a POST to the review-mode endpoint must have been issued
+    // with camelCase reviewMode body (not snake_case review_mode).
+    await waitFor(() => postCalls.length > 0);
+
+    const approveCall = postCalls.find((c) => c.url.includes("/review-mode"));
+    expect(approveCall).toBeDefined();
+    expect(approveCall?.url).toContain(`/api/admin/source-bindings/${binding.id}/review-mode`);
+    expect(approveCall?.method).toBe("POST");
+    // Body must use camelCase reviewMode — not snake_case review_mode.
+    expect((approveCall?.body as Record<string, unknown>)["reviewMode"]).toBe("auto");
+    expect((approveCall?.body as Record<string, unknown>)["review_mode"]).toBeUndefined();
   });
 });

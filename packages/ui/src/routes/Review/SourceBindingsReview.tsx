@@ -154,7 +154,7 @@ export function SourceBindingsReview(
         `/api/admin/source-bindings/${binding.id}/review-mode`,
         {
           method: "POST",
-          body: { review_mode: "auto" },
+          body: { reviewMode: "auto" },
           ...fetchOptsFor(props.fetchImpl),
         },
       );

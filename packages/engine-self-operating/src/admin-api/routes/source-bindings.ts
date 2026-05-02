@@ -456,13 +456,28 @@ export function registerSourceBindingsRoutes(
       // UPDATE — atomic with prevMode guard so concurrent updates
       // don't silently overwrite a race. The condition mirrors the
       // automation-candidates pattern (update WHERE status = old).
-      await args.db.execute(sql`
+      const updateResult = (await args.db.execute(sql`
         UPDATE sources_bindings
-        SET review_mode = ${sql.raw(`'${reviewMode}'`)}::review_mode,
+        SET review_mode = ${reviewMode}::review_mode,
             updated_at = NOW()
         WHERE id = ${id}::uuid
-          AND review_mode = ${sql.raw(`'${prevMode}'`)}::review_mode
-      `);
+          AND review_mode = ${prevMode}::review_mode
+      `)) as unknown as { rowCount: number };
+
+      // If rowCount === 0, another operator raced us to the update.
+      // Re-SELECT to get the current mode and return it in the 409.
+      if (updateResult.rowCount === 0) {
+        const current = (await args.db.execute(sql`
+          SELECT review_mode::text AS review_mode
+          FROM sources_bindings
+          WHERE id = ${id}::uuid
+          LIMIT 1
+        `)) as unknown as { rows: Array<{ review_mode: string }> };
+        return reply.code(409).send({
+          error: "concurrent_update",
+          current_mode: current.rows[0]?.review_mode ?? prevMode,
+        });
+      }
 
       // Map the user's intent to the correct audit action verb.
       // approve ≡ moving to 'auto' (hands-off), reject ≡ any mode

@@ -8,7 +8,8 @@
  *
  * The acknowledge endpoint shape is:
  *   POST /api/admin/lint-findings/:runId/acknowledge
- *   Body: { kind: string; path: string }
+ *   Body: { findingId: string; note?: string }
+ *   where findingId = `${kind}:${path}`
  *
  * Security: all state-changing actions go through existing audited
  * endpoints. CSRF token is injected by fetchAdmin automatically.
@@ -91,7 +92,7 @@ export function LintFindings(props: LintFindingsProps = {}): JSX.Element {
         `/api/admin/lint-findings/${runId}/acknowledge`,
         {
           method: "POST",
-          body: { kind, path },
+          body: { findingId: `${kind}:${path}` },
           ...fetchOptsFor(props.fetchImpl),
         },
       );
