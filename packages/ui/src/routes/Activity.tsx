@@ -108,7 +108,11 @@ function FeedView(): JSX.Element {
       setConnected(true);
     });
 
-    // Agent run lifecycle events.
+    // Agent run lifecycle events — all statuses (running, success, failed).
+    // The original spec mentioned filtering to status='running' only, but
+    // operators want to see completions in the feed too. No status filter
+    // is applied here: the Activity feed shows every lifecycle transition.
+    // (I5 decision — PR-B observability review.)
     const offRun = client.on<{
       runId: string;
       definitionSlug: string;

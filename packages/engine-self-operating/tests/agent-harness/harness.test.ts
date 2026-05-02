@@ -27,6 +27,7 @@ import {
   invokeAgent,
   type AgentDefinition,
 } from "../../src/agent-harness/index.js";
+import { createSseBus, type RunEvent } from "../../src/admin-api/sse-bus.js";
 
 import { freshAgentDb, seedAgentInstance } from "./_pglite-fixture.js";
 
@@ -420,5 +421,133 @@ describe("invokeAgent — tool-call ledger", () => {
     expect(call).toHaveProperty("args");
     expect(call?.args).toEqual({});
     expect(call?.error).toBe("downstream nope");
+  });
+});
+
+// ── C1: SSE bus integration ───────────────────────────────────────────────────
+
+describe("invokeAgent — SSE bus lifecycle events (C1 fix, PR-B)", () => {
+  it("emits agent_run status=running event on run start", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedAgentInstance(fixture, {
+      definitionSlug: "heartbeat",
+      memory: { type: "none" },
+    });
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(HEARTBEAT_DEF);
+    const router = makeRouter(new MockLlmClient(), fixture.db);
+    const bus = createSseBus();
+
+    const received: RunEvent[] = [];
+    bus.onRunEvent((e) => received.push(e));
+
+    await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "scheduled",
+      inputs: {},
+      sseBus: bus,
+      run: async () => ({ ok: true }),
+    });
+
+    // Must have received at least one 'running' event and one terminal event.
+    const runningEvt = received.find((e) => e.status === "running");
+    expect(runningEvt).toBeDefined();
+    expect(runningEvt!.definitionSlug).toBe("heartbeat");
+    expect(typeof runningEvt!.startedAt).toBe("string");
+  });
+
+  it("emits agent_run status=success event on successful completion", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedAgentInstance(fixture, {
+      definitionSlug: "heartbeat",
+      memory: { type: "none" },
+    });
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(HEARTBEAT_DEF);
+    const router = makeRouter(new MockLlmClient(), fixture.db);
+    const bus = createSseBus();
+
+    const received: RunEvent[] = [];
+    bus.onRunEvent((e) => received.push(e));
+
+    await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "scheduled",
+      inputs: {},
+      sseBus: bus,
+      run: async () => ({ summary: "all good" }),
+    });
+
+    const successEvt = received.find((e) => e.status === "success");
+    expect(successEvt).toBeDefined();
+    expect(successEvt!.endedAt).toBeDefined();
+    expect(typeof successEvt!.latencyMs).toBe("number");
+    // The run id is consistent between start and finish events.
+    const runningEvt = received.find((e) => e.status === "running");
+    expect(runningEvt!.runId).toBe(successEvt!.runId);
+  });
+
+  it("emits agent_run status=failed event when the body throws", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedAgentInstance(fixture, {
+      definitionSlug: "heartbeat",
+      memory: { type: "none" },
+    });
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(HEARTBEAT_DEF);
+    const router = makeRouter(new MockLlmClient(), fixture.db);
+    const bus = createSseBus();
+
+    const received: RunEvent[] = [];
+    bus.onRunEvent((e) => received.push(e));
+
+    await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "scheduled",
+      inputs: {},
+      sseBus: bus,
+      run: async () => { throw new Error("body failed"); },
+    });
+
+    const failedEvt = received.find((e) => e.status === "failed");
+    expect(failedEvt).toBeDefined();
+    expect(failedEvt!.errorClass).toBe("transient");
+  });
+
+  it("does NOT emit any bus events when sseBus is not injected", async () => {
+    // Ensures optional sseBus doesn't break existing non-DI callers.
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedAgentInstance(fixture, {
+      definitionSlug: "heartbeat",
+      memory: { type: "none" },
+    });
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(HEARTBEAT_DEF);
+    const router = makeRouter(new MockLlmClient(), fixture.db);
+
+    // No sseBus — should not throw.
+    const result = await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "scheduled",
+      inputs: {},
+      run: async () => ({ ok: true }),
+    });
+    expect(result.status).toBe("success");
   });
 });

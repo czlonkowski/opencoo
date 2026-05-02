@@ -27,6 +27,7 @@ import {
   type GiteaWhoamiResult,
 } from "../../src/admin-api/index.js";
 import { __resetAdminAuthCache } from "../../src/admin-api/auth.js";
+import type { SseBus } from "../../src/admin-api/sse-bus.js";
 
 export type AdminTestDb = PgliteDatabase<typeof schema>;
 
@@ -257,6 +258,8 @@ export interface AdminFixtureOptions {
   readonly llmDebugLog?: boolean;
   /** Phase-a appendix #4 PR-B — injected queue for pipelines-list tests. */
   readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>>; name?: string };
+  /** Phase-a appendix #4 PR-B — injected SSE bus for heartbeat / run-lifecycle tests. */
+  readonly sseBus?: SseBus;
 }
 
 function silentLogger(): ConsoleLogger {
@@ -298,6 +301,9 @@ export async function makeAdminFixture(
     credentialStore,
     ...(opts.ingestionQueue !== undefined
       ? { ingestionQueue: opts.ingestionQueue }
+      : {}),
+    ...(opts.sseBus !== undefined
+      ? { sseBus: opts.sseBus }
       : {}),
   });
 

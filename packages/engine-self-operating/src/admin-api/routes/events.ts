@@ -43,12 +43,32 @@ export interface RegisterEventsRouteArgs {
   /** Whether `LLM_DEBUG_LOG=1` is set at boot. When false, token events
    *  are stripped of prompt content. THREAT-MODEL §2 invariant 11. */
   readonly llmDebugLog: boolean;
+  /** @internal Test seam — override `setInterval` so the heartbeat
+   *  can be tested without waiting 15 real seconds. Defaults to
+   *  `globalThis.setInterval`. Receives the callback and delay; returns
+   *  an opaque handle passed back to `clearIntervalFn` on cleanup. */
+  readonly setIntervalFn?: (fn: () => void, ms: number) => unknown;
+  /** @internal Test seam — override `clearInterval`. Receives the
+   *  handle returned by `setIntervalFn`. */
+  readonly clearIntervalFn?: (id: unknown) => void;
 }
 
 /** Interval between heartbeat pings in milliseconds. */
 const HEARTBEAT_INTERVAL_MS = 15_000;
 
 export function registerEventsRoute(args: RegisterEventsRouteArgs): void {
+  // Timer functions resolved lazily per request so that vitest fake timers
+  // applied via `vi.useFakeTimers()` AFTER route registration are still
+  // picked up. If seams are injected, they take precedence (test isolation).
+  const doSetInterval = (fn: () => void, ms: number): unknown =>
+    args.setIntervalFn !== undefined
+      ? args.setIntervalFn(fn, ms)
+      : setInterval(fn, ms);
+  const doClearInterval = (id: unknown): void =>
+    args.clearIntervalFn !== undefined
+      ? args.clearIntervalFn(id)
+      : clearInterval(id as ReturnType<typeof setInterval>);
+
   args.app.get(
     "/api/admin/events",
     async (req: FastifyRequest, reply: FastifyReply) => {
@@ -72,12 +92,20 @@ export function registerEventsRoute(args: RegisterEventsRouteArgs): void {
       // Send `connected` acknowledgement.
       writeEvent(reply, "connected", { connectedAt: new Date().toISOString() });
 
-      // For Fastify inject() (tests): end immediately so the test can
-      // read the body. In production, the reply stays open; the call
-      // to `reply.raw.end()` below is guarded by the `req.socket` check.
-      const isTest = req.socket === null || req.socket === undefined ||
-        !("writable" in req.socket) || !(req.socket as { writable?: boolean }).writable;
-      if (isTest) {
+      // For Fastify inject() (tests): if no timer seam was injected, end
+      // immediately so the test can read the body. Replacing the raw socket
+      // check with a seam check means the heartbeat path runs when a caller
+      // explicitly injects `setIntervalFn` (e.g. vitest fake-timer tests).
+      // Production callers never inject seams, so they always reach the
+      // keep-alive path via a real writable socket.
+      //
+      // When neither seam is present AND the socket is not writable (the
+      // inject() case), we end immediately so basic auth/header/connected-
+      // event tests can still call app.inject() and get a complete response.
+      const hasTimerSeam = args.setIntervalFn !== undefined;
+      const isSocketWritable = req.socket !== null && req.socket !== undefined &&
+        "writable" in req.socket && (req.socket as { writable?: boolean }).writable === true;
+      if (!hasTimerSeam && !isSocketWritable) {
         reply.raw.end();
         return reply;
       }
@@ -91,13 +119,15 @@ export function registerEventsRoute(args: RegisterEventsRouteArgs): void {
       });
 
       // Heartbeat to keep the connection alive through idle-closing proxies.
-      const heartbeat = setInterval(() => {
+      // Resolves setInterval lazily so vitest fake timers applied after route
+      // registration are picked up correctly.
+      const heartbeat = doSetInterval(() => {
         writeEvent(reply, "ping", { ts: new Date().toISOString() });
       }, HEARTBEAT_INTERVAL_MS);
 
       // Clean up when the client disconnects.
       req.raw.on("close", () => {
-        clearInterval(heartbeat);
+        doClearInterval(heartbeat);
         offToken();
         offRun();
         reply.raw.end();

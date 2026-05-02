@@ -13,6 +13,12 @@
  *      must NOT include `promptText` in the event (invariant 11).
  *   5. When `includePrompt=true`, `promptText` is included.
  *   6. Bus is an EventEmitter — subscribers can listen + unsubscribe.
+ *   7. (I5) Run events are emitted and received for ALL statuses
+ *      (running, success, failed) — the Activity feed shows lifecycle
+ *      events regardless of status. The original spec saying "UI
+ *      subscribes only when status='running'" was relaxed: operators
+ *      want to see completions too. Activity.tsx FeedView renders
+ *      every agent_run event without a status filter.
  */
 import { describe, expect, it } from "vitest";
 
@@ -143,5 +149,28 @@ describe("SseBus — run event emission", () => {
 
     expect(a).toHaveLength(1);
     expect(b).toHaveLength(1);
+  });
+
+  // ── I5: all statuses appear in the feed (spec relaxed from running-only) ──
+
+  it("(I5) run events with status='success' DO appear in the feed — all statuses accepted", () => {
+    // The original spec said the UI subscribes only when status='running'.
+    // Decision: relaxed — operators want to see completions too.
+    // Activity.tsx FeedView renders every agent_run event regardless of
+    // status. This test asserts the bus emits and subscribers receive
+    // success + failed events without filtering.
+    const bus = createSseBus();
+    const received: RunEvent[] = [];
+    bus.onRunEvent((e) => received.push(e));
+
+    const now = new Date().toISOString();
+    bus.emitRunEvent({ runId: "r-success", definitionSlug: "heartbeat", status: "success", startedAt: now, endedAt: now });
+    bus.emitRunEvent({ runId: "r-failed", definitionSlug: "lint", status: "failed", startedAt: now, endedAt: now });
+    bus.emitRunEvent({ runId: "r-running", definitionSlug: "chat", status: "running", startedAt: now });
+
+    expect(received).toHaveLength(3);
+    expect(received.find((e) => e.status === "success")).toBeDefined();
+    expect(received.find((e) => e.status === "failed")).toBeDefined();
+    expect(received.find((e) => e.status === "running")).toBeDefined();
   });
 });

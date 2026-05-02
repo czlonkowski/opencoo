@@ -17,6 +17,7 @@
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
@@ -81,7 +82,11 @@ export function registerAgentRunsRoutes(
 
   // ── Detail ────────────────────────────────────────────────────────────
   args.app.get("/api/admin/agent-runs/:id", async (req, reply) => {
-    const { id } = req.params as { id: string };
+    const paramsResult = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!paramsResult.success) {
+      return reply.code(400).send({ error: "invalid_id", detail: "id must be a valid UUID" });
+    }
+    const { id } = paramsResult.data;
 
     const result = (await args.db.execute(sql`
       SELECT
@@ -146,15 +151,25 @@ function serializeRunListRow(r: Record<string, unknown>): Record<string, unknown
   return serializeCommonRunFields(r);
 }
 
-/** Serialize a detail-level row. Gates `output` behind `llmDebugLog`
- *  (THREAT-MODEL §2 invariant 11). */
+/** Serialize a detail-level row.
+ *  Gates `inputs` AND `output` behind `llmDebugLog`
+ *  (THREAT-MODEL §2 invariant 11): both fields may contain operator-
+ *  sensitive prompt content or PII from the invocation inputs, so
+ *  they should only be surfaced when the operator has deliberately
+ *  enabled `LLM_DEBUG_LOG=1`.
+ *
+ *  `toolCalls` is always returned — it carries structured tool
+ *  invocation metadata (tool name, duration, error) but not prompt
+ *  text, so it is safe to show to operators for debugging without the
+ *  debug gate. */
 function serializeRunDetailRow(
   r: Record<string, unknown>,
   llmDebugLog: boolean,
 ): Record<string, unknown> {
   return {
     ...serializeCommonRunFields(r),
-    inputs: r["inputs"] ?? {},
+    // inputs is gated: may contain PII or prompt-sourced trigger payloads.
+    inputs: llmDebugLog ? (r["inputs"] ?? {}) : null,
     toolCalls: r["toolCalls"] ?? [],
     output: llmDebugLog ? (r["output"] ?? null) : null,
   };

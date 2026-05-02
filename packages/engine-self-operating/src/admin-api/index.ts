@@ -82,14 +82,23 @@ export interface RegisterAdminApiArgs {
    *  GET /api/admin/pipelines. When undefined, DLQ alerts are silenced
    *  and the ingestion pipeline entry shows zeroed stats.
    *
-   *  PR-B closes the TODO that was left in PR-A: the composition root
-   *  (`server-factory.ts`) now creates the queue and threads it through
-   *  `ProductionServerFactoryArgs → RegisterAdminApiArgs`. */
+   *  PR-B (C2 fix): `start.ts` constructs a `buildEngineQueue("ingestion",
+   *  "scanner", ...)` handle using `config.redisUrl`, passes it to
+   *  `productionServerFactory` via `ProductionServerFactoryArgs.ingestionQueue`,
+   *  which threads it through to `RegisterAdminApiArgs.ingestionQueue` and
+   *  onwards to `registerSourceBindingsRoutes` + `registerPipelinesRoutes`.
+   *  The queue handle is read-only — no jobs are enqueued from this side. */
   readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>>; name?: string };
   /** Phase-a appendix #4 PR-B — SSE bus for the Activity feed.
    *  When undefined a fresh bus is created internally (production path).
    *  Tests may inject a mock bus if they need to assert on bus interactions. */
   readonly sseBus?: SseBus;
+  /** @internal Test seam — override `setInterval` for heartbeat timing tests.
+   *  Threaded through to `registerEventsRoute`. Returns an opaque handle. */
+  readonly sseSetIntervalFn?: (fn: () => void, ms: number) => unknown;
+  /** @internal Test seam — override `clearInterval`. Receives the opaque
+   *  handle returned by `sseSetIntervalFn`. */
+  readonly sseClearIntervalFn?: (id: unknown) => void;
 }
 
 export async function registerAdminApi(
@@ -183,6 +192,8 @@ export async function registerAdminApi(
     app: guardedApp,
     bus,
     llmDebugLog: args.llmDebugLog,
+    ...(args.sseSetIntervalFn !== undefined ? { setIntervalFn: args.sseSetIntervalFn } : {}),
+    ...(args.sseClearIntervalFn !== undefined ? { clearIntervalFn: args.sseClearIntervalFn } : {}),
   });
   registerPipelinesRoutes({
     app: guardedApp,
