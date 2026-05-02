@@ -52,10 +52,42 @@ import pc from "picocolors";
 
 import { exitOk, exitRuntimeError, isExitSentinel } from "../lib/exit.js";
 
+/** Narrow shape of the SseBus the orchestrator passes between
+ *  engines. Defined by structural typing only — the engines'
+ *  full SseBus type lives in engine-self-operating; the
+ *  orchestrator threads the value as opaque so we don't drag the
+ *  full bus surface across the no-cross-engine-import boundary
+ *  (production-context.ts already declares the narrow
+ *  `IngestionRunEventEmitter` shape).
+ *
+ *  Round-2 fix: the bus is the SAME instance the self-op engine
+ *  built (via `Object.assign(baseEngine, { sseBus })` in
+ *  engine-self-operating/start.ts). Threading it into the ingestion
+ *  WorkerContext lets every per-job lifecycle event (compile,
+ *  scanner, index-rebuild, cleanup) publish onto the Activity feed
+ *  the operator already opens via `/api/admin/events`. */
+export interface ServeSseBus {
+  emitRunEvent(event: {
+    readonly runId: string;
+    readonly definitionSlug: string;
+    readonly status: "running" | "success" | "failed" | "timeout";
+    readonly startedAt: string;
+    readonly endedAt?: string;
+    readonly errorMessage?: string;
+  }): void;
+}
+
 /** Minimal `StartedEngine` shape consumed by `runServe`.
- *  Both engines satisfy it structurally. */
+ *  Both engines satisfy it structurally; engine-self-operating
+ *  additionally exposes `sseBus` (the bus it constructed at
+ *  boot — round-2 fix #1). */
 export interface ServeStartedEngine {
   close(): Promise<void>;
+  /** Round-2 fix #1 — only the self-op engine populates this.
+   *  Engine-ingestion's StartedEngine omits the field; the
+   *  orchestrator captures the self-op handle and forwards the
+   *  bus into the ingestion factory below. */
+  readonly sseBus?: ServeSseBus;
 }
 
 /** Matches `start({env})` from `@opencoo/engine-self-operating`. */
@@ -67,10 +99,13 @@ export type ServeStartFactory = (opts: {
  *  PR-M2 shape extends with a `stderr` channel so the production
  *  composition root can write fall-back-to-probes-only diagnostic
  *  lines without dragging the orchestrator's logging into this
- *  layer. */
+ *  layer. Round-2 fix #1 adds `sseBus`: when self-op booted
+ *  successfully, the orchestrator forwards its bus so ingestion
+ *  worker run events publish onto the Activity feed. */
 export type ServeIngestionStartFactory = (opts: {
   readonly env: Record<string, string | undefined>;
   readonly stderr: { write: (s: string) => boolean };
+  readonly sseBus?: ServeSseBus;
 }) => Promise<ServeStartedEngine>;
 
 /** Subset of `EventEmitter` `runServe` consumes — `process`
@@ -127,6 +162,7 @@ async function defaultStartFactory(opts: {
 async function defaultIngestionStartFactory(opts: {
   readonly env: Record<string, string | undefined>;
   readonly stderr: { write: (s: string) => boolean };
+  readonly sseBus?: ServeSseBus;
 }): Promise<ServeStartedEngine> {
   const mod = await import("@opencoo/engine-ingestion");
   const composition = await import("../provision/production-composition.js");
@@ -135,10 +171,19 @@ async function defaultIngestionStartFactory(opts: {
   // we fall back to probes-only — the operator gets the webhook
   // receiver + management UI, and the failure log line names
   // the missing ingredient.
+  //
+  // Round-2 fix #1: forward the self-op SseBus into the
+  // composition so the WorkerContext.sseBus is the SAME instance
+  // the management UI streams from. Without this thread, the
+  // PR-M1 sse-bridge has no bus to emit on and ingestion
+  // run-lifecycle events never reach the Activity feed.
   type Composed = Awaited<ReturnType<typeof composition.composeProductionFromEnv>>;
   let composed: Composed;
   try {
-    composed = await composition.composeProductionFromEnv({ env: opts.env });
+    composed = await composition.composeProductionFromEnv({
+      env: opts.env,
+      ...(opts.sseBus !== undefined ? { sseBus: opts.sseBus } : {}),
+    });
   } catch (err) {
     opts.stderr.write(
       pc.yellow(
@@ -234,11 +279,22 @@ export async function runServe(args: ServeArgs): Promise<void> {
   // crashing the management UI. PR-M2 wires the production
   // WorkerContext that closes the webhook → wiki loop when env
   // is fully populated.
+  //
+  // Round-2 fix #1: forward the self-op engine's SseBus into the
+  // ingestion factory so ingestion's WorkerContext.sseBus is the
+  // SAME instance the management UI streams from. Without this
+  // thread, ingestion run-lifecycle events (compile, scanner,
+  // index-rebuild, cleanup) never reach the Activity feed even
+  // though the PR-M1 sse-bridge has all the wiring on the
+  // ingestion side.
   let ingestionEngine: ServeStartedEngine | undefined;
   try {
     ingestionEngine = await startIngestionFactory({
       env: args.env,
       stderr: args.stderr,
+      ...(selfOpEngine.sseBus !== undefined
+        ? { sseBus: selfOpEngine.sseBus }
+        : {}),
     });
   } catch (err) {
     if (isExitSentinel(err)) throw err;

@@ -73,11 +73,36 @@ export interface ProductionCompositionResult {
   readonly redis: Redis;
 }
 
+/** Narrow shape of the run-event emitter the WorkerContext consumes.
+ *  Mirrors `IngestionRunEventEmitter` in engine-ingestion's
+ *  context.ts — defined here so the orchestrator can pass an opaque
+ *  bus across the engine boundary without dragging the full SseBus
+ *  type. The PR-M1 sse-bridge in engine-ingestion publishes to
+ *  whatever satisfies this shape. */
+export interface ComposeSseBus {
+  emitRunEvent(event: {
+    readonly runId: string;
+    readonly definitionSlug: string;
+    readonly status: "running" | "success" | "failed" | "timeout";
+    readonly startedAt: string;
+    readonly endedAt?: string;
+    readonly errorMessage?: string;
+  }): void;
+}
+
 export interface ComposeProductionArgs {
   readonly env: Record<string, string | undefined>;
   /** Optional logger override. Defaults to a ConsoleLogger writing
    *  to stdout. */
   readonly logger?: Logger;
+  /** Round-2 fix #1 — the self-op engine's SseBus. When present,
+   *  threaded into the WorkerContext so per-job lifecycle events
+   *  emitted by the PR-M1 sse-bridge land on the SAME bus the
+   *  Activity feed (`GET /api/admin/events`) streams from. When
+   *  undefined (e.g. self-op didn't boot — boot-tolerance), the
+   *  workers still run; their lifecycle events just don't reach
+   *  the UI. */
+  readonly sseBus?: ComposeSseBus;
 }
 
 /** Construct the production WorkerContext + the underlying pg.Pool
@@ -190,6 +215,11 @@ export async function composeProductionFromEnv(
       email: `${instanceId}@opencoo.local`,
     },
     instanceId,
+    // Round-2 fix #1: forward the orchestrator-supplied bus so
+    // every PR-M1 sse-bridge listener (compile / scanner /
+    // index-rebuild / cleanup workers) emits onto the SAME bus
+    // the management UI streams from.
+    ...(args.sseBus !== undefined ? { sseBus: args.sseBus } : {}),
   });
 
   return { workerContext, redisConnection, pgPool, redis };
