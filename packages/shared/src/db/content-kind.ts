@@ -27,6 +27,7 @@ export const CONTENT_KINDS = [
   "document",
   "n8n-workflow",
   "skill-bundle",
+  "webhook-event",
 ] as const;
 
 export type ContentKind = (typeof CONTENT_KINDS)[number];

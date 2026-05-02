@@ -29,12 +29,14 @@
  * No UI change.
  */
 
-/** Stable slug literal for the four adapters wired in v0.1 — must
+/** Stable slug literal for the five adapters wired in v0.1 — must
  *  stay in sync with the CLI's adapter-registry list
  *  (`packages/cli/src/bin.ts:95`). The TypeScript narrowness here
- *  is intentional: a future fifth adapter must touch this set
- *  AND the CLI wiring AND the UI in the same PR. */
-export type SourceAdapterSlug = "drive" | "asana" | "n8n" | "fireflies";
+ *  is intentional: a new adapter must touch this set AND the CLI
+ *  wiring AND the UI in the same PR.
+ *
+ *  `webhook` is the generic inbound webhook adapter (PR-I). */
+export type SourceAdapterSlug = "drive" | "asana" | "n8n" | "fireflies" | "webhook";
 
 /** JSON-Schema field shape — narrow subset matching the
  *  Management UI's CredentialForm expectations. Adding richer
@@ -185,6 +187,33 @@ const firefliesDescriptor = {
   },
 } as const satisfies SourceAdapterCredentialDescriptor;
 
+const webhookDescriptor = {
+  mode: "webhook",
+  credentialSchema: {
+    type: "object",
+    properties: {
+      auth: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+      webhook_secret: {
+        type: "object",
+        properties: {
+          signing_secret: {
+            type: "string",
+            description:
+              "HMAC-SHA256 signing secret. The sender must include `X-Webhook-Signature: <hex>` on every POST; the receiver verifies HMAC against this value.",
+            secret: true,
+          },
+        },
+        required: ["signing_secret"],
+      },
+    },
+    required: ["webhook_secret"],
+  },
+} as const satisfies SourceAdapterCredentialDescriptor;
+
 export const SOURCE_ADAPTER_CREDENTIAL_SCHEMAS: Readonly<
   Record<SourceAdapterSlug, SourceAdapterCredentialDescriptor>
 > = {
@@ -192,6 +221,7 @@ export const SOURCE_ADAPTER_CREDENTIAL_SCHEMAS: Readonly<
   asana: asanaDescriptor,
   n8n: n8nDescriptor,
   fireflies: firefliesDescriptor,
+  webhook: webhookDescriptor,
 };
 
 /** Type-narrowing helper. Returns `undefined` for unknown slugs
