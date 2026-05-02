@@ -83,9 +83,34 @@ export async function runRetryLoop(
   const { policy, deliveryId, outputBindingId, onDeliveryRow, onDlq, sleep } =
     args;
 
+  // INSERT one append-only audit row per attempt (THREAT-MODEL §2 invariant 8).
+  // `statusCode` and `responseBodyExcerpt` are conditionally included so the
+  // DB column stays NULL when the upstream produced no response.
+  async function recordAttempt(
+    attempt: number,
+    sentAt: Date,
+    status: OutputDeliveryStatus,
+    statusCode: number | undefined,
+    responseBodyExcerpt: string | undefined,
+  ): Promise<void> {
+    const row: OutputDeliveryRow = {
+      outputBindingId,
+      deliveryId,
+      attempt,
+      status,
+      sentAt,
+      completedAt: new Date(),
+      ...(statusCode !== undefined ? { statusCode } : {}),
+      ...(responseBodyExcerpt !== undefined ? { responseBodyExcerpt } : {}),
+    };
+    await onDeliveryRow(row);
+  }
+
   let lastError: unknown;
 
   for (let attempt = 0; attempt < policy.maxAttempts; attempt++) {
+    const isFinalAttempt = attempt === policy.maxAttempts - 1;
+
     // Apply backoff BEFORE retries (not before first attempt)
     if (attempt > 0) {
       const delay =
@@ -101,21 +126,10 @@ export async function runRetryLoop(
       httpResult = await args.attempt();
     } catch (networkErr) {
       // Network-level error (fetch threw) — treat as transient
-      const completedAt = new Date();
-      const isFinalAttempt = attempt === policy.maxAttempts - 1;
       const status: OutputDeliveryStatus = isFinalAttempt
         ? "dlq"
         : "transient_failure";
-
-      const row: OutputDeliveryRow = {
-        outputBindingId,
-        deliveryId,
-        attempt,
-        status,
-        sentAt,
-        completedAt,
-      };
-      await onDeliveryRow(row);
+      await recordAttempt(attempt, sentAt, status, undefined, undefined);
 
       lastError = new OutputAdapterTransientError(
         `output-webhook: network error on attempt ${attempt}: ${
@@ -131,24 +145,11 @@ export async function runRetryLoop(
       continue;
     }
 
-    const completedAt = new Date();
     const { status, retryAfterHeader, responseBodyExcerpt } = httpResult;
 
     // 2xx — success
     if (status >= 200 && status < 300) {
-      const row: OutputDeliveryRow = {
-        outputBindingId,
-        deliveryId,
-        attempt,
-        status: "success",
-        statusCode: status,
-        sentAt,
-        completedAt,
-        ...(responseBodyExcerpt !== undefined
-          ? { responseBodyExcerpt }
-          : {}),
-      };
-      await onDeliveryRow(row);
+      await recordAttempt(attempt, sentAt, "success", status, responseBodyExcerpt);
       return { status, responseBodyExcerpt };
     }
 
@@ -162,26 +163,12 @@ export async function runRetryLoop(
     // 429 (upstream-quota) → DLQ immediately (let BullMQ handle retry-after)
     // 4xx (validation) → DLQ immediately (no retry)
     const isRetryable =
-      classifiedError.errorClass === "transient" &&
-      attempt < policy.maxAttempts - 1;
-
+      classifiedError.errorClass === "transient" && !isFinalAttempt;
     const rowStatus: OutputDeliveryStatus = isRetryable
       ? "transient_failure"
       : "dlq";
 
-    const row: OutputDeliveryRow = {
-      outputBindingId,
-      deliveryId,
-      attempt,
-      status: rowStatus,
-      statusCode: status,
-      sentAt,
-      completedAt,
-      ...(responseBodyExcerpt !== undefined
-        ? { responseBodyExcerpt }
-        : {}),
-    };
-    await onDeliveryRow(row);
+    await recordAttempt(attempt, sentAt, rowStatus, status, responseBodyExcerpt);
 
     lastError = classifiedError;
 

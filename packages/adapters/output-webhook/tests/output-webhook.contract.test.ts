@@ -9,8 +9,6 @@
  * interface the adapter delegates HTTP calls through.
  */
 import { outputAdapterContract } from "@opencoo/shared/adapter-contract-tests/output-adapter";
-import { InMemoryCredentialStore } from "@opencoo/shared/credential-store";
-import { ConsoleLogger } from "@opencoo/shared/logger";
 
 import {
   WEBHOOK_OUTPUT_ADAPTER_SLUG,
@@ -21,23 +19,15 @@ import {
   createMockHttpState,
   makeMockHttpFetch,
 } from "../src/testing/mock-http.js";
-
-function silentLogger(): ConsoleLogger {
-  return new ConsoleLogger({ stream: { write: (): boolean => true } });
-}
+import { VALID_PAYLOAD, createTestStore } from "./test-helpers.js";
 
 const CONTRACT_SECRET_MARKER = "webhook_contract_secret_marker_xyz_abc";
-
-const VALID_PAYLOAD: WebhookPayload = {
-  event: "heartbeat.report",
-  data: { summary: "All systems healthy" },
-};
 
 outputAdapterContract<WebhookPayload>({
   backendName: "output-webhook",
   makeAdapter: async () => {
     const httpState = createMockHttpState();
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
+    const store = createTestStore();
 
     // Seed the signing secret credential
     const signingSecretCredentialId = await store.write({
@@ -93,7 +83,7 @@ import { describe, expect, it } from "vitest";
 describe("output-webhook slug", () => {
   it("slug is 'webhook'", async () => {
     const httpState = createMockHttpState();
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
+    const store = createTestStore();
     const credId = await store.write({
       name: "s",
       schemaRef: "s/v1",

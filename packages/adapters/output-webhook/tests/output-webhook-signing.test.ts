@@ -19,24 +19,18 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
-import { InMemoryCredentialStore } from "@opencoo/shared/credential-store";
-import { ConsoleLogger } from "@opencoo/shared/logger";
-
-import { createWebhookOutputAdapter, type WebhookPayload } from "../src/index.js";
+import { createWebhookOutputAdapter } from "../src/index.js";
 import {
   createMockHttpState,
   makeMockHttpFetch,
 } from "../src/testing/mock-http.js";
-
-function silentLogger(): ConsoleLogger {
-  return new ConsoleLogger({ stream: { write: (): boolean => true } });
-}
+import { VALID_PAYLOAD, createTestStore } from "./test-helpers.js";
 
 const SIGNING_SECRET = "test-signing-secret-for-hmac-verification";
 
 async function makeAdapterAndStore() {
   const httpState = createMockHttpState();
-  const store = new InMemoryCredentialStore({ logger: silentLogger() });
+  const store = createTestStore();
   const credentialId = await store.write({
     name: "signing-secret",
     schemaRef: "webhook-signing-secret/v1",
@@ -53,11 +47,6 @@ async function makeAdapterAndStore() {
   });
   return { adapter, store, credentialId, httpState };
 }
-
-const VALID_PAYLOAD: WebhookPayload = {
-  event: "heartbeat.report",
-  data: { summary: "All systems healthy" },
-};
 
 // UUID v4/v5 format: 8-4-4-4-12 hex groups
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

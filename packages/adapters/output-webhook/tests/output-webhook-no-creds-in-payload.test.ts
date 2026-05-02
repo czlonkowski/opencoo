@@ -19,31 +19,20 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { InMemoryCredentialStore } from "@opencoo/shared/credential-store";
-import { ConsoleLogger } from "@opencoo/shared/logger";
-
-import { createWebhookOutputAdapter, type WebhookPayload } from "../src/index.js";
+import { createWebhookOutputAdapter } from "../src/index.js";
 import {
   createMockHttpState,
   makeMockHttpFetch,
 } from "../src/testing/mock-http.js";
-
-function silentLogger(): ConsoleLogger {
-  return new ConsoleLogger({ stream: { write: (): boolean => true } });
-}
+import { VALID_PAYLOAD, createTestStore } from "./test-helpers.js";
 
 // A highly distinctive secret that would be unmistakeable in any output
 const DISTINCTIVE_SECRET =
   "unique_secret_value_that_must_never_appear_in_any_outbound_payload_or_header";
 
-const VALID_PAYLOAD: WebhookPayload = {
-  event: "heartbeat.report",
-  data: { summary: "All systems healthy" },
-};
-
 async function makeAdapter(opts: { headers?: Record<string, string> } = {}) {
   const httpState = createMockHttpState();
-  const store = new InMemoryCredentialStore({ logger: silentLogger() });
+  const store = createTestStore();
   const credentialId = await store.write({
     name: "signing-secret",
     schemaRef: "webhook-signing-secret/v1",
@@ -90,7 +79,7 @@ describe("output-webhook — no credentials in payload (THREAT-MODEL §3.6 invar
 
   it("error message when upstream fails never contains signing secret", async () => {
     const httpState = createMockHttpState();
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
+    const store = createTestStore();
     const credentialId = await store.write({
       name: "signing-secret",
       schemaRef: "webhook-signing-secret/v1",
@@ -166,7 +155,7 @@ describe("output-webhook — no credentials in payload (THREAT-MODEL §3.6 invar
 
   it("custom non-Authorization headers are permitted", async () => {
     const httpState = createMockHttpState();
-    const store = new InMemoryCredentialStore({ logger: silentLogger() });
+    const store = createTestStore();
     const credentialId = await store.write({
       name: "s",
       schemaRef: "s/v1",

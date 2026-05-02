@@ -24,24 +24,13 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { InMemoryCredentialStore } from "@opencoo/shared/credential-store";
-import { ConsoleLogger } from "@opencoo/shared/logger";
-
-import { createWebhookOutputAdapter, type WebhookPayload } from "../src/index.js";
+import { createWebhookOutputAdapter } from "../src/index.js";
 import type { OutputDeliveryRow } from "../src/output-deliveries-writer.js";
 import {
   createMockHttpState,
   makeMockHttpFetch,
 } from "../src/testing/mock-http.js";
-
-function silentLogger(): ConsoleLogger {
-  return new ConsoleLogger({ stream: { write: (): boolean => true } });
-}
-
-const VALID_PAYLOAD: WebhookPayload = {
-  event: "heartbeat.report",
-  data: { summary: "All systems healthy" },
-};
+import { VALID_PAYLOAD, createTestStore } from "./test-helpers.js";
 
 async function makeAdapterWithDeliveries(opts: {
   maxAttempts?: number;
@@ -49,7 +38,7 @@ async function makeAdapterWithDeliveries(opts: {
   onDlq?: (args: { deliveryId: string; error: unknown }) => void;
 }) {
   const httpState = createMockHttpState();
-  const store = new InMemoryCredentialStore({ logger: silentLogger() });
+  const store = createTestStore();
   const credentialId = await store.write({
     name: "signing-secret",
     schemaRef: "webhook-signing-secret/v1",
