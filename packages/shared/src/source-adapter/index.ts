@@ -47,6 +47,11 @@ export interface SourceChangedDocument {
    *  consume. v0.1 inlines into the BullMQ job payload (1MiB
    *  cap); PR 23+ replaces with re-fetch. */
   readonly contentBytes: Buffer;
+  /** Optional adapter-supplied metadata that downstream
+   *  Compiler or pipeline steps may consume. Extension point —
+   *  callers ignore fields they don't understand.
+   *  PR-F adds `summary` (Light-tier one-liner). */
+  readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
 export interface SourceScanResult {
@@ -76,13 +81,38 @@ export interface SourceWebhookEvent {
    *  adapters emit. Mostly useful in PR 30 wiring; the
    *  contract suite asserts shape. */
   readonly doc: SourceChangedDocument;
+  /** Optional semantic event type derived by the adapter.
+   *  PR-F (source-asana v2) populates this for Asana events;
+   *  other adapters may leave it undefined. Downstream Compiler
+   *  templates may use this for routing or template selection. */
+  readonly eventType?: string;
 }
 
 /**
- * Webhook-mode helpers an adapter exposes (PR 24 / plan #115).
+ * Returned by `handshakeFn` when a registration handshake is
+ * detected. The receiver echoes `secret` in the response header,
+ * persists it to the CredentialStore, and skips all verification
+ * + intake steps for this request.
+ */
+export interface HandshakeResult {
+  /** The raw secret to echo back in the response header. */
+  readonly secret: string;
+  /** schemaRef under which the secret should be persisted in
+   *  the CredentialStore. Defaults to the adapter-defined
+   *  schema if not set by the adapter. */
+  readonly schemaRef?: string;
+}
+
+/**
+ * Webhook-mode helpers an adapter exposes (PR 24 / plan #115;
+ * extended in PR-F with handshakeFn).
  * Polling adapters do NOT set this. The engine-ingestion
  * webhook receiver consumes the helpers via DI:
  *
+ *   0. (PR-F) Check `handshakeFn?.(headers)` BEFORE signature
+ *      verification. If it returns a HandshakeResult, run the
+ *      handshake branch (echo secret + persist + return 200)
+ *      without touching signature verification or intake.
  *   1. Lookup binding → fetch webhook secret from
  *      CredentialStore.
  *   2. `extractSignature(req.headers)` → string | undefined.
@@ -104,8 +134,13 @@ export interface SourceWebhookHelpers {
   /** Extracts the signature string from request headers. The
    *  header name varies by source (Asana: `X-Hook-Signature`,
    *  Gitea: `X-Hub-Signature-256`); this helper localises the
-   *  detail. Returns undefined if absent. */
-  extractSignature(headers: Readonly<Record<string, string | undefined>>):
+   *  detail. Returns undefined if absent.
+   *
+   *  Headers may carry `string | string[] | undefined` — Fastify
+   *  preserves multi-value headers as arrays. Adapters should
+   *  take the last value or join as appropriate; Asana's
+   *  signature headers are always single-valued in practice. */
+  extractSignature(headers: Readonly<Record<string, string | string[] | undefined>>):
     | string
     | undefined;
   /** Unpack a verified body into one or more events. Adapter
@@ -115,6 +150,23 @@ export interface SourceWebhookHelpers {
     readonly body: Buffer;
     readonly fetchedAt?: Date;
   }): readonly SourceWebhookEvent[];
+  /**
+   * Optional per-adapter registration handshake detector.
+   * The receiver calls this BEFORE signature verification.
+   * If the adapter returns a HandshakeResult, the receiver:
+   *   1. Persists the secret to CredentialStore.
+   *   2. UPDATEs sources_bindings.webhook_secret_credentials_id.
+   *   3. Echoes the secret in the response header.
+   *   4. Returns 200 without enqueueing anything.
+   *
+   * Asana uses `X-Hook-Secret` on the first POST; adapters
+   * that don't have a handshake protocol leave this undefined.
+   *
+   * Headers may carry `string | string[] | undefined` (Fastify
+   * multi-value header shape). */
+  handshakeFn?(headers: Readonly<Record<string, string | string[] | undefined>>):
+    | HandshakeResult
+    | null;
 }
 
 export interface SourceAdapter {

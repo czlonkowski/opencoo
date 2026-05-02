@@ -11,6 +11,13 @@
  *      binding.adapter_slug). Unknown adapter → 500 + DLQ
  *      (caller-bug-on-our-side: the binding exists but no
  *      adapter is wired).
+ *   2a. (PR-F) Per-adapter handshake detection: if the adapter
+ *       exposes `webhook.handshakeFn` AND the request headers
+ *       trigger a handshake result, run the handshake branch:
+ *         - Persist the received secret to CredentialStore.
+ *         - UPDATE sources_bindings.webhook_secret_credentials_id.
+ *         - Echo the secret in the response header.
+ *         - Return 200 without writing webhook_events or enqueueing.
  *   3. Read the HMAC secret via credentialStore.read(binding.
  *      credentialsId). The store's audit log fires here.
  *   4. Verify signature via injected WebhookVerifier on the
@@ -44,6 +51,8 @@ import {
 } from "@opencoo/shared/db/schema";
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
+import type { Logger } from "@opencoo/shared/logger";
+import type { SourceWebhookHelpers } from "@opencoo/shared/source-adapter";
 import type { WebhookVerifier } from "@opencoo/shared/webhook-verifier";
 
 import type { InMemoryAdapterRegistry } from "./adapter-registry.js";
@@ -64,13 +73,37 @@ export interface WebhookReceiverOptions {
   readonly verifier: WebhookVerifier;
   readonly scannerQueue: WebhookQueueLike;
   readonly dlqQueue: WebhookQueueLike;
+  /** Enables Fastify's built-in request logger when true. */
   readonly logger?: boolean;
+  /** Application-level structured logger for audit events. */
+  readonly appLogger?: Logger;
 }
 
 interface BindingRow {
   readonly id: string;
   readonly adapterSlug: string;
   readonly credentialsId: string | null;
+  readonly webhookSecretCredentialsId: string | null;
+}
+
+/**
+ * Type guard: narrows a `SourceAdapterStub` (slug-only) to a value
+ * that also carries the optional `webhook` helpers. The registry stores
+ * `SourceAdapterStub`s, but full adapters satisfy that shape too —
+ * callers that need `webhook.handshakeFn` should use this guard rather
+ * than casting, so the type error surfaces at compile-time if the
+ * webhook surface changes.
+ */
+function hasWebhookHelpers(
+  a: unknown,
+): a is { webhook: SourceWebhookHelpers } {
+  return (
+    typeof a === "object" &&
+    a !== null &&
+    "webhook" in a &&
+    typeof (a as Record<string, unknown>)["webhook"] === "object" &&
+    (a as Record<string, unknown>)["webhook"] !== null
+  );
 }
 
 export function buildWebhookReceiver(
@@ -99,6 +132,7 @@ export function buildWebhookReceiver(
       "x-signature"?: string;
       "x-event-id"?: string;
       "x-provider"?: string;
+      "x-hook-secret"?: string;
     };
   }>("/webhooks/:bindingId", async (req, reply) => {
     const { bindingId } = req.params;
@@ -109,6 +143,7 @@ export function buildWebhookReceiver(
         id: sourcesBindings.id,
         adapterSlug: sourcesBindings.adapterSlug,
         credentialsId: sourcesBindings.credentialsId,
+        webhookSecretCredentialsId: sourcesBindings.webhookSecretCredentialsId,
       })
       .from(sourcesBindings)
       .where(eq(sourcesBindings.id, bindingId))
@@ -119,11 +154,12 @@ export function buildWebhookReceiver(
       return { accepted: false, reason: "binding not found" };
     }
 
-    // Step 2: confirm the adapter is registered. We don't need the
-    // adapter object itself in this PR — PR 23+ widens the surface
-    // to call adapter.verifyWebhook / adapter.fetchPayload through
-    // it; today we just gate on registration.
-    if (options.adapterRegistry.get(binding.adapterSlug) === undefined) {
+    // Step 2: confirm the adapter is registered.
+    // `get()` returns `SourceAdapterStub | undefined` (slug-only shape).
+    // We use the `hasWebhookHelpers` guard below when we need the
+    // optional webhook surface; no unsafe cast to `SourceAdapter`.
+    const adapterStub = options.adapterRegistry.get(binding.adapterSlug);
+    if (adapterStub === undefined) {
       // The binding references an adapter slug that isn't wired —
       // operator config bug. DLQ for triage; reply 500.
       await options.dlqQueue.add("intake.dlq", {
@@ -137,8 +173,51 @@ export function buildWebhookReceiver(
       };
     }
 
+    // Step 2a (PR-F): per-adapter handshake detection.
+    // Check BEFORE signature verification — handshake requests
+    // have no signature (Asana's X-Hook-Secret is the whole message).
+    const allHeaders = req.headers as Readonly<Record<string, string | string[] | undefined>>;
+    const handshakeResult = hasWebhookHelpers(adapterStub)
+      ? (adapterStub.webhook.handshakeFn?.(allHeaders) ?? null)
+      : null;
+    if (handshakeResult !== null) {
+      // Persist the webhook secret to CredentialStore.
+      const newCredId = await options.credentialStore.write({
+        name: `${binding.adapterSlug}:webhook-secret:${bindingId}`,
+        schemaRef: handshakeResult.schemaRef ?? `${binding.adapterSlug}:webhook_secret`,
+        plaintext: Buffer.from(handshakeResult.secret, "utf8"),
+      });
+
+      // UPDATE sources_bindings.webhook_secret_credentials_id.
+      await options.db
+        .update(sourcesBindings)
+        .set({ webhookSecretCredentialsId: newCredId })
+        .where(eq(sourcesBindings.id, bindingId));
+
+      // Audit log: handshake received and secret stored.
+      // THREAT-MODEL §2 invariant 11: do NOT log the secret bytes.
+      options.appLogger?.info("webhook.handshake.received", {
+        bindingId,
+        adapterSlug: binding.adapterSlug,
+        credentialId: newCredId,
+      });
+
+      // Echo the secret header and return 200 with an empty body.
+      // Asana expects an empty 200 — not a JSON `null` body — so we
+      // use reply.send("") to suppress Fastify's default serialization.
+      // No DLQ, no webhook_events row, no scanner enqueue.
+      reply.header("x-hook-secret", handshakeResult.secret).code(200).send("");
+      return;
+    }
+
     // Step 3: read the HMAC secret.
-    if (binding.credentialsId === null) {
+    // Use webhookSecretCredentialsId if set (Asana uses a separate
+    // webhook signing secret from the API credentials); fall back to
+    // credentialsId for adapters that use the same credential.
+    const hmacCredId =
+      binding.webhookSecretCredentialsId ?? binding.credentialsId;
+
+    if (hmacCredId === null) {
       // Binding has no credentials wired — also an operator config
       // bug. DLQ + 500.
       await options.dlqQueue.add("intake.dlq", {
@@ -152,10 +231,14 @@ export function buildWebhookReceiver(
       };
     }
     const credential = await options.credentialStore.read(
-      binding.credentialsId as CredentialId,
+      hmacCredId as CredentialId,
     );
 
     // Step 4: verify signature on the raw body.
+    // Receiver uses the fixed `x-signature` header per orchestrator
+    // override 5; adapter-exported verifier symmetry (extractSignature)
+    // enables per-scheme customisation post-v0.1 when adapters need
+    // different header names (e.g. Asana's `x-hook-signature`).
     const rawBody = req.body as Buffer;
     const signature = req.headers["x-signature"];
     const provider = req.headers["x-provider"] ?? binding.adapterSlug;

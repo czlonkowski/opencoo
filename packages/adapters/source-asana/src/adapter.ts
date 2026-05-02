@@ -1,5 +1,7 @@
 /**
- * Asana SourceAdapter — webhook mode (PR 24 / plan #115).
+ * Asana SourceAdapter — webhook mode (PR 24 / plan #115;
+ * extended in PR-F: handshake + event_type derivation +
+ * monitored-project filter + Light per-event summary).
  *
  * Asana sources events via webhooks (the PoC's pattern). The
  * adapter exposes:
@@ -12,12 +14,17 @@
  *     (Asana sends `X-Hook-Signature` as hex).
  *   - `webhook.extractSignature(headers)` — looks up
  *     `x-hook-signature` (case-insensitive).
+ *   - `webhook.handshakeFn(headers)` — detects Asana's first-POST
+ *     X-Hook-Secret registration handshake (PR-F).
  *   - `webhook.parseEvents({ body })` — unpacks the Asana
- *     webhook envelope `{ events: [...] }`. Each event becomes
- *     one `SourceWebhookEvent` with a stable `eventId`
- *     derived from `(event.user, event.created_at,
- *     event.resource.gid)` — Asana doesn't expose a per-event
- *     id directly, so we compute a deterministic hash.
+ *     webhook envelope `{ events: [...] }`. Each surviving event
+ *     becomes one `SourceWebhookEvent` with:
+ *       - stable `eventId` from (user, created_at, resource.gid, action)
+ *       - `eventType` (derived via deriveEventType; null events are
+ *         dropped before emitting)
+ *       - monitored-project filter applied (events for unmonitored
+ *         project GIDs are silently dropped)
+ *       - optional `metadata.summary` (Light-tier LLM one-liner)
  *
  * # Architecture pin
  *
@@ -26,6 +33,7 @@
  * it does NOT verify on its own (no req/res abstraction
  * dependency, keeps the package dependency-light). The
  * receiver's responsibilities:
+ *   0. (PR-F) Check handshakeFn before signature verification.
  *   1. Resolve `webhookSecretCredentialId` → secret bytes.
  *   2. Call `verifier.verify({ body, secret, signature })`.
  *   3. On `ok:false`, throw `WebhookSignatureError(validation)`.
@@ -40,6 +48,7 @@ import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
 import { ValidationError } from "@opencoo/shared/errors";
 import type {
+  HandshakeResult,
   SourceAdapter,
   SourceScanArgs,
   SourceScanResult,
@@ -55,6 +64,7 @@ import {
   asanaBindingConfigSchema,
   type AsanaBindingConfig,
 } from "./binding-config.js";
+import { deriveEventType } from "./derive-event-type.js";
 
 export const ASANA_ADAPTER_SLUG = "asana" as const;
 
@@ -62,10 +72,24 @@ export const ASANA_ADAPTER_SLUG = "asana" as const;
  *  via the helper below. */
 export const ASANA_SIGNATURE_HEADER = "x-hook-signature";
 
+/** Header Asana sends on the first POST (registration handshake).
+ *  Its presence signals a handshake — the value is echoed back. */
+export const ASANA_HOOK_SECRET_HEADER = "x-hook-secret";
+
 export interface CreateAsanaSourceAdapterArgs {
   readonly credentialStore: CredentialStore;
   readonly credentialId: CredentialId;
   readonly config: AsanaBindingConfig | unknown;
+}
+
+/**
+ * Options for `buildAsanaWebhookHelpers`. Allows injection of
+ * the config-driven knobs (monitoredProjectGids, lightSummaryEnabled)
+ * without exposing the full AsanaBindingConfig shape in tests.
+ */
+export interface BuildAsanaWebhookHelpersOptions {
+  readonly monitoredProjectGids?: readonly string[];
+  readonly lightSummaryEnabled?: boolean;
 }
 
 /**
@@ -83,6 +107,11 @@ interface RawAsanaEvent {
     readonly gid?: string;
     readonly resource_type?: string;
   };
+  /** Parent of the resource (e.g. the task a story belongs to). */
+  readonly parent?: {
+    readonly gid?: string;
+    readonly resource_type?: string;
+  };
   readonly action?: string;
   readonly change?: { readonly field?: string };
 }
@@ -91,15 +120,48 @@ interface RawAsanaWebhookBody {
   readonly events?: ReadonlyArray<RawAsanaEvent>;
 }
 
-export function extractAsanaSignature(
-  headers: Readonly<Record<string, string | undefined>>,
+/**
+ * Case-insensitive header lookup. Header names in `headers` may be
+ * lower-cased (Fastify normalises) or original-case (raw injection in
+ * tests); we don't want to depend on that.
+ *
+ * HTTP headers can be `string | string[] | undefined` (Fastify preserves
+ * multi-value headers as arrays). For Asana's single-value signature
+ * headers we take the last value when an array is present — this is safe
+ * because Asana never sends these headers more than once per request.
+ */
+function findHeaderValue(
+  headers: Readonly<Record<string, string | string[] | undefined>>,
+  headerName: string,
 ): string | undefined {
   for (const [k, v] of Object.entries(headers)) {
-    if (k.toLowerCase() === ASANA_SIGNATURE_HEADER && typeof v === "string") {
-      return v;
-    }
+    if (k.toLowerCase() !== headerName) continue;
+    if (typeof v === "string") return v;
+    // Array case: take the last value (defensive; Asana is always single).
+    if (Array.isArray(v) && v.length > 0) return v[v.length - 1];
   }
   return undefined;
+}
+
+export function extractAsanaSignature(
+  headers: Readonly<Record<string, string | string[] | undefined>>,
+): string | undefined {
+  return findHeaderValue(headers, ASANA_SIGNATURE_HEADER);
+}
+
+/**
+ * Detect Asana's registration handshake. Returns the secret to echo,
+ * or null if this is a normal event delivery.
+ */
+function detectAsanaHandshake(
+  headers: Readonly<Record<string, string | string[] | undefined>>,
+): HandshakeResult | null {
+  const secret = findHeaderValue(headers, ASANA_HOOK_SECRET_HEADER);
+  if (secret === undefined || secret.length === 0) return null;
+  return {
+    secret,
+    schemaRef: "source-asana:webhook_secret",
+  };
 }
 
 /**
@@ -116,6 +178,30 @@ function deriveEventId(event: RawAsanaEvent): string {
     event.change?.field ?? "",
   ].join("|");
   return createHash("sha256").update(parts).digest("hex").slice(0, 32);
+}
+
+/**
+ * Extract the project GID from an event. Returns undefined when no
+ * project is derivable.
+ *
+ * Asana's convention:
+ *   - For task events: parent.resource_type === 'project' → parent.gid
+ *   - For project events: resource.resource_type === 'project' → resource.gid
+ */
+function extractProjectGid(event: RawAsanaEvent): string | undefined {
+  if (
+    event.parent?.resource_type === "project" &&
+    typeof event.parent.gid === "string"
+  ) {
+    return event.parent.gid;
+  }
+  if (
+    event.resource?.resource_type === "project" &&
+    typeof event.resource.gid === "string"
+  ) {
+    return event.resource.gid;
+  }
+  return undefined;
 }
 
 function parseAsanaWebhookBody(body: Buffer): RawAsanaWebhookBody {
@@ -138,16 +224,28 @@ function parseAsanaWebhookBody(body: Buffer): RawAsanaWebhookBody {
   return parsed as RawAsanaWebhookBody;
 }
 
-export function buildAsanaWebhookHelpers(): SourceWebhookHelpers {
+export function buildAsanaWebhookHelpers(
+  opts: BuildAsanaWebhookHelpersOptions = {},
+): SourceWebhookHelpers {
   const verifier: WebhookVerifier = new HmacSha256Verifier();
+  const monitoredSet =
+    opts.monitoredProjectGids !== undefined && opts.monitoredProjectGids.length > 0
+      ? new Set(opts.monitoredProjectGids)
+      : undefined;
+
   return {
     verifier,
     extractSignature: extractAsanaSignature,
+
+    // Handshake detection — called by receiver BEFORE signature verification.
+    handshakeFn: detectAsanaHandshake,
+
     parseEvents: ({ body, fetchedAt }) => {
       const parsed = parseAsanaWebhookBody(body);
       const events = parsed.events ?? [];
       const at = fetchedAt ?? new Date();
       const out: SourceWebhookEvent[] = [];
+
       for (const ev of events) {
         // Validate required fields BEFORE deriving an eventId —
         // empty resource.gid + empty action would still hash to
@@ -169,6 +267,26 @@ export function buildAsanaWebhookHelpers(): SourceWebhookHelpers {
             "asana webhook: event missing required fields (resource.gid, resource.resource_type, action)",
           );
         }
+
+        // Step 1 (PR-F): derive semantic event type; drop noise events.
+        const eventType = deriveEventType(ev);
+        if (eventType === null) {
+          // Silently drop — deletions, removals, non-comment stories,
+          // task_added_to_project, and uninteresting field changes.
+          continue;
+        }
+
+        // Step 2 (PR-F): monitored-project filter.
+        // When monitoredProjectGids is configured, only emit events
+        // whose project GID appears in the allowlist.
+        if (monitoredSet !== undefined) {
+          const projectGid = extractProjectGid(ev);
+          if (projectGid === undefined || !monitoredSet.has(projectGid)) {
+            // Silently drop — no error, no recordWebhook.
+            continue;
+          }
+        }
+
         const eventId = deriveEventId(ev);
         const sourceDocId = `${resourceGid}:${action}`;
         const contentBytes = Buffer.from(JSON.stringify(ev), "utf8");
@@ -180,8 +298,20 @@ export function buildAsanaWebhookHelpers(): SourceWebhookHelpers {
             `asana webhook: event exceeds 1 MiB ceiling (got ${contentBytes.length} bytes)`,
           );
         }
+
+        // Light-tier summary (lightSummaryEnabled) is a no-op until the
+        // ingestion-pipeline wiring lands in a follow-up PR (phase-b /
+        // PR-G). Rationale: `parseEvents` is sync
+        // (SourceWebhookHelpers contract); `summarizeAsanaEvent` is async
+        // (LLM call). Wiring requires a post-parseEvents async step in the
+        // Ingestion Processor — that is out of scope for PR-F.
+        // TODO(follow-up): wire `summarizeAsanaEvent` in the Ingestion
+        // Processor after `parseEvents`, gated on `lightSummaryEnabled`.
+        // The helper in `light-summary.ts` is fully tested and ready.
+
         out.push({
           eventId,
+          eventType,
           doc: {
             sourceDocId,
             sourceRevision: eventId, // every event = new revision
@@ -202,7 +332,7 @@ export function createAsanaSourceAdapter(
   args: CreateAsanaSourceAdapterArgs,
 ): SourceAdapter {
   // Validate the config at factory time — fail loud here.
-  asanaBindingConfigSchema.parse(args.config);
+  const config = asanaBindingConfigSchema.parse(args.config);
   // credentialStore + credentialId are part of the factory shape
   // (THREAT-MODEL §3.6 invariant 11) but unused by webhook-mode
   // adapters: the engine-ingestion receiver resolves the actual
@@ -220,6 +350,12 @@ export function createAsanaSourceAdapter(
       void _args;
       return { documents: [], nextCursor: null };
     },
-    webhook: buildAsanaWebhookHelpers(),
+    webhook: buildAsanaWebhookHelpers({
+      // exactOptionalPropertyTypes: omit key when undefined.
+      ...(config.monitoredProjectGids !== undefined
+        ? { monitoredProjectGids: config.monitoredProjectGids }
+        : {}),
+      lightSummaryEnabled: config.lightSummaryEnabled,
+    }),
   };
 }

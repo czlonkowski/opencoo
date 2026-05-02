@@ -125,15 +125,52 @@ sourceAdapterContract({
 // Adapter-specific tests
 // ---------------------------------------------------------------------------
 
+describe("source-asana — monitoredProjectGids schema validation", () => {
+  it("rejects empty array [] (must have at least one GID when present)", () => {
+    expect(() =>
+      asanaBindingConfigSchema.parse({
+        projectGid: "p",
+        monitoredProjectGids: [],
+      }),
+    ).toThrow();
+  });
+
+  it("accepts a non-empty array", () => {
+    expect(() =>
+      asanaBindingConfigSchema.parse({
+        projectGid: "p",
+        monitoredProjectGids: ["proj-100"],
+      }),
+    ).not.toThrow();
+  });
+
+  it("undefined monitoredProjectGids is valid (backwards-compat, all events pass)", () => {
+    expect(() =>
+      asanaBindingConfigSchema.parse({ projectGid: "p" }),
+    ).not.toThrow();
+  });
+});
+
 describe("source-asana — binding-config schema", () => {
-  it("requires projectGid + webhookSecretCredentialId", () => {
+  it("requires projectGid; webhookSecretCredentialId is optional (backfilled by handshake)", () => {
+    // projectGid is always required.
     expect(() =>
       asanaBindingConfigSchema.parse({
         webhookSecretCredentialId: "uuid",
       }),
     ).toThrow();
+    // webhookSecretCredentialId is optional — operators may omit it when
+    // creating a new binding; the first Asana POST triggers the handshake
+    // which writes the credential and backfills the field automatically.
     expect(() =>
       asanaBindingConfigSchema.parse({ projectGid: "p" }),
+    ).not.toThrow();
+    // When provided, it must be a non-empty string.
+    expect(() =>
+      asanaBindingConfigSchema.parse({
+        projectGid: "p",
+        webhookSecretCredentialId: "",
+      }),
     ).toThrow();
   });
 
@@ -216,7 +253,7 @@ describe("source-asana — webhook helpers", () => {
     );
   });
 
-  it("parseEvents produces 1 event per Asana event in body.events[]", () => {
+  it("parseEvents produces 1 event per Asana event in body.events[] (both events must have derivable event type)", () => {
     const multi = buildMockAsanaWebhookFixture({
       events: [
         {
@@ -232,6 +269,9 @@ describe("source-asana — webhook helpers", () => {
           resource_type: "task",
           action: "changed",
           created_at: "2026-04-25T12:01:00Z",
+          // PR-F: change.field is required for 'changed' events to
+          // produce a non-null eventType; 'completed' maps to 'completed'.
+          change_field: "completed",
         },
       ],
     });

@@ -72,6 +72,7 @@ const DDL = `
     review_mode review_mode DEFAULT 'auto' NOT NULL,
     schedule_cron text,
     credentials_id uuid,
+    webhook_secret_credentials_id uuid,
     retention_days_override integer,
     enabled boolean DEFAULT true NOT NULL,
     last_scanned_at timestamp with time zone,
@@ -129,6 +130,32 @@ export async function freshIntakeDb(): Promise<IntakeFixture> {
   const domainId = domainResult.rows[0]!.id;
   const bindingResult = await pg.query<{ id: string }>(
     `INSERT INTO sources_bindings (domain_id, adapter_slug) VALUES ($1, 'drive') RETURNING id`,
+    [domainId],
+  );
+  const bindingId = bindingResult.rows[0]!.id;
+
+  return { db, domainId, bindingId };
+}
+
+/**
+ * Extended fixture for Asana handshake tests (PR-F).
+ * Seeds a binding with adapter_slug='asana' and
+ * webhook_secret_credentials_id=NULL (the pre-handshake state).
+ *
+ * Note: the DDL above already includes the
+ * `webhook_secret_credentials_id` column (added in PR-F).
+ */
+export async function freshIntakeDbWithWebhookSecretCol(): Promise<IntakeFixture> {
+  const pg = new PGlite();
+  await pg.exec(DDL);
+  const db: IntakeTestDb = drizzle(pg, { schema });
+
+  const domainResult = await pg.query<{ id: string }>(
+    `INSERT INTO domains (slug, name) VALUES ('asana-domain', 'Asana Domain') RETURNING id`,
+  );
+  const domainId = domainResult.rows[0]!.id;
+  const bindingResult = await pg.query<{ id: string }>(
+    `INSERT INTO sources_bindings (domain_id, adapter_slug) VALUES ($1, 'asana') RETURNING id`,
     [domainId],
   );
   const bindingId = bindingResult.rows[0]!.id;
