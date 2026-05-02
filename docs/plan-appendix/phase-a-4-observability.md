@@ -18,7 +18,7 @@ Phase-a (32 PRs + 5 fix-ups, `main @ 5a5b51e`) ships the engine but not a window
 
 PRD §4 explicitly defers Prometheus and says "UI surfaces `agent_runs` + `llm_usage` instead." That UI did not ship in phase-a. This appendix is that UI.
 
-The user (2026-04-28) decided this blocks the `0.1.0-a` tag — `0.1.0-a` should not ship "engine works, you can't see it work." Three items originally marked for phase-b / v0.2 are pulled forward (Heartbeat reader, Lint + Surfacer review UI, redaction-events surface, real-time LLM token streaming). Only the in-app wiki page browser stays out (Gitea owns rendering by design).
+The user (2026-04-28) decided this blocks the `0.1.0-a` tag — `0.1.0-a` should not ship "engine works, you can't see it work." Four items originally marked for phase-b / v0.2 are pulled forward (Heartbeat reader, Lint + Surfacer review UI, redaction-events surface, real-time LLM token streaming). Only the in-app wiki page browser stays out (Gitea owns rendering by design).
 
 ## Ground truth (verified 2026-04-28)
 
