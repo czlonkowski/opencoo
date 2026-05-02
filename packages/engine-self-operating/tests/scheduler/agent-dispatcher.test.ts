@@ -84,25 +84,16 @@ async function seedScheduledInstance(
     readonly enabled?: boolean;
   } = {},
 ): Promise<{ readonly instanceId: string }> {
-  const definitionSlug = args.definitionSlug ?? TEST_DEFINITION.slug;
-  const name = args.name ?? "default";
-  const scheduleCron = args.scheduleCron ?? null;
-  const enabled = args.enabled ?? true;
-  const result = await fixture.raw.query<{ id: string }>(
-    `INSERT INTO agent_instances
-       (definition_slug, name, scope_domain_ids, memory, locale, enabled, schedule_cron)
-     VALUES ($1, $2, $3::uuid[], $4::jsonb, 'en', $5, $6)
-     RETURNING id`,
-    [
-      definitionSlug,
-      name,
-      [fixture.domainId],
-      JSON.stringify({ type: "none" }),
-      enabled,
-      scheduleCron,
-    ],
-  );
-  return { instanceId: result.rows[0]!.id };
+  // Thin wrapper over the shared seedAgentInstance — keeps the
+  // {definitionSlug,name,scheduleCron,enabled} call shape that
+  // the dispatcher tests already use.
+  const seeded = await seedAgentInstance(fixture, {
+    definitionSlug: args.definitionSlug ?? TEST_DEFINITION.slug,
+    instanceName: args.name ?? "default",
+    scheduleCron: args.scheduleCron ?? null,
+    enabled: args.enabled ?? true,
+  });
+  return { instanceId: seeded.instanceId };
 }
 
 interface DispatcherHarness {

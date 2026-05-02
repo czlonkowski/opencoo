@@ -135,7 +135,8 @@ async function defaultIngestionStartFactory(opts: {
   // we fall back to probes-only — the operator gets the webhook
   // receiver + management UI, and the failure log line names
   // the missing ingredient.
-  let composed: Awaited<ReturnType<typeof composition.composeProductionFromEnv>> | null = null;
+  type Composed = Awaited<ReturnType<typeof composition.composeProductionFromEnv>>;
+  let composed: Composed;
   try {
     composed = await composition.composeProductionFromEnv({ env: opts.env });
   } catch (err) {
@@ -144,10 +145,6 @@ async function defaultIngestionStartFactory(opts: {
         `opencoo: ingestion workers disabled (${describeError(err)}) — booting probes-only; webhook deliveries will queue in Redis until composition is fixed\n`,
       ),
     );
-    composed = null;
-  }
-
-  if (composed === null) {
     // Fall back to probes-only — webhook receiver up, no Workers.
     return mod.start({ env: opts.env });
   }

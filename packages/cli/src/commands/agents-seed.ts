@@ -82,37 +82,40 @@ interface ExecResult {
 }
 
 function buildRows(): readonly SeedRow[] {
-  const out: SeedRow[] = [];
-  for (const def of SEEDABLE_DEFINITIONS) {
-    if (def.defaultScheduleCron === undefined) {
-      // Skip on-demand agents (Chat, Builder) — they live in the
-      // SEEDABLE_DEFINITIONS list only as a future-proofing hook;
-      // current v0.1 set is filtered above. Defensive guard.
-      continue;
-    }
-    out.push({
-      definitionSlug: def.slug,
-      name: `${def.slug}-default`,
-      scheduleCron: def.defaultScheduleCron,
-    });
-  }
-  return out;
+  // SEEDABLE_DEFINITIONS is curated to only include scheduled-class
+  // agents (Heartbeat, Lint, Surfacer) — every entry has a
+  // defaultScheduleCron. The defensive narrow keeps a future
+  // entry without a schedule from accidentally seeding a NULL
+  // schedule_cron value.
+  return SEEDABLE_DEFINITIONS.flatMap((def) =>
+    def.defaultScheduleCron === undefined
+      ? []
+      : [
+          {
+            definitionSlug: def.slug,
+            name: `${def.slug}-default`,
+            scheduleCron: def.defaultScheduleCron,
+          },
+        ],
+  );
 }
 
 export async function runAgentsSeed(args: AgentsSeedArgs): Promise<void> {
-  let pool: Pool | null = null;
+  // Test path supplies dbFactory + (optionally) closePool. Production
+  // path opens a pg.Pool here and drains it in the finally block.
   let db: Db;
   let closePool: () => Promise<void>;
-
   if (args.dbFactory !== undefined) {
     db = args.dbFactory(args.env);
     closePool = args.closePool ?? (async (): Promise<void> => undefined);
   } else {
-    pool = openPool({ env: args.env });
+    const pool: Pool = openPool({ env: args.env });
     db = drizzle(pool);
-    closePool = args.closePool ?? (async (): Promise<void> => {
-      await pool!.end().catch(() => undefined);
-    });
+    closePool =
+      args.closePool ??
+      (async (): Promise<void> => {
+        await pool.end().catch(() => undefined);
+      });
   }
 
   try {
