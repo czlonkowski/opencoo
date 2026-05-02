@@ -216,12 +216,15 @@ export function startIngestionWorkers(
           });
         }),
       );
-      // Race the parallel-close against a watchdog timer. We hold
+      // Race the parallel-close against a watchdog timer. Capture
       // the timer handle so the success branch can `clearTimeout`
-      // it — otherwise a fast close (<1s) leaves the timer
-      // pending and holds the event loop alive for up to
-      // `timeoutMs` (test runners with a single closeAll() call
-      // would block exit on the unreferenced timer).
+      // it — `setTimeout` returns a REFERENCED timer that holds
+      // the event loop alive until it fires or is cleared. BullMQ's
+      // `worker.close()` resolves promptly when there are no
+      // in-flight jobs, so the typical close path lands here in
+      // milliseconds; without `clearTimeout` the watchdog timer
+      // would still pin the loop for the full `timeoutMs` after
+      // every worker had already closed cleanly.
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<void>((resolve) => {
         timer = setTimeout(() => {
