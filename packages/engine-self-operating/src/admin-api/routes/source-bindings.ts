@@ -77,6 +77,10 @@ interface BindingRow {
    *  Prefers `error_text` (free-form message) over `error_class` (enum literal).
    *  THREAT-MODEL §3.6 invariant 11: no credential bytes in the response. */
   readonly lastError: string | null;
+  /** Count of webhook_events rows with status='pending' for this binding.
+   *  Used by the Review Dashboard to surface bindings that need attention.
+   *  Phase-a appendix #4 PR-C addition. */
+  readonly pendingEventsCount: number;
 }
 
 /** Coerce pg's timestamp result (Date when node-postgres parsed it,
@@ -157,7 +161,13 @@ export function registerSourceBindingsRoutes(
                  AND ii.created_at >= NOW() - INTERVAL '24 hours'
                ORDER BY ii.created_at DESC
                LIMIT 1
-             ) AS latest_error_class
+             ) AS latest_error_class,
+             (
+               SELECT COUNT(*)::int
+               FROM webhook_events w
+               WHERE w.binding_id = b.id
+                 AND w.status = 'pending'
+             ) AS pending_events_count
       FROM sources_bindings b
       JOIN domains d ON d.id = b.domain_id
       ORDER BY b.created_at DESC
@@ -175,6 +185,7 @@ export function registerSourceBindingsRoutes(
         last_event_at: Date | string | null;
         sig_fail_count_24h: number;
         latest_error_class: string | null;
+        pending_events_count: number;
       }>;
     };
 
@@ -208,6 +219,7 @@ export function registerSourceBindingsRoutes(
         status,
         lastEventAt,
         lastError,
+        pendingEventsCount: r.pending_events_count,
       };
     });
     return { rows };

@@ -1,7 +1,7 @@
 /**
  * Cross-route shared types (PR 29 / plan #131).
  */
-export type Tab = "domains" | "sources" | "llmPolicy" | "prompts" | "activity";
+export type Tab = "domains" | "sources" | "llmPolicy" | "prompts" | "activity" | "review";
 
 export interface Domain {
   readonly id: string;
@@ -30,6 +30,11 @@ export interface SourceBinding {
   /** Truncated + scrubbed error string, or null. Max 200 chars.
    *  THREAT-MODEL §3.6 invariant 11: no credential bytes. */
   readonly lastError: string | null;
+  /** Count of webhook_events rows with status='pending' for this binding.
+   *  Phase-a appendix #4 PR-C addition. Used by the Review Dashboard.
+   *  Sources tab (PR-A) does not require this field — it is optional here
+   *  to preserve backward-compat with the Sources route's existing usage. */
+  readonly pendingEventsCount?: number;
 }
 
 export interface PromptManifestEntry {

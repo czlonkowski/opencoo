@@ -33,6 +33,8 @@ const TABS: ReadonlyArray<{ key: Tab; labelKey: string }> = [
   { key: "prompts", labelKey: "nav.prompts" },
   // Phase-a appendix #4 PR-B: Activity tab (5th tab).
   { key: "activity", labelKey: "nav.activity" },
+  // Phase-a appendix #4 PR-C: Review Dashboard (6th tab).
+  { key: "review", labelKey: "nav.review" },
 ];
 
 export function Sidebar(props: SidebarProps): JSX.Element {
