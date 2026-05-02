@@ -84,6 +84,44 @@ const REBUILDER_AUTHOR = {
   email: "rebuilder@opencoo.local",
 } as const;
 
+/** Build the in-memory wikiDeps fixture every worker test in this
+ *  file uses. The clock is pinned so dependent assertions stay
+ *  deterministic across runs. */
+function inMemoryWikiDeps(adapter: InMemoryWikiAdapter): {
+  adapter: InMemoryWikiAdapter;
+  queue: InMemoryWikiWriteQueue;
+  deleteCap: InMemoryDeleteCap;
+  logger: ConsoleLogger;
+  clock: () => Date;
+} {
+  return {
+    adapter,
+    queue: new InMemoryWikiWriteQueue(),
+    deleteCap: new InMemoryDeleteCap(),
+    logger: silentLogger(),
+    clock: () => new Date("2026-04-25T12:00:00Z"),
+  };
+}
+
+/** Assemble the WorkerContext both `startIngestionWorkers` test
+ *  cases construct identically. The compile worker exercises only
+ *  the failure path here so a fakeRouter / noOpGuard is fine. */
+function makeWorkerCtx(args: {
+  fixture: Awaited<ReturnType<typeof freshPipelineDb>>;
+  wikiAdapter: InMemoryWikiAdapter;
+}): WorkerContext {
+  return {
+    db: args.fixture.db as unknown as WorkerContext["db"],
+    logger: silentLogger(),
+    wikiDeps: inMemoryWikiDeps(args.wikiAdapter),
+    wikiAdapter: args.wikiAdapter,
+    author: REBUILDER_AUTHOR,
+    router: fakeRouter(),
+    guardAdapter: noOpGuard(),
+    adapterRegistry: { get: () => undefined },
+  };
+}
+
 describe("buildScannerHandler", () => {
   it("invokes runScanner with the worker context", async () => {
     const fixture = await freshPipelineDb();
@@ -144,13 +182,7 @@ describe("buildIndexRebuildHandler", () => {
     const wikiAdapter = new InMemoryWikiAdapter();
     const handler = buildIndexRebuildHandler({
       logger: silentLogger(),
-      wikiDeps: {
-        adapter: wikiAdapter,
-        queue: new InMemoryWikiWriteQueue(),
-        deleteCap: new InMemoryDeleteCap(),
-        logger: silentLogger(),
-        clock: () => new Date("2026-04-25T12:00:00Z"),
-      },
+      wikiDeps: inMemoryWikiDeps(wikiAdapter),
       wikiAdapter,
       author: REBUILDER_AUTHOR,
     });
@@ -167,13 +199,7 @@ describe("buildIndexRebuildHandler", () => {
     const wikiAdapter = new InMemoryWikiAdapter();
     const handler = buildIndexRebuildHandler({
       logger: silentLogger(),
-      wikiDeps: {
-        adapter: wikiAdapter,
-        queue: new InMemoryWikiWriteQueue(),
-        deleteCap: new InMemoryDeleteCap(),
-        logger: silentLogger(),
-        clock: () => new Date("2026-04-25T12:00:00Z"),
-      },
+      wikiDeps: inMemoryWikiDeps(wikiAdapter),
       wikiAdapter,
       author: REBUILDER_AUTHOR,
     });
@@ -204,13 +230,7 @@ describe("buildCompilationHandler", () => {
       db: fixture.db as unknown as WorkerContext["db"],
       logger: silentLogger(),
       router: fakeRouter(),
-      wikiDeps: {
-        adapter: wikiAdapter,
-        queue: new InMemoryWikiWriteQueue(),
-        deleteCap: new InMemoryDeleteCap(),
-        logger: silentLogger(),
-        clock: () => new Date("2026-04-25T12:00:00Z"),
-      },
+      wikiDeps: inMemoryWikiDeps(wikiAdapter),
       author: REBUILDER_AUTHOR,
       guardAdapter: noOpGuard(),
     });
@@ -237,22 +257,7 @@ describe("startIngestionWorkers", () => {
     const wikiAdapter = new InMemoryWikiAdapter();
     const redis = new IORedisMock();
     const handle = startIngestionWorkers({
-      ctx: {
-        db: fixture.db as unknown as WorkerContext["db"],
-        logger: silentLogger(),
-        wikiDeps: {
-          adapter: wikiAdapter,
-          queue: new InMemoryWikiWriteQueue(),
-          deleteCap: new InMemoryDeleteCap(),
-          logger: silentLogger(),
-          clock: () => new Date("2026-04-25T12:00:00Z"),
-        },
-        wikiAdapter,
-        author: REBUILDER_AUTHOR,
-        router: fakeRouter(),
-        guardAdapter: noOpGuard(),
-        adapterRegistry: { get: () => undefined },
-      },
+      ctx: makeWorkerCtx({ fixture, wikiAdapter }),
       connection: redis as unknown as Parameters<
         typeof startIngestionWorkers
       >[0]["connection"],
@@ -277,40 +282,25 @@ describe("startIngestionWorkers", () => {
     const wikiAdapter = new InMemoryWikiAdapter();
     const redis = new IORedisMock();
     const handle = startIngestionWorkers({
-      ctx: {
-        db: fixture.db as unknown as WorkerContext["db"],
-        logger: silentLogger(),
-        wikiDeps: {
-          adapter: wikiAdapter,
-          queue: new InMemoryWikiWriteQueue(),
-          deleteCap: new InMemoryDeleteCap(),
-          logger: silentLogger(),
-          clock: () => new Date("2026-04-25T12:00:00Z"),
-        },
-        wikiAdapter,
-        author: REBUILDER_AUTHOR,
-        router: fakeRouter(),
-        guardAdapter: noOpGuard(),
-        adapterRegistry: { get: () => undefined },
-      },
+      ctx: makeWorkerCtx({ fixture, wikiAdapter }),
       connection: redis as unknown as Parameters<
         typeof startIngestionWorkers
       >[0]["connection"],
       autorun: false,
     });
 
-    const scannerCloseSpy = vi.spyOn(handle.scanner, "close");
-    const compileCloseSpy = vi.spyOn(handle.compile, "close");
-    const dispatchCloseSpy = vi.spyOn(handle.reviewDispatch, "close");
-    const indexCloseSpy = vi.spyOn(handle.indexRebuild, "close");
-    const cleanupCloseSpy = vi.spyOn(handle.cleanup, "close");
+    const closeSpies = [
+      vi.spyOn(handle.scanner, "close"),
+      vi.spyOn(handle.compile, "close"),
+      vi.spyOn(handle.reviewDispatch, "close"),
+      vi.spyOn(handle.indexRebuild, "close"),
+      vi.spyOn(handle.cleanup, "close"),
+    ];
 
     await handle.closeAll();
-    expect(scannerCloseSpy).toHaveBeenCalledTimes(1);
-    expect(compileCloseSpy).toHaveBeenCalledTimes(1);
-    expect(dispatchCloseSpy).toHaveBeenCalledTimes(1);
-    expect(indexCloseSpy).toHaveBeenCalledTimes(1);
-    expect(cleanupCloseSpy).toHaveBeenCalledTimes(1);
+    for (const spy of closeSpies) {
+      expect(spy).toHaveBeenCalledTimes(1);
+    }
 
     redis.disconnect();
   });

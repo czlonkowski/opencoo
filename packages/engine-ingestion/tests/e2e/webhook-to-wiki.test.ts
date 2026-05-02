@@ -78,6 +78,38 @@ const STUB_AUTHOR = {
   email: "test@opencoo.local",
 } as const;
 
+/** In-memory wikiDeps fixture shared by both e2e cases. Clock is
+ *  pinned so commit-time-dependent assertions stay deterministic. */
+function inMemoryWikiDeps(adapter: InMemoryWikiAdapter): WikiWriteDeps {
+  return {
+    adapter,
+    queue: new InMemoryWikiWriteQueue(),
+    deleteCap: new InMemoryDeleteCap(),
+    logger: silentLogger(),
+    clock: () => new Date("2026-04-25T12:00:00Z"),
+  };
+}
+
+/** Build an LlmRouter wrapping the supplied provider. The pauser
+ *  stub is a no-op — these e2e tests don't exercise the cost-cap
+ *  pause logic. */
+function makeRouter(
+  fixture: Awaited<ReturnType<typeof freshPipelineDb>>,
+  provider: LlmProvider,
+): LlmRouter {
+  return new LlmRouter({
+    db: fixture.db as unknown as Parameters<typeof LlmRouter>[0]["db"],
+    env: {},
+    logger: silentLogger(),
+    pauser: {
+      paused: () => false,
+      pause: () => undefined,
+      resume: () => undefined,
+    },
+    provider,
+  });
+}
+
 function makeStubSourceAdapter(slug: string): SourceAdapter {
   return {
     slug,
@@ -141,13 +173,7 @@ describe("webhook → wiki end-to-end (PR-M1)", () => {
   it("scans a binding → enqueues classify → compile handler writes to wiki", async () => {
     const fixture = await freshPipelineDb();
     const wikiAdapter = new InMemoryWikiAdapter();
-    const wikiDeps: WikiWriteDeps = {
-      adapter: wikiAdapter,
-      queue: new InMemoryWikiWriteQueue(),
-      deleteCap: new InMemoryDeleteCap(),
-      logger: silentLogger(),
-      clock: () => new Date("2026-04-25T12:00:00Z"),
-    };
+    const wikiDeps = inMemoryWikiDeps(wikiAdapter);
 
     // Stage 1: invoke the Scanner handler directly. Uses the
     // pglite-seeded binding from `freshPipelineDb` (adapter_slug:
@@ -186,23 +212,10 @@ describe("webhook → wiki end-to-end (PR-M1)", () => {
     // Stage 2: invoke the Compile handler with the enqueued job.
     // Wire a real LlmRouter backed by MockLlmClient so the
     // classifier + compiler return canned outputs.
-    const provider: LlmProvider = buildClassifierMock();
-    const router = new LlmRouter({
-      db: fixture.db as unknown as Parameters<typeof LlmRouter>[0]["db"],
-      env: {},
-      logger: silentLogger(),
-      pauser: {
-        paused: () => false,
-        pause: () => undefined,
-        resume: () => undefined,
-      },
-      provider,
-    });
-
     const compileHandler = buildCompilationHandler({
       db: fixture.db as unknown as WorkerContext["db"],
       logger: silentLogger(),
-      router,
+      router: makeRouter(fixture, buildClassifierMock()),
       wikiDeps,
       author: STUB_AUTHOR,
       guardAdapter: passThroughGuard(),
@@ -241,33 +254,15 @@ describe("webhook → wiki end-to-end (PR-M1)", () => {
     const fixture = await freshPipelineDb();
     const wikiAdapter = new InMemoryWikiAdapter();
     const redis = new IORedisMock();
-    const provider: LlmProvider = new MockLlmClient();
-    const router = new LlmRouter({
-      db: fixture.db as unknown as Parameters<typeof LlmRouter>[0]["db"],
-      env: {},
-      logger: silentLogger(),
-      pauser: {
-        paused: () => false,
-        pause: () => undefined,
-        resume: () => undefined,
-      },
-      provider,
-    });
 
     const handle = startIngestionWorkers({
       ctx: {
         db: fixture.db as unknown as WorkerContext["db"],
         logger: silentLogger(),
-        wikiDeps: {
-          adapter: wikiAdapter,
-          queue: new InMemoryWikiWriteQueue(),
-          deleteCap: new InMemoryDeleteCap(),
-          logger: silentLogger(),
-          clock: () => new Date("2026-04-25T12:00:00Z"),
-        },
+        wikiDeps: inMemoryWikiDeps(wikiAdapter),
         wikiAdapter,
         author: STUB_AUTHOR,
-        router,
+        router: makeRouter(fixture, new MockLlmClient()),
         guardAdapter: passThroughGuard(),
         adapterRegistry: { get: () => undefined },
       },
