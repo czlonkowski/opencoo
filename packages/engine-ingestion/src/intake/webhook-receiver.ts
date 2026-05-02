@@ -52,7 +52,7 @@ import {
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
 import type { Logger } from "@opencoo/shared/logger";
-import type { SourceAdapter } from "@opencoo/shared/source-adapter";
+import type { SourceWebhookHelpers } from "@opencoo/shared/source-adapter";
 import type { WebhookVerifier } from "@opencoo/shared/webhook-verifier";
 
 import type { InMemoryAdapterRegistry } from "./adapter-registry.js";
@@ -84,6 +84,26 @@ interface BindingRow {
   readonly adapterSlug: string;
   readonly credentialsId: string | null;
   readonly webhookSecretCredentialsId: string | null;
+}
+
+/**
+ * Type guard: narrows a `SourceAdapterStub` (slug-only) to a value
+ * that also carries the optional `webhook` helpers. The registry stores
+ * `SourceAdapterStub`s, but full adapters satisfy that shape too —
+ * callers that need `webhook.handshakeFn` should use this guard rather
+ * than casting, so the type error surfaces at compile-time if the
+ * webhook surface changes.
+ */
+function hasWebhookHelpers(
+  a: unknown,
+): a is { webhook: SourceWebhookHelpers } {
+  return (
+    typeof a === "object" &&
+    a !== null &&
+    "webhook" in a &&
+    typeof (a as Record<string, unknown>)["webhook"] === "object" &&
+    (a as Record<string, unknown>)["webhook"] !== null
+  );
 }
 
 export function buildWebhookReceiver(
@@ -135,10 +155,11 @@ export function buildWebhookReceiver(
     }
 
     // Step 2: confirm the adapter is registered.
-    const adapter = options.adapterRegistry.get(binding.adapterSlug) as
-      | SourceAdapter
-      | undefined;
-    if (adapter === undefined) {
+    // `get()` returns `SourceAdapterStub | undefined` (slug-only shape).
+    // We use the `hasWebhookHelpers` guard below when we need the
+    // optional webhook surface; no unsafe cast to `SourceAdapter`.
+    const adapterStub = options.adapterRegistry.get(binding.adapterSlug);
+    if (adapterStub === undefined) {
       // The binding references an adapter slug that isn't wired —
       // operator config bug. DLQ for triage; reply 500.
       await options.dlqQueue.add("intake.dlq", {
@@ -155,8 +176,10 @@ export function buildWebhookReceiver(
     // Step 2a (PR-F): per-adapter handshake detection.
     // Check BEFORE signature verification — handshake requests
     // have no signature (Asana's X-Hook-Secret is the whole message).
-    const allHeaders = req.headers as Readonly<Record<string, string | undefined>>;
-    const handshakeResult = adapter.webhook?.handshakeFn?.(allHeaders) ?? null;
+    const allHeaders = req.headers as Readonly<Record<string, string | string[] | undefined>>;
+    const handshakeResult = hasWebhookHelpers(adapterStub)
+      ? (adapterStub.webhook.handshakeFn?.(allHeaders) ?? null)
+      : null;
     if (handshakeResult !== null) {
       // Persist the webhook secret to CredentialStore.
       const newCredId = await options.credentialStore.write({
@@ -179,10 +202,12 @@ export function buildWebhookReceiver(
         credentialId: newCredId,
       });
 
-      // Echo the secret header and return 200. No body, no DLQ,
-      // no webhook_events row, no scanner enqueue.
-      reply.header("x-hook-secret", handshakeResult.secret).code(200);
-      return null;
+      // Echo the secret header and return 200 with an empty body.
+      // Asana expects an empty 200 — not a JSON `null` body — so we
+      // use reply.send("") to suppress Fastify's default serialization.
+      // No DLQ, no webhook_events row, no scanner enqueue.
+      reply.header("x-hook-secret", handshakeResult.secret).code(200).send("");
+      return;
     }
 
     // Step 3: read the HMAC secret.
@@ -210,6 +235,10 @@ export function buildWebhookReceiver(
     );
 
     // Step 4: verify signature on the raw body.
+    // Receiver uses the fixed `x-signature` header per orchestrator
+    // override 5; adapter-exported verifier symmetry (extractSignature)
+    // enables per-scheme customisation post-v0.1 when adapters need
+    // different header names (e.g. Asana's `x-hook-signature`).
     const rawBody = req.body as Buffer;
     const signature = req.headers["x-signature"];
     const provider = req.headers["x-provider"] ?? binding.adapterSlug;

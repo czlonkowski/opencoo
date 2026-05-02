@@ -132,6 +132,26 @@ describe("webhook receiver — Asana X-Hook-Secret handshake (PR-F)", () => {
     await app.close();
   });
 
+  it("returns an empty body on handshake (not JSON null) — Asana expects empty 200", async () => {
+    const { app, bindingId } = await makeAsanaFixture();
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/webhooks/${bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        "x-hook-secret": "handshake-body-test",
+      },
+      payload: "{}",
+    });
+
+    expect(res.statusCode).toBe(200);
+    // Asana requires an empty body — `reply.send("")` suppresses
+    // Fastify's default JSON null serialization.
+    expect(res.body).toBe("");
+    await app.close();
+  });
+
   it("persists secret and updates sources_bindings.webhook_secret_credentials_id", async () => {
     const { app, bindingId, db } = await makeAsanaFixture();
     const secret = "handshake-secret-xyz2";

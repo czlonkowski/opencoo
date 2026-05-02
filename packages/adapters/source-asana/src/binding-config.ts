@@ -42,13 +42,24 @@ export const asanaBindingConfigSchema = z
      *  silently dropped before reaching intake. Default
      *  `undefined` = all projects pass (backwards-compat).
      *  In practice every production binding should set this to
-     *  a single project gid for deterministic monitoring. */
-    monitoredProjectGids: z.array(z.string().min(1)).optional(),
+     *  a single project gid for deterministic monitoring.
+     *
+     *  Must contain at least one GID when provided — an empty
+     *  array would silently drop all events, which is almost
+     *  certainly an operator misconfiguration. The schema
+     *  rejects `[]` at parse time to surface the error early. */
+    monitoredProjectGids: z.array(z.string().min(1)).min(1).optional(),
     /** When true, each qualifying event gets a Light-tier LLM
      *  call to produce a ≤25-word Polish one-liner summary
      *  persisted as `metadata.summary` on the SourceEvent.
      *  Default false (opt-in to avoid unexpected LLM cost on
-     *  high-volume projects). */
+     *  high-volume projects).
+     *
+     *  NOTE: currently a no-op. The helper (`summarizeAsanaEvent`
+     *  in `light-summary.ts`) is fully implemented and exported,
+     *  but the ingestion-pipeline wiring that calls it per-event
+     *  is deferred to a follow-up PR (phase-b / PR-G). Setting
+     *  this to `true` has no runtime effect until that PR lands. */
     lightSummaryEnabled: z.boolean().default(false),
   })
   .strict();

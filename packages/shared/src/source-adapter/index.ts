@@ -134,8 +134,13 @@ export interface SourceWebhookHelpers {
   /** Extracts the signature string from request headers. The
    *  header name varies by source (Asana: `X-Hook-Signature`,
    *  Gitea: `X-Hub-Signature-256`); this helper localises the
-   *  detail. Returns undefined if absent. */
-  extractSignature(headers: Readonly<Record<string, string | undefined>>):
+   *  detail. Returns undefined if absent.
+   *
+   *  Headers may carry `string | string[] | undefined` — Fastify
+   *  preserves multi-value headers as arrays. Adapters should
+   *  take the last value or join as appropriate; Asana's
+   *  signature headers are always single-valued in practice. */
+  extractSignature(headers: Readonly<Record<string, string | string[] | undefined>>):
     | string
     | undefined;
   /** Unpack a verified body into one or more events. Adapter
@@ -156,8 +161,10 @@ export interface SourceWebhookHelpers {
    *
    * Asana uses `X-Hook-Secret` on the first POST; adapters
    * that don't have a handshake protocol leave this undefined.
-   */
-  handshakeFn?(headers: Readonly<Record<string, string | undefined>>):
+   *
+   * Headers may carry `string | string[] | undefined` (Fastify
+   * multi-value header shape). */
+  handshakeFn?(headers: Readonly<Record<string, string | string[] | undefined>>):
     | HandshakeResult
     | null;
 }

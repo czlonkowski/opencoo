@@ -77,9 +77,10 @@ export function buildMockAsanaWebhookFixture(args?: {
 
 /**
  * Builds a fixture with `parent` field on events — needed for
- * monitored-project filter tests (PR-F). The fixture body is
- * unsigned (no secret/signature needed for filter tests that
- * call parseEvents directly without going through the verifier).
+ * monitored-project filter tests (PR-F). Like `buildMockAsanaWebhookFixture`,
+ * the body IS signed (HMAC-SHA256 against the test secret). Filter tests
+ * call `parseEvents` directly and skip the verifier, so the signature is
+ * present but not checked in those tests.
  */
 export function buildMockAsanaWebhookFixtureWithParent(args?: {
   readonly events?: ReadonlyArray<MockAsanaEventWithParent>;

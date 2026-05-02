@@ -3,7 +3,12 @@
  *
  * Helper that calls the Light-tier LLM router to produce a
  * ≤25-word Polish one-liner summarising a single Asana event.
- * Used in `parseEvents` when `lightSummaryEnabled: true`.
+ * Called when `lightSummaryEnabled: true` — but note that the actual
+ * wiring that calls this helper from the ingestion pipeline is deferred
+ * to a follow-up PR (phase-b or PR-G). Until then `lightSummaryEnabled`
+ * is a no-op config knob; see `binding-config.ts` and adapter.ts comment
+ * block near `lightSummaryEnabled`. This helper is fully tested and
+ * exported so the wiring PR is purely a receiver/pipeline change.
  *
  * THREAT-MODEL compliance:
  *   - §2 invariant 11: event content logged at debug only (never info).
@@ -76,9 +81,18 @@ Podsumowanie (max 25 słów, max 120 tokenów):`;
       ...(args.documentId !== undefined ? { documentId: args.documentId } : {}),
     });
     return result.text.trim() || undefined;
-  } catch {
+  } catch (err) {
     // THREAT-MODEL §2 invariant 11: do not log event content at info level.
     // The warning message is metadata-only (no payload bytes).
+    console.warn(
+      "source-asana: light-summary LLM call failed",
+      {
+        pipeline: args.pipeline,
+        domainId: args.domainId,
+        // Include a safe error message string only — never the event payload.
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
     return undefined;
   }
 }

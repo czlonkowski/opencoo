@@ -124,21 +124,27 @@ interface RawAsanaWebhookBody {
  * Case-insensitive header lookup. Header names in `headers` may be
  * lower-cased (Fastify normalises) or original-case (raw injection in
  * tests); we don't want to depend on that.
+ *
+ * HTTP headers can be `string | string[] | undefined` (Fastify preserves
+ * multi-value headers as arrays). For Asana's single-value signature
+ * headers we take the last value when an array is present — this is safe
+ * because Asana never sends these headers more than once per request.
  */
 function findHeaderValue(
-  headers: Readonly<Record<string, string | undefined>>,
+  headers: Readonly<Record<string, string | string[] | undefined>>,
   headerName: string,
 ): string | undefined {
   for (const [k, v] of Object.entries(headers)) {
-    if (k.toLowerCase() === headerName && typeof v === "string") {
-      return v;
-    }
+    if (k.toLowerCase() !== headerName) continue;
+    if (typeof v === "string") return v;
+    // Array case: take the last value (defensive; Asana is always single).
+    if (Array.isArray(v) && v.length > 0) return v[v.length - 1];
   }
   return undefined;
 }
 
 export function extractAsanaSignature(
-  headers: Readonly<Record<string, string | undefined>>,
+  headers: Readonly<Record<string, string | string[] | undefined>>,
 ): string | undefined {
   return findHeaderValue(headers, ASANA_SIGNATURE_HEADER);
 }
@@ -148,7 +154,7 @@ export function extractAsanaSignature(
  * or null if this is a normal event delivery.
  */
 function detectAsanaHandshake(
-  headers: Readonly<Record<string, string | undefined>>,
+  headers: Readonly<Record<string, string | string[] | undefined>>,
 ): HandshakeResult | null {
   const secret = findHeaderValue(headers, ASANA_HOOK_SECRET_HEADER);
   if (secret === undefined || secret.length === 0) return null;
@@ -293,15 +299,15 @@ export function buildAsanaWebhookHelpers(
           );
         }
 
-        // Note: Light-tier summary (lightSummaryEnabled) is an async
-        // operation that requires the LLM router. The router is not
-        // available in this sync parseEvents call. Summaries are attached
-        // by the caller (engine-ingestion pipeline) after parseEvents
-        // returns, via the summarizeAsanaEvent helper. The
-        // metadata.summary field is left undefined here when the async
-        // path is not yet wired; this matches the spec's pattern of
-        // summarizeAsanaEvent being a separate testable helper in
-        // light-summary.ts.
+        // Light-tier summary (lightSummaryEnabled) is a no-op until the
+        // ingestion-pipeline wiring lands in a follow-up PR (phase-b /
+        // PR-G). Rationale: `parseEvents` is sync
+        // (SourceWebhookHelpers contract); `summarizeAsanaEvent` is async
+        // (LLM call). Wiring requires a post-parseEvents async step in the
+        // Ingestion Processor — that is out of scope for PR-F.
+        // TODO(follow-up): wire `summarizeAsanaEvent` in the Ingestion
+        // Processor after `parseEvents`, gated on `lightSummaryEnabled`.
+        // The helper in `light-summary.ts` is fully tested and ready.
 
         out.push({
           eventId,

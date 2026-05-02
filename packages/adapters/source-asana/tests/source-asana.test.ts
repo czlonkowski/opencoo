@@ -125,6 +125,32 @@ sourceAdapterContract({
 // Adapter-specific tests
 // ---------------------------------------------------------------------------
 
+describe("source-asana — monitoredProjectGids schema validation", () => {
+  it("rejects empty array [] (must have at least one GID when present)", () => {
+    expect(() =>
+      asanaBindingConfigSchema.parse({
+        projectGid: "p",
+        monitoredProjectGids: [],
+      }),
+    ).toThrow();
+  });
+
+  it("accepts a non-empty array", () => {
+    expect(() =>
+      asanaBindingConfigSchema.parse({
+        projectGid: "p",
+        monitoredProjectGids: ["proj-100"],
+      }),
+    ).not.toThrow();
+  });
+
+  it("undefined monitoredProjectGids is valid (backwards-compat, all events pass)", () => {
+    expect(() =>
+      asanaBindingConfigSchema.parse({ projectGid: "p" }),
+    ).not.toThrow();
+  });
+});
+
 describe("source-asana — binding-config schema", () => {
   it("requires projectGid; webhookSecretCredentialId is optional (backfilled by handshake)", () => {
     // projectGid is always required.

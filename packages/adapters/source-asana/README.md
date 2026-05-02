@@ -6,12 +6,12 @@ SourceAdapter for Asana (webhook mode). Implements `SourceAdapter` from `@openco
 
 Asana sources events via webhooks; the adapter does NOT poll. The engine-ingestion webhook receiver (`POST /webhooks/:bindingId`) consumes the adapter's helpers:
 
-0. **Handshake (PR-F):** receiver calls `adapter.webhook.handshakeFn(headers)` BEFORE signature verification. If it returns a `HandshakeResult` (x-hook-secret header present), the receiver echoes the secret, persists it to CredentialStore, and returns 200 without enqueueing.
+0. **Handshake (PR-F):** receiver calls `adapter.webhook.handshakeFn(headers)` BEFORE signature verification. If it returns a `HandshakeResult` (x-hook-secret header present), the receiver echoes the secret, persists it to CredentialStore, and returns 200 with an empty body without enqueueing.
 1. Resolve the binding (by webhook target URL or path id).
 2. Resolve the binding's `webhookSecretCredentialsId` to secret bytes via the `CredentialStore`.
 3. Read the request body (raw bytes) and headers.
-4. Call `adapter.webhook.verifier.verify({ body, secret, signature })` where `signature` came from `adapter.webhook.extractSignature(headers)`.
-5. On `ok: false` → throw `WebhookSignatureError(validation)` (DLQ; no replay).
+4. Read the signature from the fixed `x-signature` header (receiver convention; per orchestrator override 5 the receiver owns the header name, not the adapter — the adapter's `extractSignature` helper is exported for symmetry and future per-scheme routing). Verify with `options.verifier.verify({ body, secret, signature })`.
+5. On `ok: false` → DLQ + 401.
 6. On `ok: true` → call `adapter.webhook.parseEvents({ body })` to unpack events.
 7. `parseEvents` filters events: derives `eventType` via `deriveEventType`, drops null events (noise), applies `monitoredProjectGids` filter (if set), and emits `SourceWebhookEvent` with `eventType` set.
 8. For each event, dedupe `eventId` against the `webhook_events` UNIQUE constraint on `(binding_id, event_id)`, then push into intake.
@@ -49,9 +49,11 @@ Events with `eventType = null` are silently dropped before emitting `SourceWebho
 
 When `monitoredProjectGids` is set in the binding config, events for projects NOT in the allowlist are silently dropped. Default (undefined) = all projects pass (backwards-compatible).
 
-## Light-tier per-event summary (PR-F)
+## Light-tier per-event summary (PR-F, wiring deferred)
 
-When `lightSummaryEnabled: true` in the binding config, each qualifying event gets a Light-tier LLM call to produce a ≤25-word Polish one-liner summary, attached as `metadata.summary` on the `SourceEvent`. The summary helper (`summarizeAsanaEvent` in `light-summary.ts`) wraps event content in `<source_content>` tags (THREAT-MODEL §3.4 XML spotlighting). Failures are non-fatal: the event is still emitted without `metadata.summary`.
+When `lightSummaryEnabled: true`, each qualifying event should receive a Light-tier LLM call to produce a ≤25-word Polish one-liner summary, attached as `metadata.summary` on the `SourceEvent`. The summary helper (`summarizeAsanaEvent` in `light-summary.ts`) wraps event content in `<source_content>` tags (THREAT-MODEL §3.4 XML spotlighting). Failures are non-fatal: the event is still emitted without `metadata.summary`.
+
+**Current status:** `lightSummaryEnabled: true` is a no-op. The helper is fully implemented and tested but the ingestion-pipeline wiring (calling `summarizeAsanaEvent` per event after `parseEvents`) is deferred to a follow-up PR (phase-b / PR-G). Reason: `parseEvents` is sync (`SourceWebhookHelpers` contract) while `summarizeAsanaEvent` is async (LLM call); wiring requires an async post-`parseEvents` step in the Ingestion Processor that is out of scope for this PR.
 
 ## Configuration
 
