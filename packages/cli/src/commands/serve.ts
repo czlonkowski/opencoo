@@ -19,19 +19,37 @@
  * every var. The `no-feature-env-vars` ESLint rule (THREAT-MODEL
  * §2 invariant 9) is non-negotiable.
  *
- * # PR-M1 boot tolerance
+ * # What this verb actually wires (PR-M1)
  *
- * `engine-ingestion` start() requires a fully composed
- * `WorkerContext` (production WikiAdapter / GuardAdapter /
- * LlmRouter / SourceAdapterRegistry — all per-domain LLM-policy
- * gated). PR-M1 ships the worker INFRASTRUCTURE; the production
- * composition root that constructs every adapter wires up in
- * PR-M2 + the recurring-cron seed. Until then, `serve.ts`
- * attempts the workers boot (mode='workers' when a
- * `workerContext` is supplied via the orchestrator), and falls
- * back to the legacy boot path with a clear stderr line when
- * production composition isn't available — same boot-tolerance
- * pattern as engine-self-operating's admin-API gating.
+ * Today, `runServe` boots BOTH engines in sequence:
+ *
+ *   1. `engine-self-operating.start({env})` — the management
+ *      server. Failure exits the process with code 2.
+ *   2. `engine-ingestion.start({env})` in `'probes-only'` mode
+ *      (the engine-side default). This brings up the Fastify
+ *      health/ready probes and the webhook receiver, but does
+ *      NOT construct the BullMQ Workers — `mode: 'workers'`
+ *      requires a fully composed `WorkerContext` (production
+ *      WikiAdapter / LlmRouter / GuardAdapter /
+ *      SourceAdapterRegistry / live wiki + credential wiring),
+ *      and that composition root is owned by **PR-M2**, not
+ *      this PR. Failure of the ingestion boot is logged to
+ *      stderr and SWALLOWED — the management UI stays up and
+ *      the operator can triage; we do not exit.
+ *
+ * Net effect after PR-M1: the operator can `pnpm opencoo` and
+ * land on the management UI, the webhook receiver accepts
+ * deliveries and writes them to `webhook_events`, and jobs
+ * queue into Redis. Nothing dequeues them yet — workers ship
+ * their boot path here but the engine boots in `'probes-only'`
+ * by default. **PR-M2 flips the default ingestion factory to
+ * `mode: 'workers'`** with a real WorkerContext built from the
+ * shared pg.Pool / Redis / SseBus, at which point queued jobs
+ * start getting drained and persisted to Gitea automatically.
+ *
+ * The boot-tolerance for the ingestion side mirrors
+ * engine-self-operating's admin-API gating pattern (env
+ * incomplete → log + skip, don't crash the process).
  */
 import type { EventEmitter } from "node:events";
 
