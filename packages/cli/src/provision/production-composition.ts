@@ -66,6 +66,21 @@ import { guardRedactionRegex } from "@opencoo/guard-redaction-regex";
 
 const COMPOSITION_NAME = "cli/serve" as const;
 
+/** Round-3 fix #3: shared scrub-and-cap helper. The two error-log
+ *  sites in this file (`llm_router.provider_unavailable` and
+ *  `source_adapter_factory.skipped`) both surface a thrown
+ *  `Error.message` from a dynamic-import / provider-construction
+ *  path. THREAT-MODEL §3.6 invariant 11 says scrub credential
+ *  patterns + cap at 200 chars; this helper unifies the shape so
+ *  a future log site can't drift back to the unscrubbed form
+ *  Copilot flagged in round-3. Mirrors the `safeError` helper in
+ *  `engine-ingestion/src/workers/production-context.ts`. */
+const ERROR_MESSAGE_MAX_LENGTH = 200;
+function safeError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return scrubPat(raw).slice(0, ERROR_MESSAGE_MAX_LENGTH);
+}
+
 export interface ProductionCompositionResult {
   readonly workerContext: ProductionWorkerContext;
   readonly redisConnection: ConnectionOptions;
@@ -277,9 +292,14 @@ function createMultiProviderDispatcher(
       // Don't cache the rejection — let the next call retry the
       // import in case the operator fixes the env mid-run.
       cache.delete(providerName);
+      // Round-3 fix #3: scrub + cap via the shared helper.
+      // Previously this site applied scrubPat to the Error branch
+      // but skipped the 200-char cap AND left the non-Error
+      // (`String(err)`) fallback unscrubbed — both inconsistencies
+      // Copilot flagged in round-3.
       logger.warn("llm_router.provider_unavailable", {
         provider: providerName,
-        error: err instanceof Error ? scrubPat(err.message) : String(err),
+        error: safeError(err),
       });
       throw err;
     });
@@ -312,9 +332,10 @@ async function tryLoadAdapter(
     logger.warn("source_adapter_factory.skipped", {
       adapter_slug: slug,
       // Round-2 fix #2: scrub + cap. THREAT-MODEL §3.6 invariant 11.
-      // Adapter import errors realistically wouldn't carry creds,
-      // but uniform scrub matches the rest of the composition root.
-      error: scrubPat(err instanceof Error ? err.message : String(err)).slice(0, 200),
+      // Round-3 fix #3: routed through the shared `safeError`
+      // helper so this site stays in lockstep with
+      // `llm_router.provider_unavailable`.
+      error: safeError(err),
     });
   }
 }
