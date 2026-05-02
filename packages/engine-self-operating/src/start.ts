@@ -191,6 +191,66 @@ function tryLoadAdminApiEnv(
   }
 }
 
+/** Try to construct the DrizzleCredentialStore the binding-create
+ *  handler uses. Returns `null` (and logs) when ENCRYPTION_KEY is
+ *  missing or invalid — the admin API still boots, but POST
+ *  /api/admin/source-bindings will surface a 500. */
+function tryBuildCredentialStore(
+  pgPool: pg.Pool,
+  env: Record<string, string | undefined>,
+  logger: Logger,
+): import("@opencoo/shared/credential-store").CredentialStore | null {
+  try {
+    return new DrizzleCredentialStore({
+      db: drizzle(pgPool) as unknown as ConstructorParameters<
+        typeof DrizzleCredentialStore
+      >[0]["db"],
+      key: loadEncryptionKey(env as NodeJS.ProcessEnv),
+      logger,
+    });
+  } catch (err) {
+    logger.warn("admin_api.binding_create_disabled", {
+      reason:
+        "ENCRYPTION_KEY missing or invalid — POST /api/admin/source-bindings will surface 500",
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+type IngestionQueueRef = NonNullable<
+  Parameters<typeof productionServerFactory>[0]["ingestionQueue"]
+>;
+
+/** Resolve the read-only `ingestion.scanner` BullMQ Queue handle
+ *  GET /api/admin/pipelines reads stats from. Prefer the caller-
+ *  supplied handle (orchestrator co-boot path); fall back to
+ *  constructing a fresh one. Returns `undefined` if construction
+ *  fails — the endpoint surfaces zeroed stats instead of erroring. */
+function resolveIngestionQueue(
+  supplied: IngestionQueueRef | undefined,
+  redisUrl: string,
+  logger: Logger,
+): IngestionQueueRef | undefined {
+  if (supplied !== undefined) return supplied;
+  try {
+    return buildEngineQueue("ingestion", "scanner", {
+      connection: {
+        url: redisUrl,
+        maxRetriesPerRequest: null,
+        enableReadyCheck: false,
+      },
+    }) as unknown as IngestionQueueRef;
+  } catch (err) {
+    logger.warn("admin_api.pipelines_queue_disabled", {
+      reason:
+        "Failed to construct ingestion.scanner queue handle — GET /api/admin/pipelines will return zeroed stats",
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return undefined;
+  }
+}
+
 export async function start(
   options: StartOptions = {},
 ): Promise<StartedEngine> {
@@ -235,66 +295,26 @@ export async function start(
     if (userServerFactory !== undefined) {
       return userServerFactory(probes, config, logger);
     }
-    if (compositionEnv !== null && pgPool !== null) {
-      // Build the credential store the binding-create handler
-      // uses — DrizzleCredentialStore wraps the same pg pool +
-      // ENCRYPTION_KEY the rest of the engine consumes.
-      let credentialStore: import("@opencoo/shared/credential-store").CredentialStore | null = null;
-      try {
-        credentialStore = new DrizzleCredentialStore({
-          db: drizzle(pgPool) as unknown as ConstructorParameters<
-            typeof DrizzleCredentialStore
-          >[0]["db"],
-          key: loadEncryptionKey(env as NodeJS.ProcessEnv),
-          logger,
-        });
-      } catch (err) {
-        logger.warn("admin_api.binding_create_disabled", {
-          reason:
-            "ENCRYPTION_KEY missing or invalid — POST /api/admin/source-bindings will surface 500",
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      // Phase-a appendix #4 PR-B (C2) — read-only BullMQ Queue
-      // handle for the ingestion-scanner queue so GET /api/admin/pipelines
-      // returns live stats. PR-M1, phase-a appendix #5: prefer the
-      // caller-supplied `options.ingestionQueue` so the orchestrator
-      // can share ONE queue handle with engine-ingestion's worker
-      // boot (avoiding a duplicate Redis stream subscription).
-      // Falls back to constructing a fresh handle when the orchestrator
-      // didn't supply one (matches the pre-PR-M1 behaviour).
-      let ingestionQueue:
-        | Parameters<typeof productionServerFactory>[0]["ingestionQueue"]
-        | undefined = options.ingestionQueue;
-      if (ingestionQueue === undefined) {
-        try {
-          // Cast: BullMQ Queue.getJobCounts takes JobType[] (a restricted literal
-          // union), but our QueueRef interface uses string[] for testability.
-          // The runtime values ("waiting", "failed") are valid JobType members;
-          // the cast is safe.
-          ingestionQueue = buildEngineQueue("ingestion", "scanner", {
-            connection: { url: config.redisUrl, maxRetriesPerRequest: null, enableReadyCheck: false },
-          }) as unknown as Parameters<typeof productionServerFactory>[0]["ingestionQueue"];
-        } catch (err) {
-          logger.warn("admin_api.pipelines_queue_disabled", {
-            reason: "Failed to construct ingestion.scanner queue handle — GET /api/admin/pipelines will return zeroed stats",
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
-      return productionServerFactory({
-        probes,
-        config,
-        logger,
-        pgPool,
-        giteaClient: giteaClientFactory(compositionEnv.giteaBaseUrl),
-        compositionEnv,
-        sseBus,
-        ...(credentialStore !== null ? { credentialStore } : {}),
-        ...(ingestionQueue !== undefined ? { ingestionQueue } : {}),
-      });
+    if (compositionEnv === null || pgPool === null) {
+      return staticUiOnlyServerFactory(probes, config, logger);
     }
-    return staticUiOnlyServerFactory(probes, config, logger);
+    const credentialStore = tryBuildCredentialStore(pgPool, env, logger);
+    const ingestionQueue = resolveIngestionQueue(
+      options.ingestionQueue,
+      config.redisUrl,
+      logger,
+    );
+    return productionServerFactory({
+      probes,
+      config,
+      logger,
+      pgPool,
+      giteaClient: giteaClientFactory(compositionEnv.giteaBaseUrl),
+      compositionEnv,
+      sseBus,
+      ...(credentialStore !== null ? { credentialStore } : {}),
+      ...(ingestionQueue !== undefined ? { ingestionQueue } : {}),
+    });
   };
 
   const baseOptions: BaseStartOptions<EngineConfig, SelfOperatingRegistry> = {
