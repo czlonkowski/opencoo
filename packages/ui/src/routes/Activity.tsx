@@ -17,7 +17,7 @@
  *   - Run list does NOT include `output` — only the detail view does.
  *   - StatusPill (PR-E) is used for run status indicators.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { StatusPill, type StatusTone } from "../components/StatusPill.js";
@@ -54,7 +54,7 @@ export interface ActivityProps {
 
 type ActivityTab = "feed" | "runs" | "pipelines";
 
-// ─── Status helpers ───────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function runStatusTone(status: string): StatusTone | null {
   switch (status) {
@@ -66,17 +66,42 @@ function runStatusTone(status: string): StatusTone | null {
   }
 }
 
+/** Build fetchAdmin's options object only when an override is provided —
+ *  passing `{ fetchImpl: undefined }` would shadow the default. */
+function fetchOptsFor(
+  fetchImpl: typeof fetch | undefined,
+): { fetchImpl?: typeof fetch } {
+  return fetchImpl !== undefined ? { fetchImpl } : {};
+}
+
+/** Single-line status / empty / error row used by the runs + pipelines views. */
+function NoticeRow(props: {
+  tone: "alert" | "muted";
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <div
+      style={{
+        color: props.tone === "alert" ? "var(--alert)" : "var(--ink-3)",
+        fontFamily: "var(--font-sans)",
+        fontSize: 13,
+        padding: "16px 0",
+      }}
+    >
+      {props.children}
+    </div>
+  );
+}
+
 // ─── Feed sub-view ────────────────────────────────────────────────────────────
 
-function FeedView(props: { fetchImpl?: typeof fetch }): JSX.Element {
+function FeedView(): JSX.Element {
   const { t } = useTranslation();
   const [connected, setConnected] = useState(false);
   const [entries, setEntries] = useState<FeedEntry[]>([]);
-  const clientRef = useRef<ReturnType<typeof openSseClient> | null>(null);
 
   useEffect(() => {
-    const client = openSseClient("/api/admin/events", props.fetchImpl);
-    clientRef.current = client;
+    const client = openSseClient("/api/admin/events");
 
     // Connected acknowledgement.
     const offConnected = client.on<{ connectedAt: string }>("connected", () => {
@@ -172,17 +197,12 @@ function RunsView(props: { fetchImpl?: typeof fetch }): JSX.Element {
   const [rows, setRows] = useState<readonly AgentRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchOpts =
-    props.fetchImpl !== undefined
-      ? { fetchImpl: props.fetchImpl as typeof fetch }
-      : {};
-
   useEffect(() => {
     void (async () => {
       try {
         const r = await fetchAdmin<AgentRunsResponse>(
           "/api/admin/agent-runs?limit=50",
-          fetchOpts,
+          fetchOptsFor(props.fetchImpl),
         );
         setRows(r.rows);
       } catch {
@@ -191,29 +211,9 @@ function RunsView(props: { fetchImpl?: typeof fetch }): JSX.Element {
     })();
   }, []);
 
-  if (error !== null) {
-    return (
-      <div style={{ color: "var(--alert)", fontFamily: "var(--font-sans)", fontSize: 13, padding: "16px 0" }}>
-        {error}
-      </div>
-    );
-  }
-
-  if (rows === null) {
-    return (
-      <div style={{ color: "var(--ink-3)", fontFamily: "var(--font-sans)", fontSize: 13, padding: "16px 0" }}>
-        {t("common.loading")}
-      </div>
-    );
-  }
-
-  if (rows.length === 0) {
-    return (
-      <div style={{ color: "var(--ink-3)", fontFamily: "var(--font-sans)", fontSize: 13, padding: "16px 0" }}>
-        {t("activity.runs.empty")}
-      </div>
-    );
-  }
+  if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
+  if (rows === null) return <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>;
+  if (rows.length === 0) return <NoticeRow tone="muted">{t("activity.runs.empty")}</NoticeRow>;
 
   return (
     <table
@@ -286,17 +286,12 @@ function PipelinesView(props: { fetchImpl?: typeof fetch }): JSX.Element {
   const [pipelines, setPipelines] = useState<readonly Pipeline[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchOpts =
-    props.fetchImpl !== undefined
-      ? { fetchImpl: props.fetchImpl as typeof fetch }
-      : {};
-
   useEffect(() => {
     void (async () => {
       try {
         const r = await fetchAdmin<PipelinesResponse>(
           "/api/admin/pipelines",
-          fetchOpts,
+          fetchOptsFor(props.fetchImpl),
         );
         setPipelines(r.pipelines);
       } catch {
@@ -305,29 +300,9 @@ function PipelinesView(props: { fetchImpl?: typeof fetch }): JSX.Element {
     })();
   }, []);
 
-  if (error !== null) {
-    return (
-      <div style={{ color: "var(--alert)", fontFamily: "var(--font-sans)", fontSize: 13, padding: "16px 0" }}>
-        {error}
-      </div>
-    );
-  }
-
-  if (pipelines === null) {
-    return (
-      <div style={{ color: "var(--ink-3)", fontFamily: "var(--font-sans)", fontSize: 13, padding: "16px 0" }}>
-        {t("common.loading")}
-      </div>
-    );
-  }
-
-  if (pipelines.length === 0) {
-    return (
-      <div style={{ color: "var(--ink-3)", fontFamily: "var(--font-sans)", fontSize: 13, padding: "16px 0" }}>
-        {t("activity.pipelines.empty")}
-      </div>
-    );
-  }
+  if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
+  if (pipelines === null) return <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>;
+  if (pipelines.length === 0) return <NoticeRow tone="muted">{t("activity.pipelines.empty")}</NoticeRow>;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "16px 0" }}>
@@ -422,13 +397,11 @@ export function Activity(props: ActivityProps = {}): JSX.Element {
         ))}
       </div>
 
-      {/* Active sub-view */}
+      {/* Active sub-view. The ternary satisfies
+          `exactOptionalPropertyTypes` — passing `fetchImpl={undefined}`
+          would shadow the prop's optional default. */}
       <div style={{ flex: 1, overflowY: "auto" }}>
-        {activeTab === "feed" && (
-          props.fetchImpl !== undefined
-            ? <FeedView fetchImpl={props.fetchImpl} />
-            : <FeedView />
-        )}
+        {activeTab === "feed" && <FeedView />}
         {activeTab === "runs" && (
           props.fetchImpl !== undefined
             ? <RunsView fetchImpl={props.fetchImpl} />

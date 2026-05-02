@@ -118,40 +118,15 @@ export function registerAgentRunsRoutes(
   });
 }
 
-/** Serialize a list-level row. Does NOT include `output`. */
-function serializeRunListRow(r: Record<string, unknown>): Record<string, unknown> {
-  return {
-    id: r["id"],
-    definitionSlug: r["definitionSlug"],
-    instanceId: r["instanceId"] ?? null,
-    trigger: r["trigger"],
-    skillsUsed: r["skillsUsed"] ?? [],
-    tokensIn: r["tokensIn"] ?? 0,
-    tokensOut: r["tokensOut"] ?? 0,
-    costUsd: r["costUsd"] ?? "0",
-    latencyMs: r["latencyMs"] ?? 0,
-    status: r["status"],
-    errorClass: r["errorClass"] ?? null,
-    startedAt: toIso(r["startedAt"] as Date | string | null),
-    endedAt: toIso(r["endedAt"] as Date | string | null),
-    createdAt: toIso(r["createdAt"] as Date | string | null),
-  };
-}
-
-/** Serialize a detail-level row. Gates `output` behind `llmDebugLog`. */
-function serializeRunDetailRow(
+/** Fields common to both list and detail responses. */
+function serializeCommonRunFields(
   r: Record<string, unknown>,
-  llmDebugLog: boolean,
 ): Record<string, unknown> {
   return {
     id: r["id"],
     definitionSlug: r["definitionSlug"],
     instanceId: r["instanceId"] ?? null,
     trigger: r["trigger"],
-    inputs: r["inputs"] ?? {},
-    toolCalls: r["toolCalls"] ?? [],
-    // THREAT-MODEL §2 invariant 11: output gated behind LLM_DEBUG_LOG.
-    output: llmDebugLog ? (r["output"] ?? null) : null,
     skillsUsed: r["skillsUsed"] ?? [],
     tokensIn: r["tokensIn"] ?? 0,
     tokensOut: r["tokensOut"] ?? 0,
@@ -165,9 +140,28 @@ function serializeRunDetailRow(
   };
 }
 
+/** Serialize a list-level row. Does NOT include `inputs`, `toolCalls`,
+ *  or `output` — those are detail-only. */
+function serializeRunListRow(r: Record<string, unknown>): Record<string, unknown> {
+  return serializeCommonRunFields(r);
+}
+
+/** Serialize a detail-level row. Gates `output` behind `llmDebugLog`
+ *  (THREAT-MODEL §2 invariant 11). */
+function serializeRunDetailRow(
+  r: Record<string, unknown>,
+  llmDebugLog: boolean,
+): Record<string, unknown> {
+  return {
+    ...serializeCommonRunFields(r),
+    inputs: r["inputs"] ?? {},
+    toolCalls: r["toolCalls"] ?? [],
+    output: llmDebugLog ? (r["output"] ?? null) : null,
+  };
+}
+
 function toIso(value: Date | string | null | undefined): string | null {
   if (value === null || value === undefined) return null;
-  const d = value instanceof Date ? value : new Date(value as string);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }

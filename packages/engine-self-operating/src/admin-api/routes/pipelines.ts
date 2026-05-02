@@ -82,33 +82,11 @@ async function probeQueue(queue: QueueRef, db: Db): Promise<PipelineStat> {
   let lastFailureAt: string | null = null;
   try {
     const [lastRunResult, lastFailResult] = await Promise.all([
-      db.execute(sql`
-        SELECT started_at
-        FROM agent_runs
-        WHERE definition_slug = ${slug}
-          AND status = 'success'
-        ORDER BY started_at DESC
-        LIMIT 1
-      `) as unknown as Promise<{ rows: Array<{ started_at: Date | string | null }> }>,
-      db.execute(sql`
-        SELECT started_at
-        FROM agent_runs
-        WHERE definition_slug = ${slug}
-          AND status = 'failed'
-        ORDER BY started_at DESC
-        LIMIT 1
-      `) as unknown as Promise<{ rows: Array<{ started_at: Date | string | null }> }>,
+      lastStartedAt(db, slug, "success"),
+      lastStartedAt(db, slug, "failed"),
     ]);
-    const lastRun = lastRunResult.rows[0];
-    if (lastRun?.started_at !== null && lastRun?.started_at !== undefined) {
-      const d = lastRun.started_at instanceof Date ? lastRun.started_at : new Date(lastRun.started_at);
-      lastRunAt = Number.isNaN(d.getTime()) ? null : d.toISOString();
-    }
-    const lastFail = lastFailResult.rows[0];
-    if (lastFail?.started_at !== null && lastFail?.started_at !== undefined) {
-      const d = lastFail.started_at instanceof Date ? lastFail.started_at : new Date(lastFail.started_at);
-      lastFailureAt = Number.isNaN(d.getTime()) ? null : d.toISOString();
-    }
+    lastRunAt = toIso(lastRunResult);
+    lastFailureAt = toIso(lastFailResult);
   } catch {
     // DB query failure should not surface as a 500 — return nulls.
   }
@@ -121,4 +99,30 @@ async function probeQueue(queue: QueueRef, db: Db): Promise<PipelineStat> {
     lastRunAt,
     lastFailureAt,
   };
+}
+
+/** Most-recent `started_at` for a definition_slug + status, or null. */
+async function lastStartedAt(
+  db: Db,
+  slug: string,
+  status: "success" | "failed",
+): Promise<Date | string | null | undefined> {
+  // `status` is a closed literal union (not user input); inlined via sql.raw
+  // to keep the original literal SQL shape — bound params would force an
+  // explicit ::agent_run_status cast.
+  const result = (await db.execute(sql`
+    SELECT started_at
+    FROM agent_runs
+    WHERE definition_slug = ${slug}
+      AND status = ${sql.raw(`'${status}'`)}
+    ORDER BY started_at DESC
+    LIMIT 1
+  `)) as unknown as { rows: Array<{ started_at: Date | string | null }> };
+  return result.rows[0]?.started_at;
+}
+
+function toIso(value: Date | string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
