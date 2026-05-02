@@ -52,6 +52,10 @@ import {
 
 import type { GiteaClient } from "./admin-api/auth.js";
 import {
+  createSseBus,
+  type SseBus,
+} from "./admin-api/sse-bus.js";
+import {
   loadAdminApiCompositionEnv,
   type AdminApiCompositionEnv,
 } from "./composition/env.js";
@@ -61,7 +65,19 @@ import { loadEngineConfig, type EngineConfig } from "./config.js";
 import { registerStaticUi } from "./static-ui.js";
 
 export type SelfOperatingRegistry = PipelineRegistry;
-export type StartedEngine = BaseStartedEngine<EngineConfig, SelfOperatingRegistry>;
+/** Extended StartedEngine — exposes the SSE bus the engine wired
+ *  so the orchestrator (CLI `serve.ts`) can thread it into
+ *  engine-ingestion's worker boot. The bus carries Activity-feed
+ *  events from BOTH engines so the operator sees a single stream. */
+export type StartedEngine = BaseStartedEngine<
+  EngineConfig,
+  SelfOperatingRegistry
+> & {
+  /** Always present after a successful `start()`. Either the
+   *  caller-supplied `options.sseBus` (PR-M1) or a fresh bus
+   *  the engine constructed at boot. */
+  readonly sseBus: SseBus;
+};
 
 export { PipelineRegistry } from "@opencoo/shared/engine-scaffold";
 export type {
@@ -107,6 +123,23 @@ export interface StartOptions
    * `opencoo migrate` explicitly. Reserved for v0.2.
    */
   readonly skipMigrate?: boolean;
+  /** Optional SSE bus override (PR-M1, phase-a appendix #5). When
+   *  the orchestrator is co-booting engine-ingestion in the same
+   *  process, both engines share ONE bus so the Activity feed
+   *  shows events from both. When undefined, `start()` constructs
+   *  a fresh bus. */
+  readonly sseBus?: SseBus;
+  /** Optional read-only `ingestion.scanner` BullMQ Queue handle
+   *  (PR-M1, phase-a appendix #5). When the orchestrator opens
+   *  the queue ONCE and shares it with engine-ingestion (so the
+   *  scanner enqueues onto the same Redis stream the admin
+   *  pipelines endpoint reads from), it can pass the handle
+   *  here to avoid `start()` opening a duplicate. When
+   *  undefined, the production wiring path constructs its own
+   *  read-only handle the way pre-PR-M1 code did. */
+  readonly ingestionQueue?: Parameters<
+    typeof productionServerFactory
+  >[0]["ingestionQueue"];
 }
 
 function defaultDbFactory(config: EngineConfig): StartDb {
@@ -184,6 +217,12 @@ export async function start(
     options.giteaClientFactory ??
     ((baseUrl: string): GiteaClient => createGiteaClient({ baseUrl }));
 
+  // PR-M1, phase-a appendix #5 — resolve the SSE bus ONCE at
+  // boot. When the orchestrator co-boots engine-ingestion in the
+  // same process, it constructs the bus and passes it down so
+  // both engines emit through the same channel.
+  const sseBus: SseBus = options.sseBus ?? createSseBus();
+
   // Pick the serverFactory:
   //   - test-supplied override → use it,
   //   - production wiring (env complete + pool present) →
@@ -216,30 +255,32 @@ export async function start(
           error: err instanceof Error ? err.message : String(err),
         });
       }
-      // Phase-a appendix #4 PR-B (C2) — create a read-only BullMQ Queue
+      // Phase-a appendix #4 PR-B (C2) — read-only BullMQ Queue
       // handle for the ingestion-scanner queue so GET /api/admin/pipelines
-      // returns live stats. We use the same REDIS_URL the engine scaffold
-      // opens for its ioredis connection. `buildEngineQueue` validates the
-      // slug and names it `ingestion.scanner`.
-      //
-      // Design choice: engine-self-operating opens its own queue handle
-      // (read-only probe) rather than writing pipeline stats to a Postgres
-      // table. This avoids a new table + polling overhead and keeps the stats
-      // fresh with zero write-path coupling. Under 80 lines total.
-      let ingestionQueue: Parameters<typeof productionServerFactory>[0]["ingestionQueue"] | undefined;
-      try {
-        // Cast: BullMQ Queue.getJobCounts takes JobType[] (a restricted literal
-        // union), but our QueueRef interface uses string[] for testability.
-        // The runtime values ("waiting", "failed") are valid JobType members;
-        // the cast is safe.
-        ingestionQueue = buildEngineQueue("ingestion", "scanner", {
-          connection: { url: config.redisUrl, maxRetriesPerRequest: null, enableReadyCheck: false },
-        }) as unknown as Parameters<typeof productionServerFactory>[0]["ingestionQueue"];
-      } catch (err) {
-        logger.warn("admin_api.pipelines_queue_disabled", {
-          reason: "Failed to construct ingestion.scanner queue handle — GET /api/admin/pipelines will return zeroed stats",
-          error: err instanceof Error ? err.message : String(err),
-        });
+      // returns live stats. PR-M1, phase-a appendix #5: prefer the
+      // caller-supplied `options.ingestionQueue` so the orchestrator
+      // can share ONE queue handle with engine-ingestion's worker
+      // boot (avoiding a duplicate Redis stream subscription).
+      // Falls back to constructing a fresh handle when the orchestrator
+      // didn't supply one (matches the pre-PR-M1 behaviour).
+      let ingestionQueue:
+        | Parameters<typeof productionServerFactory>[0]["ingestionQueue"]
+        | undefined = options.ingestionQueue;
+      if (ingestionQueue === undefined) {
+        try {
+          // Cast: BullMQ Queue.getJobCounts takes JobType[] (a restricted literal
+          // union), but our QueueRef interface uses string[] for testability.
+          // The runtime values ("waiting", "failed") are valid JobType members;
+          // the cast is safe.
+          ingestionQueue = buildEngineQueue("ingestion", "scanner", {
+            connection: { url: config.redisUrl, maxRetriesPerRequest: null, enableReadyCheck: false },
+          }) as unknown as Parameters<typeof productionServerFactory>[0]["ingestionQueue"];
+        } catch (err) {
+          logger.warn("admin_api.pipelines_queue_disabled", {
+            reason: "Failed to construct ingestion.scanner queue handle — GET /api/admin/pipelines will return zeroed stats",
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
       return productionServerFactory({
         probes,
@@ -248,6 +289,7 @@ export async function start(
         pgPool,
         giteaClient: giteaClientFactory(compositionEnv.giteaBaseUrl),
         compositionEnv,
+        sseBus,
         ...(credentialStore !== null ? { credentialStore } : {}),
         ...(ingestionQueue !== undefined ? { ingestionQueue } : {}),
       });
@@ -265,7 +307,16 @@ export async function start(
       ? { probeExtender: options.probeExtender }
       : {}),
   };
-  return startEngine<EngineConfig, SelfOperatingRegistry>(baseOptions);
+  const baseEngine = await startEngine<EngineConfig, SelfOperatingRegistry>(
+    baseOptions,
+  );
+  // Attach the bus to the returned engine so the orchestrator
+  // can thread it into engine-ingestion's worker boot. The
+  // production serverFactory already attached the same bus to
+  // the Fastify instance (`Object.assign(app, { sseBus })`); we
+  // expose it at the engine level too so callers don't have to
+  // dig through `engine.app`.
+  return Object.assign(baseEngine, { sseBus });
 }
 
 // Re-export the default factories for tests that want to

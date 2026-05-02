@@ -572,6 +572,16 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe("runServe", () => {
+  // Helper — every legacy test passes a no-op ingestion factory
+  // since PR-M1 added co-boot but the legacy tests only assert
+  // self-op behaviour. See "co-boots engine-ingestion alongside
+  // engine-self-operating" below for the multi-engine assertion.
+  const noopIngestionFactory = (): Awaited<
+    ReturnType<NonNullable<ServeArgs["startIngestionFactory"]>>
+  > => makeFakeEngine() as unknown as Awaited<
+    ReturnType<NonNullable<ServeArgs["startIngestionFactory"]>>
+  >;
+
   it("wires SIGTERM to engine.close + exitOk(0)", async () => {
     const stdout = new CapturingStream();
     const stderr = new CapturingStream();
@@ -595,6 +605,7 @@ describe("runServe", () => {
       stdout,
       stderr,
       startFactory,
+      startIngestionFactory: vi.fn(async () => noopIngestionFactory()),
       signalSource,
       exit: exit as unknown as ServeArgs["exit"],
     });
@@ -630,6 +641,7 @@ describe("runServe", () => {
       stdout,
       stderr,
       startFactory,
+      startIngestionFactory: vi.fn(async () => noopIngestionFactory()),
       signalSource,
       exit: exit as unknown as ServeArgs["exit"],
     });
@@ -675,5 +687,101 @@ describe("runServe", () => {
     }
     expect(exit.code).toBe(2);
     expect(stderr.buffer).toContain("DATABASE_URL invalid");
+  });
+
+  // PR-M1, phase-a appendix #5 — co-boot of engine-ingestion
+  // alongside engine-self-operating. The orchestrator constructs
+  // shared pg/Redis/SseBus and threads them into both engines.
+  it("co-boots engine-ingestion alongside engine-self-operating", async () => {
+    const stdout = new CapturingStream();
+    const stderr = new CapturingStream();
+    const selfOpEngine = makeFakeEngine();
+    const ingestionEngine = makeFakeEngine();
+    const startFactory = vi.fn(
+      async () => selfOpEngine as unknown as Awaited<
+        ReturnType<ServeArgs["startFactory"]>
+      >,
+    );
+    const startIngestionFactory = vi.fn(
+      async () => ingestionEngine as unknown as Awaited<
+        ReturnType<ServeArgs["startFactory"]>
+      >,
+    );
+    const exit = vi.fn();
+    const signalSource = new EventEmitter();
+
+    const env = {
+      DATABASE_URL: "postgres://x",
+      REDIS_URL: "redis://y",
+      GITEA_URL: "https://gitea.test",
+      ENCRYPTION_KEY: "0".repeat(64),
+      PORT: "8080",
+    };
+
+    const serve = runServe({
+      env,
+      stdout,
+      stderr,
+      startFactory,
+      startIngestionFactory,
+      signalSource,
+      exit: exit as unknown as ServeArgs["exit"],
+    });
+
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(startFactory).toHaveBeenCalledTimes(1);
+    expect(startIngestionFactory).toHaveBeenCalledTimes(1);
+
+    signalSource.emit("SIGTERM");
+    await serve;
+
+    // Both engines closed on shutdown.
+    expect(selfOpEngine.close).toHaveBeenCalledTimes(1);
+    expect(ingestionEngine.close).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it("does not abort if engine-ingestion fails to boot — logs and continues", async () => {
+    // Boot-tolerant: if engine-ingestion fails (missing prod
+    // composition deps in PR-M1), the operator still gets
+    // engine-self-operating up. The error is logged to stderr.
+    const stdout = new CapturingStream();
+    const stderr = new CapturingStream();
+    const selfOpEngine = makeFakeEngine();
+    const startFactory = vi.fn(
+      async () => selfOpEngine as unknown as Awaited<
+        ReturnType<ServeArgs["startFactory"]>
+      >,
+    );
+    const startIngestionFactory = vi.fn(async () => {
+      throw new Error("ingestion: production WorkerContext not configured");
+    });
+    const exit = vi.fn();
+    const signalSource = new EventEmitter();
+
+    const serve = runServe({
+      env: { DATABASE_URL: "postgres://x" },
+      stdout,
+      stderr,
+      startFactory,
+      startIngestionFactory,
+      signalSource,
+      exit: exit as unknown as ServeArgs["exit"],
+    });
+
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(startFactory).toHaveBeenCalledTimes(1);
+    expect(startIngestionFactory).toHaveBeenCalledTimes(1);
+    expect(stderr.buffer).toContain("ingestion engine did not boot");
+
+    signalSource.emit("SIGTERM");
+    await serve;
+
+    expect(selfOpEngine.close).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
   });
 });

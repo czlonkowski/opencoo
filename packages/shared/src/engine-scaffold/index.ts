@@ -16,7 +16,9 @@ export {
 
 export {
   buildEngineQueue,
+  buildEngineWorker,
   type BuildEngineQueueOptions,
+  type BuildEngineWorkerOptions,
 } from "./queue.js";
 
 export {
