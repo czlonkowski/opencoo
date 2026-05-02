@@ -255,6 +255,8 @@ export interface AdminFixture {
 export interface AdminFixtureOptions {
   readonly adminTeamSlug?: string;
   readonly llmDebugLog?: boolean;
+  /** Phase-a appendix #4 PR-B — injected queue for pipelines-list tests. */
+  readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>>; name?: string };
 }
 
 function silentLogger(): ConsoleLogger {
@@ -294,6 +296,9 @@ export async function makeAdminFixture(
       }),
     provisionOrg: "opencoo",
     credentialStore,
+    ...(opts.ingestionQueue !== undefined
+      ? { ingestionQueue: opts.ingestionQueue }
+      : {}),
   });
 
   return {

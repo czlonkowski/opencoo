@@ -32,7 +32,9 @@ import type { Logger } from "@opencoo/shared/logger";
 import { buildVerifyAdmin, type GiteaClient } from "./auth.js";
 import { issueCsrfToken } from "./csrf.js";
 import { attachDebugBannerHook } from "./debug-banner.js";
+import { createSseBus, type SseBus } from "./sse-bus.js";
 import { registerAdaptersRoute } from "./routes/adapters.js";
+import { registerAgentRunsRoutes } from "./routes/agent-runs.js";
 import { registerAuditLogReadRoutes } from "./routes/audit-log-read.js";
 import { registerAutomationCandidatesRoutes } from "./routes/automation-candidates.js";
 import { registerDomainsLlmPolicyRoutes } from "./routes/domains-llm-policy.js";
@@ -40,9 +42,11 @@ import {
   registerDomainsRoutes,
   type ProvisionDomainRepoFn,
 } from "./routes/domains.js";
+import { registerEventsRoute } from "./routes/events.js";
 import { registerLintFindingsRoutes } from "./routes/lint-findings.js";
 import { registerLogoutRoute } from "./routes/logout.js";
 import { registerMarketplaceUpdatesRoutes } from "./routes/marketplace-updates.js";
+import { registerPipelinesRoutes } from "./routes/pipelines.js";
 import { registerPromptsRoutes } from "./routes/prompts.js";
 import { registerSourceBindingsRoutes } from "./routes/source-bindings.js";
 
@@ -73,17 +77,19 @@ export interface RegisterAdminApiArgs {
    *  the binding row INSERT. When undefined, POST
    *  /api/admin/source-bindings returns 500. */
   readonly credentialStore?: CredentialStore;
-  /** BullMQ ingestion queue, passed to `registerSourceBindingsRoutes`
-   *  so the GET /api/admin/source-bindings handler can probe DLQ depth.
-   *  When undefined (current production state), DLQ depth contributes
-   *  nothing to status computation (treated as 0 — no alert from DLQ alone).
+  /** BullMQ ingestion queue — probed for DLQ depth in the GET
+   *  /api/admin/source-bindings handler AND for pipeline stats in
+   *  GET /api/admin/pipelines. When undefined, DLQ alerts are silenced
+   *  and the ingestion pipeline entry shows zeroed stats.
    *
-   *  TODO (PR-B): wire `buildIngestionQueue('scanner', ...)` from the
-   *  engine-ingestion boot site here. PR-B wires the first QueueEvents
-   *  listeners; the queue instance should be created there and threaded
-   *  through ProductionServerFactoryArgs → RegisterAdminApiArgs →
-   *  registerSourceBindingsRoutes. Until then, DLQ alerts are silenced. */
-  readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>> };
+   *  PR-B closes the TODO that was left in PR-A: the composition root
+   *  (`server-factory.ts`) now creates the queue and threads it through
+   *  `ProductionServerFactoryArgs → RegisterAdminApiArgs`. */
+  readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>>; name?: string };
+  /** Phase-a appendix #4 PR-B — SSE bus for the Activity feed.
+   *  When undefined a fresh bus is created internally (production path).
+   *  Tests may inject a mock bus if they need to assert on bus interactions. */
+  readonly sseBus?: SseBus;
 }
 
 export async function registerAdminApi(
@@ -122,6 +128,10 @@ export async function registerAdminApi(
   // intercept /health + /ready too — we don't want that.
   // Instead, we attach verifyAdmin per route.
   const guardedApp = makeGuardedApp(args.app, verifyAdmin);
+
+  // Phase-a appendix #4 PR-B — SSE bus. Use the caller's bus
+  // (test injection) or create a fresh one for production.
+  const bus: SseBus = args.sseBus ?? createSseBus();
 
   // Phase-a appendix #2 — adapter picker for the "+ New
   // binding" modal. Read-only; no body, no CSRF.
@@ -162,6 +172,25 @@ export async function registerAdminApi(
     sessionHmacKey: args.sessionHmacKey,
   });
   registerLogoutRoute({ app: guardedApp, db: args.db });
+
+  // Phase-a appendix #4 PR-B — Activity tab routes.
+  registerAgentRunsRoutes({
+    app: guardedApp,
+    db: args.db,
+    llmDebugLog: args.llmDebugLog,
+  });
+  registerEventsRoute({
+    app: guardedApp,
+    bus,
+    llmDebugLog: args.llmDebugLog,
+  });
+  registerPipelinesRoutes({
+    app: guardedApp,
+    db: args.db,
+    queues: args.ingestionQueue !== undefined
+      ? [{ name: args.ingestionQueue.name ?? "ingestion.scanner", ...args.ingestionQueue }]
+      : [],
+  });
 
   // Debug banner: registered LAST so it sees every JSON
   // response regardless of which route built it.

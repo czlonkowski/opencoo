@@ -13,6 +13,7 @@ import {
   fetchAdmin,
 } from "./lib/api.js";
 import { clearPat, getPat, setPat } from "./lib/pat-store.js";
+import { Activity } from "./routes/Activity.js";
 import { Domains } from "./routes/Domains.js";
 import { LlmPolicy } from "./routes/LlmPolicy.js";
 import { Prompts } from "./routes/Prompts.js";
@@ -93,6 +94,7 @@ export function App(): JSX.Element {
     sources: <Sources />,
     llmPolicy: <LlmPolicy />,
     prompts: <Prompts />,
+    activity: <Activity />,
   };
 
   const titles: Record<Tab, string> = {
@@ -100,6 +102,7 @@ export function App(): JSX.Element {
     sources: t("sources.title"),
     llmPolicy: t("llmPolicy.title"),
     prompts: t("prompts.title"),
+    activity: t("activity.title"),
   };
 
   return (
