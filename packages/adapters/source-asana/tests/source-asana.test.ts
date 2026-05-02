@@ -73,6 +73,9 @@ async function makeFixture(
     config:
       opts.config ?? {
         projectGid: "p",
+        // Use 'off' so these non-snapshot tests don't need an AsanaClient
+        // (Fix #1: on-event now requires asanaClient at factory time).
+        snapshotMode: "off",
         webhookSecretCredentialId: credentialId,
       },
   });
@@ -103,6 +106,9 @@ sourceAdapterContract({
       credentialId,
       config: {
         projectGid: "1214005588882595",
+        // Use 'off' so the contract suite doesn't need an AsanaClient
+        // (Fix #1: on-event now requires asanaClient at factory time).
+        snapshotMode: "off",
         webhookSecretCredentialId: credentialId,
       },
     });

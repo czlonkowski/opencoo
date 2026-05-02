@@ -590,3 +590,69 @@ describe("enrichEvents — snapshot fetch error containment (I1)", () => {
     expect(result[2]?.doc.sourceRef).toContain("asana:project/");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fix #3 (Copilot triage) — buildSnapshotEvent enforces 1 MiB ceiling
+// ---------------------------------------------------------------------------
+
+describe("enrichEvents — snapshot 1 MiB ceiling (Fix #3)", () => {
+  it("does NOT emit snapshot event when snapshot exceeds 1 MiB, but still emits raw event", async () => {
+    const { store, credentialId } = await seedCredential();
+
+    // Build a snapshot that serializes to > 1 MiB.
+    // 1000 tasks × ~1100 bytes each ≈ 1.1 MiB serialized.
+    const hugeTaskName = "A".repeat(1050); // ~1050 bytes per task entry
+    const hugeTasks = Array.from({ length: 1000 }, (_, i) => ({
+      gid: `task-${i}`,
+      name: hugeTaskName,
+      assignee: null,
+      completed: false,
+      due_on: null,
+      modified_at: "2026-05-02T00:00:00Z",
+    }));
+
+    const oversizedClient: AsanaClient = {
+      fetchProjectSnapshot: vi.fn(async (gid: string) => ({
+        project_gid: gid,
+        snapshot: hugeTasks,
+        incomplete_count: 1000,
+        overdue_count: 0,
+        fetched_at: "2026-05-02T10:00:00.000Z",
+      })),
+    };
+
+    const adapter = createAsanaSourceAdapter({
+      credentialStore: store,
+      credentialId,
+      config: {
+        projectGid: "proj-oversized",
+        snapshotMode: "on-event",
+        webhookSecretCredentialId: credentialId,
+      },
+      asanaClient: oversizedClient,
+    });
+
+    const rawEvent: SourceWebhookEvent = {
+      eventId: "evt-oversize",
+      eventType: "created",
+      doc: {
+        sourceDocId: "t-big:added",
+        sourceRevision: "evt-oversize",
+        sourceRef: "asana:task/t-big",
+        fetchedAt: new Date("2026-05-02T08:00:00Z"),
+        contentBytes: Buffer.from(JSON.stringify({ action: "added" }), "utf8"),
+        metadata: { projectGid: "proj-oversized" },
+      },
+    };
+
+    // enrichEvents must resolve (not throw) — fail-open at receiver level.
+    const result = await adapter.webhook!.enrichEvents!([rawEvent]);
+
+    // The raw event is always emitted.
+    expect(result[0]).toEqual(rawEvent);
+
+    // The snapshot event is NOT emitted (the 1 MiB ValidationError is caught
+    // and converted to a structured warning, matching enrichEvents' I1 policy).
+    expect(result).toHaveLength(1);
+  });
+});

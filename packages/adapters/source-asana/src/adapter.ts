@@ -259,6 +259,18 @@ export function buildSnapshotEvent(
 ): SourceWebhookEvent {
   // TODO(PR-H): register 'asana-project' in CONTENT_KINDS const.
   const contentBytes = Buffer.from(JSON.stringify(snapshot), "utf8");
+  // Fix #3 (Copilot triage): apply the same 1 MiB ceiling as parseEvents.
+  // A snapshot exceeding 1 MiB likely indicates misconfigured optFields or a
+  // runaway project — fail closed so the operator gets a visible error rather
+  // than silently overflowing the Compilation Worker prompt budget.
+  // The throw bubbles to enrichEvents' try/catch (PR-G), which logs + skips
+  // the snapshot event while preserving the raw event — effectively fail-open
+  // at the receiver level while maintaining the contract at this boundary.
+  if (contentBytes.length > 1024 * 1024) {
+    throw new ValidationError(
+      `asana snapshot exceeds 1 MiB ceiling (got ${contentBytes.length} bytes)`,
+    );
+  }
   // Stable sourceDocId: identifies the project's snapshot stream.
   // sourceRevision: fetched_at ISO timestamp (each fetch = new revision).
   const sourceDocId = `asana-project-snapshot:${snapshot.project_gid}`;
@@ -518,15 +530,24 @@ export function createAsanaSourceAdapter(
   void args.credentialStore;
   void args.credentialId;
 
-  // Guard: snapshotMode='periodic' requires an AsanaClient because
-  // scan() must fetch snapshots. Throw at factory time so operators
-  // see the config error immediately.
+  // Guard: snapshotMode='periodic' or 'on-event' requires an AsanaClient.
+  // Throw at factory time so operators see the config error immediately
+  // rather than discovering a silent no-op at runtime.
   //
-  // snapshotMode='on-event' is allowed without asanaClient for
-  // backward-compat (enrichEvents is silently skipped when no client).
+  // 'periodic': scan() must fetch snapshots — fails with a clear error.
+  // 'on-event': enrichEvents emits snapshot events — without a client the
+  //   enrichEvents hook is attached but silently skips every snapshot fetch,
+  //   which is an invisible misconfiguration. Fix #1 (Copilot triage): make
+  //   this fail loudly instead.
   if (config.snapshotMode === "periodic" && args.asanaClient === undefined) {
     throw new Error(
       `source-asana: snapshotMode='periodic' requires an AsanaClient to be provided`,
+    );
+  }
+  // Fix #1 (Copilot triage): guard on-event mode the same way.
+  if (config.snapshotMode === "on-event" && args.asanaClient === undefined) {
+    throw new Error(
+      `source-asana: snapshotMode='on-event' requires asanaClient injection`,
     );
   }
 
@@ -581,6 +602,20 @@ export function createAsanaSourceAdapter(
 
     return { documents, nextCursor: null };
   }
+
+  // Fix #2 (Copilot triage): resolve the AsanaClient that enrichEvents and
+  // scan() will use. When the caller injects a pre-built asanaClient the
+  // injected instance is used as-is (the injected client owns its own
+  // optFields choice — this is intentional and documented here so future
+  // readers don't wonder why config.optFields is "ignored"). When no
+  // client is injected the factory guards above have already thrown for
+  // 'on-event' and 'periodic' modes; for 'off' mode no client is needed.
+  //
+  // NOTE: if a future code path adds a factory-created AsanaClient (e.g.
+  // createAsanaClient({ ..., optFields: config.optFields })) it should
+  // pass config.optFields so that binding-level optFields configuration
+  // is respected end-to-end. For now the injected client pattern is the
+  // only wiring path and the comment above covers the contract.
 
   return {
     slug: ASANA_ADAPTER_SLUG,
