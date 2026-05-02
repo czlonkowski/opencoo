@@ -35,7 +35,7 @@
  *     never sees the raw bytes.
  */
 import type { CredentialStore } from "@opencoo/shared/credential-store";
-import type { CredentialId } from "@opencoo/shared/db";
+import type { ContentKind, CredentialId } from "@opencoo/shared/db";
 import { ValidationError } from "@opencoo/shared/errors";
 import type {
   SourceAdapter,
@@ -82,7 +82,7 @@ export interface BuildWebhookHelpersOptions {
   readonly signingSecretCredentialId: string;
   readonly eventIdField: string;
   readonly contentKindMap?: Record<string, string>;
-  readonly defaultContentKind?: string;
+  readonly defaultContentKind?: ContentKind;
 }
 
 /**
@@ -175,8 +175,7 @@ function parseWebhookBody(
   // Stored in metadata so the Classifier can use it for routing
   // (the adapter signals the intended kind; the Classifier may
   // confirm or override based on content analysis).
-  const defaultKind = (config.defaultContentKind ?? "webhook-event") as
-    import("@opencoo/shared/db").ContentKind;
+  const defaultKind: ContentKind = config.defaultContentKind ?? "webhook-event";
   const contentKind = resolveContentKind(
     payload,
     config.contentKindMap,

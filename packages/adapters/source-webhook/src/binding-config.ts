@@ -79,10 +79,11 @@ export const sourceWebhookBindingConfigSchema = z
     /**
      * Fallback content_kind when `contentKindMap` is absent or no entry
      * matches. Defaults to `'webhook-event'` — the generic thin wrapper.
+     *
+     * Mirrors the `z.enum(CONTENT_KINDS).default(...)` pattern used in
+     * source-drive and source-n8n; the resulting type is `ContentKind`.
      */
-    defaultContentKind: z
-      .enum([...CONTENT_KINDS] as [string, ...string[]])
-      .default("webhook-event"),
+    defaultContentKind: z.enum(CONTENT_KINDS).default("webhook-event"),
 
     /**
      * Operator review mode.
