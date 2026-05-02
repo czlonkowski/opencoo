@@ -101,6 +101,10 @@
     "./adapter-registry": {
       "types": "./dist/adapter-registry/index.d.ts",
       "default": "./dist/adapter-registry/index.js"
+    },
+    "./scrub": {
+      "types": "./dist/scrub/index.d.ts",
+      "default": "./dist/scrub/index.js"
     }
   },
   "files": [

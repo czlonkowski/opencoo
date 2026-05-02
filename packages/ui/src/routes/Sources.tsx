@@ -2,11 +2,16 @@
  * Sources tab — list of source-binding rows (PR 28 read-only) +
  * `+ New binding` create flow (phase-a appendix #2 — closes
  * the regression PR 29 introduced).
+ *
+ * Phase-a appendix #4 PR-A: enriched row with server-computed status,
+ * human-readable name, lastEventAt relative time, and lastError.
+ * The old client-side `b.enabled ? "ok" : "paused"` derivation is
+ * removed — the server now owns the 3-state health signal.
  */
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { Badge } from "../components/Badge.js";
+import { Badge, type BadgeTone } from "../components/Badge.js";
 import { Btn } from "../components/Btn.js";
 import { Card } from "../components/Card.js";
 import { NewSourceBindingModal } from "../components/NewSourceBindingModal.js";
@@ -15,6 +20,27 @@ import type { SourceBinding } from "../types.js";
 
 interface SourcesResponse {
   readonly rows: ReadonlyArray<SourceBinding>;
+}
+
+/** Server `status` → Badge tone. `null` is unreachable here (caller
+ *  short-circuits before rendering a Badge) but kept for exhaustiveness. */
+const STATUS_TONE: Record<NonNullable<SourceBinding["status"]>, BadgeTone> = {
+  alert: "alert",
+  advisory: "advisory",
+  healthy: "ok",
+};
+
+/** Format an ISO timestamp as a locale-aware relative time string.
+ *  Uses i18n keys under `sources.relativeTime.*` so PL locale doesn't
+ *  mix English strings with Polish UI. */
+function formatRelativeTime(isoString: string, t: ReturnType<typeof useTranslation>["t"]): string {
+  const diffSec = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000);
+  if (diffSec < 60) return t("sources.relativeTime.justNow");
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return t("sources.relativeTime.minutesAgo", { n: diffMin });
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return t("sources.relativeTime.hoursAgo", { n: diffHr });
+  return t("sources.relativeTime.daysAgo", { n: Math.floor(diffHr / 24) });
 }
 
 export interface SourcesProps {
@@ -77,25 +103,31 @@ export function Sources(props: SourcesProps = {}): JSX.Element {
         ) : rows.length === 0 ? (
           <div style={{ color: "var(--ink-3)" }}>{t("sources.empty")}</div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1.2fr 1fr auto", gap: 12 }}>
-            <div className="t-micro">{t("sources.columns.binding")}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1.2fr 1fr 1fr 1.2fr auto", gap: 12 }}>
+            <div className="t-micro">{t("sources.columns.name")}</div>
             <div className="t-micro">{t("sources.columns.type")}</div>
             <div className="t-micro">{t("sources.columns.domain")}</div>
             <div className="t-micro">{t("sources.columns.reviewMode")}</div>
+            <div className="t-micro">{t("sources.columns.lastEvent")}</div>
+            <div className="t-micro">{t("sources.columns.lastError")}</div>
             <div className="t-micro">{t("sources.columns.status")}</div>
-            {rows.map((b) => {
-              const status = b.enabled ? "ok" : "paused";
-              const tone = status === "ok" ? "ok" : "neutral";
-              return (
-                <div key={b.id} style={{ display: "contents" }}>
-                  <div style={{ fontFamily: "var(--font-mono)", fontSize: "var(--fs-mono)" }}>{b.id}</div>
-                  <div style={{ color: "var(--ink-3)" }}>{b.adapterSlug}</div>
-                  <div>{b.domainSlug}</div>
-                  <div style={{ color: "var(--ink-2)" }}>{b.reviewMode}</div>
-                  <Badge tone={tone}>{t(`sources.status.${status}`)}</Badge>
+            {rows.map((b) => (
+              <div key={b.id} style={{ display: "contents" }}>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: "var(--fs-mono)" }}>{b.name}</div>
+                <div style={{ color: "var(--ink-3)" }}>{b.adapterSlug}</div>
+                <div>{b.domainSlug}</div>
+                <div style={{ color: "var(--ink-2)" }}>{b.reviewMode}</div>
+                <div style={{ color: "var(--ink-3)", fontSize: "var(--fs-micro)", fontFamily: "var(--font-mono)" }}>
+                  {b.lastEventAt !== null ? formatRelativeTime(b.lastEventAt, t) : "—"}
                 </div>
-              );
-            })}
+                <div style={{ color: "var(--ink-3)", fontSize: "var(--fs-micro)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {b.lastError ?? ""}
+                </div>
+                {b.status !== null
+                  ? <Badge tone={STATUS_TONE[b.status]}>{t(`sources.status.${b.status}`)}</Badge>
+                  : <span />}
+              </div>
+            ))}
           </div>
         )}
       </Card>

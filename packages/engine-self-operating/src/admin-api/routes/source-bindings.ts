@@ -38,6 +38,7 @@ import { z } from "zod";
 
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
+import { scrubPat } from "@opencoo/shared/scrub";
 import {
   defaultReviewModeFor,
   getSourceAdapterDescriptor,
@@ -52,6 +53,10 @@ import { requireCsrf } from "../csrf.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
+/** 3-state health, or `null` for neutral (paused or never-fired binding).
+ *  See `computeBindingStatus` for the rules. */
+type BindingStatus = "healthy" | "advisory" | "alert" | null;
+
 interface BindingRow {
   readonly id: string;
   readonly domainSlug: string;
@@ -60,6 +65,33 @@ interface BindingRow {
   readonly enabled: boolean;
   readonly lastScannedAt: string | null;
   readonly notes: string | null;
+  /** Human-readable name: `notes` if set, else `${adapterSlug} → ${domainSlug}`.
+   *  `notes` is the current display-label convention; v0.2 should add a dedicated
+   *  `display_name` column. Operators should treat `notes` as the binding's display
+   *  label until then. */
+  readonly name: string;
+  readonly status: BindingStatus;
+  /** ISO timestamp of the most-recent webhook_events.received_at. */
+  readonly lastEventAt: string | null;
+  /** Scrubbed + 200-char-truncated error message from ingestion_intake.
+   *  Prefers `error_text` (free-form message) over `error_class` (enum literal).
+   *  THREAT-MODEL §3.6 invariant 11: no credential bytes in the response. */
+  readonly lastError: string | null;
+}
+
+/** Coerce pg's timestamp result (Date when node-postgres parsed it,
+ *  string when pglite returned it raw) to an ISO string.
+ *
+ *  Returns `null` rather than throwing if the value cannot be parsed
+ *  (e.g. pglite returns a non-ISO string on rare schema mismatches).
+ *  Callers already handle `null` per the `BindingRow` type signature.
+ *
+ *  Exported for unit testing only — not part of the public module API. */
+export function toIso(value: Date | string | null): string | null {
+  if (value === null) return null;
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
 }
 
 const REVIEW_MODES = ["auto", "approve", "review"] as const;
@@ -80,12 +112,20 @@ export interface RegisterSourceBindingsRoutesArgs {
    *  the binding row INSERT. When undefined, POST returns 500
    *  (composition-incomplete). The GET handler is unaffected. */
   readonly credentialStore?: CredentialStore;
+  /** BullMQ ingestion queue, probed for DLQ depth in the GET handler.
+   *  Optional: when undefined the DLQ signal contributes nothing to
+   *  status (treated as 0 — no alert from DLQ alone). */
+  readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>> };
 }
 
 export function registerSourceBindingsRoutes(
   args: RegisterSourceBindingsRoutesArgs,
 ): void {
   args.app.get("/api/admin/source-bindings", async () => {
+    // Status query: three correlated sub-selects, one per signal
+    // (latest event time, 24h sig-fail count, latest 24h intake error).
+    // `name` falls back to `adapter_slug → domain_slug` when notes is null
+    // — a dedicated column is a v0.2 enhancement.
     const result = (await args.db.execute(sql`
       SELECT b.id::text AS id,
              d.slug AS domain_slug,
@@ -93,7 +133,31 @@ export function registerSourceBindingsRoutes(
              b.review_mode::text AS review_mode,
              b.enabled,
              b.last_scanned_at,
-             b.notes
+             b.notes,
+             COALESCE(b.notes, b.adapter_slug || ' → ' || d.slug) AS name,
+             (
+               SELECT w.received_at
+               FROM webhook_events w
+               WHERE w.binding_id = b.id
+               ORDER BY w.received_at DESC
+               LIMIT 1
+             ) AS last_event_at,
+             (
+               SELECT COUNT(*)::int
+               FROM webhook_events w
+               WHERE w.binding_id = b.id
+                 AND w.signature_ok = false
+                 AND w.received_at >= NOW() - INTERVAL '24 hours'
+             ) AS sig_fail_count_24h,
+             (
+               SELECT COALESCE(ii.error_text, ii.error_class::text)
+               FROM ingestion_intake ii
+               WHERE ii.binding_id = b.id
+                 AND (ii.error_class IS NOT NULL OR ii.error_text IS NOT NULL)
+                 AND ii.created_at >= NOW() - INTERVAL '24 hours'
+               ORDER BY ii.created_at DESC
+               LIMIT 1
+             ) AS latest_error_class
       FROM sources_bindings b
       JOIN domains d ON d.id = b.domain_id
       ORDER BY b.created_at DESC
@@ -107,22 +171,45 @@ export function registerSourceBindingsRoutes(
         enabled: boolean;
         last_scanned_at: Date | string | null;
         notes: string | null;
+        name: string;
+        last_event_at: Date | string | null;
+        sig_fail_count_24h: number;
+        latest_error_class: string | null;
       }>;
     };
-    const rows: BindingRow[] = result.rows.map((r) => ({
-      id: r.id,
-      domainSlug: r.domain_slug,
-      adapterSlug: r.adapter_slug,
-      reviewMode: r.review_mode,
-      enabled: r.enabled,
-      lastScannedAt:
-        r.last_scanned_at === null
-          ? null
-          : r.last_scanned_at instanceof Date
-            ? r.last_scanned_at.toISOString()
-            : new Date(r.last_scanned_at).toISOString(),
-      notes: r.notes,
-    }));
+
+    // DLQ depth is a single shared probe — v0.1 uses one ingestion queue;
+    // per-binding queues are v0.2. A failed probe is non-fatal: keep 0 so
+    // the UI doesn't flash spurious alerts.
+    const dlqDepth = await probeDlqDepth(args.ingestionQueue);
+
+    const rows: BindingRow[] = result.rows.map((r) => {
+      const lastEventAt = toIso(r.last_event_at);
+      const lastError =
+        r.latest_error_class !== null
+          ? scrubPat(r.latest_error_class).slice(0, 200)
+          : null;
+      const status = computeBindingStatus({
+        enabled: r.enabled,
+        lastEventAt,
+        sigFailCount24h: r.sig_fail_count_24h,
+        latestErrorClass: r.latest_error_class,
+        dlqDepth,
+      });
+      return {
+        id: r.id,
+        domainSlug: r.domain_slug,
+        adapterSlug: r.adapter_slug,
+        reviewMode: r.review_mode,
+        enabled: r.enabled,
+        lastScannedAt: toIso(r.last_scanned_at),
+        notes: r.notes,
+        name: r.name,
+        status,
+        lastEventAt,
+        lastError,
+      };
+    });
     return { rows };
   });
 
@@ -306,6 +393,58 @@ export function registerSourceBindingsRoutes(
       return reply.code(201).send({ id });
     },
   );
+}
+
+// ─── Status computation (phase-a appendix #4 PR-A) ──────────────────────────
+
+interface ComputeBindingStatusArgs {
+  readonly enabled: boolean;
+  readonly lastEventAt: string | null;
+  readonly sigFailCount24h: number;
+  readonly latestErrorClass: string | null;
+  readonly dlqDepth: number;
+}
+
+const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+
+/** Compute the 3-state health status for a source binding.
+ *
+ *   null       → paused (enabled=false) OR newly created (no events ever).
+ *   'alert'    → any failure signal in last 24h: intake error_class,
+ *                webhook sig-fail, or DLQ depth > 0.
+ *   'advisory' → enabled, has events, but last one was >24h ago (stale).
+ *   'healthy'  → events arriving normally, no failures.
+ */
+function computeBindingStatus(args: ComputeBindingStatusArgs): BindingStatus {
+  if (!args.enabled) return null;
+  if (args.lastEventAt === null) return null;
+
+  if (
+    args.latestErrorClass !== null ||
+    args.sigFailCount24h >= 1 ||
+    args.dlqDepth > 0
+  ) {
+    return "alert";
+  }
+
+  const ageMs = Date.now() - new Date(args.lastEventAt).getTime();
+  return ageMs > TWENTY_FOUR_HOURS_MS ? "advisory" : "healthy";
+}
+
+/** Read the shared ingestion queue's failed-job count. Returns 0 when
+ *  no queue is injected (e.g. composition-incomplete in tests) or when
+ *  the probe itself fails — the UI should not flash spurious alerts on
+ *  a Redis blip. */
+async function probeDlqDepth(
+  queue: { getJobCounts: (...states: string[]) => Promise<Record<string, number>> } | undefined,
+): Promise<number> {
+  if (queue === undefined) return 0;
+  try {
+    const counts = await queue.getJobCounts("failed");
+    return counts["failed"] ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 /** Validate credentials against the adapter's descriptor. Walks

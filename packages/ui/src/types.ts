@@ -19,6 +19,17 @@ export interface SourceBinding {
   readonly reviewMode: string;
   readonly enabled: boolean;
   readonly notes: string | null;
+  /** Human-readable label: server-derived from notes or adapter→domain.
+   *  A schema column for explicit name is a v0.2 enhancement. */
+  readonly name: string;
+  /** Server-computed 3-state health status, or null for neutral
+   *  (newly-created binding with no events, or paused/disabled). */
+  readonly status: "healthy" | "advisory" | "alert" | null;
+  /** ISO timestamp of most-recent webhook event, or null. */
+  readonly lastEventAt: string | null;
+  /** Truncated + scrubbed error string, or null. Max 200 chars.
+   *  THREAT-MODEL §3.6 invariant 11: no credential bytes. */
+  readonly lastError: string | null;
 }
 
 export interface PromptManifestEntry {

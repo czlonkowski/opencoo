@@ -66,16 +66,24 @@
     "subtitle": "Bindings that ingest into a domain.",
     "empty": "No bindings yet.",
     "columns": {
-      "binding": "binding",
+      "name": "name",
       "type": "type",
       "domain": "domain",
       "reviewMode": "review mode",
-      "status": "status"
+      "status": "status",
+      "lastEvent": "last event",
+      "lastError": "last error"
     },
     "status": {
-      "ok": "OK",
-      "paused": "paused",
+      "healthy": "healthy",
+      "advisory": "advisory",
       "alert": "alert"
+    },
+    "relativeTime": {
+      "justNow": "just now",
+      "minutesAgo": "{{n}}m ago",
+      "hoursAgo": "{{n}}h ago",
+      "daysAgo": "{{n}}d ago"
     },
     "newBinding": "+ New binding",
     "create": {

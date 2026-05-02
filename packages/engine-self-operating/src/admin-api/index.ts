@@ -73,6 +73,17 @@ export interface RegisterAdminApiArgs {
    *  the binding row INSERT. When undefined, POST
    *  /api/admin/source-bindings returns 500. */
   readonly credentialStore?: CredentialStore;
+  /** BullMQ ingestion queue, passed to `registerSourceBindingsRoutes`
+   *  so the GET /api/admin/source-bindings handler can probe DLQ depth.
+   *  When undefined (current production state), DLQ depth contributes
+   *  nothing to status computation (treated as 0 — no alert from DLQ alone).
+   *
+   *  TODO (PR-B): wire `buildIngestionQueue('scanner', ...)` from the
+   *  engine-ingestion boot site here. PR-B wires the first QueueEvents
+   *  listeners; the queue instance should be created there and threaded
+   *  through ProductionServerFactoryArgs → RegisterAdminApiArgs →
+   *  registerSourceBindingsRoutes. Until then, DLQ alerts are silenced. */
+  readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>> };
 }
 
 export async function registerAdminApi(
@@ -120,6 +131,9 @@ export async function registerAdminApi(
     db: args.db,
     ...(args.credentialStore !== undefined
       ? { credentialStore: args.credentialStore }
+      : {}),
+    ...(args.ingestionQueue !== undefined
+      ? { ingestionQueue: args.ingestionQueue }
       : {}),
   });
   registerLintFindingsRoutes({ app: guardedApp, db: args.db });

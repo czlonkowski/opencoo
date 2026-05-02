@@ -91,6 +91,7 @@ const DDL = `
     status intake_status DEFAULT 'pending' NOT NULL,
     last_classifier_run_id text,
     error_class error_class,
+    error_text text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT ingestion_intake_binding_doc_revision_unique UNIQUE (binding_id, source_doc_id, source_revision)
   );

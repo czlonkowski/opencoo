@@ -57,6 +57,13 @@
       "when": 1777287854948,
       "tag": "0007_sources_bindings_webhook_secret_credentials_id",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1777713628181,
+      "tag": "0008_ingestion_intake_error_text",
+      "breakpoints": true
     }
   ]
 }

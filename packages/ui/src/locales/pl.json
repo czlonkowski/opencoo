@@ -67,16 +67,24 @@
     "subtitle": "Bindings that ingest into a domain.",
     "empty": "No bindings yet.",
     "columns": {
-      "binding": "binding",
-      "type": "type",
-      "domain": "domain",
-      "reviewMode": "review mode",
-      "status": "status"
+      "name": "nazwa",
+      "type": "typ",
+      "domain": "domena",
+      "reviewMode": "tryb recenzji",
+      "status": "status",
+      "lastEvent": "ostatnie zdarzenie",
+      "lastError": "ostatni błąd"
     },
     "status": {
-      "ok": "OK",
-      "paused": "paused",
+      "healthy": "zdrowe",
+      "advisory": "ostrzeżenie",
       "alert": "alert"
+    },
+    "relativeTime": {
+      "justNow": "przed chwilą",
+      "minutesAgo": "{{n}} min temu",
+      "hoursAgo": "{{n}} godz temu",
+      "daysAgo": "{{n}} dni temu"
     },
     "newBinding": "+ New binding",
     "create": {

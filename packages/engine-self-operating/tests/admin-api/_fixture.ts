@@ -158,6 +158,37 @@ const TABLES_DDL = `
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT marketplace_updates_source_release_tag_unique UNIQUE (marketplace_source, release_tag)
   );
+
+  -- Phase-a appendix #4 PR-A: status probing queries in the GET
+  -- /api/admin/source-bindings handler reference these two tables.
+  -- Including them in the base fixture so all source-binding tests
+  -- work without per-test table creation.
+  CREATE TABLE IF NOT EXISTS webhook_events (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    provider text NOT NULL,
+    event_id text,
+    payload_hash text NOT NULL,
+    payload jsonb,
+    signature_ok boolean NOT NULL,
+    binding_id uuid REFERENCES sources_bindings(id) ON DELETE RESTRICT,
+    delivery_count integer NOT NULL DEFAULT 1,
+    status text NOT NULL DEFAULT 'pending',
+    received_at timestamp with time zone NOT NULL DEFAULT now(),
+    created_at timestamp with time zone NOT NULL DEFAULT now()
+  );
+
+  CREATE TABLE IF NOT EXISTS ingestion_intake (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    binding_id uuid NOT NULL REFERENCES sources_bindings(id) ON DELETE RESTRICT,
+    source_doc_id text NOT NULL,
+    source_revision text NOT NULL,
+    content_hash text NOT NULL,
+    status text NOT NULL DEFAULT 'pending',
+    last_classifier_run_id text,
+    error_class text,
+    error_text text,
+    created_at timestamp with time zone NOT NULL DEFAULT now()
+  );
 `;
 
 export class MockGiteaClient implements GiteaClient {
