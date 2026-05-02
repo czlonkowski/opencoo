@@ -272,12 +272,23 @@ export class AgentDispatcher {
     // + jobId). Using `instance_id` as `jobId` makes a re-
     // registration on engine restart land on the same repeatable;
     // the `immediately: false` flag prevents a boot-time burst.
+    //
+    // Round-3 fix #1: pin `tz: 'UTC'`. BullMQ's repeat parser
+    // defaults to the host's local timezone (cron-parser
+    // `ParserOptions.tz` is undefined → resolves to local). Without
+    // this, schedules drift on non-UTC hosts (developer Macs,
+    // bare-metal Linux deploys) — `0 8 * * 1-5` would fire at 8am
+    // wall-clock instead of 8am UTC. Containerized prod is usually
+    // UTC, but pinning here guarantees the same behavior across
+    // every deployment shape AND keeps `nextFireAt` from
+    // `cron-parser.parseExpression(..., { tz: 'UTC' })` aligned
+    // with what BullMQ actually scheduled.
     await this.queue.add(
       "dispatch",
       { instanceId: entry.instanceId },
       {
         jobId: entry.instanceId,
-        repeat: { pattern: entry.scheduleCron, immediately: false },
+        repeat: { pattern: entry.scheduleCron, tz: "UTC", immediately: false },
       },
     );
   }

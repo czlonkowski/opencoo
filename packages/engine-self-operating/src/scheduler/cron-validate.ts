@@ -28,6 +28,16 @@ export interface ValidateCronResult {
 }
 
 /**
+ * Round-3 fix #5: every `cron-parser` call MUST pin
+ * `tz: 'UTC'` so parsed schedules + computed `nextFireAt`
+ * timestamps are deterministic regardless of the host machine's
+ * local timezone. The dispatcher pins the same `tz: 'UTC'` on
+ * BullMQ's `RepeatOptions` so the two layers agree on which
+ * wall-clock minute each pattern resolves to.
+ */
+const PARSER_TZ_OPTS = { tz: "UTC" as const } as const;
+
+/**
  * Parse a 5-field UTC cron pattern. Returns `{ valid: true }` on
  * success, `{ valid: false, error }` otherwise. Never throws.
  */
@@ -36,7 +46,7 @@ export function validateCron(pattern: string): ValidateCronResult {
     return { valid: false, error: "cron pattern must be a non-empty string" };
   }
   try {
-    cronParser.parseExpression(pattern);
+    cronParser.parseExpression(pattern, PARSER_TZ_OPTS);
     return { valid: true };
   } catch (err) {
     // First line only — `cron-parser` 4.x throws plain `Error` objects
@@ -56,10 +66,16 @@ export function validateCron(pattern: string): ValidateCronResult {
  * compute a next date (e.g. an end-date constraint already passed).
  * The caller surfaces `null` as a missing field rather than an error
  * so a single bad row doesn't take the whole listing down.
+ *
+ * Round-3 fix #5: `tz: 'UTC'` is pinned via `PARSER_TZ_OPTS` so the
+ * timestamp the admin route surfaces matches what BullMQ scheduled
+ * (the dispatcher pins `tz: 'UTC'` on `RepeatOptions` too).
  */
 export function nextFireAt(pattern: string, from?: Date): Date | null {
   try {
-    const opts = from !== undefined ? { currentDate: from } : undefined;
+    const opts = from !== undefined
+      ? { ...PARSER_TZ_OPTS, currentDate: from }
+      : PARSER_TZ_OPTS;
     const expr = cronParser.parseExpression(pattern, opts);
     return expr.next().toDate();
   } catch {

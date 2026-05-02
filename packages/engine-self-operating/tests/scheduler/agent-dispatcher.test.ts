@@ -363,3 +363,62 @@ describe("AgentDispatcher.stop", () => {
     await expect(harness.dispatcher.stop()).resolves.toBeUndefined();
   });
 });
+
+describe("AgentDispatcher — UTC timezone pin (round-3 fix #1)", () => {
+  it("passes tz: 'UTC' on every BullMQ repeat-job registration", async () => {
+    // Bypass the test-only `registerScheduleFn` seam so the
+    // production code path lands a real `queue.add(..., { repeat })`
+    // call — that call is what would silently default to host-local
+    // time without the round-3 fix. The spy captures the args.
+    const fixture = await freshAgentDb();
+    await fixture.raw.query(
+      `INSERT INTO agent_instances
+         (definition_slug, name, scope_domain_ids, memory, locale, enabled, schedule_cron)
+       VALUES ('heartbeat', 'morning-utc', $1::uuid[], '{}'::jsonb, 'en', true, '0 8 * * 1-5')`,
+      [[fixture.domainId]],
+    );
+
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+      // No registerScheduleFn — production code path runs through
+      // `queue.add(..., { repeat })`.
+    });
+
+    // Spy on the real queue's `add` method. We resolve immediately
+    // with a stub Job-shape so BullMQ's Lua-script call (which
+    // ioredis-mock doesn't fully implement) never executes.
+    const queue = dispatcher.queueForTest();
+    const addSpy = vi
+      .spyOn(queue, "add")
+      .mockResolvedValue({ id: "stub" } as never);
+
+    try {
+      await dispatcher.start();
+
+      expect(addSpy).toHaveBeenCalledTimes(1);
+      const callArgs = addSpy.mock.calls[0];
+      expect(callArgs).toBeDefined();
+      const opts = callArgs![2] as { repeat: { tz?: string; pattern?: string } };
+      // Round-3 fix #1 — `tz: 'UTC'` MUST be present so BullMQ's
+      // repeat parser doesn't silently use `process.env.TZ`. Without
+      // this, `0 8 * * 1-5` fires at 8am LOCAL on a developer Mac
+      // and `nextFireAt` from the admin route returns a different
+      // wall-clock time than what BullMQ scheduled.
+      expect(opts.repeat.tz).toBe("UTC");
+      expect(opts.repeat.pattern).toBe("0 8 * * 1-5");
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+  });
+});
