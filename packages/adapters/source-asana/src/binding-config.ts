@@ -22,8 +22,15 @@ export const asanaBindingConfigSchema = z
     workspaceGid: z.string().min(1).optional(),
     /** Reference to the webhook secret persisted in the
      *  CredentialStore. The receiver fetches the actual bytes
-     *  via this reference at verify-time. */
-    webhookSecretCredentialId: z.string().min(1),
+     *  via this reference at verify-time.
+     *
+     *  Optional at binding creation time: the first Asana POST
+     *  triggers the X-Hook-Secret handshake which writes the
+     *  credential and backfills this field automatically via
+     *  sources_bindings.webhook_secret_credentials_id. Operators
+     *  creating a new binding may omit this; subsequent normal
+     *  event POSTs will use the backfilled value. */
+    webhookSecretCredentialId: z.string().min(1).optional(),
     /** Operator review mode. Default `auto` — the engine
      *  ingests Asana events without per-doc review. NOTE:
      *  `auto` requires the redaction guard (PR 12) wired into

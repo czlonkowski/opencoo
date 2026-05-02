@@ -126,14 +126,25 @@ sourceAdapterContract({
 // ---------------------------------------------------------------------------
 
 describe("source-asana — binding-config schema", () => {
-  it("requires projectGid + webhookSecretCredentialId", () => {
+  it("requires projectGid; webhookSecretCredentialId is optional (backfilled by handshake)", () => {
+    // projectGid is always required.
     expect(() =>
       asanaBindingConfigSchema.parse({
         webhookSecretCredentialId: "uuid",
       }),
     ).toThrow();
+    // webhookSecretCredentialId is optional — operators may omit it when
+    // creating a new binding; the first Asana POST triggers the handshake
+    // which writes the credential and backfills the field automatically.
     expect(() =>
       asanaBindingConfigSchema.parse({ projectGid: "p" }),
+    ).not.toThrow();
+    // When provided, it must be a non-empty string.
+    expect(() =>
+      asanaBindingConfigSchema.parse({
+        projectGid: "p",
+        webhookSecretCredentialId: "",
+      }),
     ).toThrow();
   });
 

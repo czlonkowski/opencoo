@@ -51,6 +51,7 @@ import {
 } from "@opencoo/shared/db/schema";
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
+import type { Logger } from "@opencoo/shared/logger";
 import type { SourceAdapter } from "@opencoo/shared/source-adapter";
 import type { WebhookVerifier } from "@opencoo/shared/webhook-verifier";
 
@@ -72,7 +73,10 @@ export interface WebhookReceiverOptions {
   readonly verifier: WebhookVerifier;
   readonly scannerQueue: WebhookQueueLike;
   readonly dlqQueue: WebhookQueueLike;
+  /** Enables Fastify's built-in request logger when true. */
   readonly logger?: boolean;
+  /** Application-level structured logger for audit events. */
+  readonly appLogger?: Logger;
 }
 
 interface BindingRow {
@@ -166,6 +170,14 @@ export function buildWebhookReceiver(
         .update(sourcesBindings)
         .set({ webhookSecretCredentialsId: newCredId })
         .where(eq(sourcesBindings.id, bindingId));
+
+      // Audit log: handshake received and secret stored.
+      // THREAT-MODEL §2 invariant 11: do NOT log the secret bytes.
+      options.appLogger?.info("webhook.handshake.received", {
+        bindingId,
+        adapterSlug: binding.adapterSlug,
+        credentialId: newCredId,
+      });
 
       // Echo the secret header and return 200. No body, no DLQ,
       // no webhook_events row, no scanner enqueue.

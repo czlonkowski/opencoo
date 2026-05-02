@@ -7,8 +7,9 @@
  *
  * THREAT-MODEL compliance:
  *   - §2 invariant 11: event content logged at debug only (never info).
- *   - §3.4 XML spotlighting: event content wrapped in
- *     <source_content>...</source_content> before reaching the LLM.
+ *   - §3.4 XML spotlighting: event content wrapped via the canonical
+ *     `spotlight()` helper from @opencoo/shared/spotlight — prevents
+ *     injection via `</source_content>` or `<system>` in task names.
  *   - Tier 'light', max_tokens 120 (enforced via prompt instruction;
  *     the LLM router's generateText call honours the router's budget).
  *   - On any LLM failure: logs warn, returns undefined — caller
@@ -16,6 +17,7 @@
  */
 import type { DomainId } from "@opencoo/shared/db";
 import type { GenerateOpts, GenerateTextResult } from "@opencoo/shared/llm-router";
+import { spotlight } from "@opencoo/shared/spotlight";
 
 /** Minimal router surface needed for Light-tier calls. */
 export interface LightSummaryRouter {
@@ -47,15 +49,20 @@ Limit tokenów: 120.`;
 export async function summarizeAsanaEvent(
   args: SummarizeAsanaEventArgs,
 ): Promise<string | undefined> {
-  const eventJson = JSON.stringify(args.event);
+  // Use the canonical spotlight() helper per THREAT-MODEL §3.4.
+  // This escapes `</source_content>`, `<system>`, `<assistant>` and
+  // other sentinels so injected tag sequences in task names cannot
+  // close the envelope early or impersonate a chat-role marker.
+  const envelope = spotlight({
+    content: JSON.stringify(args.event),
+    source: "asana-event",
+    fetchedAt: new Date(),
+  });
 
-  // XML-spotlight event content per THREAT-MODEL §3.4.
   const prompt = `${SYSTEM_PROMPT}
 
 Zdarzenie do podsumowania:
-<source_content>
-${eventJson}
-</source_content>
+${envelope}
 
 Podsumowanie (max 25 słów, max 120 tokenów):`;
 
