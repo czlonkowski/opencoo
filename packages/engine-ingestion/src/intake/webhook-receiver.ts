@@ -11,6 +11,13 @@
  *      binding.adapter_slug). Unknown adapter → 500 + DLQ
  *      (caller-bug-on-our-side: the binding exists but no
  *      adapter is wired).
+ *   2a. (PR-F) Per-adapter handshake detection: if the adapter
+ *       exposes `webhook.handshakeFn` AND the request headers
+ *       trigger a handshake result, run the handshake branch:
+ *         - Persist the received secret to CredentialStore.
+ *         - UPDATE sources_bindings.webhook_secret_credentials_id.
+ *         - Echo the secret in the response header.
+ *         - Return 200 without writing webhook_events or enqueueing.
  *   3. Read the HMAC secret via credentialStore.read(binding.
  *      credentialsId). The store's audit log fires here.
  *   4. Verify signature via injected WebhookVerifier on the
@@ -44,6 +51,7 @@ import {
 } from "@opencoo/shared/db/schema";
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
+import type { SourceAdapter } from "@opencoo/shared/source-adapter";
 import type { WebhookVerifier } from "@opencoo/shared/webhook-verifier";
 
 import type { InMemoryAdapterRegistry } from "./adapter-registry.js";
@@ -71,6 +79,7 @@ interface BindingRow {
   readonly id: string;
   readonly adapterSlug: string;
   readonly credentialsId: string | null;
+  readonly webhookSecretCredentialsId: string | null;
 }
 
 export function buildWebhookReceiver(
@@ -99,6 +108,7 @@ export function buildWebhookReceiver(
       "x-signature"?: string;
       "x-event-id"?: string;
       "x-provider"?: string;
+      "x-hook-secret"?: string;
     };
   }>("/webhooks/:bindingId", async (req, reply) => {
     const { bindingId } = req.params;
@@ -109,6 +119,7 @@ export function buildWebhookReceiver(
         id: sourcesBindings.id,
         adapterSlug: sourcesBindings.adapterSlug,
         credentialsId: sourcesBindings.credentialsId,
+        webhookSecretCredentialsId: sourcesBindings.webhookSecretCredentialsId,
       })
       .from(sourcesBindings)
       .where(eq(sourcesBindings.id, bindingId))
@@ -119,11 +130,11 @@ export function buildWebhookReceiver(
       return { accepted: false, reason: "binding not found" };
     }
 
-    // Step 2: confirm the adapter is registered. We don't need the
-    // adapter object itself in this PR — PR 23+ widens the surface
-    // to call adapter.verifyWebhook / adapter.fetchPayload through
-    // it; today we just gate on registration.
-    if (options.adapterRegistry.get(binding.adapterSlug) === undefined) {
+    // Step 2: confirm the adapter is registered.
+    const adapter = options.adapterRegistry.get(binding.adapterSlug) as
+      | SourceAdapter
+      | undefined;
+    if (adapter === undefined) {
       // The binding references an adapter slug that isn't wired —
       // operator config bug. DLQ for triage; reply 500.
       await options.dlqQueue.add("intake.dlq", {
@@ -137,8 +148,39 @@ export function buildWebhookReceiver(
       };
     }
 
+    // Step 2a (PR-F): per-adapter handshake detection.
+    // Check BEFORE signature verification — handshake requests
+    // have no signature (Asana's X-Hook-Secret is the whole message).
+    const allHeaders = req.headers as Readonly<Record<string, string | undefined>>;
+    const handshakeResult = adapter.webhook?.handshakeFn?.(allHeaders) ?? null;
+    if (handshakeResult !== null) {
+      // Persist the webhook secret to CredentialStore.
+      const newCredId = await options.credentialStore.write({
+        name: `${binding.adapterSlug}:webhook-secret:${bindingId}`,
+        schemaRef: handshakeResult.schemaRef ?? `${binding.adapterSlug}:webhook_secret`,
+        plaintext: Buffer.from(handshakeResult.secret, "utf8"),
+      });
+
+      // UPDATE sources_bindings.webhook_secret_credentials_id.
+      await options.db
+        .update(sourcesBindings)
+        .set({ webhookSecretCredentialsId: newCredId })
+        .where(eq(sourcesBindings.id, bindingId));
+
+      // Echo the secret header and return 200. No body, no DLQ,
+      // no webhook_events row, no scanner enqueue.
+      reply.header("x-hook-secret", handshakeResult.secret).code(200);
+      return null;
+    }
+
     // Step 3: read the HMAC secret.
-    if (binding.credentialsId === null) {
+    // Use webhookSecretCredentialsId if set (Asana uses a separate
+    // webhook signing secret from the API credentials); fall back to
+    // credentialsId for adapters that use the same credential.
+    const hmacCredId =
+      binding.webhookSecretCredentialsId ?? binding.credentialsId;
+
+    if (hmacCredId === null) {
       // Binding has no credentials wired — also an operator config
       // bug. DLQ + 500.
       await options.dlqQueue.add("intake.dlq", {
@@ -152,7 +194,7 @@ export function buildWebhookReceiver(
       };
     }
     const credential = await options.credentialStore.read(
-      binding.credentialsId as CredentialId,
+      hmacCredId as CredentialId,
     );
 
     // Step 4: verify signature on the raw body.

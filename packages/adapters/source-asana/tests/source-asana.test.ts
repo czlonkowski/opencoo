@@ -216,7 +216,7 @@ describe("source-asana — webhook helpers", () => {
     );
   });
 
-  it("parseEvents produces 1 event per Asana event in body.events[]", () => {
+  it("parseEvents produces 1 event per Asana event in body.events[] (both events must have derivable event type)", () => {
     const multi = buildMockAsanaWebhookFixture({
       events: [
         {
@@ -232,6 +232,9 @@ describe("source-asana — webhook helpers", () => {
           resource_type: "task",
           action: "changed",
           created_at: "2026-04-25T12:01:00Z",
+          // PR-F: change.field is required for 'changed' events to
+          // produce a non-null eventType; 'completed' maps to 'completed'.
+          change_field: "completed",
         },
       ],
     });

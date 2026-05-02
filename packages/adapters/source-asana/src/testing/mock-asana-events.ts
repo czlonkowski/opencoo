@@ -21,6 +21,13 @@ export interface MockAsanaEvent {
   readonly change_field?: string;
 }
 
+/** Extended event fixture that includes a `parent` field —
+ *  used for monitored-project filter tests (PR-F). */
+export interface MockAsanaEventWithParent extends MockAsanaEvent {
+  readonly parent_gid?: string;
+  readonly parent_type?: string;
+}
+
 export interface MockAsanaWebhookFixture {
   readonly body: Buffer;
   readonly secret: Buffer;
@@ -54,6 +61,55 @@ export function buildMockAsanaWebhookFixture(args?: {
         action: ev.action,
         created_at: ev.created_at,
         change: ev.change_field ? { field: ev.change_field } : undefined,
+      })),
+    }),
+    "utf8",
+  );
+  const validSignature = createHmac("sha256", secret)
+    .update(body)
+    .digest("hex");
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    [ASANA_SIGNATURE_HEADER]: validSignature,
+  };
+  return { body, secret, validSignature, headers };
+}
+
+/**
+ * Builds a fixture with `parent` field on events — needed for
+ * monitored-project filter tests (PR-F). The fixture body is
+ * unsigned (no secret/signature needed for filter tests that
+ * call parseEvents directly without going through the verifier).
+ */
+export function buildMockAsanaWebhookFixtureWithParent(args?: {
+  readonly events?: ReadonlyArray<MockAsanaEventWithParent>;
+  readonly secret?: Buffer;
+}): MockAsanaWebhookFixture {
+  const events = args?.events ?? [
+    {
+      user_gid: "user-1",
+      resource_gid: "task-42",
+      resource_type: "task",
+      action: "added",
+      created_at: "2026-04-25T12:00:00.000Z",
+    },
+  ];
+  const secret = args?.secret ?? Buffer.from("asana-test-secret");
+  const body = Buffer.from(
+    JSON.stringify({
+      events: events.map((ev) => ({
+        user: { gid: ev.user_gid },
+        resource: {
+          gid: ev.resource_gid,
+          resource_type: ev.resource_type,
+        },
+        action: ev.action,
+        created_at: ev.created_at,
+        change: ev.change_field ? { field: ev.change_field } : undefined,
+        parent:
+          ev.parent_gid !== undefined
+            ? { gid: ev.parent_gid, resource_type: ev.parent_type ?? "project" }
+            : undefined,
       })),
     }),
     "utf8",
