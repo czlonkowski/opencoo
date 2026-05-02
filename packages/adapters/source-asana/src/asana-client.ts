@@ -104,7 +104,9 @@ function scrubError(err: unknown): Error {
 
 interface AsanaPageResponse {
   readonly data: ReadonlyArray<AsanaTaskRow>;
-  readonly next_page: { readonly uri: string; readonly offset: string } | null;
+  // M11: `offset` is declared in the Asana response but never read — pagination
+  // follows `uri` directly. Keeping it in the type would be dead weight.
+  readonly next_page: { readonly uri: string } | null;
 }
 
 /** Parse and validate the Asana tasks-list response. */
@@ -120,7 +122,7 @@ function parseAsanaTasksResponse(raw: unknown): AsanaPageResponse {
     obj["next_page"] !== null &&
     typeof obj["next_page"] === "object" &&
     typeof (obj["next_page"] as Record<string, unknown>)["uri"] === "string"
-      ? (obj["next_page"] as { uri: string; offset: string })
+      ? (obj["next_page"] as { uri: string })
       : null;
   return { data: obj["data"] as AsanaTaskRow[], next_page: nextPage };
 }
@@ -198,11 +200,22 @@ export function createAsanaClient(args: AsanaClientArgs): AsanaClient {
           );
         }
         // Respect Retry-After if present; otherwise exponential + jitter.
+        // I2: RFC 7231 §7.1.3 allows two forms:
+        //   - Numeric seconds: "30"  → parse directly.
+        //   - HTTP-date: "Wed, 21 Oct 2026 07:28:00 GMT" → Date.parse().
+        // If neither parses validly, fall back to exponential backoff.
         const retryAfterHeader = response.headers.get("Retry-After");
-        const delayMs =
-          retryAfterHeader !== null && /^\d+$/.test(retryAfterHeader)
-            ? parseInt(retryAfterHeader, 10) * 1000
-            : computeBackoffMs(retryDelayMs, rateAttempt);
+        let delayMs: number;
+        if (retryAfterHeader !== null && /^\d+$/.test(retryAfterHeader)) {
+          delayMs = parseInt(retryAfterHeader, 10) * 1000;
+        } else if (retryAfterHeader !== null) {
+          const parsed = Date.parse(retryAfterHeader);
+          delayMs = Number.isNaN(parsed)
+            ? computeBackoffMs(retryDelayMs, rateAttempt)
+            : Math.max(0, parsed - Date.now());
+        } else {
+          delayMs = computeBackoffMs(retryDelayMs, rateAttempt);
+        }
         await sleep(delayMs);
         continue;
       }

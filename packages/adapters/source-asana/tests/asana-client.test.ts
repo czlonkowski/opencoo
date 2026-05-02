@@ -225,6 +225,64 @@ describe("AsanaClient — 429 rate-limit retry", () => {
     await expect(client.fetchProjectSnapshot(PROJECT_GID)).rejects.toThrow();
     expect(fetchImpl).toHaveBeenCalledTimes(5);
   });
+
+  // I2: RFC 7231 §7.1.3 HTTP-date form support
+  it("retries on 429 with HTTP-date Retry-After header", async () => {
+    const { store, credentialId } = await makeCredentialStore();
+    let callCount = 0;
+
+    // Build a date ~1 second in the future so the computed delay is positive.
+    const retryAfterDate = new Date(Date.now() + 1000).toUTCString();
+
+    const fetchImpl = vi.fn(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return new Response(JSON.stringify({ errors: [{ message: "Rate Limited" }] }), {
+          status: 429,
+          headers: { "Retry-After": retryAfterDate, "content-type": "application/json" },
+        });
+      }
+      return makeAsanaResponse([makeTask()]);
+    });
+
+    const client = createAsanaClient({
+      credentialStore: store,
+      credentialId,
+      fetchImpl,
+      retryDelayMs: 1,
+    });
+
+    const snapshot = await client.fetchProjectSnapshot(PROJECT_GID);
+    expect(snapshot.snapshot).toHaveLength(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to exponential backoff for an invalid Retry-After value", async () => {
+    const { store, credentialId } = await makeCredentialStore();
+    let callCount = 0;
+
+    const fetchImpl = vi.fn(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return new Response(JSON.stringify({ errors: [{ message: "Rate Limited" }] }), {
+          status: 429,
+          headers: { "Retry-After": "not-a-date", "content-type": "application/json" },
+        });
+      }
+      return makeAsanaResponse([makeTask()]);
+    });
+
+    const client = createAsanaClient({
+      credentialStore: store,
+      credentialId,
+      fetchImpl,
+      retryDelayMs: 1,
+    });
+
+    const snapshot = await client.fetchProjectSnapshot(PROJECT_GID);
+    expect(snapshot.snapshot).toHaveLength(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

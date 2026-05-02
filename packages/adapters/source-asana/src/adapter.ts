@@ -314,45 +314,94 @@ export function buildAsanaWebhookHelpers(
         opts.llmRouter !== undefined &&
         opts.domainId !== undefined
       ) {
-        const summary = await summarizeAsanaEvent({
-          event: JSON.parse(event.doc.contentBytes.toString("utf8")),
-          domainId: opts.domainId,
-          llmRouter: opts.llmRouter,
-          pipeline: "source-asana:enrich",
-          ...(event.doc.sourceDocId !== undefined
-            ? { documentId: event.doc.sourceDocId }
-            : {}),
-        });
-        if (summary !== undefined) {
-          // Attach summary to a new event object (immutable shape).
-          enrichedEvent = {
-            ...event,
-            doc: {
-              ...event.doc,
-              metadata: {
-                ...event.doc.metadata,
-                summary,
+        // I3: wrap JSON.parse in try/catch — a hand-built SourceWebhookEvent
+        // from a future code path could carry malformed bytes. On failure we
+        // skip summarization but still push the raw event + attempt snapshot.
+        let parsedEventBody: unknown;
+        let parsedOk = true;
+        try {
+          parsedEventBody = JSON.parse(event.doc.contentBytes.toString("utf8"));
+        } catch (parseErr) {
+          parsedOk = false;
+          console.warn("source-asana: enrichEvents JSON parse failed for event", {
+            sourceDocId: event.doc.sourceDocId,
+            error: parseErr instanceof Error ? parseErr.message : String(parseErr),
+          });
+        }
+
+        if (parsedOk && parsedEventBody !== undefined) {
+          const summary = await summarizeAsanaEvent({
+            event: parsedEventBody,
+            domainId: opts.domainId,
+            llmRouter: opts.llmRouter,
+            pipeline: "source-asana:enrich",
+            ...(event.doc.sourceDocId !== undefined
+              ? { documentId: event.doc.sourceDocId }
+              : {}),
+          });
+          if (summary !== undefined) {
+            // Attach summary to a new event object (immutable shape).
+            enrichedEvent = {
+              ...event,
+              doc: {
+                ...event.doc,
+                metadata: {
+                  ...event.doc.metadata,
+                  summary,
+                },
               },
-            },
-          };
+            };
+          }
         }
       }
 
       result.push(enrichedEvent);
 
       // Step 2: Snapshot fetch (on-event mode only).
+      // I1: wrap fetchProjectSnapshot in try/catch — fail-open semantics
+      // mirror light-summary.ts:84-97. A transient 5xx must NOT propagate
+      // up to the receiver: that would cause Asana to retry, and on retry
+      // recordWebhook deduplication would prevent scanner re-enqueue,
+      // silently losing the snapshot. Log a structured warning and continue.
       if (opts.asanaClient !== undefined) {
-        // Determine project GID: prefer event metadata.projectGid,
-        // fall back to binding's primary projectGid.
+        // Determine project GID from the *original* event's metadata.projectGid
+        // (preserved by the spread above; reading from `event` rather than
+        // `enrichedEvent` removes the dependency on key-preservation across
+        // future spread changes — M6).
         const eventProjectGid =
-          typeof enrichedEvent.doc.metadata?.["projectGid"] === "string"
-            ? enrichedEvent.doc.metadata["projectGid"]
+          typeof event.doc.metadata?.["projectGid"] === "string"
+            ? event.doc.metadata["projectGid"]
             : opts.projectGid;
 
         if (eventProjectGid !== undefined) {
-          const snapshot = await opts.asanaClient.fetchProjectSnapshot(eventProjectGid);
-          const snapshotEvent = buildSnapshotEvent(snapshot, enrichedEvent.doc.fetchedAt);
-          result.push(snapshotEvent);
+          try {
+            const snapshot = await opts.asanaClient.fetchProjectSnapshot(eventProjectGid);
+            // M7: use new Date() for fetchedAt — the snapshot was fetched *now*,
+            // not at the original event's arrival time. The snapshot's internal
+            // fetched_at field is already correct; this fixes the outer
+            // SourceChangedDocument-level field for audit truthfulness.
+            const snapshotEvent = buildSnapshotEvent(snapshot, new Date());
+            result.push(snapshotEvent);
+          } catch (snapshotErr) {
+            // Fail-open: log safe metadata only (THREAT-MODEL §3.6 invariant 11:
+            // the error from AsanaClient is already scrubbed via scrubError, but
+            // we add another layer of defense — never log opts.asanaClient or
+            // any raw credential bytes here).
+            console.warn("source-asana: enrichEvents snapshot fetch failed", {
+              projectGid: eventProjectGid,
+              sourceDocId: event.doc.sourceDocId,
+              errorClass:
+                snapshotErr instanceof Error
+                  ? snapshotErr.constructor.name
+                  : typeof snapshotErr,
+              error:
+                snapshotErr instanceof Error
+                  ? snapshotErr.message
+                  : String(snapshotErr),
+            });
+            // Raw event is already pushed above; snapshot event is skipped.
+            // Continue iterating remaining events in the batch.
+          }
         }
       }
     }
@@ -504,15 +553,30 @@ export function createAsanaSourceAdapter(
         ? config.monitoredProjectGids
         : [config.projectGid];
 
+    // M5: hoist asanaClient to a local const — the factory guard above already
+    // ensures it is defined for snapshotMode='periodic', eliminating the need
+    // for the non-null assertion (!) at call-site.
+    const asanaClient = args.asanaClient!;
+
     const documents: SourceChangedDocument[] = [];
     const now = new Date();
 
+    // I4: per-project try/catch — a failure on one project must not abort the
+    // remaining batch. We log a structured warning and continue so that the
+    // next scan cycle for the failed project will retry naturally.
     for (const projectGid of projectGids) {
-      // args.asanaClient is guaranteed non-undefined by the factory guard above
-      // (snapshotMode='periodic' check throws when asanaClient is absent).
-      const snapshot = await args.asanaClient!.fetchProjectSnapshot(projectGid);
-      const snapshotEvent = buildSnapshotEvent(snapshot, now);
-      documents.push(snapshotEvent.doc);
+      try {
+        const snapshot = await asanaClient.fetchProjectSnapshot(projectGid);
+        const snapshotEvent = buildSnapshotEvent(snapshot, now);
+        documents.push(snapshotEvent.doc);
+      } catch (err) {
+        console.warn("source-asana: scan() snapshot fetch failed for project", {
+          projectGid,
+          errorClass: err instanceof Error ? err.constructor.name : typeof err,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        // Continue to next project — partial results are better than none.
+      }
     }
 
     return { documents, nextCursor: null };

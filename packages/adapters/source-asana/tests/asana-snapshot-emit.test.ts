@@ -475,3 +475,118 @@ describe("enrichEvents — light summary wiring", () => {
     expect(mockRouter.generateText).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// I1 — enrichEvents snapshot-fetch error containment
+// ---------------------------------------------------------------------------
+
+describe("enrichEvents — snapshot fetch error containment (I1)", () => {
+  it("resolves successfully when fetchProjectSnapshot rejects", async () => {
+    const { store, credentialId } = await seedCredential();
+
+    const failingClient: AsanaClient = {
+      fetchProjectSnapshot: vi.fn(async () => {
+        throw new Error("asana-client: server error (503) after 3 attempts");
+      }),
+    };
+
+    const adapter = createAsanaSourceAdapter({
+      credentialStore: store,
+      credentialId,
+      config: {
+        projectGid: "proj-fail",
+        snapshotMode: "on-event",
+        monitoredProjectGids: ["proj-fail"],
+        webhookSecretCredentialId: credentialId,
+      },
+      asanaClient: failingClient,
+    });
+
+    const rawEvent: SourceWebhookEvent = {
+      eventId: "evt-i1",
+      eventType: "created",
+      doc: {
+        sourceDocId: "task-i1:added",
+        sourceRevision: "evt-i1",
+        sourceRef: "asana:task/task-i1",
+        fetchedAt: new Date("2026-05-02T08:00:00Z"),
+        contentBytes: Buffer.from(JSON.stringify({ action: "added" }), "utf8"),
+        metadata: { projectGid: "proj-fail" },
+      },
+    };
+
+    // (a) resolves without throwing
+    const result = await adapter.webhook!.enrichEvents!([rawEvent]);
+
+    // (b) raw event is in the result
+    expect(result[0]).toEqual(rawEvent);
+
+    // (c) no snapshot event emitted (only the raw event)
+    expect(result).toHaveLength(1);
+  });
+
+  it("continues processing subsequent events after one snapshot fetch fails", async () => {
+    const { store, credentialId } = await seedCredential();
+    let callCount = 0;
+
+    const partiallyFailingClient: AsanaClient = {
+      fetchProjectSnapshot: vi.fn(async (gid: string) => {
+        callCount++;
+        if (callCount === 1) {
+          throw new Error("asana-client: server error (500)");
+        }
+        return {
+          project_gid: gid,
+          snapshot: [],
+          incomplete_count: 0,
+          overdue_count: 0,
+          fetched_at: "2026-05-02T10:00:00.000Z",
+        };
+      }),
+    };
+
+    const adapter = createAsanaSourceAdapter({
+      credentialStore: store,
+      credentialId,
+      config: {
+        projectGid: "proj-batch",
+        snapshotMode: "on-event",
+        webhookSecretCredentialId: credentialId,
+      },
+      asanaClient: partiallyFailingClient,
+    });
+
+    const events: SourceWebhookEvent[] = [
+      {
+        eventId: "batch-1",
+        eventType: "created",
+        doc: {
+          sourceDocId: "t1:added",
+          sourceRevision: "batch-1",
+          sourceRef: "asana:task/t1",
+          fetchedAt: new Date(),
+          contentBytes: Buffer.from("{}", "utf8"),
+        },
+      },
+      {
+        eventId: "batch-2",
+        eventType: "completed",
+        doc: {
+          sourceDocId: "t2:changed",
+          sourceRevision: "batch-2",
+          sourceRef: "asana:task/t2",
+          fetchedAt: new Date(),
+          contentBytes: Buffer.from("{}", "utf8"),
+        },
+      },
+    ];
+
+    // (d) both events processed — first has no snapshot (fetch failed), second has one
+    const result = await adapter.webhook!.enrichEvents!(events);
+    expect(result).toHaveLength(3); // event[0] (no snapshot) + event[1] + snapshot[1]
+    expect(result[0]?.eventId).toBe("batch-1");
+    expect(result[1]?.eventId).toBe("batch-2");
+    // Third entry is the snapshot for the second event
+    expect(result[2]?.doc.sourceRef).toContain("asana:project/");
+  });
+});

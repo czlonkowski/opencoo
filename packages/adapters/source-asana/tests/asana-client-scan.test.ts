@@ -249,3 +249,78 @@ describe("scan() — periodic mode without AsanaClient", () => {
     ).toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// I4 — scan() partial-batch failure containment
+// ---------------------------------------------------------------------------
+
+describe("scan() — partial-batch failure containment (I4)", () => {
+  it("returns successful documents when one project fetch fails mid-batch", async () => {
+    const { store, credentialId } = await seedCredential();
+
+    // Three projects: proj-a succeeds, proj-b fails, proj-c succeeds.
+    const partiallyFailingClient: AsanaClient = {
+      fetchProjectSnapshot: vi.fn(async (gid: string) => {
+        if (gid === "proj-b") {
+          throw new Error("asana-client: server error (500)");
+        }
+        return {
+          project_gid: gid,
+          snapshot: [],
+          incomplete_count: 0,
+          overdue_count: 0,
+          fetched_at: "2026-05-02T10:00:00.000Z",
+        };
+      }),
+    };
+
+    const adapter = createAsanaSourceAdapter({
+      credentialStore: store,
+      credentialId,
+      config: {
+        projectGid: "proj-primary",
+        snapshotMode: "periodic",
+        monitoredProjectGids: ["proj-a", "proj-b", "proj-c"],
+        webhookSecretCredentialId: credentialId,
+      },
+      asanaClient: partiallyFailingClient,
+    });
+
+    // scan() should not throw — partial results should be returned.
+    const result = await adapter.scan({ cursor: null });
+
+    // Two out of three projects succeeded.
+    expect(result.documents).toHaveLength(2);
+    const refs = result.documents.map((d) => d.sourceRef);
+    expect(refs).toContain("asana:project/proj-a");
+    expect(refs).toContain("asana:project/proj-c");
+    expect(refs).not.toContain("asana:project/proj-b");
+    expect(result.nextCursor).toBeNull();
+  });
+
+  it("returns empty documents when all projects fail", async () => {
+    const { store, credentialId } = await seedCredential();
+
+    const alwaysFailingClient: AsanaClient = {
+      fetchProjectSnapshot: vi.fn(async () => {
+        throw new Error("asana-client: server error (503)");
+      }),
+    };
+
+    const adapter = createAsanaSourceAdapter({
+      credentialStore: store,
+      credentialId,
+      config: {
+        projectGid: "proj-only",
+        snapshotMode: "periodic",
+        webhookSecretCredentialId: credentialId,
+      },
+      asanaClient: alwaysFailingClient,
+    });
+
+    // Should not throw — gracefully returns empty.
+    const result = await adapter.scan({ cursor: null });
+    expect(result.documents).toHaveLength(0);
+    expect(result.nextCursor).toBeNull();
+  });
+});
