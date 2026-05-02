@@ -53,12 +53,8 @@ import { requireCsrf } from "../csrf.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
-/** Status derivation (phase-a appendix #4 PR-A).
- *  - `null`       if enabled=false (paused) OR no events ever (new binding)
- *  - `'alert'`    if recent intake error, sig-fail, or DLQ depth > 0
- *  - `'advisory'` if last event >24h ago on enabled binding, or >7d idle
- *  - `'healthy'`  if events arriving normally with no failures
- */
+/** 3-state health, or `null` for neutral (paused or never-fired binding).
+ *  See `computeBindingStatus` for the rules. */
 type BindingStatus = "healthy" | "advisory" | "alert" | null;
 
 interface BindingRow {
@@ -71,12 +67,19 @@ interface BindingRow {
   readonly notes: string | null;
   /** Human-readable name: `notes` if set, else `${adapterSlug} → ${domainSlug}`. */
   readonly name: string;
-  /** 3-state health status, or null for neutral (new/paused). */
   readonly status: BindingStatus;
-  /** ISO timestamp of the most-recent webhook_events.received_at, or null. */
+  /** ISO timestamp of the most-recent webhook_events.received_at. */
   readonly lastEventAt: string | null;
-  /** Scrubbed + truncated error string from ingestion_intake.error_class, or null. */
+  /** Scrubbed + 200-char-truncated error from ingestion_intake.error_class.
+   *  THREAT-MODEL §3.6 invariant 11: no credential bytes. */
   readonly lastError: string | null;
+}
+
+/** Coerce pg's timestamp result (Date when node-postgres parsed it,
+ *  string when pglite returned it raw) to an ISO string. */
+function toIso(value: Date | string | null): string | null {
+  if (value === null) return null;
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
 const REVIEW_MODES = ["auto", "approve", "review"] as const;
@@ -97,11 +100,9 @@ export interface RegisterSourceBindingsRoutesArgs {
    *  the binding row INSERT. When undefined, POST returns 500
    *  (composition-incomplete). The GET handler is unaffected. */
   readonly credentialStore?: CredentialStore;
-  /** Phase-a appendix #4 PR-A — BullMQ Queue instance for the
-   *  ingestion pipeline. Used to probe DLQ depth per binding's
-   *  queue. When undefined, DLQ depth is treated as 0 (no alert
-   *  from DLQ alone). Match the optional-injection pattern of
-   *  `credentialStore` above. */
+  /** BullMQ ingestion queue, probed for DLQ depth in the GET handler.
+   *  Optional: when undefined the DLQ signal contributes nothing to
+   *  status (treated as 0 — no alert from DLQ alone). */
   readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>> };
 }
 
@@ -109,17 +110,10 @@ export function registerSourceBindingsRoutes(
   args: RegisterSourceBindingsRoutesArgs,
 ): void {
   args.app.get("/api/admin/source-bindings", async () => {
-    // Phase-a appendix #4 PR-A: enriched query that joins
-    // webhook_events and ingestion_intake for status probing.
-    //
-    // Name derivation (no `name` column on sources_bindings):
-    //   prefer `notes` if non-null, else `${adapter_slug} → ${domain_slug}`.
-    //   A schema column for explicit name is a v0.2 enhancement.
-    //
-    // Status computation uses three sub-selects (one per signal):
-    //   1. Latest webhook_events.received_at for the binding.
-    //   2. sig-fail count in last 24h (signature_ok = false).
-    //   3. Latest non-null ingestion_intake.error_class within last 24h.
+    // Status query: three correlated sub-selects, one per signal
+    // (latest event time, 24h sig-fail count, latest 24h intake error).
+    // `name` falls back to `adapter_slug → domain_slug` when notes is null
+    // — a dedicated column is a v0.2 enhancement.
     const result = (await args.db.execute(sql`
       SELECT b.id::text AS id,
              d.slug AS domain_slug,
@@ -172,35 +166,17 @@ export function registerSourceBindingsRoutes(
       }>;
     };
 
-    // Probe DLQ depth once (not per-binding — v0.1 uses a shared
-    // ingestion queue; per-binding queues are v0.2). If no queue
-    // is injected, treat DLQ depth as 0.
-    let dlqDepth = 0;
-    if (args.ingestionQueue !== undefined) {
-      try {
-        const counts = await args.ingestionQueue.getJobCounts("failed");
-        dlqDepth = counts["failed"] ?? 0;
-      } catch {
-        // Non-fatal: DLQ probe failure does not block the status
-        // response. Treat as 0 so the UI doesn't flash spurious alerts.
-        dlqDepth = 0;
-      }
-    }
+    // DLQ depth is a single shared probe — v0.1 uses one ingestion queue;
+    // per-binding queues are v0.2. A failed probe is non-fatal: keep 0 so
+    // the UI doesn't flash spurious alerts.
+    const dlqDepth = await probeDlqDepth(args.ingestionQueue);
 
     const rows: BindingRow[] = result.rows.map((r) => {
-      const lastEventAt =
-        r.last_event_at === null
-          ? null
-          : r.last_event_at instanceof Date
-            ? r.last_event_at.toISOString()
-            : new Date(r.last_event_at).toISOString();
-
-      const rawError = r.latest_error_class;
-      // Truncation pipeline: scrubPat first (removes credentials),
-      // then slice to 200 chars. (THREAT-MODEL §3.6 invariant 11)
+      const lastEventAt = toIso(r.last_event_at);
       const lastError =
-        rawError !== null ? scrubPat(rawError).slice(0, 200) : null;
-
+        r.latest_error_class !== null
+          ? scrubPat(r.latest_error_class).slice(0, 200)
+          : null;
       const status = computeBindingStatus({
         enabled: r.enabled,
         lastEventAt,
@@ -208,19 +184,13 @@ export function registerSourceBindingsRoutes(
         latestErrorClass: r.latest_error_class,
         dlqDepth,
       });
-
       return {
         id: r.id,
         domainSlug: r.domain_slug,
         adapterSlug: r.adapter_slug,
         reviewMode: r.review_mode,
         enabled: r.enabled,
-        lastScannedAt:
-          r.last_scanned_at === null
-            ? null
-            : r.last_scanned_at instanceof Date
-              ? r.last_scanned_at.toISOString()
-              : new Date(r.last_scanned_at).toISOString(),
+        lastScannedAt: toIso(r.last_scanned_at),
         notes: r.notes,
         name: r.name,
         status,
@@ -423,21 +393,20 @@ interface ComputeBindingStatusArgs {
   readonly dlqDepth: number;
 }
 
+const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+
 /** Compute the 3-state health status for a source binding.
  *
- * Rules (verbatim from appendix #4):
- *   null      → enabled=false (paused) OR no events ever (newly created, neutral)
- *   'alert'   → latest ingestion_intake error_class non-null in last 24h,
- *               OR sig-fail count in last 24h ≥ 1,
- *               OR DLQ depth > 0.
- *   'advisory'→ enabled=true AND last event >24h ago (stale/idle).
- *   'healthy' → events arriving normally, no failures.
+ *   null       → paused (enabled=false) OR newly created (no events ever).
+ *   'alert'    → any failure signal in last 24h: intake error_class,
+ *                webhook sig-fail, or DLQ depth > 0.
+ *   'advisory' → enabled, has events, but last one was >24h ago (stale).
+ *   'healthy'  → events arriving normally, no failures.
  */
 function computeBindingStatus(args: ComputeBindingStatusArgs): BindingStatus {
   if (!args.enabled) return null;
-  if (args.lastEventAt === null) return null; // never fired — neutral
+  if (args.lastEventAt === null) return null;
 
-  // Alert: any failure signal present.
   if (
     args.latestErrorClass !== null ||
     args.sigFailCount24h >= 1 ||
@@ -446,14 +415,24 @@ function computeBindingStatus(args: ComputeBindingStatusArgs): BindingStatus {
     return "alert";
   }
 
-  // Advisory: enabled but last event >24h ago (stale/idle).
-  const lastEventMs = new Date(args.lastEventAt).getTime();
-  const twentyFourHoursMs = 24 * 60 * 60 * 1000;
-  if (Date.now() - lastEventMs > twentyFourHoursMs) {
-    return "advisory";
-  }
+  const ageMs = Date.now() - new Date(args.lastEventAt).getTime();
+  return ageMs > TWENTY_FOUR_HOURS_MS ? "advisory" : "healthy";
+}
 
-  return "healthy";
+/** Read the shared ingestion queue's failed-job count. Returns 0 when
+ *  no queue is injected (e.g. composition-incomplete in tests) or when
+ *  the probe itself fails — the UI should not flash spurious alerts on
+ *  a Redis blip. */
+async function probeDlqDepth(
+  queue: { getJobCounts: (...states: string[]) => Promise<Record<string, number>> } | undefined,
+): Promise<number> {
+  if (queue === undefined) return 0;
+  try {
+    const counts = await queue.getJobCounts("failed");
+    return counts["failed"] ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 /** Validate credentials against the adapter's descriptor. Walks

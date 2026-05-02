@@ -11,7 +11,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { Badge } from "../components/Badge.js";
+import { Badge, type BadgeTone } from "../components/Badge.js";
 import { Btn } from "../components/Btn.js";
 import { Card } from "../components/Card.js";
 import { NewSourceBindingModal } from "../components/NewSourceBindingModal.js";
@@ -22,22 +22,23 @@ interface SourcesResponse {
   readonly rows: ReadonlyArray<SourceBinding>;
 }
 
-/**
- * Format an ISO timestamp as a human-readable relative time string.
- * Examples: "2h ago", "3d ago", "just now".
- * Used for the lastEventAt column.
- */
+/** Server `status` → Badge tone. `null` is unreachable here (caller
+ *  short-circuits before rendering a Badge) but kept for exhaustiveness. */
+const STATUS_TONE: Record<NonNullable<SourceBinding["status"]>, BadgeTone> = {
+  alert: "alert",
+  advisory: "advisory",
+  healthy: "ok",
+};
+
+/** Format an ISO timestamp as "just now" / "Nm ago" / "Nh ago" / "Nd ago". */
 function formatRelativeTime(isoString: string): string {
-  const diffMs = Date.now() - new Date(isoString).getTime();
-  if (diffMs < 0) return "just now";
-  const diffSec = Math.floor(diffMs / 1000);
+  const diffSec = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000);
   if (diffSec < 60) return "just now";
   const diffMin = Math.floor(diffSec / 60);
   if (diffMin < 60) return `${diffMin}m ago`;
   const diffHr = Math.floor(diffMin / 60);
   if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDays = Math.floor(diffHr / 24);
-  return `${diffDays}d ago`;
+  return `${Math.floor(diffHr / 24)}d ago`;
 }
 
 export interface SourcesProps {
@@ -108,36 +109,23 @@ export function Sources(props: SourcesProps = {}): JSX.Element {
             <div className="t-micro">{t("sources.columns.lastEvent")}</div>
             <div className="t-micro">{t("sources.columns.lastError")}</div>
             <div className="t-micro">{t("sources.columns.status")}</div>
-            {rows.map((b) => {
-              // Status comes from the server (phase-a appendix #4 PR-A).
-              // The old client-side derivation `b.enabled ? "ok" : "paused"`
-              // is removed — the server now computes the 3-state signal.
-              const tone =
-                b.status === "alert"
-                  ? "alert"
-                  : b.status === "advisory"
-                    ? "advisory"
-                    : b.status === "healthy"
-                      ? "ok"
-                      : "neutral";
-              return (
-                <div key={b.id} style={{ display: "contents" }}>
-                  <div style={{ fontFamily: "var(--font-mono)", fontSize: "var(--fs-mono)" }}>{b.name}</div>
-                  <div style={{ color: "var(--ink-3)" }}>{b.adapterSlug}</div>
-                  <div>{b.domainSlug}</div>
-                  <div style={{ color: "var(--ink-2)" }}>{b.reviewMode}</div>
-                  <div style={{ color: "var(--ink-3)", fontSize: "var(--fs-micro)", fontFamily: "var(--font-mono)" }}>
-                    {b.lastEventAt !== null ? formatRelativeTime(b.lastEventAt) : "—"}
-                  </div>
-                  <div style={{ color: "var(--ink-3)", fontSize: "var(--fs-micro)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {b.lastError ?? ""}
-                  </div>
-                  {b.status !== null
-                    ? <Badge tone={tone}>{t(`sources.status.${b.status}`)}</Badge>
-                    : <span />}
+            {rows.map((b) => (
+              <div key={b.id} style={{ display: "contents" }}>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: "var(--fs-mono)" }}>{b.name}</div>
+                <div style={{ color: "var(--ink-3)" }}>{b.adapterSlug}</div>
+                <div>{b.domainSlug}</div>
+                <div style={{ color: "var(--ink-2)" }}>{b.reviewMode}</div>
+                <div style={{ color: "var(--ink-3)", fontSize: "var(--fs-micro)", fontFamily: "var(--font-mono)" }}>
+                  {b.lastEventAt !== null ? formatRelativeTime(b.lastEventAt) : "—"}
                 </div>
-              );
-            })}
+                <div style={{ color: "var(--ink-3)", fontSize: "var(--fs-micro)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {b.lastError ?? ""}
+                </div>
+                {b.status !== null
+                  ? <Badge tone={STATUS_TONE[b.status]}>{t(`sources.status.${b.status}`)}</Badge>
+                  : <span />}
+              </div>
+            ))}
           </div>
         )}
       </Card>

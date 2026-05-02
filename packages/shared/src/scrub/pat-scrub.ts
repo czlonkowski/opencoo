@@ -44,11 +44,9 @@ const REDACTED = "[REDACTED]";
  * Returns the sanitised string. Never throws.
  */
 export function scrubPat(s: string): string {
-  // Apply in order: Bearer first (catches `Bearer <anything>`),
-  // then Asana PAT, then Gitea PAT, then generic.
-  // Later passes are safe because `[REDACTED]` itself won't
-  // match any of these regexes (no 32+ alphanum run, not 40-hex,
-  // no `1/` + digits, no `Bearer `).
+  // Chained replaces are safe: `[REDACTED]` matches none of these
+  // regexes (no 32+ alphanum run, not 40-hex, no `1/` + digits,
+  // no `Bearer `) so later passes can't double-redact a placeholder.
   return s
     .replace(BEARER_RE, REDACTED)
     .replace(ASANA_PAT_RE, REDACTED)
