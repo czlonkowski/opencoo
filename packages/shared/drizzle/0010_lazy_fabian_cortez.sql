@@ -1,0 +1,1 @@
+ALTER TABLE "output_deliveries" ALTER COLUMN "delivery_id" SET DATA TYPE uuid;
