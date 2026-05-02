@@ -122,6 +122,13 @@ export interface SseBus {
    *
    * Callers must inject this when constructing output adapters so
    * permanent delivery failures surface in the Activity tab feed.
+   *
+   * TODO(v0.2 / phase-b): ready for the first production caller of
+   * `createWebhookOutputAdapter`, which lands when the `output_bindings`
+   * admin endpoint ships. At that point, `server-factory.ts` (where
+   * `sseBus` is in scope) must inject `onDlq: sseBus.bindOutputDlq()`
+   * when constructing output adapters so permanent delivery failures
+   * surface in the Activity feed without polling the audit log.
    */
   bindOutputDlq(): (args: {
     readonly outputBindingId: string;

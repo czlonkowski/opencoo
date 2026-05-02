@@ -428,7 +428,19 @@ export async function runDoctor(args: DoctorArgs): Promise<void> {
   const dbCheck = await checkDb(args);
   const migCheck = dbCheck.level === "ok" ? await checkMigrations(args) : null;
   const giteaCheck = await checkGiteaTeam(args);
-  const webhookResult = await checkWebhookBindings(args);
+  // Fix #5: gate webhook check on DB availability — if checkDb already failed,
+  // a second connection attempt adds noise without new information.
+  const webhookResult = dbCheck.level === "ok"
+    ? await checkWebhookBindings(args)
+    : {
+        check: {
+          id: "webhook_surfaces",
+          level: "ok" as const,
+          message: "webhook_surfaces: skipped — db unavailable",
+          detail: { count: 0, skipped: true },
+        },
+        surfaces: [] as ReadonlyArray<WebhookSurface>,
+      };
 
   const checks: DoctorCheck[] = [
     ...secretChecks,
@@ -461,7 +473,13 @@ export async function runDoctor(args: DoctorArgs): Promise<void> {
     }
     args.stdout.write("\n");
     args.stdout.write(pc.bold("webhook intake surfaces:\n"));
-    if (webhookResult.surfaces.length === 0) {
+    // Fix #6: distinguish three states — no bindings, bindings exist, and
+    // enumeration failed — rather than collapsing the last two into the same
+    // "no webhook bindings configured" message.
+    if (webhookResult.check.level === "warn") {
+      // Enumeration failed — the check message already contains the reason.
+      args.stdout.write(`  could not enumerate (${webhookResult.check.message.replace(/^webhook_surfaces:\s*/i, "")})\n`);
+    } else if (webhookResult.surfaces.length === 0) {
       args.stdout.write("  no webhook bindings configured\n");
     } else {
       for (const s of webhookResult.surfaces) {

@@ -35,6 +35,9 @@ interface FeedEntry {
   /** Optional tone override. `undefined` = neutral (default ink-2 color).
    *  `'alert'` = alert-red, used for output_delivery_dlq events (PR-L). */
   readonly tone?: "alert";
+  /** Full delivery UUID for DLQ entries — shown truncated in the feed but
+   *  available as a tooltip and `data-delivery-id` attr for audit lookup. */
+  readonly deliveryId?: string;
 }
 
 interface AgentRunsResponse {
@@ -144,13 +147,17 @@ function FeedView(): JSX.Element {
       occurredAt: string;
     }>("output_delivery_dlq", (evt) => {
       const d = evt.data;
+      // deliveryId shown truncated (first 8 chars) for readability; full UUID
+      // is accessible via the `data-delivery-id` attribute for audit lookup.
+      const shortId = d.deliveryId.slice(0, 8);
       setEntries((prev) => [
         {
           id: d.deliveryId,
           type: "output_delivery_dlq",
           at: d.occurredAt,
-          text: `${t("activity.feed.dlqAlert")} binding=${d.outputBindingId} — ${d.error}`,
+          text: `${t("activity.feed.dlqAlert")} binding=${d.outputBindingId} ${t("activity.feed.dlqDeliveryId")}=${shortId} — ${d.error}`,
           tone: "alert" as const,
+          deliveryId: d.deliveryId,
         },
         ...prev.slice(0, 99),
       ]);
@@ -204,6 +211,8 @@ function FeedView(): JSX.Element {
       {entries.map((e) => (
         <div
           key={e.id}
+          data-delivery-id={e.deliveryId}
+          title={e.deliveryId !== undefined ? `${t("activity.feed.dlqDeliveryId")}: ${e.deliveryId}` : undefined}
           style={{
             fontFamily: "var(--font-mono)",
             fontSize: 12,
