@@ -86,7 +86,7 @@ Six adapter interfaces. A new integration = one package implementing one interfa
 |---|---|---|
 | `SourceAdapter` | Fetch source bytes; emit `SourceEvent` | `source-drive`, `source-asana`, `source-fireflies`, `source-n8n`, `source-skill-bundle` |
 | `WikiAdapter` | Write compiled pages to the wiki backend | `wiki-gitea` (reference) |
-| `OutputAdapter` | Deliver agent outputs | `output-asana` (v0.1; `output-slack` deferred to v2) |
+| `OutputAdapter` | Deliver agent outputs | `output-asana` (v0.1; `output-slack` deferred to v2); `output-webhook` — generic webhook OutputAdapter: signed POST to operator-configured `target_url` with HMAC + delivery-id idempotency; `output_deliveries` audit table per attempt (appendix #4 PR-J) |
 | `AutomationAdapter` | Platform-specific automation tools + `builderSkills` bundle + `credentialSchema`. **One active per deployment.** | `automation-n8n-mcp` (v0.1 default) |
 | `GuardAdapter` | Prompt-injection detection, content safety, or **redaction** (secret/PII scrubbing on structured payloads) | `guard-redaction-regex` (v0.1) |
 | `DocumentConverterAdapter` | Source bytes → clean Markdown; per-domain sovereignty gating | Docling sidecar (default) |

@@ -272,17 +272,72 @@ Residual advisories from PR bodies (all flagged non-blocking; tracked for v0.2 h
 - `source test` validates adapter construction only in v0.1; live API smoke deferred to engine-harness re-use (#33).
 - `source forget` does NOT rewrite Gitea wiki history — operator notice + Lint catches orphan citations (#33).
 
+---
+
+## Appendix #4 (PR-A through PR-J) — Observability + adapters track
+
+Ten PRs merged after the post-32 fix-up cycle, covering the observable-enough-to-ship gap and the Asana/webhook adapter track. Full scoping in `docs/plan-appendix/phase-a-4-observability.md`. Main closes at `d4ec0c6`.
+
+### Added
+
+#### Schema (2 new migrations)
+
+| File | Adds |
+|---|---|
+| `0008_ingestion_intake_error_text.sql` | `ingestion_intake.error_text text` — last error message for the Sources table 3-state status probe (PR-A / #42) |
+| `0010_output_deliveries.sql` | `output_deliveries` audit table — one row per outbound delivery attempt from `output-webhook`; tracks `status`, `http_status`, `duration_ms`, `attempt` (PR-J / #51; was 0009 in scoping — PR-I's CLI migration landed 0009 transitively after rebase) |
+
+#### New packages
+
+- `@opencoo/source-webhook` — generic webhook `SourceAdapter`: HMAC via `x-signature` canonical header; replay-stable `event_id`; `contentKindMap` jsonpath routing; `reviewMode: 'review'` default; CLI registers slug (PR-I / #50).
+- `@opencoo/output-webhook` — generic webhook `OutputAdapter`: signed POST to operator-configured `target_url`; HMAC + delivery-id idempotency; retry with jitter; `output_deliveries` audit per attempt; `onDlq` callback ready for PR-B.1 SSE wiring (PR-J / #51).
+
+#### New UI components
+
+- **`StatusPill`** — design-system-bound status indicator using glyph trio + tone color cascade; consumed by Activity, Review, and Reports tabs (PR-E / #43).
+- **Activity tab** — 5th admin tab: agent-run list, run-detail drawer, Pipelines sub-view; first SSE route (`/api/admin/events`) with token-streaming gated by `LLM_DEBUG_LOG=1` (PR-B / #45).
+- **Review tab** — 3 of 5 item sub-views: source-binding review, Lint findings, Surfacer candidates; skill candidates + marketplace updates ship in phase-b/c (PR-C / #48).
+- **Reports tab** — 2 sub-views: Heartbeat reader (reads `agent_runs.output` without LLM re-call) and redaction-events surface (metadata only — content-cannot-reconstruct verified by 4-test security suite; THREAT-MODEL §3.3) (PR-D / #47).
+
+#### New internet-facing surfaces
+
+The following paths are now registered and enumerable via `opencoo doctor`:
+
+- `/api/admin/events` — SSE bus (agent-run lifecycle + token stream, gated `LLM_DEBUG_LOG=1`)
+- `/api/admin/agent-runs` + `/api/admin/agent-runs/:id` — agent-run list + detail
+- `/api/admin/pipelines` — BullMQ pipeline status
+- `/api/admin/heartbeat` — last Heartbeat run output (Reports tab reader)
+- `/api/admin/redaction-events` — redaction metadata (no matched text)
+- `/api/admin/source-bindings/:id/review-mode` — POST; transitions binding review mode
+- `/api/admin/lint-findings/:runId/acknowledge` — POST; marks a Lint finding acknowledged
+- Source-webhook inbound receiver path (registered per-slug at CLI setup)
+- Output-webhook outbound (operator-configured `target_url` per binding)
+
+#### Asana state-ingestion track
+
+- `source-asana` v2 (PR-F / #44): `X-Hook-Secret` handshake branch; `deriveEventType` 6-enum filter; monitored-project filter; `summarizeAsanaEvent` Light helper (XML-spotlit per §3.4); `lightSummaryEnabled: false` default (opt-in).
+- `AsanaClient` + snapshot enrichment (PR-G / #46): `snapshotMode: 'on-event'|'periodic'|'off'`; emits second `SourceEvent` with `content_kind: 'asana-project'`; fail-open on transient 5xx (logs warn + skips snapshot, raw event still pushed).
+- `asana-project` Compiler template (PR-H / #49): Polish merge prompt; `spotlight()` wraps BOTH snapshot AND existing-page content; YAML-safe frontmatter; registers `'asana-project'` in `CONTENT_KINDS`.
+
+### Residual advisories (non-blocking, tracked for follow-up)
+
+- **PR-B.1 token streaming + SSE bus producer wiring** — Heartbeat / Lint / Chat schedulers (PRs 21+) do not yet emit per-token events onto the SSE bus; the consumer-side UI + route exist but producers are no-op until a follow-up PR wires `llm-router` stream callbacks.
+- **UI filter controls for redaction-events deferred to v0.2** — Reports tab shows all events; `since` / `domainSlug` / `category` query filters are advisory for v0.2 (same pattern as audit-log filters from PR #31).
+- **Light-summary v2** (real-LLM verification pending) — `summarizeAsanaEvent` was validated against the MockLLMClient; maintainer-side run against OpenRouter test key is the outstanding verification step before the feature is considered production-verified.
+
+---
+
 ### Phase-a EXIT GATE STATUS
 
-`IMPLEMENTATION-PLAN.md` §1.3 enumerates the criteria. Status as of `a780a99`:
+`IMPLEMENTATION-PLAN.md` §1.3 enumerates the criteria. Status as of `d4ec0c6` (all 10 appendix-4 PRs merged):
 
 - [x] PRD §5 criteria 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 — green in CI (Criteria 11 / 12 are phase-b and phase-c gates respectively).
 - [ ] **Pilot cuts over on phase-a code.** At least one pipeline runs on opencoo in parallel with the n8n equivalent; opencoo output quality ≥ n8n baseline on reviewer sign-off. **OPEN — partner cutover is the single most important exit criterion and the gate to tagging.**
 - [ ] THREAT-MODEL §5 PR-checklist run on the phase-merge commit — every box ticked or residual risk added to §7. **OPEN — to be run pre-tag.**
 - [x] Fresh `docker compose up -d` → operator can create one domain + one binding through the Management UI without psql, exercised by `pnpm test:e2e -- domain-and-binding-create` (appendix #2).
-- [ ] `CHANGES-v0.1.md` drafted with breaking-change list from pre-release to `a.N`. **THIS DOCUMENT — pending maintainer edit.**
+- [x] `CHANGES-v0.1.md` drafted with breaking-change list from pre-release to `a.N`. **RE-EDITED at appendix-4 close** to cover all 10 PRs (PR-A through PR-J). Maintainer edit before tagging; flagged residual advisories above.
 
-Two of five exit-gate boxes are open; both require human action (partner sign-off + maintainer-run THREAT-MODEL checklist + edit-and-merge of this document). No additional code work is required to tag `0.1.0-a`.
+Two of five exit-gate boxes remain open; both require human action (partner sign-off + maintainer-run THREAT-MODEL checklist). No additional code work is required to tag `0.1.0-a`.
 
 ---
 
