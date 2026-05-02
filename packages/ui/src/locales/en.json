@@ -79,6 +79,12 @@
       "advisory": "advisory",
       "alert": "alert"
     },
+    "relativeTime": {
+      "justNow": "just now",
+      "minutesAgo": "{{n}}m ago",
+      "hoursAgo": "{{n}}h ago",
+      "daysAgo": "{{n}}d ago"
+    },
     "newBinding": "+ New binding",
     "create": {
       "title": "New source binding",

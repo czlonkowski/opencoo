@@ -76,9 +76,30 @@ describe("scrubPat — Bearer token", () => {
     expect(result).not.toContain("abc123");
     expect(result).toContain("[REDACTED]");
   });
+
+  it("redacts lowercase bearer (HTTP auth schemes are case-insensitive)", () => {
+    const s = "authorization: bearer supersecrettoken123";
+    const result = scrubPat(s);
+    expect(result).not.toContain("supersecrettoken123");
+    expect(result).toContain("[REDACTED]");
+  });
+
+  it("redacts uppercase BEARER", () => {
+    const s = "AUTHORIZATION: BEARER UPPERCASETOKEN456";
+    const result = scrubPat(s);
+    expect(result).not.toContain("UPPERCASETOKEN456");
+    expect(result).toContain("[REDACTED]");
+  });
+
+  it("redacts mixed-case Bearer (canonical form)", () => {
+    const s = "Bearer MixedCaseToken789";
+    const result = scrubPat(s);
+    expect(result).not.toContain("MixedCaseToken789");
+    expect(result).toContain("[REDACTED]");
+  });
 });
 
-describe("scrubPat — generic high-entropy token (≥32 alphanumeric chars)", () => {
+describe("scrubPat — generic high-entropy token (≥32 alphanumeric/base64url chars)", () => {
   it("redacts a 32-char alphanumeric token", () => {
     const token = "abcdefABCDEF0123456789abcdefABCD";
     const s = `api_key=${token} failed`;
@@ -92,6 +113,16 @@ describe("scrubPat — generic high-entropy token (≥32 alphanumeric chars)", (
     const s = `key=${token}`;
     const result = scrubPat(s);
     expect(result).not.toContain(token);
+    expect(result).toContain("[REDACTED]");
+  });
+
+  it("redacts a JWT-shaped token (base64url with - and _)", () => {
+    // Real JWT: header.payload.signature — each part uses base64url alphabet (A-Z a-z 0-9 - _)
+    const jwt =
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    const s = `token=${jwt}`;
+    const result = scrubPat(s);
+    expect(result).not.toContain("eyJhbGciOiJIUzI1NiJ9");
     expect(result).toContain("[REDACTED]");
   });
 

@@ -131,7 +131,8 @@ describe("Sources route — status badge (server-side)", () => {
     const fetchImpl = makeFetchWithBindings([binding]);
     render(<Sources fetchImpl={fetchImpl} />);
 
-    await waitFor(() => fetchImpl);
+    // Wait for the row to actually render before asserting absence of badge text.
+    await screen.findByText(binding.name);
     // No status-related text for neutral state
     expect(screen.queryByText(/healthy/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/advisory/i)).not.toBeInTheDocument();
@@ -172,7 +173,8 @@ describe("Sources route — lastEventAt column", () => {
     const fetchImpl = makeFetchWithBindings([binding]);
     render(<Sources fetchImpl={fetchImpl} />);
 
-    await waitFor(() => fetchImpl);
+    // Wait for the row to render before asserting cell content.
+    await screen.findByText(binding.name);
     // Should not throw; cell renders without crashing
     expect(screen.queryByText(/NaN|Invalid/i)).not.toBeInTheDocument();
   });
@@ -196,7 +198,8 @@ describe("Sources route — lastError column", () => {
     const fetchImpl = makeFetchWithBindings([binding]);
     render(<Sources fetchImpl={fetchImpl} />);
 
-    await waitFor(() => fetchImpl);
+    // Wait for the row to render before asserting absence of error text.
+    await screen.findByText(binding.name);
     // No error text shown
     expect(screen.queryByText(/null|undefined/i)).not.toBeInTheDocument();
   });

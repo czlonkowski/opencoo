@@ -30,15 +30,17 @@ const STATUS_TONE: Record<NonNullable<SourceBinding["status"]>, BadgeTone> = {
   healthy: "ok",
 };
 
-/** Format an ISO timestamp as "just now" / "Nm ago" / "Nh ago" / "Nd ago". */
-function formatRelativeTime(isoString: string): string {
+/** Format an ISO timestamp as a locale-aware relative time string.
+ *  Uses i18n keys under `sources.relativeTime.*` so PL locale doesn't
+ *  mix English strings with Polish UI. */
+function formatRelativeTime(isoString: string, t: ReturnType<typeof useTranslation>["t"]): string {
   const diffSec = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000);
-  if (diffSec < 60) return "just now";
+  if (diffSec < 60) return t("sources.relativeTime.justNow");
   const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffMin < 60) return t("sources.relativeTime.minutesAgo", { n: diffMin });
   const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  return `${Math.floor(diffHr / 24)}d ago`;
+  if (diffHr < 24) return t("sources.relativeTime.hoursAgo", { n: diffHr });
+  return t("sources.relativeTime.daysAgo", { n: Math.floor(diffHr / 24) });
 }
 
 export interface SourcesProps {
@@ -116,7 +118,7 @@ export function Sources(props: SourcesProps = {}): JSX.Element {
                 <div>{b.domainSlug}</div>
                 <div style={{ color: "var(--ink-2)" }}>{b.reviewMode}</div>
                 <div style={{ color: "var(--ink-3)", fontSize: "var(--fs-micro)", fontFamily: "var(--font-mono)" }}>
-                  {b.lastEventAt !== null ? formatRelativeTime(b.lastEventAt) : "—"}
+                  {b.lastEventAt !== null ? formatRelativeTime(b.lastEventAt, t) : "—"}
                 </div>
                 <div style={{ color: "var(--ink-3)", fontSize: "var(--fs-micro)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {b.lastError ?? ""}

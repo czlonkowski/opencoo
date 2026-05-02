@@ -80,10 +80,18 @@ interface BindingRow {
 }
 
 /** Coerce pg's timestamp result (Date when node-postgres parsed it,
- *  string when pglite returned it raw) to an ISO string. */
-function toIso(value: Date | string | null): string | null {
+ *  string when pglite returned it raw) to an ISO string.
+ *
+ *  Returns `null` rather than throwing if the value cannot be parsed
+ *  (e.g. pglite returns a non-ISO string on rare schema mismatches).
+ *  Callers already handle `null` per the `BindingRow` type signature.
+ *
+ *  Exported for unit testing only — not part of the public module API. */
+export function toIso(value: Date | string | null): string | null {
   if (value === null) return null;
-  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
 }
 
 const REVIEW_MODES = ["auto", "approve", "review"] as const;
