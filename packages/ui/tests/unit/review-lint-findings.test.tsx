@@ -166,7 +166,8 @@ describe("LintFindings — acknowledge action", () => {
     const ackBtn = screen.getAllByRole("button", { name: /ack|acknowledge|dismiss/i })[0]!;
     fireEvent.click(ackBtn);
 
-    // After click, a state-changing request should be issued.
-    await waitFor(() => true); // async handlers settle
+    // After click, a POST to the ack endpoint must have been issued.
+    await waitFor(() => postCalls.length > 0);
+    expect(postCalls.some((url) => url.includes("/acknowledge"))).toBe(true);
   });
 });

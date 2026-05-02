@@ -51,6 +51,12 @@ import { writeAuditLog } from "../audit-log.js";
 import { requireAdminContext } from "../auth.js";
 import { requireCsrf } from "../csrf.js";
 
+const reviewModeUpdateSchema = z
+  .object({
+    reviewMode: z.enum(["auto", "review", "approve"]),
+  })
+  .strict();
+
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
 /** 3-state health, or `null` for neutral (paused or never-fired binding).
@@ -403,6 +409,83 @@ export function registerSourceBindingsRoutes(
       });
 
       return reply.code(201).send({ id });
+    },
+  );
+
+  // Review-mode update — flip a binding's review_mode in one
+  // audited action. The UI uses this to approve ('auto') or
+  // revert a binding to manual review ('review').
+  args.app.post(
+    "/api/admin/source-bindings/:id/review-mode",
+    { preHandler: requireCsrf },
+    async (req, reply) => {
+      const ctx = requireAdminContext(req);
+      const id = (req.params as { id: string }).id;
+      // Validate id is a UUID before passing to SQL.
+      if (!z.string().uuid().safeParse(id).success) {
+        return reply.code(400).send({ error: "invalid_id" });
+      }
+      const parsed = reviewModeUpdateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(422).send({
+          error: "validation_failed",
+          issues: parsed.error.issues,
+        });
+      }
+      const { reviewMode } = parsed.data;
+
+      // Fetch the current row to get prev_mode + existence check.
+      const existing = (await args.db.execute(sql`
+        SELECT review_mode::text AS review_mode
+        FROM sources_bindings
+        WHERE id = ${id}::uuid
+        LIMIT 1
+      `)) as unknown as { rows: Array<{ review_mode: string }> };
+      const row = existing.rows[0];
+      if (row === undefined) {
+        return reply.code(404).send({ error: "not_found", id });
+      }
+      const prevMode = row.review_mode;
+      if (prevMode === reviewMode) {
+        return reply.code(409).send({
+          error: "already_in_target_mode",
+          review_mode: reviewMode,
+        });
+      }
+
+      // UPDATE — atomic with prevMode guard so concurrent updates
+      // don't silently overwrite a race. The condition mirrors the
+      // automation-candidates pattern (update WHERE status = old).
+      await args.db.execute(sql`
+        UPDATE sources_bindings
+        SET review_mode = ${sql.raw(`'${reviewMode}'`)}::review_mode,
+            updated_at = NOW()
+        WHERE id = ${id}::uuid
+          AND review_mode = ${sql.raw(`'${prevMode}'`)}::review_mode
+      `);
+
+      // Map the user's intent to the correct audit action verb.
+      // approve ≡ moving to 'auto' (hands-off), reject ≡ any mode
+      // that keeps the operator in the loop ('review').
+      const auditAction =
+        reviewMode === "auto"
+          ? "source_binding.review.approve"
+          : "source_binding.review.reject";
+
+      await writeAuditLog(args.db, {
+        action: auditAction,
+        userId: ctx.userId,
+        metadata: {
+          binding_id: id,
+          prev_mode: prevMode,
+          new_mode: reviewMode,
+          caller_username: ctx.username,
+        },
+        sourceIp: req.ip,
+        userAgent: req.headers["user-agent"],
+      });
+
+      return reply.code(200).send({ reviewMode });
     },
   );
 }

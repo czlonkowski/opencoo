@@ -119,10 +119,9 @@ describe("Review route — sub-tab navigation", () => {
 
     // The spec requires that the Review tab explicitly notes that "5th and 6th
     // item types ship later" (skill candidates + marketplace updates).
-    await waitFor(() => {
-      const noticeEl = screen.queryByText(/skill candidate|marketplace|later|phase/i);
-      return noticeEl !== null || true;
-    });
+    expect(
+      await screen.findByText(/skill candidate|marketplace|later|phase/i),
+    ).toBeInTheDocument();
   });
 });
 

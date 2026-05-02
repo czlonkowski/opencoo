@@ -104,10 +104,7 @@ describe("SourceBindingsReview — empty + error states", () => {
     const fetchImpl = makeFetch([]);
     render(<SourceBindingsReview fetchImpl={fetchImpl} />);
 
-    await waitFor(() => {
-      const hasEmpty = screen.queryByText(/no bindings|empty|nothing to review/i) !== null;
-      return hasEmpty || true; // Non-crash is the key assertion
-    });
+    expect(await screen.findByText(/no bindings need review|empty|nothing to review/i)).toBeInTheDocument();
   });
 
   it("renders an error state when the API call fails", async () => {
@@ -117,10 +114,7 @@ describe("SourceBindingsReview — empty + error states", () => {
 
     render(<SourceBindingsReview fetchImpl={fetchImpl} />);
 
-    await waitFor(() => {
-      const errEl = screen.queryByText(/error|something went wrong/i);
-      return errEl !== null || true;
-    });
+    expect(await screen.findByText(/error|something went wrong/i)).toBeInTheDocument();
   });
 });
 
@@ -146,11 +140,12 @@ describe("SourceBindingsReview — sovereignty-diff confirmation", () => {
     // confirmation dialog before committing.
     fireEvent.click(approveButtons[0]!);
 
-    await waitFor(() => {
-      const confirmEls = screen.queryAllByText(/confirm|sovereignty|llm policy/i);
-      // Either a confirm dialog appears (one or more matching elements) or
-      // the button triggers the endpoint directly. Either is valid.
-      return confirmEls.length > 0 || true;
-    });
+    // Clicking approve on a 'review' mode binding must surface the
+    // sovereignty-diff dialog before committing.
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+    // The dialog must mention sovereignty / LLM policy in its title text.
+    const { within } = await import("@testing-library/react");
+    expect(within(dialog).getByText(/sovereignty|llm policy/i)).toBeInTheDocument();
   });
 });

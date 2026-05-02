@@ -172,10 +172,9 @@ describe("SurfacerCandidates — conflict handling", () => {
     await waitFor(() => screen.getByRole("button", { name: /approve/i }));
     fireEvent.click(screen.getByRole("button", { name: /approve/i }));
 
-    await waitFor(() => {
-      const conflictEl = screen.queryByText(/conflict|already|transition/i);
-      return conflictEl !== null || true;
-    });
+    expect(
+      await screen.findByText(/conflict|already|transition/i),
+    ).toBeInTheDocument();
   });
 });
 
@@ -184,6 +183,6 @@ describe("SurfacerCandidates — empty state", () => {
     const fetchImpl = makeFetch([]);
     render(<SurfacerCandidates fetchImpl={fetchImpl} />);
 
-    await waitFor(() => true); // Non-crash assertion
+    expect(await screen.findByText(/no proposed candidates|empty|nothing/i)).toBeInTheDocument();
   });
 });
