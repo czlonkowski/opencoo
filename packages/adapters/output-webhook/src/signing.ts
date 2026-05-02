@@ -25,8 +25,9 @@
 import { createHash, createHmac } from "node:crypto";
 
 /** opencoo delivery-id namespace UUID (RFC 4122 v5 name-based).
- *  Randomly assigned, stable — changing this would break idempotency
- *  for all existing receivers. */
+ *  This is the well-known RFC 4122 DNS namespace UUID, not randomly
+ *  assigned. Stable — changing this would break idempotency for all
+ *  existing receivers. */
 const DELIVERY_ID_NAMESPACE = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
 
 /**

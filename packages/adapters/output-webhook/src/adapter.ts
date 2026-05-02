@@ -91,6 +91,7 @@ export interface CreateWebhookOutputAdapterArgs {
   readonly onDeliveryRow?: OutputDeliveryWriter;
   /** Called on terminal DLQ for the Activity tab alert surface (PR-B). */
   readonly onDlq?: (args: {
+    readonly outputBindingId: string;
     readonly deliveryId: string;
     readonly error: unknown;
   }) => void;
@@ -149,6 +150,15 @@ export function createWebhookOutputAdapter(
       const signingSecret = record.plaintext;
 
       const bodyBytes = Buffer.from(JSON.stringify(parsed.data), "utf8");
+
+      // Enforce 1 MiB payload ceiling (mirrors source-webhook ceiling).
+      // Check after serialization so the byte count is exact.
+      if (bodyBytes.length > 1024 * 1024) {
+        throw new OutputAdapterValidationError(
+          `output-webhook: payload exceeds 1 MiB ceiling (got ${bodyBytes.length} bytes)`,
+        );
+      }
+
       const hmacHex = computeHmac(bodyBytes, signingSecret);
 
       // Use the credentialId as the stable binding identifier for
@@ -165,11 +175,16 @@ export function createWebhookOutputAdapter(
       // Use lowercase header names — HTTP headers are case-insensitive
       // per RFC 7230 §3.2. Lowercase is the HTTP/2 standard (RFC 7540
       // §8.1.2) and is what the test mock + most receivers expect.
+      //
+      // config.headers spreads FIRST so operator-supplied values are
+      // overwritten by the required security headers below. This ensures
+      // a misconfigured or tampered operator config cannot replace the
+      // computed HMAC or the deterministic delivery ID.
       const requestHeaders: Record<string, string> = {
+        ...config.headers,
         "content-type": "application/json",
         "x-opencoo-signature": hmacHex,
         "x-opencoo-delivery-id": deliveryId,
-        ...config.headers,
       };
 
       await runRetryLoop({

@@ -1,4 +1,4 @@
-import { integer, pgEnum, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { integer, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 import { createdAt, primaryKeyId } from "./columns.js";
 
@@ -45,8 +45,9 @@ export const outputDeliveries = pgTable(
     outputBindingId: text("output_binding_id").notNull(),
     /** Deterministic UUID v5 derived from (bindingId, payloadHash).
      *  All attempts for the same logical delivery share this id.
-     *  Used by receivers for idempotency deduplication. */
-    deliveryId: text("delivery_id").notNull(),
+     *  Used by receivers for idempotency deduplication.
+     *  Typed as `uuid` for DB-level format enforcement and smaller storage. */
+    deliveryId: uuid("delivery_id").notNull(),
     /** Zero-based attempt counter. First attempt = 0. */
     attempt: integer("attempt").notNull(),
     /** Fixed at insert time — never updated. */

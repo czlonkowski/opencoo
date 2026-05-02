@@ -3,11 +3,12 @@
  *
  * # Backoff formula
  *
- *   delayMs = baseDelayMs * 2^attempt + random(0, 250)
+ *   delayMs = baseDelayMs * 2^(attempt - 1) + random(0, 250)
  *
  *   - `attempt` is 0-indexed: first attempt = 0, first retry = 1, …
+ *   - No delay before attempt 0 (the first try). Delay applies before
+ *     each subsequent attempt, using `attempt - 1` as the exponent.
  *   - jitter range [0, 250ms] is fixed (not configurable).
- *   - Delay is applied BEFORE the next attempt (not after failure).
  *
  * # Retry eligibility
  *
@@ -60,6 +61,7 @@ export interface RetryLoopArgs {
   readonly onDeliveryRow: OutputDeliveryWriter;
   /** Called on terminal DLQ — for the Activity tab alert surface. */
   readonly onDlq?: (args: {
+    readonly outputBindingId: string;
     readonly deliveryId: string;
     readonly error: unknown;
   }) => void;
@@ -139,7 +141,7 @@ export async function runRetryLoop(
       );
 
       if (isFinalAttempt) {
-        onDlq?.({ deliveryId, error: lastError });
+        onDlq?.({ outputBindingId, deliveryId, error: lastError });
         throw lastError;
       }
       continue;
@@ -173,13 +175,13 @@ export async function runRetryLoop(
     lastError = classifiedError;
 
     if (!isRetryable) {
-      onDlq?.({ deliveryId, error: lastError });
+      onDlq?.({ outputBindingId, deliveryId, error: lastError });
       throw lastError;
     }
   }
 
   // Should not reach here (loop always returns or throws)
-  onDlq?.({ deliveryId, error: lastError });
+  onDlq?.({ outputBindingId, deliveryId, error: lastError });
   throw (
     lastError ??
     new OutputAdapterTransientError(

@@ -7,7 +7,7 @@ Generic webhook `OutputAdapter` — delivers opencoo payloads to any external HT
 - POST JSON payloads to a configurable `targetUrl`.
 - Signs every outgoing request with HMAC-SHA256: `X-OpenCoo-Signature: <64-hex>`.
 - Attaches `X-OpenCoo-Delivery-Id: <uuid>` for receiver-side idempotency — deterministic from `(bindingId, payloadHash)`.
-- Exponential backoff with jitter on transient (5xx) failures: `delay = baseDelayMs * 2^attempt + random(0, 250ms)`.
+- Exponential backoff with jitter on transient (5xx) failures: `delay = baseDelayMs * 2^(attempt - 1) + random(0, 250ms)` (no delay before the first attempt; exponent uses `attempt - 1` for retries).
 - Appends one `output_deliveries` audit row per attempt (INSERT-only, no UPDATE — append-only invariant).
 - On terminal failure: final row `status='dlq'`, optional `onDlq` callback fires for the Activity tab alert surface.
 
@@ -71,6 +71,6 @@ Each attempt = one row with fixed `status ∈ {success, transient_failure, dlq}`
 
 ## Activity tab alert surface (PR-B concern)
 
-The `onDlq` callback in `createWebhookOutputAdapter` fires on terminal failure with `{ deliveryId, error }`. PR-B's Activity SSE bus will wire this callback when it ships. Until then, the callback is optional and the DLQ row in `output_deliveries` is the persistent audit record.
+The `onDlq` callback in `createWebhookOutputAdapter` fires on terminal failure with `{ outputBindingId, deliveryId, error }`. PR-B's Activity SSE bus will wire this callback when it ships; `outputBindingId` lets the consumer attribute the alert to the correct binding row. Until then, the callback is optional and the DLQ row in `output_deliveries` is the persistent audit record.
 
 **DONE_WITH_CONCERNS: Activity tab wiring** — The `onDlq` callback interface is ready; wiring to PR-B's SSE bus (`/api/admin/events`) is deferred until PR-B ships its `QueueEvents` listener pattern. Flag for PR-B implementer: look for `onDlq` in `createWebhookOutputAdapter` args.

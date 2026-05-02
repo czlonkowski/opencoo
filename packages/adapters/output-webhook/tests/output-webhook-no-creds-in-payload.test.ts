@@ -19,6 +19,7 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { OutputAdapterValidationError } from "@opencoo/shared/output-adapter";
 import { createWebhookOutputAdapter } from "../src/index.js";
 import {
   createMockHttpState,
@@ -189,5 +190,80 @@ describe("output-webhook — no credentials in payload (THREAT-MODEL §3.6 invar
 
     const rendered = JSON.stringify(result);
     expect(rendered).not.toContain(DISTINCTIVE_SECRET);
+  });
+});
+
+describe("output-webhook — 1 MiB payload ceiling", () => {
+  it("payload over 1 MiB throws OutputAdapterValidationError before any HTTP call", async () => {
+    const httpState = createMockHttpState();
+    const store = createTestStore();
+    const credentialId = await store.write({
+      name: "signing-secret",
+      schemaRef: "webhook-signing-secret/v1",
+      plaintext: Buffer.from("test-secret"),
+    });
+
+    const adapter = createWebhookOutputAdapter({
+      config: {
+        targetUrl: "https://example.com/hooks/opencoo",
+        signingSecretCredentialId: credentialId as string,
+        retryPolicy: { maxAttempts: 1, baseDelayMs: 0 },
+        headers: {},
+      },
+      makeFetch: () => makeMockHttpFetch(httpState),
+    });
+
+    // Build a payload whose JSON serialization exceeds 1 MiB (~1.1 MiB)
+    // "x" * 1_150_000 bytes in a string field far exceeds the cap once JSON-encoded.
+    const oversizedPayload = {
+      event: "heartbeat.report",
+      data: { big: "x".repeat(1_150_000) },
+    };
+
+    await expect(
+      adapter.write({ credentialStore: store, credentialId, payload: oversizedPayload }),
+    ).rejects.toThrow(OutputAdapterValidationError);
+
+    await expect(
+      adapter.write({ credentialStore: store, credentialId, payload: oversizedPayload }),
+    ).rejects.toThrow(/exceeds 1 MiB ceiling/);
+
+    // No HTTP calls should have been made — we throw before sending
+    expect(httpState.calls).toHaveLength(0);
+  });
+
+  it("payload just under 1 MiB is accepted and sent normally", async () => {
+    const httpState = createMockHttpState();
+    const store = createTestStore();
+    const credentialId = await store.write({
+      name: "signing-secret",
+      schemaRef: "webhook-signing-secret/v1",
+      plaintext: Buffer.from("test-secret"),
+    });
+
+    const adapter = createWebhookOutputAdapter({
+      config: {
+        targetUrl: "https://example.com/hooks/opencoo",
+        signingSecretCredentialId: credentialId as string,
+        retryPolicy: { maxAttempts: 1, baseDelayMs: 0 },
+        headers: {},
+      },
+      makeFetch: () => makeMockHttpFetch(httpState),
+    });
+
+    // Payload just under 1 MiB — enough to verify the boundary allows it.
+    // JSON envelope overhead for this shape is ~40 bytes, so 1_048_500 chars
+    // in the field would exceed the cap. Use 1_000_000 chars to stay safely
+    // under 1_048_576 bytes after JSON serialization.
+    const justUnPayload = {
+      event: "heartbeat.report",
+      data: { big: "x".repeat(1_000_000) },
+    };
+
+    await expect(
+      adapter.write({ credentialStore: store, credentialId, payload: justUnPayload }),
+    ).resolves.toBeDefined();
+
+    expect(httpState.calls).toHaveLength(1);
   });
 });

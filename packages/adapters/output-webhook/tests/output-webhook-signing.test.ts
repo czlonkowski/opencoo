@@ -136,4 +136,37 @@ describe("output-webhook — signing", () => {
     const sig = httpState.lastRequest!.headers["x-opencoo-signature"];
     expect(sig).toMatch(/^[0-9a-f]{64}$/);
   });
+
+  it("operator config headers cannot overwrite X-OpenCoo-Signature (required headers always win)", async () => {
+    // Arrange: operator supplies a tampered signature header
+    const httpState = createMockHttpState();
+    const store = createTestStore();
+    const credentialId = await store.write({
+      name: "signing-secret",
+      schemaRef: "webhook-signing-secret/v1",
+      plaintext: Buffer.from(SIGNING_SECRET),
+    });
+    const adapter = createWebhookOutputAdapter({
+      config: {
+        targetUrl: "https://example.com/hooks/opencoo",
+        signingSecretCredentialId: credentialId as string,
+        retryPolicy: { maxAttempts: 1, baseDelayMs: 0 },
+        // Operator attempts to inject a tampered signature header
+        headers: { "x-opencoo-signature": "tampered-value-000000000000000000000000000000000000000000000000000000000000" },
+      },
+      makeFetch: () => makeMockHttpFetch(httpState),
+    });
+
+    // Act
+    await adapter.write({ credentialStore: store, credentialId, payload: VALID_PAYLOAD });
+
+    // Assert: the outbound signature is the correctly computed HMAC, not the tampered value
+    const req = httpState.lastRequest!;
+    const bodyBytes = Buffer.from(req.body, "utf8");
+    const expectedHmac = createHmac("sha256", SIGNING_SECRET)
+      .update(bodyBytes)
+      .digest("hex");
+    expect(req.headers["x-opencoo-signature"]).toBe(expectedHmac);
+    expect(req.headers["x-opencoo-signature"]).not.toBe("tampered-value-000000000000000000000000000000000000000000000000000000000000");
+  });
 });

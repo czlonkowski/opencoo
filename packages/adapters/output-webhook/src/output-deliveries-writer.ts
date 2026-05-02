@@ -6,7 +6,6 @@
  *
  * This module INSERT-only. Strategy (a) from the spec: each retry
  * attempt creates a NEW row. Status is fixed at insert time:
- *   - `pending`           → reserved for future speculative inserts
  *   - `success`           → 2xx response received
  *   - `transient_failure` → 5xx / network drop; will be retried
  *   - `dlq`               → terminal failure (all attempts exhausted,

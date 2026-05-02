@@ -10,9 +10,9 @@
  *   - `event` — event type identifier (e.g. "heartbeat.report",
  *     "lint.finding", "surfacer.candidate"). Namespaced with `.`
  *     for readability in receiver routing.
- *   - `data` — arbitrary JSON payload. The webhook receiver
- *     parses and routes based on `event`; opencoo does not
- *     interpret `data` contents.
+ *   - `data` — JSON object payload (string-keyed record; not arrays
+ *     or bare primitives). The webhook receiver parses and routes
+ *     based on `event`; opencoo does not interpret `data` contents.
  *
  * Body size cap: 1 MiB (mirrors the source-webhook ceiling). The
  * body is serialized to JSON in the adapter; validation is against

@@ -18,7 +18,7 @@
  *   insert time. No UPDATEs to prior rows.
  *
  * Alert event (PR-B Activity tab surface):
- *   On DLQ, the adapter calls `onDlq({ deliveryId, bindingId, error })`
+ *   On DLQ, the adapter calls `onDlq({ outputBindingId, deliveryId, error })`
  *   if provided. PR-B's Activity SSE bus will wire this; for now we
  *   assert the callback fires with the expected shape.
  */
@@ -35,7 +35,7 @@ import { VALID_PAYLOAD, createTestStore } from "./test-helpers.js";
 async function makeAdapterWithDeliveries(opts: {
   maxAttempts?: number;
   baseDelayMs?: number;
-  onDlq?: (args: { deliveryId: string; error: unknown }) => void;
+  onDlq?: (args: { outputBindingId: string; deliveryId: string; error: unknown }) => void;
 }) {
   const httpState = createMockHttpState();
   const store = createTestStore();
@@ -138,9 +138,12 @@ describe("output-webhook — retry behavior", () => {
 
     expect(dlqSpy).toHaveBeenCalledOnce();
     const args = dlqSpy.mock.calls[0]![0] as {
+      outputBindingId: string;
       deliveryId: string;
       error: unknown;
     };
+    expect(typeof args.outputBindingId).toBe("string");
+    expect(args.outputBindingId.length).toBeGreaterThan(0);
     expect(typeof args.deliveryId).toBe("string");
     expect(args.deliveryId.length).toBeGreaterThan(0);
     expect(args.error).toBeDefined();
