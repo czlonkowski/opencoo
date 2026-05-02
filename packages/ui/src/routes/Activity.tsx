@@ -32,6 +32,9 @@ interface FeedEntry {
   readonly type: string;
   readonly at: string;
   readonly text: string;
+  /** Optional tone override. `undefined` = neutral (default ink-2 color).
+   *  `'alert'` = alert-red, used for output_delivery_dlq events (PR-L). */
+  readonly tone?: "alert";
 }
 
 interface AgentRunsResponse {
@@ -131,6 +134,28 @@ function FeedView(): JSX.Element {
       ]);
     });
 
+    // PR-L: output-delivery DLQ alerts — permanent delivery failures
+    // surface in the Activity feed as alert-toned entries.
+    const offDlq = client.on<{
+      type: string;
+      outputBindingId: string;
+      deliveryId: string;
+      error: string;
+      occurredAt: string;
+    }>("output_delivery_dlq", (evt) => {
+      const d = evt.data;
+      setEntries((prev) => [
+        {
+          id: d.deliveryId,
+          type: "output_delivery_dlq",
+          at: d.occurredAt,
+          text: `${t("activity.feed.dlqAlert")} binding=${d.outputBindingId} — ${d.error}`,
+          tone: "alert" as const,
+        },
+        ...prev.slice(0, 99),
+      ]);
+    });
+
     // In test environments EventSource is not available and the client
     // marks itself as "open" immediately — treat that as connected.
     if (client.readyState === "open") {
@@ -140,6 +165,7 @@ function FeedView(): JSX.Element {
     return () => {
       offConnected();
       offRun();
+      offDlq();
       client.close();
     };
   }, []);
@@ -181,13 +207,19 @@ function FeedView(): JSX.Element {
           style={{
             fontFamily: "var(--font-mono)",
             fontSize: 12,
-            color: "var(--ink-2)",
-            borderLeft: "2px solid var(--rule)",
+            color: e.tone === "alert" ? "var(--alert)" : "var(--ink-2)",
+            borderLeft: `2px solid ${e.tone === "alert" ? "var(--alert)" : "var(--rule)"}`,
             paddingLeft: 10,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
           }}
         >
-          <span style={{ color: "var(--ink-3)", marginRight: 8 }}>{e.at}</span>
-          {e.text}
+          <span style={{ color: "var(--ink-3)" }}>{e.at}</span>
+          {e.tone === "alert" && (
+            <StatusPill tone="alert">{t("activity.feed.dlq")}</StatusPill>
+          )}
+          <span>{e.text}</span>
         </div>
       ))}
     </div>
