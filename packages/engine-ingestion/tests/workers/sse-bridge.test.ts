@@ -85,10 +85,18 @@ describe("attachRunEvents — failed event PAT scrub", () => {
     const event = emitter.events[0]!;
     expect(event.runId).toBe("job-fail");
     expect(event.status).toBe("failed");
-    expect(event.errorClass).toBeDefined();
-    expect(event.errorClass).not.toContain("sk-or-v1-deadbeef");
-    expect(event.errorClass).toContain("[REDACTED]");
-    expect(event.errorClass!.length).toBeLessThanOrEqual(200);
+    expect(event.errorMessage).toBeDefined();
+    expect(event.errorMessage).not.toContain("sk-or-v1-deadbeef");
+    expect(event.errorMessage).toContain("[REDACTED]");
+    expect(event.errorMessage!.length).toBeLessThanOrEqual(200);
+    // Disambiguation pin (Copilot finding from PR #53): the
+    // free-text scrub MUST NOT leak into the typed retry-class
+    // field. `errorClass` belongs to the OpencooError taxonomy
+    // ('transient' | 'upstream-quota' | 'validation') and is
+    // owned by the agent harness, not the BullMQ bridge.
+    expect(
+      (event as IngestionRunEvent & { errorClass?: string }).errorClass,
+    ).toBeUndefined();
 
     await worker.close();
     redis.disconnect();
@@ -124,7 +132,7 @@ describe("attachRunEvents — failed event PAT scrub", () => {
     );
 
     const event = emitter.events[0]!;
-    expect(event.errorClass!.length).toBe(200);
+    expect(event.errorMessage!.length).toBe(200);
 
     await worker.close();
     redis.disconnect();

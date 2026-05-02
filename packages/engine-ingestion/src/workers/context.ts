@@ -34,6 +34,16 @@ import type { SourceAdapterRegistry } from "../pipelines/scanner.js";
  * Run-lifecycle event emitted by the worker on `completed` /
  * `failed` BullMQ events. Mirrors the SseBus `RunEvent` shape so
  * the cross-engine seam in `serve.ts` is a literal pass-through.
+ *
+ * `errorMessage` (NOT `errorClass`) — Copilot finding: the typed
+ * retry taxonomy `OpencooError.errorClass: 'transient' |
+ * 'upstream-quota' | 'validation'` is a load-bearing name across
+ * the codebase. The SSE bridge writes a SCRUBBED FREE-TEXT message
+ * (BullMQ `failed` event's `Error.message`), which is a different
+ * concept and deserves a different field name. The peer
+ * `RunEvent.errorMessage?: string` field on the SseBus side carries
+ * the same shape so the structural-typing seam at the orchestrator
+ * still holds.
  */
 export interface IngestionRunEvent {
   readonly runId: string;
@@ -41,7 +51,10 @@ export interface IngestionRunEvent {
   readonly status: "running" | "success" | "failed" | "timeout";
   readonly startedAt: string;
   readonly endedAt?: string;
-  readonly errorClass?: string;
+  /** Scrubbed (`scrubPat`) + capped-at-200-chars `Error.message`
+   *  from a BullMQ `failed` event. Free text, NOT the retry-class
+   *  taxonomy. Only set when `status === 'failed'`. */
+  readonly errorMessage?: string;
 }
 
 /** Narrow subset of the SseBus the workers need. The cross-engine

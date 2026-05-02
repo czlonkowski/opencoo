@@ -7,9 +7,13 @@
  * inside the handler) so emission survives uncaught throws — same
  * pattern as `bindOutputDlq` in `engine-self-operating`'s sse-bus.
  *
- * Error message strings are scrubbed via `scrubPat` before leaving
- * the engine boundary (THREAT-MODEL §3.6 invariant 11) and capped
- * at 200 chars to keep the SSE frame small.
+ * `failed` events ship the `Error.message` in the `errorMessage`
+ * field — scrubbed via `scrubPat` before leaving the engine
+ * boundary (THREAT-MODEL §3.6 invariant 11) and capped at 200
+ * chars to keep the SSE frame small. The field is deliberately
+ * named `errorMessage` (free text) rather than `errorClass` (the
+ * 3-class retry taxonomy on `OpencooError`) so consumers can't
+ * confuse the two surfaces.
  */
 import type { Worker } from "bullmq";
 
@@ -20,7 +24,7 @@ import type {
   IngestionRunEventEmitter,
 } from "./context.js";
 
-const ERROR_CLASS_MAX_LENGTH = 200;
+const ERROR_MESSAGE_MAX_LENGTH = 200;
 
 /** Wire SSE run-event emission onto a BullMQ Worker. No-op when
  *  `bus` is undefined — keeps the production composition root
@@ -52,14 +56,14 @@ export function attachRunEvents(
   });
 
   worker.on("failed", (job, err) => {
-    const errorMessage = err instanceof Error ? err.message : String(err);
+    const rawMessage = err instanceof Error ? err.message : String(err);
     const event: IngestionRunEvent = {
       runId: String(job?.id ?? "unknown"),
       definitionSlug,
       status: "failed",
       startedAt: new Date(job?.processedOn ?? Date.now()).toISOString(),
       endedAt: new Date().toISOString(),
-      errorClass: scrubPat(errorMessage).slice(0, ERROR_CLASS_MAX_LENGTH),
+      errorMessage: scrubPat(rawMessage).slice(0, ERROR_MESSAGE_MAX_LENGTH),
     };
     bus.emitRunEvent(event);
   });

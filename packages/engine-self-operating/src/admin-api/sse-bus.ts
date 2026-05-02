@@ -56,7 +56,26 @@ export interface TokenEvent {
   readonly promptText?: string; // present only when includePrompt=true
 }
 
-/** A structured run lifecycle event (started / completed / failed). */
+/** A structured run lifecycle event (started / completed / failed).
+ *
+ *  Two distinct error fields by design (Copilot finding from PR #53):
+ *
+ *    - `errorClass` carries the 3-class retry taxonomy from
+ *      `OpencooError.errorClass` (`'transient' | 'upstream-quota' |
+ *       'validation'`). The agent harness writes this from the
+ *      caught error's typed class.
+ *    - `errorMessage` carries free-text `Error.message`, scrubbed of
+ *      credentials and capped to keep the SSE frame small. The
+ *      ingestion-engine sse-bridge (PR-M1) writes this from BullMQ
+ *      `failed` events; it is structurally `string` rather than the
+ *      retry-taxonomy union, so consumers must not key retry logic
+ *      off this field.
+ *
+ *  Either, both, or neither may be present on a `failed` event
+ *  depending on which producer emitted it. UIs that show an error
+ *  banner should prefer `errorMessage` for human-readable text
+ *  and `errorClass` for the retry-class badge.
+ */
 export interface RunEvent {
   readonly runId: string;
   readonly definitionSlug: string;
@@ -67,7 +86,13 @@ export interface RunEvent {
   readonly tokensOut?: number;
   readonly costUsd?: string;
   readonly latencyMs?: number;
+  /** Retry-class taxonomy. The agent harness writes this. */
   readonly errorClass?: string;
+  /** Scrubbed + truncated `Error.message` from a failed BullMQ
+   *  job (or any other free-text producer). Structurally
+   *  separate from `errorClass` to prevent the two surfaces
+   *  from colliding on the same field. */
+  readonly errorMessage?: string;
 }
 
 export interface EmitTokenArgs {
