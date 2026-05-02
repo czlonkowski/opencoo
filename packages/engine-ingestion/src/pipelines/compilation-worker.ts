@@ -55,6 +55,10 @@ import {
   compileCatalogWorkflow,
   type CatalogWorkflowInput,
 } from "../compiler/catalog-workflow.js";
+import {
+  compileAsanaProject,
+  type AsanaProjectSnapshot,
+} from "../compiler/asana-project.js";
 
 import type { ScannerClassifyJob } from "./scanner.js";
 
@@ -155,6 +159,23 @@ export async function runCompilationWorker(
     });
     classifiedDomains = 1;
     if (result.commitSha !== null) commitsLanded = 1;
+  } else if (meta.contentKind === "asana-project") {
+    const snapshot = parseAsanaProjectContent(content, args.job.sourceRef);
+    const title = deriveAsanaProjectTitle(snapshot);
+    const result = await compileAsanaProject({
+      db: args.db,
+      domainId: meta.domainId as DomainId,
+      domainSlug: meta.domainSlug,
+      bindingId: meta.bindingId as SourceBindingId,
+      sourceRef: args.job.sourceRef,
+      snapshot,
+      title,
+      wikiDeps: args.wikiDeps,
+      router: args.router,
+      author: args.author,
+    });
+    classifiedDomains = 1;
+    if (result.commitSha !== null) commitsLanded = 1;
   } else if (meta.contentKind === "skill-bundle") {
     throw new Error(
       "compilation-worker: contentKind='skill-bundle' is reserved for phase-b (not implemented in v0.1)",
@@ -232,6 +253,80 @@ const n8nWorkflowSchema = z
       ),
   })
   .passthrough();
+
+// Zod schema for the asana-project snapshot shape (PR-G). `.passthrough()`
+// preserves unknown keys so the compiler can forward them verbatim.
+const asanaProjectSchema = z
+  .object({
+    project_gid: z.string(),
+    snapshot: z.array(
+      z
+        .object({
+          gid: z.string(),
+          name: z.string(),
+          completed: z.boolean(),
+          modified_at: z.string(),
+          due_on: z.string().nullable().optional(),
+          assignee: z
+            .object({ name: z.string() })
+            .nullable()
+            .optional(),
+          memberships: z
+            .array(
+              z
+                .object({
+                  section: z
+                    .object({ name: z.string() })
+                    .optional(),
+                })
+                .passthrough(),
+            )
+            .optional(),
+        })
+        .passthrough(),
+    ),
+    incomplete_count: z.number().int().nonnegative(),
+    overdue_count: z.number().int().nonnegative(),
+    fetched_at: z.string(),
+    // Optional project name field — emitted by AsanaClient when the
+    // /projects/{gid} endpoint is available.
+    name: z.string().optional(),
+  })
+  .passthrough();
+
+function parseAsanaProjectContent(
+  content: string,
+  sourceRef: string,
+): AsanaProjectSnapshot {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (err) {
+    throw new Error(
+      `compilation-worker: asana-project content for ${sourceRef} is not valid JSON (${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+  const result = asanaProjectSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new Error(
+      `compilation-worker: asana-project content for ${sourceRef} failed shape validation: ${result.error.message}`,
+    );
+  }
+  return result.data as AsanaProjectSnapshot;
+}
+
+/**
+ * Derive a human-readable title for the project page. If the snapshot
+ * carries a `name` field (from AsanaClient), use it. Otherwise fall
+ * back to the project GID.
+ */
+function deriveAsanaProjectTitle(snapshot: AsanaProjectSnapshot): string {
+  const raw = (snapshot as AsanaProjectSnapshot & { name?: string }).name;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    return raw.trim();
+  }
+  return `Project ${snapshot.project_gid}`;
+}
 
 function parseN8nWorkflowContent(
   content: string,

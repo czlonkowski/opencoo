@@ -41,6 +41,19 @@ export {
   type CompileCatalogWorkflowResult,
 } from "./catalog-workflow.js";
 export {
+  ASANA_PROJECT_PROMPT_VERSION,
+  asanaProjectPagePath,
+  buildAsanaProjectBody,
+  compileAsanaProject,
+  parseAsanaProjectSections,
+  type AsanaProjectSnapshot,
+  type AsanaTaskRow,
+  type BuildAsanaProjectBodyArgs,
+  type CompileAsanaProjectArgs,
+  type CompileAsanaProjectResult,
+  type AsanaProjectSections,
+} from "./asana-project.js";
+export {
   MERGED_PAGE_BODY_SCHEMA,
   type MergedPageBody,
   type MergedPageBodyWire,

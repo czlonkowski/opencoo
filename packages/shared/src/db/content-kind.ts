@@ -13,11 +13,14 @@
  *     string as the `'n8n-workflow'` content-kind value (they are
  *     deliberately one constant).
  *
- * v0.1 ships three values:
+ * v0.1 ships four values:
  *   - `'document'` — Drive docs / PDFs / arbitrary text. The
  *     two-pass classify→compile path with LLM merge.
  *   - `'n8n-workflow'` — n8n workflow JSON (PR 26). Routed to the
  *     deterministic `compileCatalogWorkflow` template; no LLM.
+ *   - `'asana-project'` — Asana project snapshot JSON (PR-H /
+ *     phase-a appendix #4). Routed to `compileAsanaProject`
+ *     template; Worker-tier LLM merge.
  *   - `'skill-bundle'` — Builder-skill `.skill` directories
  *     (PR 33+). Reserved for phase-b; the v0.1 compiler does
  *     not implement this branch.
@@ -26,6 +29,7 @@
 export const CONTENT_KINDS = [
   "document",
   "n8n-workflow",
+  "asana-project",
   "skill-bundle",
 ] as const;
 
