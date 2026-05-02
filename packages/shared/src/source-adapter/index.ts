@@ -167,6 +167,24 @@ export interface SourceWebhookHelpers {
   handshakeFn?(headers: Readonly<Record<string, string | string[] | undefined>>):
     | HandshakeResult
     | null;
+  /**
+   * Optional post-parse enrichment hook. Called AFTER `parseEvents` and
+   * BEFORE `recordWebhook` in the webhook receiver. The adapter may return
+   * an augmented array (e.g. appending a fresh snapshot SourceEvent after
+   * each raw event). When undefined, behavior is identical to the pre-PR-G
+   * receiver — backward-compat, no changes required in other adapters.
+   *
+   * PR-G wires this for source-asana when `snapshotMode='on-event'`:
+   * the Asana adapter appends a second SourceEvent with
+   * `content_kind: 'asana-project'` containing the full project snapshot.
+   * TODO(PR-H): register 'asana-project' in the CONTENT_KINDS const.
+   *
+   * The returned array REPLACES the input — callers that add events should
+   * spread the originals first: `[...events, ...additionalEvents]`.
+   * Callers that only want to mutate metadata should return a new array
+   * with updated SourceWebhookEvent objects (immutable shape).
+   */
+  enrichEvents?(events: readonly SourceWebhookEvent[]): Promise<readonly SourceWebhookEvent[]>;
 }
 
 export interface SourceAdapter {

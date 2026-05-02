@@ -45,11 +45,12 @@
 import { createHash } from "node:crypto";
 
 import type { CredentialStore } from "@opencoo/shared/credential-store";
-import type { CredentialId } from "@opencoo/shared/db";
+import type { CredentialId, DomainId } from "@opencoo/shared/db";
 import { ValidationError } from "@opencoo/shared/errors";
 import type {
   HandshakeResult,
   SourceAdapter,
+  SourceChangedDocument,
   SourceScanArgs,
   SourceScanResult,
   SourceWebhookEvent,
@@ -65,6 +66,9 @@ import {
   type AsanaBindingConfig,
 } from "./binding-config.js";
 import { deriveEventType } from "./derive-event-type.js";
+import type { AsanaClient, ProjectSnapshot } from "./asana-client.js";
+import type { LightSummaryRouter } from "./light-summary.js";
+import { summarizeAsanaEvent } from "./light-summary.js";
 
 export const ASANA_ADAPTER_SLUG = "asana" as const;
 
@@ -80,6 +84,21 @@ export interface CreateAsanaSourceAdapterArgs {
   readonly credentialStore: CredentialStore;
   readonly credentialId: CredentialId;
   readonly config: AsanaBindingConfig | unknown;
+  /**
+   * Injected Asana REST client for snapshot fetches (PR-G).
+   * Required when `config.snapshotMode` is 'on-event' or 'periodic'.
+   * Throws at factory time when snapshotMode requires it but none provided.
+   */
+  readonly asanaClient?: AsanaClient;
+  /**
+   * LLM router for Light-tier per-event summaries (PR-G closes PR-F gap).
+   * Required when `config.lightSummaryEnabled=true`; ignored otherwise.
+   */
+  readonly llmRouter?: LightSummaryRouter;
+  /**
+   * Domain ID for LLM tier routing (required when llmRouter provided).
+   */
+  readonly domainId?: DomainId;
 }
 
 /**
@@ -90,6 +109,16 @@ export interface CreateAsanaSourceAdapterArgs {
 export interface BuildAsanaWebhookHelpersOptions {
   readonly monitoredProjectGids?: readonly string[];
   readonly lightSummaryEnabled?: boolean;
+  /** Snapshot mode — controls whether enrichEvents is wired (PR-G). */
+  readonly snapshotMode?: "on-event" | "periodic" | "off";
+  /** Primary project GID for the binding (fallback in enrichEvents). */
+  readonly projectGid?: string;
+  /** Injected Asana client for snapshot fetches (PR-G). */
+  readonly asanaClient?: AsanaClient;
+  /** LLM router for Light-tier summaries (PR-G closes PR-F gap). */
+  readonly llmRouter?: LightSummaryRouter;
+  /** Domain ID for LLM tier routing. */
+  readonly domainId?: DomainId;
 }
 
 /**
@@ -224,6 +253,29 @@ function parseAsanaWebhookBody(body: Buffer): RawAsanaWebhookBody {
   return parsed as RawAsanaWebhookBody;
 }
 
+export function buildSnapshotEvent(
+  snapshot: ProjectSnapshot,
+  fetchedAt: Date,
+): SourceWebhookEvent {
+  // TODO(PR-H): register 'asana-project' in CONTENT_KINDS const.
+  const contentBytes = Buffer.from(JSON.stringify(snapshot), "utf8");
+  // Stable sourceDocId: identifies the project's snapshot stream.
+  // sourceRevision: fetched_at ISO timestamp (each fetch = new revision).
+  const sourceDocId = `asana-project-snapshot:${snapshot.project_gid}`;
+  const sourceRevision = snapshot.fetched_at;
+  return {
+    // eventId: hash of project_gid + fetched_at for dedup
+    eventId: `snapshot:${snapshot.project_gid}:${snapshot.fetched_at}`,
+    doc: {
+      sourceDocId,
+      sourceRevision,
+      sourceRef: `asana:project/${snapshot.project_gid}`,
+      fetchedAt,
+      contentBytes,
+    },
+  };
+}
+
 export function buildAsanaWebhookHelpers(
   opts: BuildAsanaWebhookHelpersOptions = {},
 ): SourceWebhookHelpers {
@@ -233,99 +285,185 @@ export function buildAsanaWebhookHelpers(
       ? new Set(opts.monitoredProjectGids)
       : undefined;
 
-  return {
-    verifier,
-    extractSignature: extractAsanaSignature,
+  const snapshotMode = opts.snapshotMode ?? "on-event";
 
-    // Handshake detection — called by receiver BEFORE signature verification.
-    handshakeFn: detectAsanaHandshake,
+  /**
+   * Build the enrichEvents function when snapshotMode='on-event' (PR-G).
+   *
+   * For each parsed event:
+   *   1. If lightSummaryEnabled=true AND llmRouter+domainId provided,
+   *      call summarizeAsanaEvent and attach metadata.summary.
+   *      (Closes the TODO from PR-F — the sync/async contract gap is
+   *      resolved here, not in parseEvents.)
+   *   2. Fetch a project snapshot via AsanaClient and emit a second
+   *      SourceEvent with content_kind='asana-project'.
+   *      TODO(PR-H): register 'asana-project' in CONTENT_KINDS const.
+   */
+  async function enrichEventsImpl(
+    events: readonly SourceWebhookEvent[],
+  ): Promise<readonly SourceWebhookEvent[]> {
+    const result: SourceWebhookEvent[] = [];
 
-    parseEvents: ({ body, fetchedAt }) => {
-      const parsed = parseAsanaWebhookBody(body);
-      const events = parsed.events ?? [];
-      const at = fetchedAt ?? new Date();
-      const out: SourceWebhookEvent[] = [];
+    for (const event of events) {
+      let enrichedEvent = event;
 
-      for (const ev of events) {
-        // Validate required fields BEFORE deriving an eventId —
-        // empty resource.gid + empty action would still hash to
-        // a stable id, but the resulting sourceDocId would be
-        // ambiguous and intake-dedupe would conflate distinct
-        // events. Fail closed with errorClass='validation'.
-        const resourceGid = ev.resource?.gid;
-        const resourceType = ev.resource?.resource_type;
-        const action = ev.action;
-        if (
-          typeof resourceGid !== "string" ||
-          resourceGid.length === 0 ||
-          typeof resourceType !== "string" ||
-          resourceType.length === 0 ||
-          typeof action !== "string" ||
-          action.length === 0
-        ) {
-          throw new ValidationError(
-            "asana webhook: event missing required fields (resource.gid, resource.resource_type, action)",
-          );
+      // Step 1: Light-summary wiring (PR-G closes PR-F TODO).
+      // Only when lightSummaryEnabled + llmRouter + domainId are all provided.
+      if (
+        opts.lightSummaryEnabled === true &&
+        opts.llmRouter !== undefined &&
+        opts.domainId !== undefined
+      ) {
+        const summary = await summarizeAsanaEvent({
+          event: JSON.parse(event.doc.contentBytes.toString("utf8")),
+          domainId: opts.domainId,
+          llmRouter: opts.llmRouter,
+          pipeline: "source-asana:enrich",
+          ...(event.doc.sourceDocId !== undefined
+            ? { documentId: event.doc.sourceDocId }
+            : {}),
+        });
+        if (summary !== undefined) {
+          // Attach summary to a new event object (immutable shape).
+          enrichedEvent = {
+            ...event,
+            doc: {
+              ...event.doc,
+              metadata: {
+                ...event.doc.metadata,
+                summary,
+              },
+            },
+          };
         }
+      }
 
-        // Step 1 (PR-F): derive semantic event type; drop noise events.
-        const eventType = deriveEventType(ev);
-        if (eventType === null) {
-          // Silently drop — deletions, removals, non-comment stories,
-          // task_added_to_project, and uninteresting field changes.
+      result.push(enrichedEvent);
+
+      // Step 2: Snapshot fetch (on-event mode only).
+      if (opts.asanaClient !== undefined) {
+        // Determine project GID: prefer event metadata.projectGid,
+        // fall back to binding's primary projectGid.
+        const eventProjectGid =
+          typeof enrichedEvent.doc.metadata?.["projectGid"] === "string"
+            ? enrichedEvent.doc.metadata["projectGid"]
+            : opts.projectGid;
+
+        if (eventProjectGid !== undefined) {
+          const snapshot = await opts.asanaClient.fetchProjectSnapshot(eventProjectGid);
+          const snapshotEvent = buildSnapshotEvent(snapshot, enrichedEvent.doc.fetchedAt);
+          result.push(snapshotEvent);
+        }
+      }
+    }
+
+    return result;
+  }
+
+  function parseEventsFn({ body, fetchedAt }: { body: Buffer; fetchedAt?: Date }): readonly SourceWebhookEvent[] {
+    const parsed = parseAsanaWebhookBody(body);
+    const events = parsed.events ?? [];
+    const at = fetchedAt ?? new Date();
+    const out: SourceWebhookEvent[] = [];
+
+    for (const ev of events) {
+      // Validate required fields BEFORE deriving an eventId —
+      // empty resource.gid + empty action would still hash to
+      // a stable id, but the resulting sourceDocId would be
+      // ambiguous and intake-dedupe would conflate distinct
+      // events. Fail closed with errorClass='validation'.
+      const resourceGid = ev.resource?.gid;
+      const resourceType = ev.resource?.resource_type;
+      const action = ev.action;
+      if (
+        typeof resourceGid !== "string" ||
+        resourceGid.length === 0 ||
+        typeof resourceType !== "string" ||
+        resourceType.length === 0 ||
+        typeof action !== "string" ||
+        action.length === 0
+      ) {
+        throw new ValidationError(
+          "asana webhook: event missing required fields (resource.gid, resource.resource_type, action)",
+        );
+      }
+
+      // Step 1 (PR-F): derive semantic event type; drop noise events.
+      const eventType = deriveEventType(ev);
+      if (eventType === null) {
+        // Silently drop — deletions, removals, non-comment stories,
+        // task_added_to_project, and uninteresting field changes.
+        continue;
+      }
+
+      // Step 2 (PR-F): monitored-project filter.
+      // When monitoredProjectGids is configured, only emit events
+      // whose project GID appears in the allowlist.
+      const projectGid = extractProjectGid(ev);
+      if (monitoredSet !== undefined) {
+        if (projectGid === undefined || !monitoredSet.has(projectGid)) {
+          // Silently drop — no error, no recordWebhook.
           continue;
         }
-
-        // Step 2 (PR-F): monitored-project filter.
-        // When monitoredProjectGids is configured, only emit events
-        // whose project GID appears in the allowlist.
-        if (monitoredSet !== undefined) {
-          const projectGid = extractProjectGid(ev);
-          if (projectGid === undefined || !monitoredSet.has(projectGid)) {
-            // Silently drop — no error, no recordWebhook.
-            continue;
-          }
-        }
-
-        const eventId = deriveEventId(ev);
-        const sourceDocId = `${resourceGid}:${action}`;
-        const contentBytes = Buffer.from(JSON.stringify(ev), "utf8");
-        // 1 MiB ceiling mirrors the SourceAdapter contract; an
-        // event that serializes larger fails closed rather than
-        // overflowing the Compilation Worker prompt budget.
-        if (contentBytes.length > 1024 * 1024) {
-          throw new ValidationError(
-            `asana webhook: event exceeds 1 MiB ceiling (got ${contentBytes.length} bytes)`,
-          );
-        }
-
-        // Light-tier summary (lightSummaryEnabled) is a no-op until the
-        // ingestion-pipeline wiring lands in a follow-up PR (phase-b /
-        // PR-G). Rationale: `parseEvents` is sync
-        // (SourceWebhookHelpers contract); `summarizeAsanaEvent` is async
-        // (LLM call). Wiring requires a post-parseEvents async step in the
-        // Ingestion Processor — that is out of scope for PR-F.
-        // TODO(follow-up): wire `summarizeAsanaEvent` in the Ingestion
-        // Processor after `parseEvents`, gated on `lightSummaryEnabled`.
-        // The helper in `light-summary.ts` is fully tested and ready.
-
-        out.push({
-          eventId,
-          eventType,
-          doc: {
-            sourceDocId,
-            sourceRevision: eventId, // every event = new revision
-            sourceRef: `asana:${resourceType}/${resourceGid}`,
-            fetchedAt: at,
-            // Inline the event JSON as bytes so the
-            // Compilation Worker has the full event verbatim.
-            contentBytes,
-          },
-        });
       }
-      return out;
-    },
-  };
+
+      const eventId = deriveEventId(ev);
+      const sourceDocId = `${resourceGid}:${action}`;
+      const contentBytes = Buffer.from(JSON.stringify(ev), "utf8");
+      // 1 MiB ceiling mirrors the SourceAdapter contract; an
+      // event that serializes larger fails closed rather than
+      // overflowing the Compilation Worker prompt budget.
+      if (contentBytes.length > 1024 * 1024) {
+        throw new ValidationError(
+          `asana webhook: event exceeds 1 MiB ceiling (got ${contentBytes.length} bytes)`,
+        );
+      }
+
+      // Light-summary wiring is now in enrichEvents (PR-G).
+      // parseEvents stays sync; the async LLM call is done post-parse.
+
+      // exactOptionalPropertyTypes: omit the metadata key entirely when
+      // projectGid is undefined, rather than setting it to undefined.
+      const docBase = {
+        sourceDocId,
+        sourceRevision: eventId, // every event = new revision
+        sourceRef: `asana:${resourceType}/${resourceGid}`,
+        fetchedAt: at,
+        // Inline the event JSON as bytes so the
+        // Compilation Worker has the full event verbatim.
+        contentBytes,
+      };
+      out.push({
+        eventId,
+        eventType,
+        doc: projectGid !== undefined
+          ? { ...docBase, metadata: { projectGid } }
+          : docBase,
+      });
+    }
+    return out;
+  }
+
+  // Build the SourceWebhookHelpers object.
+  // enrichEvents is attached only when snapshotMode='on-event' (PR-G).
+  // 'periodic' uses scan(); 'off' skips snapshots entirely.
+  // Using a mutable local then assigning is cleaner than a cast.
+  const helpers: SourceWebhookHelpers = snapshotMode === "on-event"
+    ? {
+        verifier,
+        extractSignature: extractAsanaSignature,
+        handshakeFn: detectAsanaHandshake,
+        parseEvents: parseEventsFn,
+        enrichEvents: enrichEventsImpl,
+      }
+    : {
+        verifier,
+        extractSignature: extractAsanaSignature,
+        handshakeFn: detectAsanaHandshake,
+        parseEvents: parseEventsFn,
+      };
+
+  return helpers;
 }
 
 export function createAsanaSourceAdapter(
@@ -341,21 +479,69 @@ export function createAsanaSourceAdapter(
   void args.credentialStore;
   void args.credentialId;
 
+  // Guard: snapshotMode='periodic' requires an AsanaClient because
+  // scan() must fetch snapshots. Throw at factory time so operators
+  // see the config error immediately.
+  //
+  // snapshotMode='on-event' is allowed without asanaClient for
+  // backward-compat (enrichEvents is silently skipped when no client).
+  if (config.snapshotMode === "periodic" && args.asanaClient === undefined) {
+    throw new Error(
+      `source-asana: snapshotMode='periodic' requires an AsanaClient to be provided`,
+    );
+  }
+
+  /**
+   * scan() implementation for snapshotMode='periodic' (PR-G).
+   *
+   * Fetches snapshots for all monitoredProjectGids (or the primary
+   * projectGid if monitoredProjectGids is not configured). Returns
+   * one SourceChangedDocument per project.
+   *
+   * For snapshotMode='on-event' or 'off', returns empty (no-op).
+   */
+  async function scan(_args: SourceScanArgs): Promise<SourceScanResult> {
+    void _args;
+
+    if (config.snapshotMode !== "periodic") {
+      // Webhook adapters that use on-event or off modes don't scan.
+      return { documents: [], nextCursor: null };
+    }
+
+    // Periodic scan: fetch snapshots for all monitored projects.
+    const projectGids =
+      config.monitoredProjectGids !== undefined && config.monitoredProjectGids.length > 0
+        ? config.monitoredProjectGids
+        : [config.projectGid];
+
+    const documents: SourceChangedDocument[] = [];
+    const now = new Date();
+
+    for (const projectGid of projectGids) {
+      // args.asanaClient is guaranteed non-undefined by the factory guard above
+      // (snapshotMode='periodic' check throws when asanaClient is absent).
+      const snapshot = await args.asanaClient!.fetchProjectSnapshot(projectGid);
+      const snapshotEvent = buildSnapshotEvent(snapshot, now);
+      documents.push(snapshotEvent.doc);
+    }
+
+    return { documents, nextCursor: null };
+  }
+
   return {
     slug: ASANA_ADAPTER_SLUG,
-    async scan(_args: SourceScanArgs): Promise<SourceScanResult> {
-      // Webhook adapters don't scan. The receiver pushes events
-      // in directly. A degenerate Scanner run reports 0 docs
-      // and a null cursor.
-      void _args;
-      return { documents: [], nextCursor: null };
-    },
+    scan,
     webhook: buildAsanaWebhookHelpers({
       // exactOptionalPropertyTypes: omit key when undefined.
       ...(config.monitoredProjectGids !== undefined
         ? { monitoredProjectGids: config.monitoredProjectGids }
         : {}),
       lightSummaryEnabled: config.lightSummaryEnabled,
+      snapshotMode: config.snapshotMode,
+      projectGid: config.projectGid,
+      ...(args.asanaClient !== undefined ? { asanaClient: args.asanaClient } : {}),
+      ...(args.llmRouter !== undefined ? { llmRouter: args.llmRouter } : {}),
+      ...(args.domainId !== undefined ? { domainId: args.domainId } : {}),
     }),
   };
 }
