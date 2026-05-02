@@ -334,6 +334,37 @@ export class AgentDispatcher {
     const instance = await loadInstanceById(this.db, instanceId);
     const runner = this.runners.get(instance.definitionSlug);
     if (runner === undefined) {
+      // Round-2 fix #4 — WHY this throw exists and what it does NOT do.
+      //
+      // The throw guards against an orchestrator config bug: a
+      // schedulable instance row exists in the DB whose
+      // `definition_slug` doesn't have a corresponding entry in the
+      // injected `AgentRunnerRegistry`. In v0.1 this never fires
+      // because production code passes no `agentRunners` at all
+      // (the dispatcher boots with an empty registry); when a
+      // follow-up wires Heartbeat / Lint / Surfacer runner closures
+      // a missing slug becomes possible and we want loud failure
+      // rather than silent no-op.
+      //
+      // What this branch does NOT do today: write a `failed`
+      // agent_runs row before throwing. The harness's run recorder
+      // (startRun -> completeRun) requires the resolved
+      // AgentDefinition + the runner closure; we don't have either
+      // when the registry lookup misses. As a result BullMQ retries
+      // until the per-job attempt cap hits and the job lands on the
+      // DLQ — the operator sees N failed-job entries instead of one
+      // visible `failed` agent_runs row tied to the instance.
+      //
+      // Follow-up (v0.2 / phase-b, when HttpMcpToolClient lands and
+      // production runners are wired): either (a) record a
+      // synthetic `failed` agent_runs row before the throw so the
+      // Activity feed surfaces the misconfiguration with one entry,
+      // or (b) pin BullMQ retry to `attempts: 1` for this code
+      // path so the operator sees one DLQ entry instead of N. Both
+      // require a definition lookup that survives the registry
+      // miss, plus a `completeRun` shape that accepts a synthetic
+      // tool-call ledger. Tracked under "agent-harness needs a
+      // schedule-time validation pass" — out of scope for PR-M2.
       throw new Error(
         `selfop.dispatch: no runner registered for definition_slug '${instance.definitionSlug}' (instance ${instanceId})`,
       );
