@@ -82,16 +82,28 @@ export interface IngestionWorkers {
   closeAll(timeoutMs?: number): Promise<void>;
 }
 
+/** Diagnostic message MISSING_ENQUEUE.add() throws when the
+ *  orchestrator forgets to wire `ctx.enqueue`. Exported so tests
+ *  can pin the exact message that lands in `scanner.enqueue_failed`
+ *  logger entries — drift between the diagnostic and the test
+ *  assertion would mean a regression at debug time, not at boot. */
+export const MISSING_ENQUEUE_MESSAGE =
+  "scanner-worker: ctx.enqueue is undefined — orchestrator did not wire the ingestion.scanner.classify queue handle";
+
 /** Producer-side enqueue fallback. The orchestrator wires the real
  *  `Queue` handle for `ingestion.scanner.classify` via `ctx.enqueue`;
  *  in the test contexts that omit it (empty adapter registry → the
  *  scanner never calls .add) a throwing stub is safer than silently
- *  dropping jobs in production if the orchestrator forgets the wire. */
-const MISSING_ENQUEUE: ScannerWorkerDeps["enqueue"] = {
+ *  dropping jobs in production if the orchestrator forgets the wire.
+ *
+ *  When the scanner DOES dispatch (adapter resolved + document
+ *  returned) and `ctx.enqueue` is missing, this stub throws — the
+ *  scanner pipeline catches the throw and logs it via
+ *  `scanner.enqueue_failed`, surfacing the misconfiguration in the
+ *  operator log without taking the whole scan run down. */
+export const MISSING_ENQUEUE: ScannerWorkerDeps["enqueue"] = {
   async add() {
-    throw new Error(
-      "scanner-worker: ctx.enqueue is undefined — orchestrator did not wire the ingestion.scanner.classify queue handle",
-    );
+    throw new Error(MISSING_ENQUEUE_MESSAGE);
   },
 };
 

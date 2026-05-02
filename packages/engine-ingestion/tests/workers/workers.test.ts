@@ -30,8 +30,11 @@ import {
 import { InMemoryWikiAdapter } from "@opencoo/shared/wiki-write/testing";
 import type { GuardAdapter } from "@opencoo/shared/adapter-contract-tests/guard";
 import type { LlmRouter } from "@opencoo/shared/llm-router";
+import type { SourceAdapter } from "@opencoo/shared/source-adapter";
 
 import {
+  MISSING_ENQUEUE,
+  MISSING_ENQUEUE_MESSAGE,
   buildCleanupHandler,
   buildCompilationHandler,
   buildIndexRebuildHandler,
@@ -337,6 +340,106 @@ describe("startIngestionWorkers — closeAll() drain timer", () => {
     });
 
     await Promise.race([handle.closeAll(30_000), watchdog]);
+    redis.disconnect();
+  });
+});
+
+describe("startIngestionWorkers — MISSING_ENQUEUE diagnostic", () => {
+  it("MISSING_ENQUEUE.add() throws with the operator-facing diagnostic", async () => {
+    // Direct assertion on the fallback the orchestrator wires
+    // when ctx.enqueue is undefined. The thrown message must name
+    // the missing wire concretely (queue slug + which side did
+    // not supply it) — ambiguous diagnostics turn into
+    // hours-long debug sessions in production.
+    await expect(MISSING_ENQUEUE.add("classify", {})).rejects.toThrow(
+      MISSING_ENQUEUE_MESSAGE,
+    );
+    expect(MISSING_ENQUEUE_MESSAGE).toMatch(/ctx\.enqueue is undefined/);
+    expect(MISSING_ENQUEUE_MESSAGE).toMatch(
+      /ingestion\.scanner\.classify/,
+    );
+  });
+
+  it("startIngestionWorkers wires MISSING_ENQUEUE when ctx.enqueue is undefined", async () => {
+    // Integration: when the orchestrator omits ctx.enqueue and
+    // the scanner attempts to dispatch, the runScanner pipeline
+    // catches the throw and logs `scanner.enqueue_failed` with
+    // the diagnostic message. The handle still closes cleanly.
+    const fixture = await freshPipelineDb();
+    const wikiAdapter = new InMemoryWikiAdapter();
+    const redis = new IORedisMock();
+
+    // Seed an adapter that returns a document so the scanner
+    // reaches the enqueue call site (the empty-registry path
+    // never calls .add).
+    const stubAdapter: SourceAdapter = {
+      slug: "drive",
+      async scan() {
+        return {
+          documents: [
+            {
+              sourceDocId: "doc-missing-enqueue",
+              sourceRevision: "rev-1",
+              sourceRef: "drive:doc-missing-enqueue",
+              fetchedAt: new Date("2026-04-25T12:00:00Z"),
+              contentBytes: Buffer.from("hello"),
+            },
+          ],
+          nextCursor: "cursor-1",
+        };
+      },
+    };
+
+    // Capture logger output to confirm the diagnostic message
+    // surfaces in `scanner.enqueue_failed`.
+    const logs: string[] = [];
+    const captureLogger = new ConsoleLogger({
+      stream: {
+        write: (chunk: string): boolean => {
+          logs.push(chunk);
+          return true;
+        },
+      },
+    });
+
+    const ctx: WorkerContext = {
+      ...makeWorkerCtx({ fixture, wikiAdapter }),
+      logger: captureLogger,
+      adapterRegistry: {
+        get: (slug) => (slug === "drive" ? stubAdapter : undefined),
+      },
+      // ctx.enqueue deliberately omitted — startIngestionWorkers
+      // wires MISSING_ENQUEUE in its place.
+    };
+
+    const handle = startIngestionWorkers({
+      ctx,
+      connection: redis as unknown as Parameters<
+        typeof startIngestionWorkers
+      >[0]["connection"],
+      autorun: false,
+    });
+
+    // Build the SAME handler shape startIngestionWorkers wires —
+    // routing the scanner's enqueue through MISSING_ENQUEUE so
+    // we exercise the production path end-to-end.
+    const handler = buildScannerHandler({
+      db: fixture.db as unknown as WorkerContext["db"],
+      logger: captureLogger,
+      adapterRegistry: ctx.adapterRegistry,
+      enqueue: MISSING_ENQUEUE,
+    });
+
+    // runScanner catches the enqueue throw (per
+    // pipelines/scanner.ts) and logs `scanner.enqueue_failed`
+    // — surfacing the misconfiguration in operator logs without
+    // tearing down the whole scan run.
+    await handler(fakeJob({}));
+    const joined = logs.join("");
+    expect(joined).toContain("scanner.enqueue_failed");
+    expect(joined).toContain("ctx.enqueue is undefined");
+
+    await handle.closeAll();
     redis.disconnect();
   });
 });

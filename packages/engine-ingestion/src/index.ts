@@ -43,6 +43,8 @@ export {
 // `startIngestionWorkers` directly for use-case coverage.
 export {
   DEFAULT_CLOSE_TIMEOUT_MS,
+  MISSING_ENQUEUE,
+  MISSING_ENQUEUE_MESSAGE,
   buildCleanupHandler,
   buildCompilationHandler,
   buildIndexRebuildHandler,
