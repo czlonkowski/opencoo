@@ -36,6 +36,7 @@ import {
   loadEncryptionKey,
 } from "@opencoo/shared/credential-store";
 import { ConsoleLogger, type Logger } from "@opencoo/shared/logger";
+import { scrubPat } from "@opencoo/shared/scrub";
 import { drizzle } from "drizzle-orm/node-postgres";
 import {
   PipelineRegistry,
@@ -170,6 +171,19 @@ export interface StartOptions
    *  the dispatcher synthesises an empty registry — runners that
    *  don't depend on definition lookups still work. */
   readonly agentDefinitions?: AgentDefinitionRegistry;
+}
+
+/** Round-3 fix #4: scrub-and-cap helper for `scheduler.*` error
+ *  log sites. BullMQ / Redis / pg connection failures can carry
+ *  connection strings or auth tokens in their `Error.message`;
+ *  THREAT-MODEL §3.6 invariant 11 says scrub. Mirrors the
+ *  `safeError` helper in
+ *  `engine-ingestion/src/workers/production-context.ts` and
+ *  `cli/src/provision/production-composition.ts`. */
+const ERROR_MESSAGE_MAX_LENGTH = 200;
+function safeError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return scrubPat(raw).slice(0, ERROR_MESSAGE_MAX_LENGTH);
 }
 
 function defaultDbFactory(config: EngineConfig): StartDb {
@@ -345,7 +359,10 @@ export async function start(
       logger.error("scheduler.compose_failed", {
         reason:
           "AgentDispatcher constructor threw — Redis connection or BullMQ wiring failure",
-        error: err instanceof Error ? err.message : String(err),
+        // Round-3 fix #4: scrub + cap. THREAT-MODEL §3.6
+        // invariant 11. Redis / BullMQ failures can carry
+        // connection strings or auth tokens.
+        error: safeError(err),
       });
       dispatcher = undefined;
     }
@@ -413,7 +430,9 @@ export async function start(
       logger.error("scheduler.start_failed", {
         reason:
           "AgentDispatcher.start() threw — no recurring jobs registered",
-        error: err instanceof Error ? err.message : String(err),
+        // Round-3 fix #4: scrub + cap. THREAT-MODEL §3.6
+        // invariant 11.
+        error: safeError(err),
       });
       // Best-effort cleanup of the partially-started dispatcher
       // so we don't leak the BullMQ Worker / Queue handles.
@@ -436,7 +455,9 @@ export async function start(
       if (attachedDispatcher !== undefined) {
         await attachedDispatcher.stop().catch((err: unknown) => {
           logger.warn("scheduler.stop_failed", {
-            error: err instanceof Error ? err.message : String(err),
+            // Round-3 fix #4: scrub + cap. THREAT-MODEL §3.6
+            // invariant 11.
+            error: safeError(err),
           });
         });
       }
