@@ -268,7 +268,7 @@ Status legend:
 
 ## §7 residual-risk delta since `0.1.0-a` baseline
 
-`THREAT-MODEL.md:352-370` lists 14 §7 entries. Phase-a appendices have closed three:
+`THREAT-MODEL.md:358-369` lists 12 §7 entries (data rows in the source table; the appendix-#8 plan's "14" was a bullet-line scan that double-counted the markdown header `|` and `|---|` separator rows). Phase-a appendices have closed three:
 
 ### Closed by appendices #4–#7 (no §7 entry was ever added; the gap was always architectural, not a residual)
 
@@ -276,12 +276,15 @@ Status legend:
 - **Surfacer omitted from runner registry when `availableTemplateSlugs.length === 0`** — closed by PR-O3 (`951aae7` / #60). Vendored ~3-template baseline now registers Surfacer by default; live n8n-mcp activation gives ~10 category-level slugs.
 - **No manual-trigger CLI for scheduled agents** — closed by PR-O2 (`26126f1` / #61). `opencoo agents fire <slug> [--dry-run]` ships.
 
-### Current §7 entries (carry forward; `THREAT-MODEL.md:356-369`)
+### Current §7 entries (carry forward; `THREAT-MODEL.md:358-369`)
 
-The 14 entries below remain accepted as-is for `0.1.0-a`. None
+The 12 entries below remain accepted as-is for `0.1.0-a`. None
 require fresh acknowledgement at tag time — each entry's "what
 triggers revisit" column already names the conditions under which
 maintainer action is required.
+
+Current count: 12 active entries (entry #11 stale; flagged for
+tag-time deletion per below).
 
 1. Zero-day prompt injection slipping past spotlighting + guard.
 2. `agent_runs.tool_calls[].result` not output-redacted.
@@ -295,7 +298,6 @@ maintainer action is required.
 10. LLM provider ToS retention (partner-owned).
 11. ~~No hard LLM spend cap today~~ — **CLOSED by PR 07** (`#8 / 7be9252`); `llm_budget_monthly_cap_usd` ships with fail-closed enforcement. Should be removed from §7 at `0.1.0-a` tag.
 12. Custom-agent authoring UI threats.
-13. _(Two more entries beyond #12 in the source table — recount; `THREAT-MODEL.md:367-370` shows 12 visible rows in the PR rendering)_ — maintainer recount at sign-off; the count "14" in the appendix-#8 plan was the bullet-line scan. The carry-forward decision is independent of the count.
 
 ### Landed-but-unrecorded residuals (advisory) — should they be promoted to §7?
 
