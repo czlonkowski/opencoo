@@ -526,6 +526,91 @@ describe("opencoo agents fire — slug resolution", () => {
       await fx.close();
     }
   });
+
+  it("--instance-id with a malformed (non-uuid) value → exit 1 with `invalid uuid` message", async () => {
+    // Round-3 fix #1 (UUID upfront-validation): a typo like
+    // `--instance-id heartbeat-default` (operator confusing
+    // `name` for `id`) used to bubble a Postgres-side `invalid
+    // input syntax for type uuid` through the runtime-error
+    // catch as exit 2. The upfront UUID check translates it into
+    // a clear exit-1 user error before any DB round-trip.
+    const fx = await makeDbFixture();
+    try {
+      const { bundle, closeSpy } = makeBundleStub({
+        db: fx.db,
+        registeredRunners: ["heartbeat"],
+      });
+      const invokeAgentFn = vi.fn();
+      const cap = captureExit();
+      const { args, stderr } = buildArgs(
+        {
+          slug: "heartbeat",
+          instanceId: "heartbeat-default", // not a uuid
+          composeBundle: () => bundle as never,
+          invokeAgentFn: invokeAgentFn as never,
+        },
+        { fx },
+      );
+      await expect(runAgentsFire(args)).rejects.toThrow(ExitSentinel);
+      expect(cap.code).toBe(1);
+      expect(invokeAgentFn).not.toHaveBeenCalled();
+      expect(stderr.buffer).toMatch(/invalid uuid/);
+      expect(stderr.buffer).toContain("heartbeat-default");
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      await fx.close();
+    }
+  });
+
+  it("--instance-id resolution that throws a generic Error → outer runtime-error catch fires (exit 2)", async () => {
+    // Round-3 fix #1: only AgentInstanceNotFoundError maps to
+    // exit 1; every other error from loadInstanceById (DB
+    // connection drop, transient pg error, etc.) re-throws so
+    // the outer catch surfaces it as exit 2. Without this
+    // distinction, a momentary Postgres outage looked like a
+    // missing instance row and operators would chase the wrong
+    // failure.
+    const fx = await makeDbFixture();
+    try {
+      const { bundle, closeSpy } = makeBundleStub({
+        db: fx.db,
+        registeredRunners: ["heartbeat"],
+      });
+      // Stub dbFromPool with a fake Db whose `execute` always
+      // throws — simulates a connection-terminated-unexpectedly
+      // mid-query failure.
+      const fakeDb = {
+        execute: async (): Promise<never> => {
+          throw new Error("connection terminated unexpectedly");
+        },
+      };
+      const invokeAgentFn = vi.fn();
+      const cap = captureExit();
+      const { args, stderr } = buildArgs(
+        {
+          slug: "heartbeat",
+          instanceId: "00000000-0000-0000-0000-0000000abcde",
+          composeBundle: () => bundle as never,
+          invokeAgentFn: invokeAgentFn as never,
+          dbFromPool: () => fakeDb as never,
+        },
+        // Note: NOT passing `{ fx }` here so the dbFromPool
+        // override above sticks; the buildArgs default fixture
+        // override would clobber it otherwise.
+      );
+      await expect(runAgentsFire(args)).rejects.toThrow(ExitSentinel);
+      expect(cap.code).toBe(2);
+      expect(invokeAgentFn).not.toHaveBeenCalled();
+      // The outer runtime-error formatter prefixes with
+      // `agents fire:` and renders the scrubbed underlying
+      // message — assert both pieces.
+      expect(stderr.buffer).toMatch(/agents fire:/);
+      expect(stderr.buffer).toContain("connection terminated");
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      await fx.close();
+    }
+  });
 });
 
 describe("opencoo agents fire — boot-tolerance + close discipline", () => {

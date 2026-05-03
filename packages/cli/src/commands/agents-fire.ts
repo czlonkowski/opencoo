@@ -48,6 +48,7 @@ import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 import {
+  AgentInstanceNotFoundError,
   invokeAgent,
   loadInstanceById,
   type AgentInstance,
@@ -85,6 +86,13 @@ interface MinimalInstanceRow {
   readonly id: string;
   readonly definitionSlug: string;
 }
+
+/** RFC-4122 UUID matcher. The CLI validates `--instance-id`
+ *  upfront so a typo gives an operator-friendly message instead
+ *  of a Postgres-side `invalid input syntax for type uuid`
+ *  bubbling through the runtime-error catch as exit 2. */
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface AgentsFireArgs {
   readonly env: Record<string, string | undefined>;
@@ -193,20 +201,43 @@ export async function runAgentsFire(args: AgentsFireArgs): Promise<void> {
     // Slug → instance resolution.
     let instance: AgentInstance;
     if (args.instanceId !== undefined) {
-      try {
-        instance = await loadInstanceById(db, args.instanceId);
-      } catch {
-        // loadInstanceById throws AgentInstanceNotFoundError when
-        // either the row doesn't exist OR the row is disabled
-        // (the SELECT carries `enabled = true`). The clearer
-        // operator message is "not found" — the admin UI is the
-        // surface for re-enabling.
+      // Reject malformed UUIDs upfront so operators see a clear
+      // "invalid uuid" message instead of either (a) the
+      // Postgres-side cast error bubbling as a generic runtime
+      // error (exit 2), or (b) a confusing "not found" report on
+      // a UUID that could never match.
+      if (!UUID_REGEX.test(args.instanceId)) {
         args.stderr.write(
           pc.red(
-            `agents fire: instance ${args.instanceId} not found (or disabled)\n`,
+            `agents fire: invalid uuid: ${args.instanceId}\n`,
           ),
         );
         return exitUserError();
+      }
+      try {
+        instance = await loadInstanceById(db, args.instanceId);
+      } catch (err) {
+        // Round-3 fix #1: only the typed not-found error maps to
+        // exit 1 ("instance row missing or disabled — operator
+        // problem"). Anything else (DB connection drop, transient
+        // pg error, surprise schema change) re-throws to the
+        // outer runtime-error handler so the operator gets exit 2
+        // with the scrubbed underlying message instead of a
+        // misdirecting "not found" on a healthy database.
+        if (err instanceof AgentInstanceNotFoundError) {
+          // loadInstanceById's SELECT carries `enabled = true`
+          // (instances.ts:86), so a disabled row presents
+          // identically to a deleted one — the CLI surfaces both
+          // under the same message. Re-enabling is an admin-UI
+          // action (out of scope for this verb).
+          args.stderr.write(
+            pc.red(
+              `agents fire: agent_instances row ${args.instanceId} not found (or disabled)\n`,
+            ),
+          );
+          return exitUserError();
+        }
+        throw err;
       }
       if (instance.definitionSlug !== args.slug) {
         args.stderr.write(
