@@ -183,7 +183,7 @@ Status legend:
 
 **Evidence**:
 - Automated (Check 5 of pre-flight) — route declarations changed since `HEAD~30` (full list in pre-flight output below).
-- `INTERNET_FACING_PATHS` enumeration at `packages/cli/src/commands/doctor.ts:102-124` (currently 19 paths covering admin-API + scheduler + 3 named webhook adapters).
+- `INTERNET_FACING_PATHS` enumeration at `packages/cli/src/commands/doctor.ts:102-124` (currently 18 paths covering admin-API + scheduler + 3 named webhook adapters; lines 117-119 are comment lines describing the scheduler entry).
 - Generic `webhook` adapter routes added per PR-I and surfaced dynamically via `computeWebhookPath` at `packages/cli/src/commands/doctor.ts:333-337` (covers the appendix #2 `webhook_secret_credentials_id` split too).
 - §4.1 surfaces (THREAT-MODEL.md:272-276): webhook receiver + Management UI + `gitea-wiki-mcp-server`. No new internet-facing surfaces added in phase-a appendices #5–#7 — all the new routes are admin-API additions inside the existing UI surface.
 - Maintainer spot-check: the route grep in Check 5 of pre-flight catches additions; cross-check each against `INTERNET_FACING_PATHS` and the §4.1 surface list.
