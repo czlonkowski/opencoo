@@ -7,8 +7,12 @@
  *     disabled rows are not picked).
  *   - Dry-run prints the row + runner-presence; does NOT invoke
  *     the harness; exits 0.
- *   - Fire path invokes the harness with `trigger='manual'` +
- *     `inputs.firedBy='cli'`; exits 0.
+ *   - Fire path invokes the harness with `trigger='http'` +
+ *     `inputs.firedBy='cli'`; exits 0. The `agent_trigger`
+ *     Postgres enum is `('scheduled', 'http', 'mcp')` in v0.1
+ *     — no `'manual'` value, and PR-O2 explicitly avoids a
+ *     schema migration. `firedBy='cli'` is the precise audit
+ *     discriminator vs admin-API HTTP runs.
  *   - `bundle.close()` runs in finally on every code path
  *     (boot-tolerance, slug-resolution failure, runner missing,
  *     happy path).
@@ -241,7 +245,7 @@ describe("opencoo agents fire — slug resolution", () => {
     }
   });
 
-  it("fire path invokes invokeAgent with trigger=manual + firedBy=cli + the resolved instance id, exit 0", async () => {
+  it("fire path invokes invokeAgent with trigger=http + firedBy=cli + the resolved instance id, exit 0", async () => {
     const fx = await makeDbFixture();
     try {
       const [instanceId] = await fx.seed([
