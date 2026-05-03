@@ -245,9 +245,10 @@ describe("post-merge install + build hook", () => {
   test("post-checkout file-checkout flag (0) → no-op", () => {
     // post-checkout receives $1=prev $2=new $3=flag. Flag=0 is a
     // single-file checkout (e.g. `git checkout -- foo`), not a branch
-    // switch. The wrapper must short-circuit; we test the wrapper
-    // directly by setting OPENCOO_POSTMERGE_CHECKOUT_FLAG=0 — the impl
-    // honours it the same way as a missing ORIG_HEAD.
+    // switch. The wrapper must short-circuit; we invoke the wrapper
+    // with argv `$3=0` to simulate the file-mode checkout — the
+    // wrapper's own guard (`if [ "${3:-}" != "1" ]; then exit 0; fi`)
+    // returns 0 without sourcing the impl, so no pnpm calls land.
     const f = track(makeFixture());
     const checkoutWrapper = resolve(REPO_ROOT, ".husky/post-checkout");
     if (!existsSync(checkoutWrapper)) {
