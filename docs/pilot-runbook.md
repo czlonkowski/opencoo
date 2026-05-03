@@ -81,7 +81,7 @@ The pilot's first real binding. all UI paths assume the engine is running on `ht
    - **Light summary enabled** — defaults to `false` (opt-in to avoid LLM cost on high-volume projects).
    - **Review mode** — defaults to `auto`. `auto` requires the redaction guard (default) wired into the ingestion path.
 4. Click **Save**. the UI returns a webhook target URL of the shape `/webhooks/<binding-id>`.
-5. Copy the URL into Asana's webhook configuration UI. Asana's webhook handshake (`X-Hook-Secret`) is handled automatically by the receiver (PR-F): the receiver echoes the secret back, persists it via `CredentialStore`, and updates `sources_bindings.webhook_secret_credentials_id`.
+5. Copy the URL into Asana's webhook configuration UI. Asana's webhook handshake (`X-Hook-Secret`) is handled automatically by the receiver (PR-F): the receiver echoes the secret back, persists it via `CredentialStore`, and updates `sources_bindings.webhook_secret_credentials_id`. The handshake depends on (a) the adapter exposing `webhook.handshakeFn` (Asana's `detectAsanaHandshake` at `packages/adapters/source-asana/src/adapter.ts:514`) AND (b) the inbound request matching the heuristic (presence of the `x-hook-secret` header — `ASANA_HOOK_SECRET_HEADER` constant at line 81 of the same file). If the binding's status pill stays `configuring` past 2 min, the handshake didn't fire — most often because Asana's first POST never reached the engine (firewall, reverse-proxy mis-routing). The `webhook.handshake.received` log line in the engine stdout (info level; from receiver.ts:199) is the success signal; absence means the handshake never ran.
 6. Confirm via the Sources tab — the binding's status pill should transition `configuring → ok` within ~30s. `last_event_at` populates on the first real delivery; `last_error` populates if the receiver rejects (signature mismatch, body over the 5MB cap, etc.).
 
 Optional verification — confirm the receiver is reachable from outside the host:
@@ -161,11 +161,11 @@ Before declaring pilot-ready, the operator runs the following spot-check (mirror
 - [ ] All `_FILE`-variant secrets resolve correctly: rename a value to its `_FILE` variant, point at a file, restart, verify `doctor` is still green.
 - [ ] Admin-API requires Gitea team membership: log in as a non-`ADMIN_TEAM_SLUG` user, confirm `/api/admin/*` returns 403.
 - [ ] Webhook 5MB body cap enforced: `curl -X POST` a 6MB payload at the binding URL, expect 413 from Fastify.
-- [ ] CSRF cookie is `Path=/` and `SameSite=Strict`: open devtools on a logged-in admin session, confirm both attributes.
+- [ ] CSRF cookie `opencoo_csrf` (real name; from `packages/engine-self-operating/src/admin-api/csrf.ts:43`) is `Path=/` and `SameSite=Strict`: open devtools → Application → Cookies on a logged-in admin session, find the `opencoo_csrf` row, confirm both attributes. The matching request header is `x-csrf-token` (line 44 in the same file).
 - [ ] No prompt content in `info`-level logs: `LOG_LEVEL=info pnpm opencoo`, trigger a webhook, grep stdout for `prompt_text` — should return empty.
 - [ ] `LLM_DEBUG_LOG` banner shown in the UI when set: with `LLM_DEBUG_LOG=1`, the management UI displays a yellow banner on every page.
 
-## 8. What's NOT yet automatic (known v0.1 limitations)
+## 8. Deferrals (v0.1 limitations)
 
 These are deliberate phase-a / phase-b deferrals. tracking each in the appendix #5 follow-up issue:
 

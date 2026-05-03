@@ -20,7 +20,7 @@
  *
  * What's NOT tested here:
  *   - The end-to-end probe against a live stack — that's the smoke's
- *     job at runtime. CI runs `pnpm test`, not `pnpm smoke:real-data`.
+ *     job at runtime.
  *   - HMAC signing of the webhook fixture — pinned via the script's
  *     reuse of `node:crypto`, no test logic of our own to verify.
  */
