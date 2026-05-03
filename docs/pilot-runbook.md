@@ -96,22 +96,44 @@ CORS is intentionally not enabled on this path; the operator should expect a 4xx
 
 The load-bearing operational test. does the deployment actually work end-to-end?
 
-1. **Trigger an event.** in the bound Asana project, create or update a task. if `monitoredProjectGids` is set, the task must belong to one of the listed projects. if the binding has a tag filter (project-level scope is enough for v0.1), use a tagged task.
-2. **Watch the Activity feed.** in the management UI's **Activity** tab, within ~10s the operator should see two events stream in:
-   - `source.event.received` — receiver acknowledged + verified the HMAC.
-   - `ingestion.intake.created` — the scanner queue dequeued the event and persisted the `ingestion_intake` row.
-3. **Watch for compile completion.** within ~30s a `compile.completed` event lands carrying the wiki path (e.g. `wiki-executive/projects/<project-name>.md`).
-4. **Confirm the wiki page in Gitea.** navigate to `<GITEA_URL>/<org>/wiki-<domain-slug>/src/branch/main/<wiki-path>.md`. the page must show populated frontmatter (`schema_version`, `prompt_version`, `compiled_at`, `compiled_by_run_id`) and a `Worldview-Impact` git trailer on the commit.
-5. **Confirm output delivery** *(if a binding has an `OutputAdapter` configured — typically `output-asana` for the comment-back loop)*. within ~10s of the wiki write, an `output.delivery.success` event appears on the Activity feed; the corresponding `output_deliveries` row is in Postgres with `status = 'sent'`. failed deliveries surface as `output.delivery.dlq`.
+The Activity feed (`GET /api/admin/events` SSE bus) emits exactly five SSE channels in v0.1: `connected`, `agent_run`, `output_delivery_dlq`, `token` (only when `LLM_DEBUG_LOG=1`), and `ping` (15s keepalive). Every Worker run — webhook scanner, compiler, index-rebuilder, cleanup — surfaces as an `agent_run` event with one of the `definitionSlug` values: `ingestion.scanner`, `ingestion.scanner.classify`, `ingestion.review.dispatch`, `ingestion.index-rebuild`, `ingestion.cleanup`. There is no separate `source.event.received` or `compile.completed` channel; webhook receipt is confirmed via the `webhook_events` table; compile success is confirmed via the `agent_run` event with `definitionSlug = 'ingestion.scanner.classify'` and `status = 'success'`.
 
-When all five markers are green, the smoke is green. proceed to the §9 sign-off checklist.
+1. **Trigger an event.** in the bound Asana project, create or update a task. if `monitoredProjectGids` is set, the task must belong to one of the listed projects. project-level scope is enough for v0.1; tag filters are not yet wired.
+2. **Confirm webhook receipt** via the database. the receiver writes the row inline before returning 200, so the row should be visible within sub-second:
+   ```
+   psql "$DATABASE_URL" -c "SELECT id, binding_id, signature_ok, received_at \
+                            FROM webhook_events \
+                            ORDER BY received_at DESC LIMIT 5;"
+   ```
+   `signature_ok = true` confirms HMAC verification succeeded. `false` rows mean the secret is stale (see §5 for recovery).
+3. **Watch the Activity feed for compile completion.** in the management UI's **Activity** tab, within ~30s the operator should see an `agent_run` event with `definitionSlug = 'ingestion.scanner.classify'` and `status = 'success'`. (`status` cycles `running → success | failed`; the bridge writes one event per BullMQ Worker `active` / `completed` / `failed` transition.) the run's `errorMessage` field, when present, is scrubbed via `scrubPat` and capped at 200 chars.
+4. **Confirm the `ingestion_intake` row** corresponds to the webhook event:
+   ```
+   psql "$DATABASE_URL" -c "SELECT id, binding_id, status, error_text, created_at \
+                            FROM ingestion_intake \
+                            ORDER BY created_at DESC LIMIT 5;"
+   ```
+   `status = 'compiled'` indicates the row reached the wiki write; `error_text` populates on the failure paths.
+5. **Confirm the wiki page in Gitea.** navigate to `<GITEA_URL>/<org>/wiki-<domain-slug>/src/branch/main/<wiki-path>.md`. the page must show populated frontmatter (`schema_version`, `prompt_version`, `compiled_at`, `compiled_by_run_id`) and a `Worldview-Impact` git trailer on the commit. the engine logs `wiki.write` at `info` level on every successful write; a `wiki.write.stale` warn line in the engine stdout means a stale-SHA pull-retry was needed.
+6. **Confirm output delivery** *(if a binding has an `OutputAdapter` configured — typically `output-asana` for the comment-back loop)*. permanent delivery failures surface on the Activity feed as `output_delivery_dlq` SSE events (the channel name on the bus is the underscore form, not `output.delivery.dlq`). the `output_deliveries` audit table records every attempt regardless of success:
+   ```
+   psql "$DATABASE_URL" -c "SELECT id, binding_id, status, http_status, attempt, duration_ms \
+                            FROM output_deliveries \
+                            ORDER BY created_at DESC LIMIT 5;"
+   ```
 
-A scripted version of this probe ships at `scripts/smoke-real-data.ts` and is registered as `pnpm smoke:real-data`. it provisions a transient test domain + a generic-webhook binding, posts a signed fixture event, polls for the `webhook_events` and `ingestion_intake` rows, and tears down its scaffolding before exit. useful as a "is the deployment alive?" probe at any time after first boot, distinct from the real-Asana walkthrough above:
+When the webhook row, the `agent_run` success event, the `ingestion_intake` `compiled` row, and the wiki page are all in place, the smoke is green. proceed to the §9 sign-off checklist.
+
+### Scripted probe (different surface)
+
+`scripts/smoke-real-data.ts` (registered as `pnpm smoke:real-data`) is a separate, narrower probe — it tests the **generic `source-webhook` adapter** path, not the Asana adapter. The smoke provisions a transient knowledge domain + a generic-webhook source binding, writes the webhook secret via `DrizzleCredentialStore.write` (same path the production receiver decrypts), posts an HMAC-signed fixture event to `/webhooks/<binding-id>`, polls for the `webhook_events` and `ingestion_intake` rows, and tears down its scaffolding before exit. It does NOT exercise Asana, Drive, Fireflies, or any output adapter. Useful as an "is the deployment alive?" probe at any time after first boot:
 
 ```
 pnpm opencoo                 # in terminal 1
 pnpm smoke:real-data         # in terminal 2; exits 0 in <90s on green
 ```
+
+The Asana walkthrough above and the scripted smoke test different code paths; running both gives separate signals.
 
 ## 5. Common failures and how to recover
 
