@@ -449,6 +449,83 @@ describe("opencoo agents fire — slug resolution", () => {
       await fx.close();
     }
   });
+
+  it("--instance-id pointing at a DISABLED row → exit 1 with not-found message, no invokeAgent call", async () => {
+    // Mirrors the slug-only "disabled instance is NOT picked" pin
+    // for the explicit `--instance-id <uuid>` path. `loadInstanceById`
+    // carries `WHERE enabled = true` (instances.ts:86) so a disabled
+    // row throws AgentInstanceNotFoundError; the CLI translates that
+    // into the "not found (or disabled)" stderr message. Without
+    // this test the disabled-via-id branch was uncovered (the slug
+    // path tests the SELECT filter; this tests the loadInstanceById
+    // filter).
+    const fx = await makeDbFixture();
+    try {
+      const [disabledId] = await fx.seed([
+        {
+          definitionSlug: "heartbeat",
+          name: "heartbeat-default",
+          enabled: false,
+        },
+      ]);
+      const id = disabledId;
+      if (id === undefined) throw new Error("seed missing id");
+      const { bundle, closeSpy } = makeBundleStub({
+        db: fx.db,
+        registeredRunners: ["heartbeat"],
+      });
+      const invokeAgentFn = vi.fn();
+      const cap = captureExit();
+      const { args, stderr } = buildArgs(
+        {
+          slug: "heartbeat",
+          instanceId: id,
+          composeBundle: () => bundle as never,
+          invokeAgentFn: invokeAgentFn as never,
+        },
+        { fx },
+      );
+      await expect(runAgentsFire(args)).rejects.toThrow(ExitSentinel);
+      expect(cap.code).toBe(1);
+      expect(invokeAgentFn).not.toHaveBeenCalled();
+      expect(stderr.buffer).toMatch(/not found \(or disabled\)/);
+      expect(stderr.buffer).toContain(id);
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      await fx.close();
+    }
+  });
+
+  it("--instance-id pointing at a NONEXISTENT uuid → exit 1 with not-found message, no invokeAgent call", async () => {
+    const fx = await makeDbFixture();
+    try {
+      // Seed nothing — the table is empty so any uuid is missing.
+      const missingId = "00000000-0000-0000-0000-0000000ffffe";
+      const { bundle, closeSpy } = makeBundleStub({
+        db: fx.db,
+        registeredRunners: ["heartbeat"],
+      });
+      const invokeAgentFn = vi.fn();
+      const cap = captureExit();
+      const { args, stderr } = buildArgs(
+        {
+          slug: "heartbeat",
+          instanceId: missingId,
+          composeBundle: () => bundle as never,
+          invokeAgentFn: invokeAgentFn as never,
+        },
+        { fx },
+      );
+      await expect(runAgentsFire(args)).rejects.toThrow(ExitSentinel);
+      expect(cap.code).toBe(1);
+      expect(invokeAgentFn).not.toHaveBeenCalled();
+      expect(stderr.buffer).toMatch(/not found/);
+      expect(stderr.buffer).toContain(missingId);
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      await fx.close();
+    }
+  });
 });
 
 describe("opencoo agents fire — boot-tolerance + close discipline", () => {
