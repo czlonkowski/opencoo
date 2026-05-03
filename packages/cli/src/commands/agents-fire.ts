@@ -180,16 +180,19 @@ export async function runAgentsFire(args: AgentsFireArgs): Promise<void> {
     ((pool: unknown): Db =>
       drizzlePg(pool as Pool) as unknown as Db);
 
-  // Boot-tolerance branch: matches the dispatcher path. Without
-  // MCP_BEARER_TOKEN (or its _FILE variant), the production
-  // composition refuses to construct an HttpMcpToolClient, the
-  // bundle is null, and there's nothing for the runner to call.
-  // Don't open a pool, don't query the DB — fail clean.
+  // Boot-tolerance branch: matches the dispatcher path.
+  // `tryComposeAgentRunnersBundleFromEnv` returns null for several
+  // reasons (production-composition.ts:475-549) — narrowing the
+  // stderr to one cause misdirects operators with the other
+  // failures. The composition itself logs the precise cause at
+  // warn level (`mcp_http.unavailable` for both the missing token
+  // and the pg.Pool path); the operator-facing line names every
+  // check so they know where to look.
   const bundle = composeBundle({ env: args.env, logger });
   if (bundle === null) {
     args.stderr.write(
       pc.red(
-        "agents fire: agent runners unavailable; check MCP_BEARER_TOKEN — see runbook §1\n",
+        "agents fire: agent runners unavailable. Check (1) DATABASE_URL is set + Postgres is reachable, (2) MCP_BEARER_TOKEN is set (or N8N_MCP_BEARER_TOKEN if relying on n8n-mcp), (3) compose-time logs above for the specific reason. See runbook §1.\n",
       ),
     );
     return exitRuntimeError();

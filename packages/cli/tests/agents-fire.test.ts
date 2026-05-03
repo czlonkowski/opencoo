@@ -625,8 +625,16 @@ describe("opencoo agents fire — boot-tolerance + close discipline", () => {
     await expect(runAgentsFire(args)).rejects.toThrow(ExitSentinel);
     expect(cap.code).toBe(2);
     expect(invokeAgentFn).not.toHaveBeenCalled();
+    // Round-3 fix #2: the boot-tolerance message names ALL three
+    // checks (DATABASE_URL + MCP_BEARER_TOKEN + compose-time logs)
+    // because tryComposeAgentRunnersBundleFromEnv returns null for
+    // any of them. Narrowing to MCP_BEARER_TOKEN alone misdirected
+    // operators with DB-side issues.
     expect(stderr.buffer).toMatch(/agent runners unavailable/);
+    expect(stderr.buffer).toContain("DATABASE_URL");
     expect(stderr.buffer).toContain("MCP_BEARER_TOKEN");
+    expect(stderr.buffer).toContain("compose-time logs");
+    expect(stderr.buffer).toContain("runbook §1");
   });
 
   it("bundle.close() runs even when the runner throws (finally discipline)", async () => {
