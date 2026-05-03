@@ -612,7 +612,34 @@ export function tryComposeAgentRunnersFromEnv(
   definitions.register(LINT_DEFINITION);
   definitions.register(SURFACER_DEFINITION);
 
+  // Round-2 fix #2 on PR #57 (Copilot review): Surfacer's
+  // `availableTemplateSlugs` is the closed list of n8n workflow
+  // templates the LLM is allowed to propose. `runSurfacer`
+  // rejects every candidate with an unknown slug, so an empty
+  // list silently drops EVERY automation Surfacer would surface
+  // — invisible failure at scheduled-cadence cron tick. v0.1
+  // ships no template catalog wiring (the catalog-workflows
+  // class exists but the slug list isn't sourced from it yet),
+  // so when the operator hasn't supplied a non-empty list we
+  // OMIT Surfacer from the runner registry entirely. The
+  // operator sees a clear warn line at boot;
+  // `agents seed`-ed Surfacer instances dispatch and the
+  // dispatcher's runner-missing path throws (with the BullMQ
+  // retry/DLQ surfacing the misconfig) instead of running
+  // silently against an empty catalog.
+  //
+  // TODO(v0.2): wire `availableTemplateSlugs` from the
+  // catalog-workflows domain's compiled page index — Surfacer
+  // becomes registered automatically when the catalog has at
+  // least one entry.
   const availableTemplateSlugs = args.availableTemplateSlugs ?? [];
+  const surfacerEnabled = availableTemplateSlugs.length > 0;
+  if (!surfacerEnabled) {
+    logger.warn("surfacer.template_catalog_empty", {
+      reason:
+        "availableTemplateSlugs is empty — Surfacer is OMITTED from the runner registry. Heartbeat + Lint still run on cron; Surfacer instances will land on the dispatcher's runner-missing path until v0.2 wires the catalog-workflows domain.",
+    });
+  }
 
   const runners = createProductionAgentRunners({
     db: args.pgPool,
@@ -621,6 +648,7 @@ export function tryComposeAgentRunnersFromEnv(
     logger,
     definitions,
     availableTemplateSlugs,
+    surfacerEnabled,
   });
 
   return { mcp, definitions, runners };

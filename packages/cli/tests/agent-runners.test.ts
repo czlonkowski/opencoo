@@ -105,7 +105,7 @@ function fakeCtx(slug: string): AgentRunContext {
 }
 
 describe("createProductionAgentRunners — registry resolution", () => {
-  it("returns runners for the three scheduled-class agents", () => {
+  it("returns runners for the three scheduled-class agents (Surfacer included when availableTemplateSlugs is non-empty)", () => {
     const registry = createProductionAgentRunners(makeDeps());
     expect(registry.get("heartbeat")).toBeTypeOf("function");
     expect(registry.get("lint")).toBeTypeOf("function");
@@ -125,6 +125,30 @@ describe("createProductionAgentRunners — registry resolution", () => {
     const registry = createProductionAgentRunners(makeDeps());
     expect(registry.get("does-not-exist")).toBeUndefined();
     expect(registry.get("")).toBeUndefined();
+  });
+
+  // Round-2 fix #2 on PR #57: when `surfacerEnabled === false`
+  // (orchestrator's signal that the template catalog is empty),
+  // Surfacer must be OMITTED from the registry. Otherwise
+  // scheduled Surfacer runs against an empty
+  // `availableTemplateSlugs` and `runSurfacer` silently rejects
+  // every candidate the LLM proposes — invisible failure.
+  it("OMITS Surfacer when surfacerEnabled === false (round-2 fix #2)", () => {
+    const registry = createProductionAgentRunners({
+      ...makeDeps(),
+      surfacerEnabled: false,
+    });
+    expect(registry.get("heartbeat")).toBeTypeOf("function");
+    expect(registry.get("lint")).toBeTypeOf("function");
+    expect(registry.get("surfacer")).toBeUndefined();
+  });
+
+  it("registers Surfacer when surfacerEnabled === true (default)", () => {
+    const registry = createProductionAgentRunners({
+      ...makeDeps(),
+      surfacerEnabled: true,
+    });
+    expect(registry.get("surfacer")).toBeTypeOf("function");
   });
 });
 
@@ -229,19 +253,52 @@ describe("tryComposeAgentRunnersFromEnv — boot-tolerance (PR-N3)", () => {
     expect(warn).toBeDefined();
   });
 
-  it("returns a populated registry when MCP_BEARER_TOKEN is set", () => {
+  it("returns a populated registry when MCP_BEARER_TOKEN is set (Surfacer OMITTED when no template catalog)", () => {
+    const records: Array<{ level: string; message: string; data?: unknown }> = [];
+    const logger = {
+      debug: (m: string, d?: unknown) => records.push({ level: "debug", message: m, data: d }),
+      info: (m: string, d?: unknown) => records.push({ level: "info", message: m, data: d }),
+      warn: (m: string, d?: unknown) => records.push({ level: "warn", message: m, data: d }),
+      error: (m: string, d?: unknown) => records.push({ level: "error", message: m, data: d }),
+    } as unknown as Parameters<typeof tryComposeAgentRunnersFromEnv>[0]["logger"];
+    const result = tryComposeAgentRunnersFromEnv({
+      env: { MCP_BEARER_TOKEN: "valid-token-1234567890" },
+      router: {} as never,
+      pgPool: {} as never,
+      logger,
+    });
+    expect(result).not.toBeNull();
+    expect(result?.runners.get("heartbeat")).toBeTypeOf("function");
+    expect(result?.runners.get("lint")).toBeTypeOf("function");
+    // Round-2 fix #2 on PR #57: empty template catalog →
+    // Surfacer is omitted (not silently misconfigured).
+    expect(result?.runners.get("surfacer")).toBeUndefined();
+    expect(result?.runners.get("chat")).toBeUndefined();
+    // The 3 definitions are still REGISTERED in the
+    // AgentDefinitionRegistry (the dispatcher uses them for
+    // automation_drift detection); only the RUNNER closure for
+    // surfacer is omitted.
+    expect(result?.definitions.list().length).toBe(3);
+    // The orchestrator emitted a clear warn line so the
+    // operator can see why Surfacer doesn't fire on cron.
+    const warn = records.find(
+      (r) =>
+        r.level === "warn" &&
+        r.message === "surfacer.template_catalog_empty",
+    );
+    expect(warn).toBeDefined();
+  });
+
+  it("registers Surfacer when MCP_BEARER_TOKEN is set AND availableTemplateSlugs is non-empty", () => {
     const result = tryComposeAgentRunnersFromEnv({
       env: { MCP_BEARER_TOKEN: "valid-token-1234567890" },
       router: {} as never,
       pgPool: {} as never,
       logger: silentLogger(),
+      availableTemplateSlugs: ["asana-comment", "drive-watch"],
     });
     expect(result).not.toBeNull();
-    expect(result?.runners.get("heartbeat")).toBeTypeOf("function");
-    expect(result?.runners.get("lint")).toBeTypeOf("function");
     expect(result?.runners.get("surfacer")).toBeTypeOf("function");
-    expect(result?.runners.get("chat")).toBeUndefined();
-    expect(result?.definitions.list().length).toBe(3);
   });
 
   it("exposes the LlmRouter on the bundle so the orchestrator can thread it into AgentDispatcher (round-2 fix #1 on PR #57)", async () => {

@@ -84,6 +84,17 @@ export interface ProductionAgentRunnersDeps {
    *  Mirrors the prompt's allow-list; `runSurfacer` rejects any
    *  candidate with an unknown slug. */
   readonly availableTemplateSlugs: readonly string[];
+  /** Round-2 fix #2 on PR #57 (Copilot review): when false,
+   *  Surfacer is OMITTED from the registry. The orchestrator
+   *  sets this to false when `availableTemplateSlugs.length === 0`
+   *  so a scheduled Surfacer doesn't silently drop every
+   *  candidate against an empty catalog — instead the
+   *  dispatcher's runner-missing path throws + the operator
+   *  sees the failure surface (one BullMQ retry burst per
+   *  Surfacer instance, then DLQ). Defaults to true (back-
+   *  compat for tests that wire a non-empty list and expect
+   *  Surfacer registered without explicitly opting in). */
+  readonly surfacerEnabled?: boolean;
 }
 
 interface SlugRow {
@@ -161,11 +172,24 @@ export function createProductionAgentRunners(
     } as unknown as Parameters<typeof runSurfacer>[1]);
   };
 
-  const map = new Map<string, AgentRunner>([
+  // Round-2 fix #2 on PR #57: Surfacer is OMITTED from the
+  // registry when `surfacerEnabled === false` (default true for
+  // back-compat with tests that wire a non-empty
+  // availableTemplateSlugs and expect Surfacer registered).
+  // Without the omit, scheduled Surfacer instances would run
+  // against an empty `availableTemplateSlugs` allow-list and
+  // `runSurfacer` would silently reject every candidate the
+  // LLM proposed — invisible failure. With the omit, the
+  // dispatcher's runner-missing throw surfaces the misconfig.
+  const surfacerEnabled = deps.surfacerEnabled ?? true;
+  const entries: Array<[string, AgentRunner]> = [
     ["heartbeat", heartbeat],
     ["lint", lint],
-    ["surfacer", surfacer],
-  ]);
+  ];
+  if (surfacerEnabled) {
+    entries.push(["surfacer", surfacer]);
+  }
+  const map = new Map<string, AgentRunner>(entries);
 
   return {
     get(definitionSlug: string): AgentRunner | undefined {
