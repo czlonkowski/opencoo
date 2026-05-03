@@ -170,6 +170,22 @@ export async function start(
   //
   // Composition-root bugs fail loud at boot, not at first POST —
   // mirroring the workerContext / workerConnection check above.
+  //
+  // PR-N2 round-2 (S1): `enqueue` is now also required in
+  // mode='workers'. Two reasons:
+  //   1. The Scanner pipeline (`pipelines/scanner.ts`) needs it as
+  //      its producer-side handle for `ingestion.scanner.classify`
+  //      — without it `MISSING_ENQUEUE` triggers per-job +
+  //      `scanner.enqueue_failed` log spam on every cron tick.
+  //   2. The webhook receiver's PR-N2 direct-intake branch needs it
+  //      as `scannerClassifyQueue`. If a future composition root
+  //      registers an `enrichEvents`-capable adapter without
+  //      `enqueue`, Branch B (legacy fallback) silently activates
+  //      and webhook deliveries pile in `webhook_events` without
+  //      ever advancing to `ingestion_intake` — exactly the
+  //      failure mode PR-N1 was written to eliminate. Treating
+  //      `enqueue` as required for production removes the silent
+  //      fallback and surfaces the misconfiguration at boot.
   if (mode === "workers") {
     const ctx = options.workerContext as WorkerContext;
     const missing: string[] = [];
@@ -177,6 +193,7 @@ export async function start(
     if (ctx.webhookVerifier === undefined) missing.push("webhookVerifier");
     if (ctx.webhookScannerQueue === undefined) missing.push("webhookScannerQueue");
     if (ctx.webhookDlqQueue === undefined) missing.push("webhookDlqQueue");
+    if (ctx.enqueue === undefined) missing.push("enqueue");
     if (missing.length > 0) {
       throw new Error(
         `engine-ingestion start: mode='workers' requires WorkerContext.{${missing.join(",")}} for the webhook receiver mount (composition-root bug)`,

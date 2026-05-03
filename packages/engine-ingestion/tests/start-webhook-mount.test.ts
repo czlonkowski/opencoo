@@ -123,17 +123,23 @@ function buildTestServerFactory(captured: { app?: FastifyInstance }) {
  *  validation. Only fields the receiver mount path consumes are
  *  populated — the actual workers are constructed by start.ts but
  *  never run a job in these tests because we never push to
- *  Redis. */
+ *  Redis.
+ *
+ *  PR-N2 round-2 (S1): `enqueue` is now part of start()'s
+ *  required-in-mode='workers' set. The helper wires a recorder
+ *  stub by default so existing tests keep passing; pass `omit:
+ *  ['enqueue']` to exercise the new boot-validation throw. */
 async function buildTestWorkerContext(opts: {
   readonly omit?: ReadonlyArray<
     | "credentialStore"
     | "webhookVerifier"
     | "webhookScannerQueue"
     | "webhookDlqQueue"
+    | "enqueue"
   >;
-  /** When true, register an adapter with `enrichEvents` and wire a
-   *  `scannerClassifyQueue` recorder onto `ctx.enqueue` so the
-   *  PR-N2 direct-intake path is exercised. */
+  /** When true, register an adapter with `enrichEvents` AND attach
+   *  the wired-by-default `enqueue` recorder so the PR-N2
+   *  direct-intake path is exercised end-to-end. */
   readonly withDirectIntake?: boolean;
 } = {}) {
   const fixture = await freshIntakeDb();
@@ -200,9 +206,9 @@ async function buildTestWorkerContext(opts: {
     author: { name: "test", email: "test@example.com" },
     guardAdapter: {} as never,
     adapterRegistry,
-    ...(opts.withDirectIntake === true
-      ? { enqueue: scannerClassifyQueue as unknown }
-      : {}),
+    // `enqueue` is required by mode='workers' since PR-N2 round-2.
+    // Always present unless explicitly omitted.
+    ...(omit.has("enqueue") ? {} : { enqueue: scannerClassifyQueue }),
     ...(omit.has("credentialStore") ? {} : { credentialStore }),
     ...(omit.has("webhookVerifier")
       ? {}
@@ -442,11 +448,20 @@ describe("start({ mode: 'probes-only' }) — does NOT mount the webhook receiver
 });
 
 describe("start({ mode: 'workers' }) — composition-root bug surfaces at boot", () => {
+  // PR-N2 round-2 (S1): `enqueue` is now required for mode='workers'
+  // — symmetric with the other four. Without it the receiver's
+  // PR-N2 direct-intake branch would silently fall through to the
+  // legacy intake.scanner enqueue, and webhook deliveries would
+  // pile in webhook_events without ever advancing to
+  // ingestion_intake. Boot-validation surfaces the misconfiguration
+  // immediately rather than letting it manifest as silent data loss
+  // on the first webhook.
   it.each([
     ["credentialStore"],
     ["webhookVerifier"],
     ["webhookScannerQueue"],
     ["webhookDlqQueue"],
+    ["enqueue"],
   ] as const)(
     "missing WorkerContext.%s → throws before app.listen",
     async (missingField) => {
