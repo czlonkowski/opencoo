@@ -288,50 +288,78 @@ async function provisionScaffolding(
     } as NodeJS.ProcessEnv),
     logger: new ConsoleLogger(),
   });
+  // Order: credential first (FK target for sources_bindings.credentials_id
+  // with onDelete: restrict — the binding INSERT cannot reference an
+  // id that doesn't yet exist). Round-3 fix #2: wrap the
+  // post-credential-write logic in a try/catch that explicitly cleans
+  // up the credential row if the domain/binding INSERT throws.
+  // Without this, a partial-provisioning failure would leak the
+  // credential row — `provisionScaffolding` rethrows before
+  // `Scaffolding` is constructed, so the outer `finally` in `run()`
+  // never reaches `teardown()` (it gates on `scaffold !== undefined`).
   const credentialId = await credentialStore.write({
     name: `smoke:webhook-secret:${stamp}`,
     schemaRef: "smoke:webhook_secret",
     plaintext: Buffer.from(webhookSecret, "utf8"),
   });
 
-  const client = await pool.connect();
+  let domainId: string;
+  let bindingId: string;
   try {
-    await client.query("BEGIN");
-    const { rows: domainRows } = await client.query<{ id: string }>(
-      `INSERT INTO domains (slug, name, class)
-       VALUES ($1, $1, 'knowledge')
-       RETURNING id`,
-      [domainSlug],
-    );
-    const domainId = domainRows[0]!.id;
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { rows: domainRows } = await client.query<{ id: string }>(
+        `INSERT INTO domains (slug, name, class)
+         VALUES ($1, $1, 'knowledge')
+         RETURNING id`,
+        [domainSlug],
+      );
+      domainId = domainRows[0]!.id;
 
-    const { rows: bindingRows } = await client.query<{ id: string }>(
-      `INSERT INTO sources_bindings
-         (domain_id, adapter_slug, credentials_id, webhook_secret_credentials_id,
-          config, enabled, review_mode)
-       VALUES ($1, 'webhook', $2, $2, $3::jsonb, true, 'auto')
-       RETURNING id`,
-      [
-        domainId,
-        credentialId,
-        JSON.stringify({
-          pathSegment: `smoke-${stamp}`,
-        }),
-      ],
-    );
-    const bindingId = bindingRows[0]!.id;
+      const { rows: bindingRows } = await client.query<{ id: string }>(
+        `INSERT INTO sources_bindings
+           (domain_id, adapter_slug, credentials_id, webhook_secret_credentials_id,
+            config, enabled, review_mode)
+         VALUES ($1, 'webhook', $2, $2, $3::jsonb, true, 'auto')
+         RETURNING id`,
+        [
+          domainId,
+          credentialId,
+          JSON.stringify({
+            pathSegment: `smoke-${stamp}`,
+          }),
+        ],
+      );
+      bindingId = bindingRows[0]!.id;
 
-    await client.query("COMMIT");
-    ctx.stdout.write(
-      `smoke: scaffolding ok (domain=${domainSlug} binding=${bindingId})\n`,
-    );
-    return { domainId, domainSlug, bindingId, webhookSecret, credentialId };
+      await client.query("COMMIT");
+    } catch (txErr) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw txErr;
+    } finally {
+      client.release();
+    }
   } catch (err) {
-    await client.query("ROLLBACK").catch(() => undefined);
+    // Domain or binding INSERT failed (most likely: schema-missing,
+    // duplicate slug, or pool-acquisition error). The credential row
+    // is now an orphan — no FK references it, but it leaks until
+    // someone runs psql. Clean it up before rethrowing so a smoke
+    // failure leaves nothing behind.
+    await credentialStore.delete(credentialId).catch((cleanupErr: unknown) => {
+      ctx.stderr.write(
+        `smoke: orphaned credential cleanup failed (${
+          (cleanupErr as Error).message
+        }) — psql DELETE FROM credentials WHERE id = '${credentialId}'\n`,
+      );
+    });
     throw err;
-  } finally {
-    client.release();
   }
+
+  ctx.stdout.write(
+    `smoke: scaffolding ok (domain=${domainSlug} binding=${bindingId})\n`,
+  );
+  return { domainId, domainSlug, bindingId, webhookSecret, credentialId };
 }
 
 async function postFixtureWebhook(
