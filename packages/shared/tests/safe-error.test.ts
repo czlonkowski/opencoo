@@ -65,6 +65,32 @@ describe("safeErrorMessage — input coercion", () => {
     expect(safeErrorMessage(null)).toBe("null");
     expect(safeErrorMessage(undefined)).toBe("undefined");
   });
+
+  it("returns the typed marker when value's toString throws", () => {
+    // Round-2 hardening: `String(err)` invokes the value's
+    // `toString()` / `[Symbol.toPrimitive]`, which CAN throw if
+    // the value has a hostile or buggy implementation. The
+    // never-throws contract requires we catch this and fall back
+    // to a typed marker so the failure-handling path stays alive.
+    const hostile = {
+      toString() {
+        throw new Error("nope");
+      },
+    };
+    expect(safeErrorMessage(hostile)).toBe("[unstringifiable error value]");
+  });
+
+  it("returns the typed marker when [Symbol.toPrimitive] throws", () => {
+    // `String(value)` prefers `[Symbol.toPrimitive]("string")`
+    // over `toString()` per the abstract OrdinaryToPrimitive
+    // algorithm — both code paths must be guarded.
+    const hostile = {
+      [Symbol.toPrimitive](): string {
+        throw new Error("primitive coercion blew up");
+      },
+    };
+    expect(safeErrorMessage(hostile)).toBe("[unstringifiable error value]");
+  });
 });
 
 describe("safeErrorMessage — scrub-then-cap order", () => {
