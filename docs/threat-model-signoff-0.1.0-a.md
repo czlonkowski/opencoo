@@ -381,10 +381,19 @@ is the evidence backing items 1, 2, 3, 8, 9 above.
 
 ---
 
-End of automatable checks. The remaining four §5 items
-(new adapter / new LLM call / new wiki write / new admin UI action)
-are pre-cited at `path:line` in the sign-off doc for the maintainer
-to spot-check by eye.
+End of automatable checks. These 5 checks reduce 4 of THREAT-MODEL §5's
+12 line-bullet items to ✓ (items 1, 9, 10, 12). The remaining 8 items
+need maintainer judgment beyond the script:
+
+  - Items 3, 4, 5, 7 — touched by the automatable checks above but
+    still need a maintainer eye (credentialSchema secret flag / LLM
+    call through router + spotlighting / wiki write provenance /
+    admin UI action CSRF + audit).
+  - Items 2, 6, 8, 11 — pure per-PR §3 read (matching §3 section
+    satisfied / webhook HMAC + cap / internet-facing route in
+    INTERNET_FACING_PATHS / credentials never in logs grep).
+
+All 8 are pre-cited at `path:line` in the sign-off doc.
 ```
 
 ---

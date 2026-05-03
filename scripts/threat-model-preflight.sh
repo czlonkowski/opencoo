@@ -57,10 +57,22 @@
 #   - This script is NOT wired into CI (per the appendix-#8 plan).
 #     Per-PR §5 checklists already live inline in PR bodies; this is
 #     the tag-time / phase-merge sweep.
-#   - The script does NOT cover the four pure-judgment §5 items
-#     (new adapter / new LLM call / new wiki write / new admin UI
-#     action). Those are pre-cited at path:line in the sign-off doc
-#     for the maintainer to spot-check.
+#   - The 5 automatable checks reduce 4 of THREAT-MODEL §5's 12
+#     line-bullet items to ✓ (items 1, 9, 10, 12 — invariants /
+#     no-feature-env-vars / test-tier discipline / residual-risk
+#     bookkeeping). The remaining 8 items need maintainer judgment
+#     beyond the script:
+#       - Items 3, 4, 5, 7 — touched by the automatable checks but
+#         still need a maintainer eye (new adapter credentialSchema
+#         flag / new LLM call through router + spotlighting / new
+#         wiki write provenance / new admin UI action with CSRF +
+#         audit).
+#       - Items 2, 6, 8, 11 — pure per-PR §3 read (matching §3
+#         section satisfied / new webhook HMAC + cap / new
+#         internet-facing route enumerated / credentials never in
+#         logs grep).
+#     All 8 are pre-cited at path:line in the sign-off doc so the
+#     maintainer can spot-check each in <30s.
 #
 # Implementation notes:
 #   - All 5 checks run unconditionally even if an earlier one fails.
@@ -347,10 +359,19 @@ echo
 cat <<EOF
 ---
 
-End of automatable checks. The remaining four §5 items
-(new adapter / new LLM call / new wiki write / new admin UI action)
-are pre-cited at \`path:line\` in the sign-off doc for the maintainer
-to spot-check by eye.
+End of automatable checks. These 5 checks reduce 4 of THREAT-MODEL §5's
+12 line-bullet items to ✓ (items 1, 9, 10, 12). The remaining 8 items
+need maintainer judgment beyond the script:
+
+  - Items 3, 4, 5, 7 — touched by the automatable checks above but
+    still need a maintainer eye (credentialSchema secret flag / LLM
+    call through router + spotlighting / wiki write provenance /
+    admin UI action CSRF + audit).
+  - Items 2, 6, 8, 11 — pure per-PR §3 read (matching §3 section
+    satisfied / webhook HMAC + cap / internet-facing route in
+    INTERNET_FACING_PATHS / credentials never in logs grep).
+
+All 8 are pre-cited at \`path:line\` in the sign-off doc.
 EOF
 
 exit 0
