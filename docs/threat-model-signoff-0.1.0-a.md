@@ -321,7 +321,11 @@ in the worktree at HEAD `2deccd1`. The maintainer should re-run the
 script if there is any drift from this run; otherwise, this fragment
 is the evidence backing items 1, 2, 3, 8, 9 above.
 
-```
+(Note: the outer fence below uses 4 backticks because the captured
+preflight output itself contains 3-backtick fences — a 3-backtick
+outer would terminate at the first inner fence and break rendering.)
+
+````
 ## §5 Automatable Checks (run 2026-05-03 against 2deccd1)
 
 > Paste this fragment into `docs/threat-model-signoff-0.1.0-a.md` (or per-tag equivalent).
@@ -395,7 +399,7 @@ need maintainer judgment beyond the script:
     INTERNET_FACING_PATHS / credentials never in logs grep).
 
 All 8 are pre-cited at `path:line` in the sign-off doc.
-```
+````
 
 ---
 
