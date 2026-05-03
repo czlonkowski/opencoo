@@ -221,26 +221,28 @@ Usage:
 Required env (read from .env / shell, identical to \`pnpm opencoo\`):
   DATABASE_URL, REDIS_URL, ENCRYPTION_KEY, GITEA_URL, GITEA_PAT
 
-What it does (webhook → intake → classify-enqueue chain):
+What it does (webhook delivery → Postgres-row verification):
   1. Asserts the env above is set.
   2. Polls http://localhost:<port>/health (default 8080) for ${HEALTH_TIMEOUT_MS / 1000}s.
   3. Provisions a transient test domain + a generic-webhook source binding.
   4. Posts a fixture HMAC-signed event to /webhooks/<binding-id>.
-  5. Confirms the row landed in webhook_events.
-  6. Confirms an ingestion_intake row landed (PR-N2 direct-intake branch
-     fires when the bound adapter exposes enrichEvents — source-webhook
-     does, since PR-N2). The classify job has been enqueued onto
-     ingestion.scanner.classify by the same code path.
+  5. Confirms the row landed in webhook_events (Postgres poll).
+  6. Confirms an ingestion_intake row landed (Postgres poll). The PR-N2
+     direct-intake branch fires when the bound adapter exposes
+     enrichEvents — source-webhook does, since PR-N2.
   7. Tears down the test scaffolding and exits 0.
 
 Scope:
-  Steps 5–6 verify the receiver wrote both the webhook_events row AND
-  the ingestion_intake row inline before returning 200, and that the
-  per-document ingestion.scanner.classify job is on the queue. This
-  probe does NOT verify compile → wiki write — that depends on the
-  Compile worker, LLM router, GuardAdapter, and WikiAdapter all being
-  composed and reachable. To verify the full chain end-to-end, bind a
-  real Asana / Drive source and follow the manual walk in
+  Steps 5–6 verify webhook delivery → \`webhook_events\` row →
+  \`ingestion_intake\` row via Postgres polling. The probe does NOT
+  inspect Redis / BullMQ — the \`ingestion.scanner.classify\` job is
+  enqueued by the same code path that writes the intake row, but
+  this script does not poll the queue itself; that's a separate
+  Redis check. The probe also does NOT verify compile → wiki write
+  (depends on the Compile worker, LLM router, GuardAdapter, and
+  WikiAdapter all being composed and reachable). To verify the full
+  chain end-to-end through compile → wiki write, bind a real Asana /
+  Drive source and follow the manual walk in
   docs/pilot-runbook.md §4.
 
 Exit codes:
