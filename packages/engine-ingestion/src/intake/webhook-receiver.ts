@@ -52,6 +52,7 @@ import {
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
 import type { Logger } from "@opencoo/shared/logger";
+import { scrubPat } from "@opencoo/shared/scrub";
 import type { SourceWebhookHelpers } from "@opencoo/shared/source-adapter";
 import type { WebhookVerifier } from "@opencoo/shared/webhook-verifier";
 
@@ -328,16 +329,33 @@ export function registerWebhookRoute(
       //   - We log the signature header NAME ("x-signature"), never
       //     the header VALUE.
       //   - We do not log the request body.
-      //   - `verifyResult.reason` is a closed enum from
-      //     HmacSha256Verifier ("signature header missing", "signature
-      //     is malformed (...)", "signature mismatch (HMAC differs)",
-      //     "signature length mismatch (...)") — safe to log verbatim.
+      //   - We `scrubPat` + cap `verifyResult.reason` defensively
+      //     before logging. The current `HmacSha256Verifier` returns
+      //     a closed-enum static string ("signature header missing",
+      //     "signature is malformed (...)", "signature mismatch
+      //     (HMAC differs)", "signature length mismatch (...)") which
+      //     scrubs to itself. But the `WebhookVerifier` type contract
+      //     just permits `string` — a future custom verifier could
+      //     include user-supplied bytes (header values, body
+      //     fragments, credential patterns). Defense in depth: scrub
+      //     credential patterns and cap at 200 chars BEFORE the line
+      //     reaches the operator log, mirroring the `safeError`
+      //     helper in `workers/production-context.ts` and
+      //     `cli/provision/production-composition.ts`.
+      //   - Apply scrubPat BEFORE the slice so a credential pattern
+      //     straddling the 200-char boundary is still redacted as a
+      //     whole match.
+      const ERROR_REASON_MAX_LENGTH = 200;
+      const safeReason = scrubPat(verifyResult.reason).slice(
+        0,
+        ERROR_REASON_MAX_LENGTH,
+      );
       options.appLogger?.debug("webhook_receiver.signature_invalid", {
         bindingId,
         provider: provider ?? binding.adapterSlug,
         eventId: eventId ?? null,
         signatureHeaderName: "x-signature",
-        errorReason: verifyResult.reason,
+        errorReason: safeReason,
       });
 
       await options.dlqQueue.add("intake.dlq", {

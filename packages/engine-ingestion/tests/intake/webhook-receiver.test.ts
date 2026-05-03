@@ -28,7 +28,11 @@ import { buildWebhookReceiver } from "../../src/intake/webhook-receiver.js";
 import { InMemoryAdapterRegistry } from "../../src/intake/adapter-registry.js";
 import { InMemoryCredentialStore } from "@opencoo/shared/credential-store";
 import { ConsoleLogger } from "@opencoo/shared/logger";
-import { HmacSha256Verifier } from "@opencoo/shared/webhook-verifier";
+import {
+  HmacSha256Verifier,
+  type WebhookVerifier,
+  type WebhookVerifyResult,
+} from "@opencoo/shared/webhook-verifier";
 
 import { freshIntakeDb } from "./_pglite-fixture.js";
 
@@ -78,7 +82,9 @@ function makeLoggerRecorder(): LoggerRecorder {
 
 const SECRET_PLAINTEXT = Buffer.from("test-shared-secret", "utf8");
 
-async function makeFixture(opts: { appLogger?: LoggerRecorder } = {}) {
+async function makeFixture(
+  opts: { appLogger?: LoggerRecorder; verifier?: WebhookVerifier } = {},
+) {
   const fixture = await freshIntakeDb();
 
   const credentialStore = new InMemoryCredentialStore({ logger: silentLogger() });
@@ -103,7 +109,7 @@ async function makeFixture(opts: { appLogger?: LoggerRecorder } = {}) {
     db: fixture.db,
     credentialStore,
     adapterRegistry,
-    verifier: new HmacSha256Verifier(),
+    verifier: opts.verifier ?? new HmacSha256Verifier(),
     scannerQueue: scannerQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["scannerQueue"],
     dlqQueue: dlqQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["dlqQueue"],
     ...(opts.appLogger !== undefined
@@ -292,6 +298,129 @@ describe("webhook receiver — signature mismatch", () => {
     // in the logged payload.
     expect(serialised).not.toContain("secret_in_body");
     expect(serialised).not.toContain("sensitive-bytes");
+
+    await app.close();
+  });
+
+  // (PR-N1 round-2 fix, Copilot #56) The `WebhookVerifier` port's
+  // `WebhookVerifyResult.reason` is typed as `string` — the contract
+  // does NOT constrain it to a closed enum. `HmacSha256Verifier`
+  // happens to return safe static strings today, but a future
+  // custom verifier could include user-supplied bytes (a header
+  // value, a body fragment, a credential pattern). The receiver
+  // MUST defensively `scrubPat`+cap the reason string before logging
+  // it so that defense-in-depth holds even if a verifier author
+  // forgets the redaction invariant. THREAT-MODEL §2 invariant 11 +
+  // §3.6.
+  it("POST with invalid signature → scrubs credential patterns from a custom verifier's reason string", async () => {
+    // A 40-hex string matches scrubPat's GITEA_PAT_RE rule and
+    // should be replaced by `[REDACTED]`.
+    const fakeGiteaPat = "a".repeat(40);
+    const reasonWithSecret = `signature mismatch (debug: leaked-token=${fakeGiteaPat})`;
+
+    const leakyVerifier: WebhookVerifier = {
+      verify(): WebhookVerifyResult {
+        return { ok: false, reason: reasonWithSecret };
+      },
+    };
+
+    const appLogger = makeLoggerRecorder();
+    const { app, bindingId } = await makeFixture({
+      appLogger,
+      verifier: leakyVerifier,
+    });
+
+    const body = '{"event":"push"}';
+    const res = await app.inject({
+      method: "POST",
+      url: `/webhooks/${bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        "x-signature": "sha256=" + "0".repeat(64),
+        "x-event-id": "evt-leaky-verifier",
+        "x-provider": "gitea",
+      },
+      payload: body,
+    });
+    expect(res.statusCode).toBe(401);
+
+    expect(appLogger.debug).toHaveBeenCalledTimes(1);
+    const [logKey, logCtx] = appLogger.debug.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(logKey).toBe("webhook_receiver.signature_invalid");
+
+    const errorReason = logCtx["errorReason"];
+    expect(typeof errorReason).toBe("string");
+
+    // The credential pattern MUST be replaced by `[REDACTED]` —
+    // verbatim secret bytes never reach the operator log.
+    expect(errorReason).toContain("[REDACTED]");
+    expect(errorReason).not.toContain(fakeGiteaPat);
+
+    // The non-secret prose around the redaction is preserved so
+    // operators can still tell what kind of failure happened.
+    expect(errorReason).toMatch(/signature mismatch/i);
+
+    // Round-2 cap: the receiver also bounds the reason at 200 chars
+    // so a verbose / attacker-controlled reason cannot blow up the
+    // log line. Asserting ≤200 here pins the cap behavior.
+    expect((errorReason as string).length).toBeLessThanOrEqual(200);
+
+    await app.close();
+  });
+
+  it("scrubs credential patterns even when the reason exceeds the 200-char cap", async () => {
+    // Build a reason longer than 200 chars that contains a credential
+    // pattern. The cap MUST be applied AFTER scrubPat so that a
+    // credential pattern straddling the 200-char boundary is still
+    // redacted (otherwise truncating first could expose a partial
+    // token through the cap window).
+    const fakeBearer = "Bearer " + "x".repeat(64);
+    const longLeakyReason =
+      "signature mismatch (verbose-debug: " +
+      "noise-".repeat(30) +
+      fakeBearer +
+      " end)";
+    expect(longLeakyReason.length).toBeGreaterThan(200);
+
+    const leakyVerifier: WebhookVerifier = {
+      verify(): WebhookVerifyResult {
+        return { ok: false, reason: longLeakyReason };
+      },
+    };
+
+    const appLogger = makeLoggerRecorder();
+    const { app, bindingId } = await makeFixture({
+      appLogger,
+      verifier: leakyVerifier,
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/webhooks/${bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        "x-signature": "sha256=" + "0".repeat(64),
+        "x-event-id": "evt-long-leaky",
+        "x-provider": "gitea",
+      },
+      payload: "{}",
+    });
+    expect(res.statusCode).toBe(401);
+
+    const [, logCtx] = appLogger.debug.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    const errorReason = logCtx["errorReason"] as string;
+
+    // The 64-x token must NEVER appear in the logged reason, even
+    // partially (`xxxx…`), because scrubPat replaces the whole
+    // generic-token match with `[REDACTED]`.
+    expect(errorReason).not.toContain("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+    expect(errorReason.length).toBeLessThanOrEqual(200);
 
     await app.close();
   });
