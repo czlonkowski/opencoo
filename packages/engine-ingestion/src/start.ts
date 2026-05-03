@@ -235,6 +235,21 @@ export async function start(
             verifier: ctx.webhookVerifier!,
             scannerQueue: ctx.webhookScannerQueue!,
             dlqQueue: ctx.webhookDlqQueue!,
+            // (PR-N2) The producer-side
+            // `ingestion.scanner.classify` queue handle the
+            // composition root already opened for the Scanner
+            // pipeline (`pipelines/scanner.ts`). Reusing the same
+            // handle for the receiver's direct-intake branch
+            // means a single Queue + a single Redis connection
+            // serve both producers — webhook deliveries and
+            // periodic scans land on the same backlog the
+            // Compile worker dequeues from. Optional in tests
+            // that omit `ctx.enqueue`; in those cases the
+            // receiver gracefully falls back to the legacy
+            // per-event `intake.scanner` enqueue path.
+            ...(ctx.enqueue !== undefined
+              ? { scannerClassifyQueue: ctx.enqueue }
+              : {}),
             appLogger: ctx.logger,
           });
           return server;

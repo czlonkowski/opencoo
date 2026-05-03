@@ -131,6 +131,10 @@ async function buildTestWorkerContext(opts: {
     | "webhookScannerQueue"
     | "webhookDlqQueue"
   >;
+  /** When true, register an adapter with `enrichEvents` and wire a
+   *  `scannerClassifyQueue` recorder onto `ctx.enqueue` so the
+   *  PR-N2 direct-intake path is exercised. */
+  readonly withDirectIntake?: boolean;
 } = {}) {
   const fixture = await freshIntakeDb();
 
@@ -147,10 +151,43 @@ async function buildTestWorkerContext(opts: {
   );
 
   const adapterRegistry = new InMemoryAdapterRegistry();
-  adapterRegistry.register({ slug: "drive" });
+  if (opts.withDirectIntake === true) {
+    // Replace the binding's adapter slug to one we register an
+    // enrichEvents-capable stub for.
+    await fixture.db.execute(
+      `UPDATE sources_bindings SET adapter_slug = 'direct-intake' WHERE id = '${fixture.bindingId}'`,
+    );
+    adapterRegistry.register({
+      slug: "direct-intake",
+      webhook: {
+        verifier: new HmacSha256Verifier(),
+        extractSignature: (headers) =>
+          typeof headers["x-signature"] === "string"
+            ? headers["x-signature"]
+            : undefined,
+        parseEvents: () => [
+          {
+            eventId: "evt-mounted-direct",
+            doc: {
+              sourceDocId: "doc-mounted-direct",
+              sourceRevision: "rev-mounted-direct",
+              sourceRef: "test:doc/mounted",
+              fetchedAt: new Date("2026-03-01T00:00:00Z"),
+              contentBytes: Buffer.from('{"hello":"mount"}', "utf8"),
+              metadata: { contentKind: "document" },
+            },
+          },
+        ],
+        enrichEvents: async (events) => events,
+      },
+    });
+  } else {
+    adapterRegistry.register({ slug: "drive" });
+  }
 
   const webhookScannerQueue = makeRecorder();
   const webhookDlqQueue = makeRecorder();
+  const scannerClassifyQueue = makeRecorder();
 
   const omit = new Set(opts.omit ?? []);
 
@@ -163,6 +200,9 @@ async function buildTestWorkerContext(opts: {
     author: { name: "test", email: "test@example.com" },
     guardAdapter: {} as never,
     adapterRegistry,
+    ...(opts.withDirectIntake === true
+      ? { enqueue: scannerClassifyQueue as unknown }
+      : {}),
     ...(omit.has("credentialStore") ? {} : { credentialStore }),
     ...(omit.has("webhookVerifier")
       ? {}
@@ -178,6 +218,7 @@ async function buildTestWorkerContext(opts: {
     fixture,
     webhookScannerQueue,
     webhookDlqQueue,
+    scannerClassifyQueue,
     credentialStore,
     adapterRegistry,
   };
@@ -271,6 +312,88 @@ describe("start({ mode: 'workers' }) — mounts the webhook receiver on the engi
     expect(res.statusCode).toBe(401);
     expect(webhookScannerQueue.add).not.toHaveBeenCalled();
     expect(webhookDlqQueue.add).toHaveBeenCalledTimes(1);
+  });
+});
+
+// (PR-N2, phase-a appendix #6) — when the mounted receiver is paired
+// with an adapter that exposes `enrichEvents` AND the WorkerContext
+// carries `enqueue` (the producer-side
+// `ingestion.scanner.classify` queue handle), the receiver takes the
+// direct-intake fast path: it INSERTs `ingestion_intake` rows itself
+// and enqueues `ScannerClassifyJob` payloads inline. This pins the
+// full webhook → intake → classify-enqueue flow under
+// `mode: 'workers'`, the production boot mode.
+describe("start({ mode: 'workers' }) — direct-intake fast path (PR-N2)", () => {
+  const enginesToClose: Array<{ close(): Promise<void> }> = [];
+  afterEach(async () => {
+    for (const e of enginesToClose.splice(0)) {
+      await e.close().catch(() => undefined);
+    }
+  });
+
+  it("POST with valid signature → ingestion_intake row inserted + ingestion.scanner.classify job enqueued", async () => {
+    const captured: { app?: FastifyInstance } = {};
+    const {
+      ctx,
+      fixture,
+      webhookScannerQueue,
+      webhookDlqQueue,
+      scannerClassifyQueue,
+    } = await buildTestWorkerContext({ withDirectIntake: true });
+
+    const engine = await start({
+      env: validEnv,
+      mode: "workers",
+      workerContext: ctx,
+      workerConnection: { host: "localhost", port: 6379 },
+      dbFactory: () => makeStubPool(),
+      redisFactory: () => makeStubRedis(),
+      serverFactory: buildTestServerFactory(captured),
+    });
+    enginesToClose.push(engine);
+
+    const body = '{"event":"direct"}';
+    const res = await captured.app!.inject({
+      method: "POST",
+      url: `/webhooks/${fixture.bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        "x-signature": `sha256=${signHex(SECRET_PLAINTEXT, body)}`,
+        "x-event-id": "evt-mount-direct-1",
+        "x-provider": "direct-intake",
+      },
+      payload: body,
+    });
+    expect(res.statusCode).toBe(200);
+
+    // ingestion_intake row landed inline.
+    const intakeRows = await fixture.db.execute(
+      `SELECT id, source_doc_id, source_revision FROM ingestion_intake`,
+    );
+    expect(intakeRows.rows).toHaveLength(1);
+    expect((intakeRows.rows[0] as { source_doc_id: string }).source_doc_id).toBe(
+      "doc-mounted-direct",
+    );
+
+    // The classify queue (ctx.enqueue, threaded through as
+    // scannerClassifyQueue) received the per-document job.
+    expect(scannerClassifyQueue.add).toHaveBeenCalledTimes(1);
+    const [name, payload] = scannerClassifyQueue.add.mock.calls[0]! as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(name).toBe("classify");
+    expect(payload).toMatchObject({
+      bindingId: fixture.bindingId,
+      domainSlug: "test-domain",
+      sourceRef: "test:doc/mounted",
+      fetchedAt: "2026-03-01T00:00:00.000Z",
+    });
+
+    // The legacy intake.scanner queue is BYPASSED on the
+    // direct-intake path.
+    expect(webhookScannerQueue.add).not.toHaveBeenCalled();
+    expect(webhookDlqQueue.add).not.toHaveBeenCalled();
   });
 });
 

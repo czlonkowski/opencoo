@@ -93,6 +93,13 @@ Six adapter interfaces. A new integration = one package implementing one interfa
 
 `packages/adapters/source-drive/` is the reference `SourceAdapter` to model new ones after. Every adapter passes a shared contract-test suite (`packages/shared/adapter-contract-tests/*`).
 
+**Webhook-native vs polling adapters (PR-N2 / phase-a appendix #6).** The `SourceAdapter` port supports two ingestion shapes that meet at the same `ingestion_intake` table:
+
+- **Polling adapters** (`source-drive`) implement `scan(args)` and return changed documents on every cron tick. The Scanner pipeline (every 4h) is the producer; it inserts intake rows + enqueues `ingestion.scanner.classify` jobs.
+- **Webhook-native adapters** (`source-webhook`, `source-asana`) implement `webhook` helpers (`verifier`, `extractSignature`, `parseEvents`, optionally `handshakeFn` and **`enrichEvents`**) and a no-op `scan()`. When the adapter exposes `enrichEvents`, the engine-ingestion webhook receiver takes the **direct-intake fast path**: it inserts `ingestion_intake` rows itself + enqueues full `ScannerClassifyJob` payloads on `ingestion.scanner.classify` inline, without waiting for the periodic Scanner cron (whose `scan()` is a no-op for these adapters anyway). When `enrichEvents` is absent, the receiver falls back to the legacy per-event `intake.scanner` enqueue.
+
+Both paths converge on the same downstream Compile worker via the same `ingestion.scanner.classify` queue + the same `ingestion_intake` table. Adapters choose their shape based on the upstream system's API: polling fits change-feed APIs (Drive's Changes resource); webhook fits push-only APIs (Asana, Fireflies). Periodic `scan()` remains the canonical path for snapshot adapters; `enrichEvents` is the canonical path for webhook-native adapters.
+
 ## 8. Intended stack
 
 TypeScript throughout. Fastify for HTTP (ingestion + self-op, one process each). React UI **bundled as static files and served by the self-op Fastify** — one process, one port, one container. PostgreSQL for state + audit; BullMQ + Redis for job queues; Drizzle ORM + `drizzle-kit` for schema-as-TypeScript and SQL migrations. pnpm workspaces + Turborepo. Docker Compose for deployment (GHCR + Docker Hub images, digest-pinned).

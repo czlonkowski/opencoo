@@ -124,18 +124,18 @@ The Activity feed (`GET /api/admin/events` SSE bus) emits exactly five SSE chann
 
 When the webhook row, the `agent_run` success event, the `ingestion_intake` `compiled` row, and the wiki page are all in place, the smoke is green. proceed to the §9 sign-off checklist.
 
-### Scripted probe (webhook-receiver layer only)
+### Scripted probe (webhook → intake → classify-enqueue chain)
 
-`scripts/smoke-real-data.ts` (registered as `pnpm smoke:real-data`) is a separate, narrower probe — it tests the **HTTP receiver + HMAC verify + DB persistence** path against the generic `source-webhook` adapter. It does NOT verify the full webhook → intake → compile → wiki chain, because `source-webhook.scan()` is a no-op by design (`packages/adapters/source-webhook/src/adapter.ts:263-268`) — the Scanner pipeline never produces an `ingestion_intake` row from a webhook event for this adapter, so polling for one would always time out. The full chain has to be walked against an adapter whose `scan()` produces documents (Asana, Drive); the §4 manual walk above is that verification.
+`scripts/smoke-real-data.ts` (registered as `pnpm smoke:real-data`) is a separate probe — it tests the **HTTP receiver + HMAC verify + DB persistence + direct-intake fast path** against the generic `source-webhook` adapter. With PR-N2 the smoke now also confirms an `ingestion_intake` row lands inline (the receiver's direct-intake branch fires when the bound adapter exposes `webhook.enrichEvents` AND the orchestrator wired `scannerClassifyQueue` — `source-webhook` satisfies both since PR-N2). The smoke does NOT verify compile → wiki write — that depends on the Compile worker, LLM router, GuardAdapter, and WikiAdapter all being composed and reachable; the §4 manual walk above remains the canonical end-to-end verification against a real Asana / Drive binding.
 
-The smoke provisions a transient knowledge domain + a generic-webhook source binding, writes the webhook secret via `DrizzleCredentialStore.write` (same path the production receiver decrypts), posts an HMAC-signed fixture event to `/webhooks/<binding-id>`, polls for the `webhook_events` row, and tears down its scaffolding before exit. Useful as an "is the receiver alive?" probe at any time after first boot:
+The smoke provisions a transient knowledge domain + a generic-webhook source binding, writes the webhook secret via `DrizzleCredentialStore.write` (same path the production receiver decrypts), posts an HMAC-signed fixture event to `/webhooks/<binding-id>`, polls for both the `webhook_events` and `ingestion_intake` rows, and tears down its scaffolding before exit. Useful as an "is the receiver-to-classify chain alive?" probe at any time after first boot:
 
 ```
 pnpm opencoo                 # in terminal 1
 pnpm smoke:real-data         # in terminal 2; exits 0 in <30s on green
 ```
 
-The Asana walkthrough above (§4 steps 1–6) and the scripted smoke test different surfaces; running both gives independent signals — the smoke catches receiver / DB regressions, the Asana walk catches pipeline regressions.
+The Asana walkthrough above (§4 steps 1–6) and the scripted smoke test different surfaces; running both gives independent signals — the smoke catches receiver / DB / direct-intake regressions, the Asana walk catches Compile + wiki regressions.
 
 ## 5. Common failures and how to recover
 
@@ -184,7 +184,7 @@ Operator ticks each box before declaring the deployment pilot-ready:
 
 - [ ] All required env vars set; `opencoo doctor` returns exit 0 with all checks green (or only the expected `gitea_team` warn when `OPENCOO_ADMIN_PAT` is unset).
 - [ ] At least one source binding created via the management UI; status pill shows `ok`; `last_event_at` populated.
-- [ ] Real webhook event observed end-to-end against a real adapter (Asana / Drive — NOT the generic `source-webhook`): `webhook_events` row appears in Postgres within ~1s of upstream trigger; an `agent_run` SSE event with `definitionSlug = 'ingestion.scanner.classify'` and `status = 'success'` lands on the Activity feed within ~30s; the corresponding `ingestion_intake` row reaches `status = 'compiled'`. (See §4 for the full marker list. The generic `source-webhook` adapter is excluded here because its `scan()` is a no-op — see `pnpm smoke:real-data --help`.)
+- [ ] Real webhook event observed end-to-end against a real adapter (Asana / Drive). PR-N2 closes the source-webhook chain on the receiver side (the receiver's direct-intake branch produces an `ingestion_intake` row inline for any adapter exposing `webhook.enrichEvents`), but pilot sign-off still requires verification past compile + wiki write — that depends on the Compile worker, LLM router, GuardAdapter, and WikiAdapter all being composed and reachable, which is best exercised end-to-end against a real adapter that produces non-trivial document content. Markers: `webhook_events` row appears in Postgres within ~1s of upstream trigger; an `agent_run` SSE event with `definitionSlug = 'ingestion.scanner.classify'` and `status = 'success'` lands on the Activity feed within ~30s; the corresponding `ingestion_intake` row reaches `status = 'compiled'`. (See §4 for the full marker list.)
 - [ ] Wiki page rendered in Gitea with populated frontmatter (`schema_version`, `prompt_version`, `compiled_at`, `compiled_by_run_id`) and a `Worldview-Impact` git trailer on the commit.
 - [ ] Activity feed populated with at least 5 events; no console errors in the management UI; no red rows in `agent_runs`.
 - [ ] PRD §5 success criteria 1, 2, 4, 6, 7, 8 verified manually:
