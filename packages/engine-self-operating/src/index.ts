@@ -187,15 +187,21 @@ export {
   type WorldviewReadArgs,
 } from "./agents/tools/index.js";
 
-// MCP tool-client surface (PR 20, plan #92 part A). v0.1 ships
-// only the port + an in-memory test fixture; production
-// `HttpMcpToolClient` arrives in PR 23+. Per Q12, the in-memory
-// fixture does NOT import gitea-mcp internals — it is a pure
-// data test double conforming to the same shape.
+// MCP tool-client surface (PR 20, plan #92 part A; PR-N3
+// phase-a appendix #6 adds the static-bearer HTTP transport).
+// v0.1 surface: port + in-memory fixture (tests) +
+// HttpMcpToolClient (production). The PAT-scoped wrapper is
+// reserved for the future Chat agent (phase-b). Per Q12, the
+// in-memory fixture does NOT import gitea-mcp internals — it
+// is a pure-data test double conforming to the same shape.
 export {
+  HttpMcpToolClient,
   InMemoryMcpToolClient,
+  McpHttpError,
   McpResourceNotFoundError,
   createPatScopedMcpClient,
+  type HttpMcpToolClientOptions,
+  type McpHttpErrorOptions,
   type McpListFilter,
   type McpToolClient,
   type PatScopedAuditEntry,

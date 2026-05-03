@@ -59,10 +59,21 @@ import { ConsoleLogger, type Logger } from "@opencoo/shared/logger";
 import { scrubPat } from "@opencoo/shared/scrub";
 
 import {
+  AgentDefinitionRegistry,
+  HEARTBEAT_DEFINITION,
+  HttpMcpToolClient,
+  LINT_DEFINITION,
+  SURFACER_DEFINITION,
+  type AgentRunnerRegistry,
+  type McpToolClient,
+} from "@opencoo/engine-self-operating";
+import {
   GiteaRestClient,
   giteaWikiAdapter,
 } from "@opencoo/wiki-gitea";
 import { guardRedactionRegex } from "@opencoo/guard-redaction-regex";
+
+import { createProductionAgentRunners } from "./agent-runners.js";
 
 const COMPOSITION_NAME = "cli/serve" as const;
 
@@ -389,4 +400,211 @@ async function loadSourceAdapterFactories(
       });
   });
   return out as Readonly<Record<string, ProductionSourceAdapterFactory>>;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// PR-N3 (phase-a appendix #6) — AgentRunnerRegistry composition.
+// ─────────────────────────────────────────────────────────────────
+
+/** Default URL for the gitea-wiki-mcp-server. Matches the
+ *  README's `MCP_MODE=http npm start` default port. The operator
+ *  overrides via `MCP_BASE_URL` when the server runs elsewhere
+ *  (Docker network, reverse proxy, etc.). */
+const DEFAULT_MCP_BASE_URL = "http://localhost:3000/mcp";
+
+export interface ComposeAgentRunnersArgs {
+  readonly env: Record<string, string | undefined>;
+  /** Production LlmRouter — typically the same instance the
+   *  ingestion WorkerContext consumes. The runners thread it
+   *  through the harness's AgentRunContext. */
+  readonly router: LlmRouter;
+  /** Postgres pool — same instance the orchestrator opens for
+   *  the ingestion composition. The runners reuse it for
+   *  scope-check / binding / citation queries. */
+  readonly pgPool: pg.Pool;
+  /** Logger — error log lines route here with `safeError`
+   *  applied. */
+  readonly logger?: Logger;
+  /** v0.1 hardcoded set of n8n template slugs Surfacer can
+   *  propose. Mirrors the seed catalogue; full catalog-driven
+   *  resolution is the catalog-workflows compiler's job. */
+  readonly availableTemplateSlugs?: readonly string[];
+}
+
+export interface ComposedAgentRunners {
+  readonly mcp: McpToolClient;
+  readonly definitions: AgentDefinitionRegistry;
+  readonly runners: AgentRunnerRegistry;
+}
+
+export interface ComposeAgentRunnersFromEnvOnlyArgs {
+  readonly env: Record<string, string | undefined>;
+  readonly logger?: Logger;
+  /** Closed set of n8n template slugs Surfacer can propose. */
+  readonly availableTemplateSlugs?: readonly string[];
+}
+
+export interface ComposedAgentRunnersBundle extends ComposedAgentRunners {
+  /** A pg.Pool the bundle owns. The orchestrator closes it on
+   *  SIGTERM. */
+  readonly pgPool: pg.Pool;
+  /** A close hook that drains the bundle's resources (pg.Pool).
+   *  Idempotent; safe to call multiple times. */
+  close(): Promise<void>;
+}
+
+/** Open a pg.Pool + LlmRouter against env, then compose the
+ *  AgentRunnerRegistry. Returns null on the same boot-tolerance
+ *  conditions as `tryComposeAgentRunnersFromEnv` PLUS a
+ *  pgPool-construction failure (missing DATABASE_URL).
+ *
+ *  Used by the CLI's serve verb to open the registry alongside
+ *  the self-op + ingestion engines without dragging the full
+ *  ingestion WorkerContext composition.
+ */
+export function tryComposeAgentRunnersBundleFromEnv(
+  args: ComposeAgentRunnersFromEnvOnlyArgs,
+): ComposedAgentRunnersBundle | null {
+  const logger = args.logger ?? new ConsoleLogger();
+
+  let databaseUrl: string;
+  try {
+    databaseUrl = requireWithFile(args.env, "DATABASE_URL", COMPOSITION_NAME);
+  } catch (err) {
+    logger.warn("mcp_http.unavailable", {
+      reason: "DATABASE_URL not set — cannot open pool for agent runners",
+      error: safeError(err),
+    });
+    return null;
+  }
+
+  let pgPool: pg.Pool;
+  try {
+    pgPool = new pg.Pool({ connectionString: databaseUrl });
+  } catch (err) {
+    logger.warn("mcp_http.unavailable", {
+      reason: "pg.Pool construction threw",
+      error: safeError(err),
+    });
+    return null;
+  }
+
+  // Build an LlmRouter using the same multi-provider dispatcher
+  // the ingestion composition does. This router targets the same
+  // `domains.llm_policy` rows the ingestion side reads, so the
+  // scheduled agents pick up the same per-domain provider/model
+  // selections.
+  const db = drizzle(pgPool);
+  const router = new LlmRouter({
+    db: db as unknown as ConstructorParameters<typeof LlmRouter>[0]["db"],
+    env: args.env as NodeJS.ProcessEnv,
+    logger,
+    pauser: new InMemoryQueuePauser(),
+    provider: createMultiProviderDispatcher(args.env, logger),
+  });
+
+  const composed = tryComposeAgentRunnersFromEnv({
+    env: args.env,
+    router,
+    pgPool,
+    logger,
+    ...(args.availableTemplateSlugs !== undefined
+      ? { availableTemplateSlugs: args.availableTemplateSlugs }
+      : {}),
+  });
+  if (composed === null) {
+    // tryComposeAgentRunnersFromEnv already logged the reason.
+    // Drain the pool we just opened so we don't leak the
+    // connections.
+    void pgPool.end().catch(() => undefined);
+    return null;
+  }
+
+  let closed = false;
+  return {
+    ...composed,
+    pgPool,
+    async close(): Promise<void> {
+      if (closed) return;
+      closed = true;
+      await pgPool.end().catch(() => undefined);
+    },
+  };
+}
+
+/** Try to compose the production AgentRunnerRegistry. Returns
+ *  null and logs `mcp_http.unavailable` when:
+ *
+ *    - `MCP_BEARER_TOKEN` (or its `_FILE` variant) is unset, OR
+ *    - `HttpMcpToolClient` construction throws.
+ *
+ *  Boot-tolerant: a returned `null` lets the orchestrator boot
+ *  with an EMPTY agent runner registry — the management UI stays
+ *  alive, the `/api/admin/scheduler` route still enumerates
+ *  registered instances, but every dispatched job throws (the
+ *  harness records the failure) until the env is fixed.
+ *
+ *  THREAT-MODEL §3.6 invariant 11: the bearer token is read but
+ *  NEVER appears in any log line; failures route through
+ *  `safeError` so a cause's `.message` carrying the token stays
+ *  redacted via the shared `scrubPat` pipeline.
+ *
+ *  Per-dispatch domain slug resolution lives in the runner
+ *  closures (`agent-runners.ts`): each closure reads
+ *  `ctx.instance.scopeDomainIds[0]` and looks up the
+ *  corresponding `domains.slug`. No new env var is needed
+ *  (THREAT-MODEL §2 invariant 9 — feature config lives in
+ *  Postgres + UI, not env).
+ */
+export function tryComposeAgentRunnersFromEnv(
+  args: ComposeAgentRunnersArgs,
+): ComposedAgentRunners | null {
+  const logger = args.logger ?? new ConsoleLogger();
+  const bearer = readWithFile(args.env, "MCP_BEARER_TOKEN");
+  if (bearer === undefined) {
+    logger.warn("mcp_http.unavailable", {
+      reason:
+        "MCP_BEARER_TOKEN (or MCP_BEARER_TOKEN_FILE) not set — scheduled agents will not fire; webhook→wiki path still works",
+    });
+    return null;
+  }
+  const baseUrl = readWithFile(args.env, "MCP_BASE_URL") ?? DEFAULT_MCP_BASE_URL;
+
+  let mcp: HttpMcpToolClient;
+  try {
+    mcp = new HttpMcpToolClient({
+      baseUrl,
+      bearerToken: bearer,
+      logger,
+    });
+  } catch (err) {
+    // The constructor itself does no I/O, so this is unlikely
+    // — but if a future refactor adds e.g. URL validation, we
+    // want the same boot-tolerant path. Round-3-style scrubbed
+    // log line.
+    logger.warn("mcp_http.unavailable", {
+      reason: "HttpMcpToolClient construction threw",
+      base_url: baseUrl,
+      error: safeError(err),
+    });
+    return null;
+  }
+
+  const definitions = new AgentDefinitionRegistry();
+  definitions.register(HEARTBEAT_DEFINITION);
+  definitions.register(LINT_DEFINITION);
+  definitions.register(SURFACER_DEFINITION);
+
+  const availableTemplateSlugs = args.availableTemplateSlugs ?? [];
+
+  const runners = createProductionAgentRunners({
+    db: args.pgPool,
+    mcp,
+    router: args.router,
+    logger,
+    definitions,
+    availableTemplateSlugs,
+  });
+
+  return { mcp, definitions, runners };
 }

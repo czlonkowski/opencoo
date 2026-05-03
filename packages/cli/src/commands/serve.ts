@@ -90,7 +90,15 @@ export interface ServeStartedEngine {
   readonly sseBus?: ServeSseBus;
 }
 
-/** Matches `start({env})` from `@opencoo/engine-self-operating`. */
+/** Matches `start({env})` from `@opencoo/engine-self-operating`.
+ *
+ *  PR-N3 (phase-a appendix #6) extends the factory's input shape
+ *  with optional `agentRunners` + `agentDefinitions`. The
+ *  defaultStartFactory composes both via
+ *  `tryComposeAgentRunnersBundleFromEnv` and threads them into
+ *  `engine-self-operating.start({...})` so the AgentDispatcher
+ *  boots with a populated registry. Tests pass their own
+ *  factory and never hit the new wiring. */
 export type ServeStartFactory = (opts: {
   readonly env: Record<string, string | undefined>;
 }) => Promise<ServeStartedEngine>;
@@ -136,12 +144,55 @@ export interface ServeArgs {
 }
 
 /** @internal Default `startFactory` — dynamic-imports the engine
- *  so the verb's cold-start cost is paid only on boot. */
+ *  so the verb's cold-start cost is paid only on boot.
+ *
+ *  PR-N3 (phase-a appendix #6): also composes the production
+ *  AgentRunnerRegistry via `tryComposeAgentRunnersBundleFromEnv`
+ *  and threads it into `start({})` so the AgentDispatcher boots
+ *  with populated runner closures. On any composition failure
+ *  (missing `MCP_BEARER_TOKEN`, pg.Pool open failure, etc.) the
+ *  helper logs `mcp_http.unavailable` and returns null; we then
+ *  boot self-op with no runners — the management UI stays alive
+ *  and the operator fixes the env without restart.
+ *
+ *  Resource ownership: when the bundle is composed, its `pgPool`
+ *  is drained by the wrapped `close()` below AFTER the engine's
+ *  own close runs. */
 async function defaultStartFactory(opts: {
   readonly env: Record<string, string | undefined>;
 }): Promise<ServeStartedEngine> {
   const mod = await import("@opencoo/engine-self-operating");
-  return mod.start({ env: opts.env });
+  const composition = await import(
+    "../provision/production-composition.js"
+  );
+  // Compose runners before start() so the dispatcher boots
+  // populated. Boot-tolerant: bundle === null → empty registry,
+  // engine still boots, scheduled jobs no-op (with one failed
+  // agent_runs row per dispatch surfacing the misconfig).
+  const bundle = composition.tryComposeAgentRunnersBundleFromEnv({
+    env: opts.env,
+  });
+  const engine = await mod.start({
+    env: opts.env,
+    ...(bundle !== null
+      ? {
+          agentRunners: bundle.runners,
+          agentDefinitions: bundle.definitions,
+        }
+      : {}),
+  });
+  if (bundle === null) {
+    return engine;
+  }
+  // Wrap close() so the runner bundle's pg.Pool drains after
+  // the engine's own close.
+  const baseClose = engine.close.bind(engine);
+  return Object.assign(engine, {
+    async close(): Promise<void> {
+      await baseClose();
+      await bundle.close();
+    },
+  });
 }
 
 /** @internal Default ingestion `startFactory`. PR-M2 (phase-a

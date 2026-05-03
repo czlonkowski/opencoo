@@ -34,6 +34,7 @@
     "@electric-sql/pglite": "^0.4.4",
     "@types/node": "^22.10.5",
     "@types/pg": "8.20.0",
+    "dotenv": "^16.4.7",
     "ioredis-mock": "8.13.1",
     "typescript": "~5.7.2",
     "vitest": "^3.0.5"

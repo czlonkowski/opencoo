@@ -849,6 +849,80 @@ describe("runServe", () => {
     await serve;
   });
 
+  // PR-N3 (phase-a appendix #6) — the orchestrator's
+  // `defaultStartFactory` composes the production
+  // AgentRunnerRegistry from env BEFORE calling
+  // `engine-self-operating.start({...})`. The two assertions
+  // below pin the boot-tolerance contract — present token →
+  // populated bundle threaded into start; missing token → null
+  // bundle + warn line surfaced by the upstream helper.
+  //
+  // These tests drive the same composition helper the default
+  // factory invokes, so the wiring path is identical.
+  it("composes a populated AgentRunnerRegistry when MCP_BEARER_TOKEN is set (PR-N3)", async () => {
+    const composition = await import(
+      "../src/provision/production-composition.js"
+    );
+    const records: Array<{ message: string }> = [];
+    const captureLogger = {
+      debug: (m: string): void => void records.push({ message: m }),
+      info: (m: string): void => void records.push({ message: m }),
+      warn: (m: string): void => void records.push({ message: m }),
+      error: (m: string): void => void records.push({ message: m }),
+    } as unknown as Parameters<
+      typeof composition.tryComposeAgentRunnersBundleFromEnv
+    >[0]["logger"];
+    const bundle = composition.tryComposeAgentRunnersBundleFromEnv({
+      env: {
+        DATABASE_URL: "postgres://test:test@localhost:65535/none",
+        MCP_BEARER_TOKEN: "static-bearer-do-not-leak",
+        MCP_BASE_URL: "http://localhost:3000/mcp",
+      },
+      logger: captureLogger,
+    });
+    expect(bundle).not.toBeNull();
+    expect(bundle?.runners.get("heartbeat")).toBeTypeOf("function");
+    expect(bundle?.runners.get("lint")).toBeTypeOf("function");
+    expect(bundle?.runners.get("surfacer")).toBeTypeOf("function");
+    expect(bundle?.definitions.list().length).toBe(3);
+    // No `mcp_http.unavailable` warn — the bundle was composed.
+    expect(
+      records.find((r) => r.message === "mcp_http.unavailable"),
+    ).toBeUndefined();
+    await bundle?.close();
+  });
+
+  it("returns a null bundle + logs mcp_http.unavailable when MCP_BEARER_TOKEN is missing (PR-N3 boot-tolerance)", async () => {
+    const composition = await import(
+      "../src/provision/production-composition.js"
+    );
+    const records: Array<{ level: string; message: string; data?: unknown }> = [];
+    const captureLogger = {
+      debug: (m: string, d?: unknown): void =>
+        void records.push({ level: "debug", message: m, data: d }),
+      info: (m: string, d?: unknown): void =>
+        void records.push({ level: "info", message: m, data: d }),
+      warn: (m: string, d?: unknown): void =>
+        void records.push({ level: "warn", message: m, data: d }),
+      error: (m: string, d?: unknown): void =>
+        void records.push({ level: "error", message: m, data: d }),
+    } as unknown as Parameters<
+      typeof composition.tryComposeAgentRunnersBundleFromEnv
+    >[0]["logger"];
+    const bundle = composition.tryComposeAgentRunnersBundleFromEnv({
+      env: {
+        DATABASE_URL: "postgres://test:test@localhost:65535/none",
+        // MCP_BEARER_TOKEN intentionally absent
+      },
+      logger: captureLogger,
+    });
+    expect(bundle).toBeNull();
+    const warn = records.find(
+      (r) => r.level === "warn" && r.message === "mcp_http.unavailable",
+    );
+    expect(warn).toBeDefined();
+  });
+
   it("does not abort if engine-ingestion fails to boot — logs and continues", async () => {
     // Boot-tolerant: if engine-ingestion fails (missing prod
     // composition deps in PR-M1), the operator still gets

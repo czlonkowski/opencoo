@@ -157,4 +157,21 @@ export default tseslint.config(
       "opencoo/no-feature-env-vars": "off",
     },
   },
+
+  // 8. Real-MCP smoke tests (`*.real-mcp.test.ts`) read
+  //    `RUN_REAL_MCP` (gate flag), `MCP_TEST_URL` (operator-supplied
+  //    server URL) and `MCP_TEST_BEARER` (operator-supplied static
+  //    bearer for the test server). All three are CI/dev-only; the
+  //    same `describe.skipIf(...)` gating pattern as the real-LLM
+  //    tests applies — production code paths never read these.
+  //    Added in PR-N3 (phase-a appendix #6) when the
+  //    HttpMcpToolClient landed; the operator-self-verification
+  //    smoke test against a live gitea-wiki-mcp-server lives at
+  //    `packages/engine-self-operating/tests/mcp-tool-client/http.real-mcp.test.ts`.
+  {
+    files: ["**/*.real-mcp.test.ts"],
+    rules: {
+      "opencoo/no-feature-env-vars": "off",
+    },
+  },
 );
