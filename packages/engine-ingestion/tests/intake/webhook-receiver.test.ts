@@ -50,9 +50,35 @@ function makeRecorder(): QueueRecorder {
   return { add: vi.fn(async () => undefined) };
 }
 
+/**
+ * Minimal Logger-shape stub the receiver accepts via `appLogger`.
+ * Only `debug` is recorded — the rejection path (PR-N1) does not
+ * call other levels, so we keep the surface tight.
+ */
+interface LoggerRecorder {
+  debug: ReturnType<typeof vi.fn>;
+  info: ReturnType<typeof vi.fn>;
+  warn: ReturnType<typeof vi.fn>;
+  error: ReturnType<typeof vi.fn>;
+  child: ReturnType<typeof vi.fn>;
+}
+
+function makeLoggerRecorder(): LoggerRecorder {
+  const recorder: LoggerRecorder = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    // child returns the same recorder so any future child() chain
+    // keeps logging into the same vi.fn collectors.
+    child: vi.fn(() => recorder),
+  };
+  return recorder;
+}
+
 const SECRET_PLAINTEXT = Buffer.from("test-shared-secret", "utf8");
 
-async function makeFixture() {
+async function makeFixture(opts: { appLogger?: LoggerRecorder } = {}) {
   const fixture = await freshIntakeDb();
 
   const credentialStore = new InMemoryCredentialStore({ logger: silentLogger() });
@@ -80,6 +106,13 @@ async function makeFixture() {
     verifier: new HmacSha256Verifier(),
     scannerQueue: scannerQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["scannerQueue"],
     dlqQueue: dlqQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["dlqQueue"],
+    ...(opts.appLogger !== undefined
+      ? {
+          appLogger: opts.appLogger as unknown as Parameters<
+            typeof buildWebhookReceiver
+          >[0]["appLogger"],
+        }
+      : {}),
   });
 
   return { ...fixture, app, credentialStore, scannerQueue, dlqQueue };
@@ -194,6 +227,72 @@ describe("webhook receiver — signature mismatch", () => {
     expect(res.statusCode).toBe(401);
     expect(scannerQueue.add).not.toHaveBeenCalled();
     expect(dlqQueue.add).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  // (PR-N1, phase-a appendix #6) Operator runbook §5 tells operators
+  // to grep for `webhook_receiver.signature_invalid` in LOG_LEVEL=debug
+  // output to diagnose failed-handshake situations. The receiver MUST
+  // emit a structured debug-level log line in the rejection branch,
+  // and that line MUST honor THREAT-MODEL §2 invariant 11 (no raw
+  // secrets in logs): the signature header NAME is fine, the header
+  // VALUE is not; the request body is not.
+  it("POST with invalid signature → emits webhook_receiver.signature_invalid debug log with redacted payload", async () => {
+    const appLogger = makeLoggerRecorder();
+    const { app, bindingId } = await makeFixture({ appLogger });
+
+    const body = '{"event":"push","secret_in_body":"sensitive-bytes"}';
+    // Use a recognisable signature header value so the negative
+    // assertion below can grep for it.
+    const sentSignature = `sha256=${"f".repeat(64)}`;
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/webhooks/${bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        "x-signature": sentSignature,
+        "x-event-id": "evt-bad-sig-log",
+        "x-provider": "gitea",
+      },
+      payload: body,
+    });
+
+    // Existing behavior preserved.
+    expect(res.statusCode).toBe(401);
+
+    // The new log line was emitted exactly once on the rejection path.
+    expect(appLogger.debug).toHaveBeenCalledTimes(1);
+
+    const [logKey, logCtx] = appLogger.debug.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(logKey).toBe("webhook_receiver.signature_invalid");
+
+    // Required fields on the structured payload.
+    expect(logCtx).toMatchObject({
+      bindingId,
+      provider: "gitea",
+      eventId: "evt-bad-sig-log",
+      signatureHeaderName: "x-signature",
+    });
+    // `errorReason` is the verifier's static reason string for an
+    // HMAC mismatch — closed enum from HmacSha256Verifier.
+    expect(typeof logCtx["errorReason"]).toBe("string");
+    expect(logCtx["errorReason"]).toMatch(/HMAC differs|mismatch/i);
+
+    // Negative assertion — the actual signature header VALUE must
+    // never appear anywhere in the logged payload.
+    const serialised = JSON.stringify(logCtx);
+    expect(serialised).not.toContain(sentSignature);
+    expect(serialised).not.toContain("f".repeat(64));
+
+    // Negative assertion — the raw request body must never appear
+    // in the logged payload.
+    expect(serialised).not.toContain("secret_in_body");
+    expect(serialised).not.toContain("sensitive-bytes");
+
     await app.close();
   });
 });

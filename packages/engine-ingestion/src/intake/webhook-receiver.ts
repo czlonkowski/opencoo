@@ -273,6 +273,28 @@ export function buildWebhookReceiver(
 
     // Step 6: signature mismatch path.
     if (!verifyResult.ok) {
+      // (PR-N1, phase-a appendix #6) Pilot runbook §5 directs operators
+      // to grep for this key in LOG_LEVEL=debug output to diagnose
+      // failed-handshake situations. The line is INTENTIONALLY at debug
+      // level — successful webhooks are voluminous in production, and
+      // operators only need this trace when chasing a failure.
+      //
+      // THREAT-MODEL §2 invariant 11 + §3.6 (no raw secrets in logs):
+      //   - We log the signature header NAME ("x-signature"), never
+      //     the header VALUE.
+      //   - We do not log the request body.
+      //   - `verifyResult.reason` is a closed enum from
+      //     HmacSha256Verifier ("signature header missing", "signature
+      //     is malformed (...)", "signature mismatch (HMAC differs)",
+      //     "signature length mismatch (...)") — safe to log verbatim.
+      options.appLogger?.debug("webhook_receiver.signature_invalid", {
+        bindingId,
+        provider: provider ?? binding.adapterSlug,
+        eventId: eventId ?? null,
+        signatureHeaderName: "x-signature",
+        errorReason: verifyResult.reason,
+      });
+
       await options.dlqQueue.add("intake.dlq", {
         webhookId: writeResult.webhookId,
         bindingId,
