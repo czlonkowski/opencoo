@@ -694,9 +694,65 @@ describe("opencoo agents fire — boot-tolerance + close discipline", () => {
       await expect(runAgentsFire(args)).rejects.toThrow(ExitSentinel);
       expect(cap.code).toBe(1);
       expect(invokeAgentFn).not.toHaveBeenCalled();
-      expect(stderr.buffer).toMatch(/no runner registered for surfacer/);
+      // Round-3 fix #5: the surfacer-specific hint references
+      // appendix #6 + N8N_MCP env vars + runbook §8 so the
+      // operator knows the omit is by-design and how to enable it.
+      expect(stderr.buffer).toMatch(/no runner registered for slug=surfacer/);
+      expect(stderr.buffer).toContain("Surfacer is omitted by default");
       expect(stderr.buffer).toContain("appendix #6");
-      expect(stderr.buffer).toContain("runbook");
+      expect(stderr.buffer).toContain("N8N_MCP");
+      expect(stderr.buffer).toContain("runbook §8");
+      // The generic "valid scheduled slugs" hint must NOT appear
+      // when the requested slug IS surfacer.
+      expect(stderr.buffer).not.toMatch(/valid scheduled slugs/);
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      await fx.close();
+    }
+  });
+
+  it("no runner registered for an unknown slug (typo) → exit 1 with generic hint, no Surfacer mention", async () => {
+    // Round-3 fix #5: a typo like `agents fire heartbear` would
+    // previously surface the Surfacer-specific hint, which is
+    // misdirecting (the operator's slug isn't surfacer; the
+    // omit reason has nothing to do with their problem). The
+    // tailored generic hint lists the v0.1 valid scheduled slugs
+    // so the operator can self-correct.
+    const fx = await makeDbFixture();
+    try {
+      // Seed an agent_instances row whose definition_slug is the
+      // typo — the slug-resolution path needs an instance row to
+      // hit the runner-missing branch (otherwise it short-
+      // circuits earlier with "no enabled instance found").
+      await fx.seed([
+        { definitionSlug: "heartbear", name: "heartbear-default" },
+      ]);
+      const { bundle, closeSpy } = makeBundleStub({
+        db: fx.db,
+        registeredRunners: ["heartbeat", "lint"],
+      });
+      const invokeAgentFn = vi.fn();
+      const cap = captureExit();
+      const { args, stderr } = buildArgs(
+        {
+          slug: "heartbear",
+          composeBundle: () => bundle as never,
+          invokeAgentFn: invokeAgentFn as never,
+        },
+        { fx },
+      );
+      await expect(runAgentsFire(args)).rejects.toThrow(ExitSentinel);
+      expect(cap.code).toBe(1);
+      expect(invokeAgentFn).not.toHaveBeenCalled();
+      expect(stderr.buffer).toMatch(/no runner registered for slug=heartbear/);
+      expect(stderr.buffer).toMatch(/valid scheduled slugs/);
+      expect(stderr.buffer).toContain("heartbeat");
+      expect(stderr.buffer).toContain("lint");
+      // The Surfacer-specific hint and its appendix-#6 cross-ref
+      // must NOT appear on the typo path — that's the misdirection
+      // this fix removed.
+      expect(stderr.buffer).not.toContain("Surfacer is omitted by default");
+      expect(stderr.buffer).not.toContain("appendix #6");
       expect(closeSpy).toHaveBeenCalledTimes(1);
     } finally {
       await fx.close();

@@ -294,11 +294,18 @@ export async function runAgentsFire(args: AgentsFireArgs): Promise<void> {
     }
 
     if (runner === undefined) {
-      args.stderr.write(
-        pc.red(
-          `agents fire: no runner registered for ${args.slug} (Surfacer is omitted by default per appendix #6 — see runbook §8)\n`,
-        ),
-      );
+      // Round-3 fix #5: the Surfacer-omitted hint is only
+      // accurate when the requested slug IS surfacer. For other
+      // slugs (typo like `heartbear`, or a v0.2 slug not yet
+      // wired) the hint misdirects. Tailor the message per-slug
+      // — the typo path lists the v0.1 valid scheduled slugs so
+      // the operator can self-correct without grepping docs.
+      const baseMsg = `agents fire: no runner registered for slug=${args.slug}`;
+      const hint =
+        args.slug === "surfacer"
+          ? " (Surfacer is omitted by default per appendix #6 — see runbook §8; configure N8N_MCP env vars to enable)"
+          : " (check spelling; valid scheduled slugs: heartbeat, lint, surfacer)";
+      args.stderr.write(pc.red(`${baseMsg}${hint}\n`));
       return exitUserError();
     }
 
