@@ -323,13 +323,13 @@ export function registerWikiResources(
   // to template parsing while still binding to the `path` variable.
   server.registerResource(
     "wiki",
-    new ResourceTemplate("wiki://{domainSlug}/{+path}", {
+    new ResourceTemplate("wiki://{slug}/{+path}", {
       list: async (extra) => lister({ authInfo: extra.authInfo }),
     }),
     {
       title: "Wiki Page",
       description:
-        "Individual markdown pages in a domain wiki. URI shape: wiki://{domainSlug}/{path} where {path} is the repo-relative .md path. Returns the page body as text/markdown. Per-request Gitea PAT scope check is enforced for OAuth principals; internal static-token clients get implicit full scope. Listing is capped at 500 entries in v0.1.",
+        "Individual markdown pages in a domain wiki. URI shape: wiki://{slug}/{path} where {path} is the repo-relative .md path. Returns the page body as text/markdown. Per-request Gitea PAT scope check is enforced for OAuth principals; internal static-token clients get implicit full scope. Listing is capped at 500 entries in v0.1.",
       mimeType: "text/markdown",
     },
     async (uri, _variables, extra) => {
