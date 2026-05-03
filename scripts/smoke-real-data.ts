@@ -2,10 +2,24 @@
 /**
  * scripts/smoke-real-data.ts (PR-M3, phase-a appendix #5).
  *
- * Operator-grade probe — confirms the deployment is alive end-to-end:
- * a webhook delivery lands in `webhook_events`, the ingestion worker
- * dequeues it into `ingestion_intake`, the management UI's `/health`
- * answers, and the script tears down its own scaffolding before exit.
+ * Operator-grade probe — confirms the deployment is alive at the
+ * webhook-receiver layer: the management UI's `/health` answers, an
+ * HMAC-signed webhook delivery is accepted, the row lands in
+ * `webhook_events`, and the script tears down its own scaffolding
+ * before exit. **The smoke does NOT verify the full ingestion pipeline**
+ * — `source-webhook.scan()` is a no-op by design
+ * (`packages/adapters/source-webhook/src/adapter.ts:263-268`), so the
+ * Scanner pipeline never produces an `ingestion_intake` row from a
+ * webhook event for this adapter. Verifying the full webhook → intake
+ * → compile → wiki chain requires an adapter whose `scan()` produces
+ * documents (Asana, Drive); the runbook §4 walks that path against a
+ * real binding.
+ *
+ * Round-3 fix #3: an earlier draft of this script polled for an
+ * `ingestion_intake` row after posting the webhook and would
+ * always time out for the reason above. Scope narrowed to
+ * "webhook delivery → DB persistence" only; the full-chain verification
+ * is the runbook walk against Asana, not this script.
  *
  * The script is deliberately minimal — it talks SQL via `pg` and HTTP
  * via the global `fetch`. No new top-level deps. No engine imports
@@ -70,8 +84,6 @@ export const HEALTH_TIMEOUT_MS = 30_000;
  *  failure mode while removing the false-positive on slow first
  *  acquires. */
 export const WEBHOOK_EVENT_TIMEOUT_MS = 10_000;
-/** How long we'll wait for the ingestion_intake row to land. */
-export const INTAKE_TIMEOUT_MS = 60_000;
 
 export interface ParsedArgs {
   readonly help: boolean;
@@ -169,18 +181,22 @@ Usage:
 Required env (read from .env / shell, identical to \`pnpm opencoo\`):
   DATABASE_URL, REDIS_URL, ENCRYPTION_KEY, GITEA_URL, GITEA_PAT
 
-What it does:
+What it does (webhook-receiver layer only):
   1. Asserts the env above is set.
   2. Polls http://localhost:<port>/health (default 8080) for ${HEALTH_TIMEOUT_MS / 1000}s.
-  3. Provisions a transient test domain + a webhook source binding.
+  3. Provisions a transient test domain + a generic-webhook source binding.
   4. Posts a fixture HMAC-signed event to /webhooks/<binding-id>.
-  5. Confirms the row landed in webhook_events and ingestion_intake.
+  5. Confirms the row landed in webhook_events.
   6. Tears down the test scaffolding and exits 0.
 
-The smoke does NOT bind a real Asana/Drive/Fireflies source — that is
-the runbook's job (docs/pilot-runbook.md §4). The smoke proves the
-HTTP + queue + DB path works; the runbook proves the operator can
-configure a real provider.
+Scope:
+  This probe verifies the HTTP receiver + HMAC verify + DB persistence
+  path. It does NOT verify the full webhook → intake → compile → wiki
+  chain, because the generic source-webhook adapter's scan() is a no-op
+  by design — Scanner only enqueues documents it can fetch, and webhook
+  adapters push events without a scannable source. To verify the full
+  chain end-to-end, bind a real Asana / Drive source and follow the
+  manual walk in docs/pilot-runbook.md §4.
 
 Exit codes:
   0  every step green
@@ -354,31 +370,6 @@ async function awaitWebhookEvent(
   ctx.stdout.write(`smoke: webhook_events row landed\n`);
 }
 
-async function awaitIntakeRow(
-  pool: pg.Pool,
-  scaffold: Scaffolding,
-  ctx: ProbeContext,
-): Promise<void> {
-  await pollUntil(
-    async () => {
-      const { rows } = await pool.query<{ id: string }>(
-        `SELECT id FROM ingestion_intake
-         WHERE binding_id = $1
-         ORDER BY created_at DESC
-         LIMIT 1`,
-        [scaffold.bindingId],
-      );
-      return rows[0] ?? null;
-    },
-    {
-      timeoutMs: INTAKE_TIMEOUT_MS,
-      intervalMs: 1_000,
-      label: "ingestion_intake row",
-    },
-  );
-  ctx.stdout.write(`smoke: ingestion_intake row landed\n`);
-}
-
 async function teardown(
   pool: pg.Pool,
   scaffold: Scaffolding,
@@ -395,6 +386,11 @@ async function teardown(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    // Round-3 fix #3: no ingestion_intake DELETE — source-webhook's
+    // scan() is a no-op so the Scanner never inserts intake rows for
+    // this binding. Defensive DELETE retained as a safety net in case
+    // a future operator binds the smoke fixture to an adapter that
+    // does scan; cost is one trivial WHERE-no-rows query.
     await client.query("DELETE FROM ingestion_intake WHERE binding_id = $1", [
       scaffold.bindingId,
     ]);
@@ -479,8 +475,7 @@ export async function run(args: RunArgs): Promise<number> {
     scaffold = await provisionScaffolding(pool, ctx);
     await postFixtureWebhook(scaffold, ctx);
     await awaitWebhookEvent(pool, scaffold, ctx);
-    await awaitIntakeRow(pool, scaffold, ctx);
-    args.stdout.write(`smoke: green\n`);
+    args.stdout.write(`smoke: green (webhook-receiver layer)\n`);
     return 0;
   } catch (err) {
     args.stderr.write(`smoke: ${(err as Error).message}\n`);

@@ -124,16 +124,18 @@ The Activity feed (`GET /api/admin/events` SSE bus) emits exactly five SSE chann
 
 When the webhook row, the `agent_run` success event, the `ingestion_intake` `compiled` row, and the wiki page are all in place, the smoke is green. proceed to the §9 sign-off checklist.
 
-### Scripted probe (different surface)
+### Scripted probe (webhook-receiver layer only)
 
-`scripts/smoke-real-data.ts` (registered as `pnpm smoke:real-data`) is a separate, narrower probe — it tests the **generic `source-webhook` adapter** path, not the Asana adapter. The smoke provisions a transient knowledge domain + a generic-webhook source binding, writes the webhook secret via `DrizzleCredentialStore.write` (same path the production receiver decrypts), posts an HMAC-signed fixture event to `/webhooks/<binding-id>`, polls for the `webhook_events` and `ingestion_intake` rows, and tears down its scaffolding before exit. It does NOT exercise Asana, Drive, Fireflies, or any output adapter. Useful as an "is the deployment alive?" probe at any time after first boot:
+`scripts/smoke-real-data.ts` (registered as `pnpm smoke:real-data`) is a separate, narrower probe — it tests the **HTTP receiver + HMAC verify + DB persistence** path against the generic `source-webhook` adapter. It does NOT verify the full webhook → intake → compile → wiki chain, because `source-webhook.scan()` is a no-op by design (`packages/adapters/source-webhook/src/adapter.ts:263-268`) — the Scanner pipeline never produces an `ingestion_intake` row from a webhook event for this adapter, so polling for one would always time out. The full chain has to be walked against an adapter whose `scan()` produces documents (Asana, Drive); the §4 manual walk above is that verification.
+
+The smoke provisions a transient knowledge domain + a generic-webhook source binding, writes the webhook secret via `DrizzleCredentialStore.write` (same path the production receiver decrypts), posts an HMAC-signed fixture event to `/webhooks/<binding-id>`, polls for the `webhook_events` row, and tears down its scaffolding before exit. Useful as an "is the receiver alive?" probe at any time after first boot:
 
 ```
 pnpm opencoo                 # in terminal 1
-pnpm smoke:real-data         # in terminal 2; exits 0 in <90s on green
+pnpm smoke:real-data         # in terminal 2; exits 0 in <30s on green
 ```
 
-The Asana walkthrough above and the scripted smoke test different code paths; running both gives separate signals.
+The Asana walkthrough above (§4 steps 1–6) and the scripted smoke test different surfaces; running both gives independent signals — the smoke catches receiver / DB regressions, the Asana walk catches pipeline regressions.
 
 ## 5. Common failures and how to recover
 
