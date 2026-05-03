@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@opencoo/eslint-plugin": "workspace:*",
+    "@opencoo/shared": "workspace:*",
     "@types/node": "^22.10.5",
     "@types/pg": "8.20.0",
     "@typescript-eslint/parser": "^8.21.0",

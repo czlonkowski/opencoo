@@ -24,6 +24,10 @@
  *   - HMAC signing of the webhook fixture — pinned via the script's
  *     reuse of `node:crypto`, no test logic of our own to verify.
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -35,6 +39,14 @@ import {
   parseArgs,
   pollUntil,
 } from "../scripts/smoke-real-data.ts";
+
+const SCRIPT_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "scripts",
+  "smoke-real-data.ts",
+);
+const SCRIPT_SOURCE = readFileSync(SCRIPT_PATH, "utf8");
 
 describe("parseArgs", () => {
   it("returns defaults on empty argv", () => {
@@ -190,10 +202,56 @@ describe("timeout constants are pinned", () => {
   it("HEALTH_TIMEOUT_MS is 30s", () => {
     expect(HEALTH_TIMEOUT_MS).toBe(30_000);
   });
-  it("WEBHOOK_EVENT_TIMEOUT_MS is 5s", () => {
-    expect(WEBHOOK_EVENT_TIMEOUT_MS).toBe(5_000);
+  it("WEBHOOK_EVENT_TIMEOUT_MS is at least 5s", () => {
+    // Round-2 fix #8: the receiver writes the row inline before
+    // returning 200, so the practical floor is 1s; CI cold-start pg
+    // pools push it higher. Anything ≥ 5s and ≤ 30s is reasonable.
+    expect(WEBHOOK_EVENT_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
+    expect(WEBHOOK_EVENT_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
   });
   it("INTAKE_TIMEOUT_MS is 60s", () => {
     expect(INTAKE_TIMEOUT_MS).toBe(60_000);
+  });
+});
+
+describe("smoke script SQL shape (round-2 fix #1)", () => {
+  // Source-grep pins. The smoke MUST go through `DrizzleCredentialStore`
+  // for the credential row — a raw `INSERT INTO credentials` would hit
+  // the schema-shape mismatch the reviewer flagged (the table has
+  // {id, name, schema_ref, ciphertext bytea, iv bytea, aad bytea,
+  // encryption_version}, NOT {provider, payload}) AND would store a
+  // plaintext blob the receiver's `credentialStore.read()` cannot
+  // decrypt. These pins make sure the regression doesn't sneak back.
+
+  it("imports DrizzleCredentialStore from @opencoo/shared", () => {
+    expect(SCRIPT_SOURCE).toMatch(
+      /from\s+["']@opencoo\/shared\/credential-store["']/,
+    );
+    expect(SCRIPT_SOURCE).toMatch(/\bDrizzleCredentialStore\b/);
+    expect(SCRIPT_SOURCE).toMatch(/\bloadEncryptionKey\b/);
+  });
+
+  it("calls credentialStore.write({ name, schemaRef, plaintext })", () => {
+    // Match the Drizzle store's `write(input: CredentialInput)` shape.
+    expect(SCRIPT_SOURCE).toMatch(/credentialStore\.write\(\s*{/);
+    expect(SCRIPT_SOURCE).toMatch(/schemaRef:\s*["']smoke:webhook_secret["']/);
+    expect(SCRIPT_SOURCE).toMatch(/plaintext:\s*Buffer\.from/);
+  });
+
+  it("does NOT raw-INSERT into the credentials table", () => {
+    // The schemaless `INSERT INTO credentials (provider, payload)`
+    // shape from the round-1 cut would die against the real schema.
+    expect(SCRIPT_SOURCE).not.toMatch(
+      /INSERT\s+INTO\s+credentials\s*\(\s*provider/i,
+    );
+  });
+
+  it("queries webhook_events by binding_id (not source_id)", () => {
+    // The schema column is `binding_id`; an earlier draft of the
+    // runbook + smoke used the wrong name `source_id`. Pin both
+    // surfaces so the regression doesn't re-emerge.
+    expect(SCRIPT_SOURCE).toMatch(/FROM\s+webhook_events/i);
+    expect(SCRIPT_SOURCE).toMatch(/binding_id\s*=\s*\$1/);
+    expect(SCRIPT_SOURCE).not.toMatch(/source_id\s*=/i);
   });
 });

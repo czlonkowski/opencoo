@@ -36,7 +36,14 @@
  */
 import crypto from "node:crypto";
 
+import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
+
+import {
+  DrizzleCredentialStore,
+  loadEncryptionKey,
+} from "@opencoo/shared/credential-store";
+import { ConsoleLogger } from "@opencoo/shared/logger";
 
 // ----------------------------------------------------------------------------
 // Public surface (tested by tests/smoke-real-data.test.ts)
@@ -55,8 +62,14 @@ export const REQUIRED_ENV_VARS = [
 
 /** How long we'll poll `/health` before giving up. */
 export const HEALTH_TIMEOUT_MS = 30_000;
-/** How long we'll wait for the webhook_events row to land. */
-export const WEBHOOK_EVENT_TIMEOUT_MS = 5_000;
+/** How long we'll wait for the webhook_events row to land.
+ *  Round-2 fix #8: bumped from 5s to 10s — the receiver writes the row
+ *  inline before returning 200, so the practical floor is sub-second,
+ *  but cold pg pools on CI / first-boot stacks can spike to multiple
+ *  seconds before the connection is acquired. 10s preserves a fast
+ *  failure mode while removing the false-positive on slow first
+ *  acquires. */
+export const WEBHOOK_EVENT_TIMEOUT_MS = 10_000;
 /** How long we'll wait for the ingestion_intake row to land. */
 export const INTAKE_TIMEOUT_MS = 60_000;
 
@@ -203,13 +216,36 @@ async function provisionScaffolding(
   pool: pg.Pool,
   ctx: ProbeContext,
 ): Promise<Scaffolding> {
-  // Use raw SQL + the existing schema. We deliberately bypass the
-  // admin-API here so the smoke survives an admin-API outage AND
-  // because the admin-API requires CSRF + admin-team membership.
-  // Cleanup tears these rows back out unconditionally.
+  // The credential row goes through `DrizzleCredentialStore.write` —
+  // identical encrypt path to the production composition root
+  // (packages/cli/src/provision/production-composition.ts:170-176).
+  // Round-2 fix #1: a raw SQL INSERT into `credentials` was schemaless
+  // (no `provider`/`payload` columns) AND would have stored a plaintext
+  // secret the receiver's `credentialStore.read()` could not decrypt
+  // (aad mismatch → IntegrityError before HMAC verification).
+  //
+  // Domain + sources_bindings rows still go in via raw SQL — those
+  // tables have no encryption surface and the admin-API requires CSRF
+  // + admin-team membership the smoke deliberately avoids.
   const stamp = Date.now();
   const domainSlug = `smoke-${stamp}`;
   const webhookSecret = crypto.randomBytes(32).toString("hex");
+
+  // Construct the credential store with the operator's vault key.
+  // `loadEncryptionKey` requires a NodeJS.ProcessEnv shape.
+  const credentialStore = new DrizzleCredentialStore({
+    db: drizzle(pool) as unknown as ConstructorParameters<
+      typeof DrizzleCredentialStore
+    >[0]["db"],
+    key: loadEncryptionKey(ctx.env as NodeJS.ProcessEnv),
+    logger: new ConsoleLogger(),
+  });
+  const credentialId = await credentialStore.write({
+    name: `smoke:webhook-secret:${stamp}`,
+    schemaRef: "smoke:webhook_secret",
+    plaintext: Buffer.from(webhookSecret, "utf8"),
+  });
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -220,20 +256,6 @@ async function provisionScaffolding(
       [domainSlug],
     );
     const domainId = domainRows[0]!.id;
-
-    // Insert the credential row directly. We store the secret in
-    // PLAINTEXT in the smoke — the credential_store column shape
-    // expects an encrypted blob, but the smoke runs OUTSIDE the
-    // CredentialStore decryption path; our handler uses the raw
-    // secret straight from the binding's config jsonb. Cleanup
-    // deletes the row regardless.
-    const { rows: credRows } = await client.query<{ id: string }>(
-      `INSERT INTO credentials (provider, payload)
-       VALUES ('smoke', $1::jsonb)
-       RETURNING id`,
-      [JSON.stringify({ secret: webhookSecret })],
-    );
-    const credentialId = credRows[0]!.id;
 
     const { rows: bindingRows } = await client.query<{ id: string }>(
       `INSERT INTO sources_bindings
@@ -246,10 +268,6 @@ async function provisionScaffolding(
         credentialId,
         JSON.stringify({
           pathSegment: `smoke-${stamp}`,
-          // Carry the secret on the config blob so the smoke's HMAC
-          // computation is reproducible without going through the
-          // CredentialStore.
-          smoke: { webhookSecret },
         }),
       ],
     );
@@ -292,17 +310,17 @@ async function postFixtureWebhook(
     },
     body,
   });
-  // The receiver is permitted to reply 200 (accepted) or 401 (sig
-  // mismatch). 401 here means the credential the receiver decrypted
-  // didn't match what we just signed with — usually because the
-  // receiver reads the secret via CredentialStore and our raw insert
-  // bypassed encryption. We surface that explicitly so the operator
-  // knows the smoke needs the production-encryption codepath.
+  // 401 from the receiver means HMAC verification failed. Since round-2
+  // fix #1, the smoke writes the credential through the same
+  // `DrizzleCredentialStore` the receiver reads from, so a 401 here
+  // is a real product bug worth surfacing to the operator (likely:
+  // ENCRYPTION_KEY rotated mid-flight, or the receiver's verifier is
+  // misconfigured). Either way, no quiet pass-through.
   if (res.status === 401) {
     throw new Error(
-      `webhook POST returned 401 (signature mismatch) — the smoke wrote a` +
-        ` plaintext secret; the receiver decrypted via CredentialStore.` +
-        ` The smoke is incomplete against an encrypted vault — see runbook.`,
+      `webhook POST returned 401 (signature mismatch) — the smoke signed` +
+        ` with the same secret it wrote via CredentialStore.write; check the` +
+        ` engine's webhook receiver for HMAC misconfiguration.`,
     );
   }
   if (!res.ok) {
@@ -369,6 +387,11 @@ async function teardown(
   // Best-effort delete in reverse FK order. Errors here are warnings,
   // not failures — the smoke ALREADY succeeded; leaving stray rows is
   // an operator-visible nuisance, not a smoke failure.
+  //
+  // The credential row carries no FK from sources_bindings (the
+  // `credentials_id` column is unconstrained text), so order here is
+  // safe: bindings first (FK to domain), then DELETE FROM credentials,
+  // then domain.
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
