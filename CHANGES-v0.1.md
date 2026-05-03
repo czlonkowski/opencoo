@@ -352,7 +352,54 @@ No new env vars. Appendix #5 reads only from the existing allow-list. The runboo
 - **`AgentRunnerRegistry` empty at boot.** Heartbeat / Lint / Surfacer scheduled rows seed correctly and the dispatcher registers their cron triggers, but no runner is wired to actually invoke the agents. Production runners need `HttpMcpToolClient`; landing in phase b alongside PR 23+. Until then, `/api/admin/scheduler` enumerates seeded schedules with `nextFireAt` populated and `lastFireAt: null`.
 - **No manual-trigger CLI for scheduled agents.** `opencoo agents seed` writes the rows; there's no `opencoo agents fire <slug>` verb. Operators trigger ad-hoc runs via `psql` (insert into `agent_runs` directly) or by awaiting the next cron tick. Tracked as a phase-b convenience.
 - **`pnpm smoke:real-data --boot` is not implemented.** The operator runs `pnpm opencoo` in another terminal first; the smoke script asserts `--boot` is passed and exits 1 with a clear message otherwise. Self-boot is a phase-c convenience.
-- **Smoke verifies the webhook-receiver layer only, not the full pipeline.** `pnpm smoke:real-data` provisions a transient generic-webhook binding and confirms the `webhook_events` row lands; it does NOT verify the full webhook → intake → compile → wiki chain because `source-webhook.scan()` is a no-op by design (the Scanner never produces an `ingestion_intake` row from a webhook event for this adapter). The full chain is verified by the runbook §4 manual walk against a real Asana / Drive binding. (Round-3 fix #3 narrowed the smoke's scope; round-2's earlier "writes a plaintext credential" framing is obsolete — the smoke now uses `DrizzleCredentialStore.write` per round-2 fix #1, so production crypto is exercised end-to-end.)
+- **Smoke verifies the webhook-receiver layer only, not the full pipeline.** `pnpm smoke:real-data` provisions a transient generic-webhook binding and confirms the `webhook_events` row lands; it does NOT verify the full webhook → intake → compile → wiki chain because `source-webhook.scan()` is a no-op by design (the Scanner never produces an `ingestion_intake` row from a webhook event for this adapter). The full chain is verified by the runbook §4 manual walk against a real Asana / Drive binding. (Round-3 fix #3 narrowed the smoke's scope; round-2's earlier "writes a plaintext credential" framing is obsolete — the smoke now uses `DrizzleCredentialStore.write` per round-2 fix #1, so production crypto is exercised end-to-end.) **(Closed by appendix #6 PR-N2 — smoke now re-enables `awaitIntakeRow` polling because the receiver does direct-intake for webhook-native adapters.)**
+
+---
+
+## Appendix #6 (PR-N1, PR-N2, PR-N3) — Pilot autonomy + observability gates
+
+Three PRs landed AFTER appendix #5 to close the deferred items the post-merge readiness review surfaced as blocking real-data pilot use. Appendix #6 ships the production webhook-receiver mount, the direct webhook → `ingestion_intake` fast path, and the production `HttpMcpToolClient` + populated `AgentRunnerRegistry` so scheduled Heartbeat / Lint actually fire on cron. None of these block the `0.1.0-a` tag (already cut), but together they unblock the pilot real-data smoke against the production composition.
+
+### Added
+
+#### Webhook receiver mount + signature-rejection observability (PR-N1, `de02fd7` / #56)
+
+- **`buildWebhookReceiver` is mounted in production.** Pre-PR-N1 the receiver was exported but never instantiated by the production boot path; webhook deliveries had no path to `webhook_events`. Now `engine-ingestion.start({mode:'workers'})` extracts `registerWebhookRoute(app, options)` from the receiver factory and binds it to the engine's primary Fastify app before `app.listen()`. `WorkerContext` extends with four new required-in-`workers`-mode fields (`credentialStore`, `webhookVerifier`, `webhookScannerQueue`, `webhookDlqQueue`); boot-validates each before mounting. Composition root in `composeProductionWorkerContext` constructs the two new BullMQ queues + `HmacSha256Verifier` and threads them through.
+- **`webhook_receiver.signature_invalid` debug log emitted on rejection.** Closes the documented runbook §5 gap: structured payload (`bindingId`, `provider`, `eventId`, `signatureHeaderName: "x-signature"`, `errorReason`) at debug level, before DLQ enqueue. Defensive `scrubPat(verifyResult.reason).slice(0, 200)` on the reason field — the `WebhookVerifier` type contract permits free-form strings, so a future custom verifier that leaks header/body bytes is automatically redacted.
+- **`BuildServerOptions.bodyLimit` extended** to thread the 5 MB ingestion-side cap through the shared engine-scaffold.
+
+#### Production `HttpMcpToolClient` + `AgentRunnerRegistry` activation (PR-N3, `aa64e10` / #57)
+
+- **`HttpMcpToolClient`** — production HTTP MCP client implementing the existing `McpToolClient` interface byte-for-byte. Hand-rolled JSON-RPC 2.0 over `fetch` against gitea-wiki-mcp-server's `/mcp` endpoint with bearer auth (`Authorization: Bearer ${MCP_BEARER_TOKEN}`). `clearTimeout`-disciplined `AbortController` (default 30 s). Typed errors: `McpResourceNotFoundError` for canonical "resource not accessible" / JSON-RPC `-32602` shape, `McpHttpError` for transport / network failures. `safe()` helper applies `scrubPat(...).slice(0, 200)` to every error log path.
+- **`AgentRunnerRegistry` populated.** New `createProductionAgentRunners` composition root + `tryComposeAgentRunnersBundleFromEnv` boot helper thread the registry into `engine-self-operating.start({ agentRunners, agentRouter })`. With `MCP_BEARER_TOKEN` set, scheduled Heartbeat + Lint fire on cron via the existing `AgentDispatcher` (PR-M2). Surfacer is INTENTIONALLY omitted when `availableTemplateSlugs.length === 0` (v0.1 has no template-catalog wiring); the orchestrator emits `surfacer.template_catalog_empty` warn at boot, and scheduled Surfacer instances land on the dispatcher's runner-missing path (BullMQ retry → DLQ) instead of running silently against an empty catalog.
+- **Per-dispatch domain-slug resolution** from `agent_instances.scope_domain_ids[0]`. Per-dispatch SQL is cheap at v0.1 cron cadence; v0.2 hoists into `AgentRunContext`.
+- **Boot tolerance.** Missing `MCP_BEARER_TOKEN` → engine boots with empty registry, `mcp_http.unavailable` warn line, management UI + webhook → wiki path stay alive.
+- **`composeStartedEngineWithBundle`** wraps `start()` in try/catch so a boot rejection drains the bundle's pg.Pool before re-throwing — no leaked connections on a half-failed boot.
+- **`MCP_BEARER_TOKEN(_FILE)` + `MCP_BASE_URL(_FILE)`** allow-listed in `tools/eslint-plugin-opencoo/src/rules/no-feature-env-vars.ts` (infrastructure-config rationale inline; same shape as `GITEA_PAT`).
+- **3 new `*.real-llm.test.ts` files** (Heartbeat / Lint / Surfacer), gated `RUN_REAL_LLM=1`. Total cost under \$0.20 against OpenRouter `moonshotai/kimi-k2.6` for one run of all three.
+
+#### Direct webhook → `ingestion_intake` fast path (PR-N2, `5790bb9` / #58)
+
+- **Receiver direct-intake branch.** When the bound adapter exposes `webhook.enrichEvents` AND the orchestrator wired `scannerClassifyQueue`, the receiver inserts `ingestion_intake` rows itself via the shared `upsertIntake` helper + enqueues full `ScannerClassifyJob` payloads on `ingestion.scanner.classify` inline. Pre-PR-N2 the receiver enqueued to a dead `intake.scanner` queue whose consumer didn't exist; webhook-native bindings (asana, generic webhook) wrote `webhook_events` rows but `ingestion_intake` rows materialized only via the periodic Scanner cron — and `scan()` is a no-op for these adapters by design, so deliveries stalled indefinitely. The new path closes the loop in milliseconds.
+- **`upsertIntake` extracted** from `pipelines/scanner.ts` to `intake/upsert-intake.ts` so receiver + scanner share one `INSERT ... ON CONFLICT DO NOTHING` path. Scanner re-exports under the historical name for sibling-package compat.
+- **`enrichEvents` impl in source-webhook** resolves `metadata.contentKind` via the `contentKindMap` jsonpath rules (idempotent re-resolution; defense-in-depth for hand-built events from outside `parseEvents`). source-asana already had `enrichEvents` (snapshot-fetch path) and benefits from direct-intake too.
+- **Boot-time validation symmetric with PR-N1.** `start({mode:'workers'})` throws if `ctx.enqueue` is missing — composition-root bugs surface at boot, not on first webhook delivery.
+- **`direct_intake_failed` logs at `error` (not `warn`).** Signature was valid, `webhook_events` written, upstream got 200 (no retry), document lost — that's a data-loss event, not a warning. Operator alerting catches it.
+- **Smoke restoration.** `pnpm smoke:real-data` re-adds `awaitIntakeRow` polling — the receiver-only scope from PR-M3 round-3 is no longer needed because the direct path means intake rows land within the smoke's timeout window.
+
+### Schema
+
+None. Appendix #6 is mount-wiring + new infrastructure code + docs.
+
+### Configuration
+
+Two new infrastructure env vars (`MCP_BEARER_TOKEN`, `MCP_BASE_URL`), allow-listed in the `no-feature-env-vars` ESLint rule with rationale comment. Both follow the `GITEA_PAT` shape (operator-level secrets needed for engine outbound auth) and accept the `_FILE` precedence variant for Docker-secrets deployments. The runbook's required-env enumeration in §1 lists both. No new feature env vars.
+
+### Residual advisories (non-blocking, tracked for the appendix #6 follow-up issue)
+
+- **Surfacer is omitted from the production runner registry** until the template catalog is sourced (v0.2 — likely from `catalog-workflows` once the consumer wiring lands). Operators see `surfacer.template_catalog_empty` warn at boot; scheduled Surfacer instances land in the dispatcher's runner-missing DLQ path. Workaround: `UPDATE agent_instances SET enabled = false WHERE definition_slug = 'surfacer'` to silence the BullMQ retry storm until v0.2.
+- **Duplicate `pg.Pool` + `LlmRouter` per process.** The agent-runner bundle and the ingestion composition each open their own; both close paths are wired so neither leaks on SIGTERM, but it's wasteful. Refactor to shared instances is a follow-up — production works correctly today.
+- **gitea-wiki-mcp-server response surface for `wiki://` URIs.** The HTTP client carries `readResource(wiki://...)` and `listResources({uriPrefix:"wiki://..."})` calls correctly to the JSON-RPC `resources/read` / `resources/list` endpoints, but whether the server (today) responds to `wiki://` URIs as registered MCP resources is a separate, server-side concern — only `worldview://{slug}` is registered today per the gitea-wiki-mcp-server README. Operators should verify against their deployment's MCP server before relying on the runbook's "Heartbeat reads wiki pages" framing.
 
 ---
 
