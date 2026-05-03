@@ -439,10 +439,18 @@ async function teardown(
   // not failures — the smoke ALREADY succeeded; leaving stray rows is
   // an operator-visible nuisance, not a smoke failure.
   //
-  // The credential row carries no FK from sources_bindings (the
-  // `credentials_id` column is unconstrained text), so order here is
-  // safe: bindings first (FK to domain), then DELETE FROM credentials,
-  // then domain.
+  // FK shape (verified in
+  // packages/shared/src/db/schema/sources-bindings.ts:34-49):
+  //   sources_bindings.credentials_id              uuid → credentials.id  ON DELETE RESTRICT
+  //   sources_bindings.webhook_secret_credentials_id  uuid → credentials.id  ON DELETE RESTRICT
+  //   sources_bindings.domain_id                   uuid → domains.id      (FK)
+  //   webhook_events.binding_id                    uuid → sources_bindings.id (FK)
+  //
+  // So the order MUST be: webhook_events → sources_bindings → credentials
+  // → domains. Deleting credentials before sources_bindings would trip
+  // the RESTRICT and leave the smoke binding behind on cleanup retry.
+  // Round-3 fix #4: an earlier comment claimed the credentials_id
+  // column was "unconstrained text" — wrong; it's uuid with RESTRICT.
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
