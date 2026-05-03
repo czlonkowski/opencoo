@@ -174,4 +174,22 @@ export default tseslint.config(
       "opencoo/no-feature-env-vars": "off",
     },
   },
+
+  // 9. Real-n8n-mcp smoke tests (`*.real-n8n-mcp.test.ts`) read
+  //    `RUN_REAL_N8N_MCP` (gate flag), `N8N_MCP_TEST_URL`
+  //    (operator-supplied n8n-mcp server URL) and
+  //    `N8N_MCP_TEST_BEARER` (operator-supplied bearer). All three
+  //    are CI/dev-only; same `describe.skipIf(...)` gating pattern
+  //    as the real-llm / real-mcp tests — production code paths
+  //    never touch them. Added in PR-O3 (phase-a appendix #7) for
+  //    operator-self-verification of the listAvailableTemplateSlugs
+  //    boot-time call against a live n8n-mcp server. The smoke test
+  //    lives at
+  //    `packages/adapters/automation-n8n-mcp/tests/list-templates.real-n8n-mcp.test.ts`.
+  {
+    files: ["**/*.real-n8n-mcp.test.ts"],
+    rules: {
+      "opencoo/no-feature-env-vars": "off",
+    },
+  },
 );

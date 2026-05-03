@@ -33,6 +33,15 @@ export {
   type BuilderSkill,
 } from "./builder-skills.js";
 
+// PR-O3 (phase-a appendix #7) — boot-time fetch of the Surfacer
+// template catalog from the n8n-mcp MCP server, with vendored-
+// fallback boot-tolerance.
+export {
+  listAvailableTemplateSlugs,
+  type ListAvailableTemplateSlugsArgs,
+  type McpToolCallClient,
+} from "./list-templates.js";
+
 export {
   tools,
   type BuilderToolDescriptor,

@@ -234,7 +234,7 @@ describe("createProductionAgentRunners — runner closures dispatch through", ()
 });
 
 describe("tryComposeAgentRunnersFromEnv — boot-tolerance (PR-N3)", () => {
-  it("returns null + logs `mcp_http.unavailable` when MCP_BEARER_TOKEN is unset", () => {
+  it("returns null + logs `mcp_http.unavailable` when MCP_BEARER_TOKEN is unset", async () => {
     const records: Array<{ level: string; message: string; data?: unknown }> = [];
     const logger = {
       debug: (m: string, d?: unknown) => records.push({ level: "debug", message: m, data: d }),
@@ -242,7 +242,7 @@ describe("tryComposeAgentRunnersFromEnv — boot-tolerance (PR-N3)", () => {
       warn: (m: string, d?: unknown) => records.push({ level: "warn", message: m, data: d }),
       error: (m: string, d?: unknown) => records.push({ level: "error", message: m, data: d }),
     } as unknown as Parameters<typeof tryComposeAgentRunnersFromEnv>[0]["logger"];
-    const result = tryComposeAgentRunnersFromEnv({
+    const result = await tryComposeAgentRunnersFromEnv({
       env: {}, // no MCP_BEARER_TOKEN
       router: {} as never,
       pgPool: {} as never,
@@ -253,7 +253,10 @@ describe("tryComposeAgentRunnersFromEnv — boot-tolerance (PR-N3)", () => {
     expect(warn).toBeDefined();
   });
 
-  it("returns a populated registry when MCP_BEARER_TOKEN is set (Surfacer OMITTED when no template catalog)", () => {
+  it("returns a populated registry when MCP_BEARER_TOKEN is set + availableTemplateSlugs override (caller-supplied path)", async () => {
+    // Caller-supplied `availableTemplateSlugs` wins outright, so
+    // the function never reaches the n8n-mcp call. This pins the
+    // legacy override path for unit-test consumers.
     const records: Array<{ level: string; message: string; data?: unknown }> = [];
     const logger = {
       debug: (m: string, d?: unknown) => records.push({ level: "debug", message: m, data: d }),
@@ -261,11 +264,13 @@ describe("tryComposeAgentRunnersFromEnv — boot-tolerance (PR-N3)", () => {
       warn: (m: string, d?: unknown) => records.push({ level: "warn", message: m, data: d }),
       error: (m: string, d?: unknown) => records.push({ level: "error", message: m, data: d }),
     } as unknown as Parameters<typeof tryComposeAgentRunnersFromEnv>[0]["logger"];
-    const result = tryComposeAgentRunnersFromEnv({
+    const result = await tryComposeAgentRunnersFromEnv({
       env: { MCP_BEARER_TOKEN: "valid-token-1234567890" },
       router: {} as never,
       pgPool: {} as never,
       logger,
+      // Empty override → Surfacer is OMITTED (round-2 fix #2 of PR-N3)
+      availableTemplateSlugs: [],
     });
     expect(result).not.toBeNull();
     expect(result?.runners.get("heartbeat")).toBeTypeOf("function");
@@ -289,8 +294,8 @@ describe("tryComposeAgentRunnersFromEnv — boot-tolerance (PR-N3)", () => {
     expect(warn).toBeDefined();
   });
 
-  it("registers Surfacer when MCP_BEARER_TOKEN is set AND availableTemplateSlugs is non-empty", () => {
-    const result = tryComposeAgentRunnersFromEnv({
+  it("registers Surfacer when MCP_BEARER_TOKEN is set AND availableTemplateSlugs is non-empty", async () => {
+    const result = await tryComposeAgentRunnersFromEnv({
       env: { MCP_BEARER_TOKEN: "valid-token-1234567890" },
       router: {} as never,
       pgPool: {} as never,
@@ -314,7 +319,7 @@ describe("tryComposeAgentRunnersFromEnv — boot-tolerance (PR-N3)", () => {
     const composition = await import(
       "../src/provision/production-composition.js"
     );
-    const bundle = composition.tryComposeAgentRunnersBundleFromEnv({
+    const bundle = await composition.tryComposeAgentRunnersBundleFromEnv({
       env: {
         DATABASE_URL: "postgres://test:test@127.0.0.1:65535/none",
         MCP_BEARER_TOKEN: "static-bearer-do-not-leak",
@@ -330,7 +335,7 @@ describe("tryComposeAgentRunnersFromEnv — boot-tolerance (PR-N3)", () => {
     await bundle?.close();
   });
 
-  it("never logs the bearer token (THREAT-MODEL §3.6 #11)", () => {
+  it("never logs the bearer token (THREAT-MODEL §3.6 #11)", async () => {
     const TOKEN = "super-secret-token-do-not-leak-1234567890";
     const records: Array<{ level: string; message: string; data?: unknown }> = [];
     const logger = {
@@ -339,7 +344,7 @@ describe("tryComposeAgentRunnersFromEnv — boot-tolerance (PR-N3)", () => {
       warn: (m: string, d?: unknown) => records.push({ level: "warn", message: m, data: d }),
       error: (m: string, d?: unknown) => records.push({ level: "error", message: m, data: d }),
     } as unknown as Parameters<typeof tryComposeAgentRunnersFromEnv>[0]["logger"];
-    const result = tryComposeAgentRunnersFromEnv({
+    const result = await tryComposeAgentRunnersFromEnv({
       env: { MCP_BEARER_TOKEN: TOKEN },
       router: {} as never,
       pgPool: {} as never,
@@ -349,5 +354,113 @@ describe("tryComposeAgentRunnersFromEnv — boot-tolerance (PR-N3)", () => {
     for (const r of records) {
       expect(JSON.stringify(r)).not.toContain(TOKEN);
     }
+  });
+});
+
+// PR-O3 (phase-a appendix #7) — Surfacer activation via n8n-mcp.
+// Three new tests pin the wiring contract between
+// production-composition.ts and the
+// `listAvailableTemplateSlugs` adapter helper.
+describe("tryComposeAgentRunnersFromEnv — n8n-mcp template catalog (PR-O3)", () => {
+  it("registers Surfacer when n8n-mcp returns a non-empty template catalog", async () => {
+    // Inject a stub McpToolCallClient via the test seam so we
+    // don't have to spin up a real n8n-mcp process.
+    const stub = {
+      callTool: async () => ({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              categories: [
+                { category: "ai_automation" },
+                { category: "webhook_processing" },
+                { category: "data_sync" },
+              ],
+            }),
+          },
+        ],
+      }),
+    };
+    const result = await tryComposeAgentRunnersFromEnv({
+      env: { MCP_BEARER_TOKEN: "valid-token-1234567890" },
+      router: {} as never,
+      pgPool: {} as never,
+      logger: silentLogger(),
+      n8nMcpClient: stub,
+    });
+    expect(result).not.toBeNull();
+    expect(result?.runners.get("heartbeat")).toBeTypeOf("function");
+    expect(result?.runners.get("lint")).toBeTypeOf("function");
+    expect(result?.runners.get("surfacer")).toBeTypeOf("function");
+  });
+
+  it("falls back to the vendored builderSkills baseline + emits `n8n_mcp.unavailable` warn when N8N_MCP env vars are unset", async () => {
+    // No `n8nMcpClient` test seam, no N8N_MCP_BASE_URL or
+    // N8N_MCP_BEARER_TOKEN — exercises the env-derivation path
+    // with the operator NOT having set the n8n-mcp env vars.
+    const records: Array<{ level: string; message: string; data?: unknown }> = [];
+    const logger = {
+      debug: (m: string, d?: unknown) => records.push({ level: "debug", message: m, data: d }),
+      info: (m: string, d?: unknown) => records.push({ level: "info", message: m, data: d }),
+      warn: (m: string, d?: unknown) => records.push({ level: "warn", message: m, data: d }),
+      error: (m: string, d?: unknown) => records.push({ level: "error", message: m, data: d }),
+    } as unknown as Parameters<typeof tryComposeAgentRunnersFromEnv>[0]["logger"];
+    const result = await tryComposeAgentRunnersFromEnv({
+      env: {
+        MCP_BEARER_TOKEN: "valid-token-1234567890",
+        // N8N_MCP_BASE_URL + N8N_MCP_BEARER_TOKEN intentionally
+        // absent.
+      },
+      router: {} as never,
+      pgPool: {} as never,
+      logger,
+    });
+    expect(result).not.toBeNull();
+    // Vendored fallback yields a non-empty list → Surfacer is
+    // registered (closing the round-2 fix #2 omission for the
+    // realistic operator deployment).
+    expect(result?.runners.get("surfacer")).toBeTypeOf("function");
+    // Operator sees a clear warn telling them why Surfacer is
+    // running on the vendored baseline.
+    const warn = records.find(
+      (r) => r.level === "warn" && r.message === "n8n_mcp.unavailable",
+    );
+    expect(warn).toBeDefined();
+    // The follow-up `surfacer.template_catalog_n8n_mcp_*` warns
+    // are NOT emitted here because n8n_mcp.unavailable runs
+    // BEFORE the listAvailableTemplateSlugs call (the client is
+    // null so the function returns the fallback verbatim with
+    // no further log noise).
+  });
+
+  it("falls back to the vendored builderSkills baseline + emits `surfacer.template_catalog_n8n_mcp_unreachable` warn when n8n-mcp throws", async () => {
+    const records: Array<{ level: string; message: string; data?: unknown }> = [];
+    const logger = {
+      debug: (m: string, d?: unknown) => records.push({ level: "debug", message: m, data: d }),
+      info: (m: string, d?: unknown) => records.push({ level: "info", message: m, data: d }),
+      warn: (m: string, d?: unknown) => records.push({ level: "warn", message: m, data: d }),
+      error: (m: string, d?: unknown) => records.push({ level: "error", message: m, data: d }),
+    } as unknown as Parameters<typeof tryComposeAgentRunnersFromEnv>[0]["logger"];
+    const stub = {
+      callTool: async () => {
+        throw new Error("ECONNREFUSED 127.0.0.1:5678");
+      },
+    };
+    const result = await tryComposeAgentRunnersFromEnv({
+      env: { MCP_BEARER_TOKEN: "valid-token-1234567890" },
+      router: {} as never,
+      pgPool: {} as never,
+      logger,
+      n8nMcpClient: stub,
+    });
+    expect(result).not.toBeNull();
+    // Fallback to vendored builderSkills → Surfacer registered.
+    expect(result?.runners.get("surfacer")).toBeTypeOf("function");
+    const warn = records.find(
+      (r) =>
+        r.level === "warn" &&
+        r.message === "surfacer.template_catalog_n8n_mcp_unreachable",
+    );
+    expect(warn).toBeDefined();
   });
 });

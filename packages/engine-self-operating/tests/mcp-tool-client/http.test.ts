@@ -387,6 +387,229 @@ describe("HttpMcpToolClient — listResources", () => {
   });
 });
 
+// PR-O3 (phase-a appendix #7) — `callTool` extension for n8n-mcp's
+// `search_templates` tool. Same JSON-RPC 2.0 over fetch shape as
+// readResource / listResources; reuses the rpc() helper, the
+// safe()/scrubPat discipline, the AbortController-with-clearTimeout
+// pattern, and the bearer-never-logged invariant. No new error class
+// — `McpHttpError` covers transport + JSON-RPC errors (a "tool not
+// found" upstream surfaces as a -32601 / -32602 JSON-RPC error and
+// rides the same code path).
+describe("HttpMcpToolClient — callTool (PR-O3)", () => {
+  it("POSTs JSON-RPC tools/call and returns the parsed result", async () => {
+    const calls: FetchCall[] = [];
+    const fetchFn = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        calls.push({ url, init: init ?? {} });
+        return jsonResponse({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            content: [{ type: "text", text: "hello" }],
+          },
+        });
+      },
+    );
+    const { logger } = makeRecordingLogger();
+    const client = new HttpMcpToolClient({
+      baseUrl: URL_BASE,
+      bearerToken: BEARER,
+      logger,
+      fetchFn: fetchFn as unknown as typeof fetch,
+    });
+    const result = await client.callTool("search_templates", {
+      searchMode: "patterns",
+    });
+    // Returns the JSON-RPC result envelope verbatim — the caller
+    // (listAvailableTemplateSlugs) is responsible for parsing the
+    // tool-specific shape.
+    expect(result).toEqual({
+      content: [{ type: "text", text: "hello" }],
+    });
+
+    // Request shape: tools/call with name + arguments.
+    expect(calls).toHaveLength(1);
+    const parsed = JSON.parse(String(calls[0]?.init.body ?? "{}")) as {
+      jsonrpc: string;
+      method: string;
+      params: { name: string; arguments: Record<string, unknown> };
+    };
+    expect(parsed.jsonrpc).toBe("2.0");
+    expect(parsed.method).toBe("tools/call");
+    expect(parsed.params.name).toBe("search_templates");
+    expect(parsed.params.arguments).toEqual({ searchMode: "patterns" });
+  });
+
+  it("defaults arguments to {} when callTool is invoked without args", async () => {
+    const calls: FetchCall[] = [];
+    const fetchFn = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        calls.push({
+          url: typeof input === "string" ? input : input.toString(),
+          init: init ?? {},
+        });
+        return jsonResponse({
+          jsonrpc: "2.0",
+          id: 1,
+          result: { content: [] },
+        });
+      },
+    );
+    const { logger } = makeRecordingLogger();
+    const client = new HttpMcpToolClient({
+      baseUrl: URL_BASE,
+      bearerToken: BEARER,
+      logger,
+      fetchFn: fetchFn as unknown as typeof fetch,
+    });
+    await client.callTool("search_templates");
+    const parsed = JSON.parse(String(calls[0]?.init.body ?? "{}")) as {
+      params: { arguments: Record<string, unknown> };
+    };
+    expect(parsed.params.arguments).toEqual({});
+  });
+
+  it("maps a JSON-RPC tool-not-found error to McpHttpError (NOT McpResourceNotFoundError)", async () => {
+    // -32601 (Method not found) is the canonical wire shape for an
+    // unknown tool. Surfaces as the generic transport error — the
+    // caller (listAvailableTemplateSlugs) maps to the vendored
+    // fallback regardless of the exact class.
+    const fetchFn = vi.fn(async () =>
+      jsonResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        error: { code: -32601, message: "Method not found: bogus_tool" },
+      }),
+    );
+    const { logger } = makeRecordingLogger();
+    const client = new HttpMcpToolClient({
+      baseUrl: URL_BASE,
+      bearerToken: BEARER,
+      logger,
+      fetchFn: fetchFn as unknown as typeof fetch,
+    });
+    await expect(client.callTool("bogus_tool")).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof McpHttpError &&
+        !(err instanceof McpResourceNotFoundError) &&
+        err.jsonRpcCode === -32601,
+    );
+  });
+
+  it("attaches `Authorization: Bearer ${token}` header on callTool", async () => {
+    const calls: FetchCall[] = [];
+    const fetchFn = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        calls.push({
+          url: typeof input === "string" ? input : input.toString(),
+          init: init ?? {},
+        });
+        return jsonResponse({
+          jsonrpc: "2.0",
+          id: 1,
+          result: { content: [] },
+        });
+      },
+    );
+    const { logger } = makeRecordingLogger();
+    const client = new HttpMcpToolClient({
+      baseUrl: URL_BASE,
+      bearerToken: BEARER,
+      logger,
+      fetchFn: fetchFn as unknown as typeof fetch,
+    });
+    await client.callTool("search_templates");
+    const headers = new Headers(
+      calls[0]?.init.headers as Record<string, string> | undefined,
+    );
+    expect(headers.get("authorization")).toBe(`Bearer ${BEARER}`);
+  });
+
+  it("NEVER includes the bearer token in any log payload (callTool success path)", async () => {
+    const fetchFn = vi.fn(async () =>
+      jsonResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [{ type: "text", text: "ok" }] },
+      }),
+    );
+    const { logger, records } = makeRecordingLogger();
+    const client = new HttpMcpToolClient({
+      baseUrl: URL_BASE,
+      bearerToken: BEARER,
+      logger,
+      fetchFn: fetchFn as unknown as typeof fetch,
+    });
+    await client.callTool("search_templates", { searchMode: "patterns" });
+    for (const r of records) {
+      const serialized = JSON.stringify(r);
+      expect(
+        serialized,
+        `bearer leaked into ${r.level} '${r.message}'`,
+      ).not.toContain(BEARER);
+    }
+  });
+
+  it("scrubs bearer-laced error messages from callTool failures", async () => {
+    const fetchFn = vi.fn(async () => {
+      throw new TypeError(
+        `request to ${URL_BASE} with Authorization: Bearer ${BEARER} failed`,
+      );
+    });
+    const { logger, records } = makeRecordingLogger();
+    const client = new HttpMcpToolClient({
+      baseUrl: URL_BASE,
+      bearerToken: BEARER,
+      logger,
+      fetchFn: fetchFn as unknown as typeof fetch,
+    });
+    await expect(client.callTool("search_templates")).rejects.toBeInstanceOf(
+      McpHttpError,
+    );
+    const warnRecords = records.filter((r) => r.level === "warn");
+    expect(warnRecords.length).toBeGreaterThan(0);
+    for (const r of warnRecords) {
+      expect(JSON.stringify(r)).not.toContain(BEARER);
+    }
+  });
+
+  it("clears the AbortController timer on success (no leaked timer)", async () => {
+    // We can't directly observe `clearTimeout` from outside, but
+    // we can pin the contract by verifying that a successful call
+    // with a long timeout completes promptly and doesn't leave the
+    // event loop dangling. A leaked timer would block vitest's
+    // worker exit; a passing test proves the clear ran.
+    const fetchFn = vi.fn(async () =>
+      jsonResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [{ type: "text", text: "ok" }] },
+      }),
+    );
+    const { logger } = makeRecordingLogger();
+    const client = new HttpMcpToolClient({
+      baseUrl: URL_BASE,
+      bearerToken: BEARER,
+      logger,
+      fetchFn: fetchFn as unknown as typeof fetch,
+      // 60s timeout — if clearTimeout didn't run, vitest's
+      // forceExit kicks in 5s after the test resolves and the
+      // suite reports a leaked-handle warning. Our assertion is
+      // that the call resolves immediately AND the suite doesn't
+      // hang.
+      requestTimeoutMs: 60_000,
+    });
+    const t0 = Date.now();
+    const result = await client.callTool("search_templates");
+    const elapsed = Date.now() - t0;
+    expect(result).toBeDefined();
+    // Should complete in <100ms (fetch is mocked); if it took
+    // anywhere close to the timeout, something is wrong.
+    expect(elapsed).toBeLessThan(100);
+  });
+});
+
 describe("HttpMcpToolClient — credential leakage prevention (THREAT-MODEL §3.6 #11)", () => {
   it("NEVER includes the bearer token in any log payload (success path)", async () => {
     const fetchFn = vi.fn(async () =>

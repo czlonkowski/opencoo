@@ -274,7 +274,13 @@ async function defaultStartFactory(opts: {
   // populated. Boot-tolerant: bundle === null → empty registry,
   // engine still boots, scheduled jobs no-op (with one failed
   // agent_runs row per dispatch surfacing the misconfig).
-  const bundle = composition.tryComposeAgentRunnersBundleFromEnv({
+  //
+  // PR-O3 (phase-a appendix #7): the bundle composition is now
+  // async — `tryComposeAgentRunnersFromEnv` performs an outbound
+  // MCP call to n8n-mcp at boot to populate the Surfacer template
+  // catalog. composeStartedEngineWithBundle already awaits the
+  // bundle.
+  const bundle = await composition.tryComposeAgentRunnersBundleFromEnv({
     env: opts.env,
   });
   return composeStartedEngineWithBundle({

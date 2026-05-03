@@ -863,7 +863,7 @@ describe("runServe", () => {
   //
   // These tests drive the same composition helper the default
   // factory invokes, so the wiring path is identical.
-  it("composes a populated AgentRunnerRegistry when MCP_BEARER_TOKEN is set (PR-N3)", async () => {
+  it("composes a populated AgentRunnerRegistry when MCP_BEARER_TOKEN is set (PR-N3 + PR-O3)", async () => {
     const composition = await import(
       "../src/provision/production-composition.js"
     );
@@ -876,34 +876,44 @@ describe("runServe", () => {
     } as unknown as Parameters<
       typeof composition.tryComposeAgentRunnersBundleFromEnv
     >[0]["logger"];
-    const bundle = composition.tryComposeAgentRunnersBundleFromEnv({
+    const bundle = await composition.tryComposeAgentRunnersBundleFromEnv({
       env: {
         DATABASE_URL: "postgres://test:test@localhost:65535/none",
         MCP_BEARER_TOKEN: "static-bearer-do-not-leak",
         MCP_BASE_URL: "http://localhost:3000/mcp",
+        // N8N_MCP_BASE_URL / N8N_MCP_BEARER_TOKEN intentionally
+        // absent — PR-O3 falls back to the vendored builderSkills
+        // baseline so Surfacer remains REGISTERED (the n8n_mcp.unavailable
+        // warn is emitted instead of surfacer.template_catalog_empty).
       },
       logger: captureLogger,
     });
     expect(bundle).not.toBeNull();
     expect(bundle?.runners.get("heartbeat")).toBeTypeOf("function");
     expect(bundle?.runners.get("lint")).toBeTypeOf("function");
-    // Round-2 fix #2 on PR #57: empty template catalog →
-    // Surfacer omitted from the registry (logged at boot).
-    expect(bundle?.runners.get("surfacer")).toBeUndefined();
+    // PR-O3 (phase-a appendix #7): Surfacer is now REGISTERED by
+    // default — the vendored builderSkills baseline is non-empty
+    // (3 entries), so the surfacerEnabled path activates even
+    // when n8n-mcp env vars are unset.
+    expect(bundle?.runners.get("surfacer")).toBeTypeOf("function");
     // The 3 definitions stay registered (Lint reads them for
-    // automation_drift); only the Surfacer runner closure is
-    // omitted.
+    // automation_drift).
     expect(bundle?.definitions.list().length).toBe(3);
     // No `mcp_http.unavailable` warn — the bundle was composed.
     expect(
       records.find((r) => r.message === "mcp_http.unavailable"),
     ).toBeUndefined();
-    // Round-2 fix #2: clear warn line at boot when Surfacer is
-    // omitted so the operator can see why scheduled Surfacer
-    // doesn't fire.
+    // PR-O3: with n8n-mcp env vars unset, the orchestrator emits
+    // `n8n_mcp.unavailable` so the operator sees why Surfacer is
+    // using the vendored baseline.
+    expect(
+      records.find((r) => r.message === "n8n_mcp.unavailable"),
+    ).toBeDefined();
+    // surfacer.template_catalog_empty should NOT be emitted —
+    // builderSkills.length > 0.
     expect(
       records.find((r) => r.message === "surfacer.template_catalog_empty"),
-    ).toBeDefined();
+    ).toBeUndefined();
     await bundle?.close();
   });
 
@@ -924,7 +934,7 @@ describe("runServe", () => {
     } as unknown as Parameters<
       typeof composition.tryComposeAgentRunnersBundleFromEnv
     >[0]["logger"];
-    const bundle = composition.tryComposeAgentRunnersBundleFromEnv({
+    const bundle = await composition.tryComposeAgentRunnersBundleFromEnv({
       env: {
         DATABASE_URL: "postgres://test:test@localhost:65535/none",
         // MCP_BEARER_TOKEN intentionally absent

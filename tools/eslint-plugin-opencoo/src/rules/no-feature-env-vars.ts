@@ -81,6 +81,21 @@ const DEFAULT_ALLOW_LIST = [
   "MCP_BEARER_TOKEN_FILE",
   "MCP_BASE_URL",
   "MCP_BASE_URL_FILE",
+  // Phase-a appendix #7 PR-O3 — n8n-mcp transport for the
+  // Surfacer template catalog. Same shape + rationale as
+  // MCP_BEARER_TOKEN/MCP_BASE_URL above (operator-level secret +
+  // URL for an outbound call to a SECOND MCP server — the
+  // n8n-mcp instance, distinct from the gitea-wiki-mcp server).
+  // When unset, Surfacer falls back to the vendored
+  // ~25-template baseline; absent does NOT break Heartbeat /
+  // Lint. Read via `requireWithFile` / `readWithFile`, never via
+  // `process.env.X`. Same `_FILE` Docker-secrets convention as
+  // the rest. Infrastructure-config — NOT feature config (which
+  // still lives in Postgres + UI per THREAT-MODEL §2 invariant 9).
+  "N8N_MCP_BEARER_TOKEN",
+  "N8N_MCP_BEARER_TOKEN_FILE",
+  "N8N_MCP_BASE_URL",
+  "N8N_MCP_BASE_URL_FILE",
 ];
 
 function isIdentifier(

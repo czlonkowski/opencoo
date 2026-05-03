@@ -1,8 +1,16 @@
 /**
  * `HttpMcpToolClient` — production transport for the McpToolClient
- * port. Speaks JSON-RPC 2.0 over HTTPS to the gitea-wiki-mcp-server's
- * `/mcp` endpoint per the MCP Streamable-HTTP transport (PR-N3,
- * phase-a appendix #6).
+ * port. Speaks JSON-RPC 2.0 over HTTPS to an MCP server's `/mcp`
+ * endpoint per the MCP Streamable-HTTP transport (PR-N3, phase-a
+ * appendix #6).
+ *
+ * Used against TWO different MCP servers in v0.1, each constructed
+ * via its own instance:
+ *   1. gitea-wiki-mcp-server — `MCP_BEARER_TOKEN` + `MCP_BASE_URL`
+ *      env vars; only `readResource` + `listResources` are called.
+ *   2. n8n-mcp (PR-O3, appendix #7) — `N8N_MCP_BEARER_TOKEN` +
+ *      `N8N_MCP_BASE_URL`; only `callTool('search_templates', ...)`
+ *      is called for the Surfacer template catalog.
  *
  * Hand-rolled over `fetch` rather than wrapping
  * `@modelcontextprotocol/sdk/client` — the SDK transport drags in
@@ -12,7 +20,7 @@
  * A future PR can swap to the SDK if streaming or richer transport
  * features become useful.
  *
- * Two operations:
+ * Three operations:
  *   - `readResource(uri)` → POST `${baseUrl}` with JSON-RPC
  *     `{ method: "resources/read", params: { uri } }`. Returns
  *     `result.contents[0].text` per the MCP spec.
@@ -21,6 +29,13 @@
  *     URI array. `scheme` and `uriPrefix` filters apply
  *     CLIENT-SIDE — the gitea-wiki-mcp-server's resources/list
  *     handler does not declare server-side filter semantics.
+ *   - `callTool(name, args?)` (PR-O3, appendix #7) → POST with
+ *     JSON-RPC `{ method: "tools/call", params: { name, arguments }}`.
+ *     Returns the JSON-RPC `result` envelope verbatim — per MCP
+ *     spec the canonical shape is
+ *     `{ content: [{ type: "text", text: "..." }] }` but the caller
+ *     parses tool-specifically (e.g. n8n-mcp's `search_templates`
+ *     ships its catalog as a JSON string inside the text content).
  *
  * Error mapping:
  *   - JSON-RPC error code -32602 with "not accessible" / "not
@@ -101,6 +116,16 @@ interface JsonRpcSuccessList {
   };
 }
 
+/** PR-O3: opaque success envelope for `tools/call`. The tool-specific
+ *  shape lives under `result` (per MCP spec, typically
+ *  `{ content: [{type:"text", text: ...}] }`) and is parsed by the
+ *  caller, not here. */
+interface JsonRpcSuccessTool {
+  readonly jsonrpc: "2.0";
+  readonly id: number | string;
+  readonly result: unknown;
+}
+
 interface JsonRpcError {
   readonly jsonrpc: "2.0";
   readonly id: number | string;
@@ -114,6 +139,7 @@ interface JsonRpcError {
 type JsonRpcResponse =
   | JsonRpcSuccessRead
   | JsonRpcSuccessList
+  | JsonRpcSuccessTool
   | JsonRpcError;
 
 function isJsonRpcError(r: JsonRpcResponse): r is JsonRpcError {
@@ -251,7 +277,7 @@ export class HttpMcpToolClient implements McpToolClient {
    *  caller is reached — so the only error type the caller can
    *  distinguish is the JSON-RPC `error` shape. */
   private async rpc(
-    method: "resources/read" | "resources/list",
+    method: "resources/read" | "resources/list" | "tools/call",
     params: Record<string, unknown>,
   ): Promise<JsonRpcResponse> {
     const id = this.nextId++;
@@ -319,20 +345,75 @@ export class HttpMcpToolClient implements McpToolClient {
 
   /** Centralised warn log for every failure path. Scrubs the
    *  inbound error message before serialisation so a bearer-laced
-   *  upstream message can't leak via the log path. */
+   *  upstream message can't leak via the log path. The
+   *  `subjectKind` discriminates the URI-vs-tool-name field for
+   *  the new callTool path (PR-O3); the `subject` value is logged
+   *  under that key. */
   private logFailed(
-    op: "readResource" | "listResources",
-    uri: string | undefined,
+    op: "readResource" | "listResources" | "callTool",
+    subject: string | undefined,
     err: unknown,
+    subjectKind: "uri" | "tool_name" = "uri",
   ): void {
     const raw = err instanceof Error ? err.message : String(err);
     const httpStatus =
       err instanceof McpHttpError ? err.httpStatus : undefined;
     this.logger.warn("mcp_http.failed", {
       op,
-      ...(uri !== undefined ? { uri } : {}),
+      ...(subject !== undefined ? { [subjectKind]: subject } : {}),
       ...(httpStatus !== undefined ? { http_status: httpStatus } : {}),
       error: safe(raw),
     });
+  }
+
+  /** PR-O3 (phase-a appendix #7) — invoke an MCP tool by name.
+   *  Mirrors the readResource/listResources shape: rpc() returns
+   *  the parsed response, JSON-RPC errors map to `McpHttpError`
+   *  (no "tool not found" specialisation — Surfacer's caller
+   *  treats every failure uniformly by falling back to the
+   *  vendored catalog). Returns the JSON-RPC `result` envelope
+   *  verbatim; the tool-specific shape is the caller's concern.
+   *
+   *  AbortController timer is cleared by the rpc() helper's
+   *  finally block on every path — same discipline as
+   *  readResource/listResources. */
+  async callTool(
+    name: string,
+    args?: Record<string, unknown>,
+  ): Promise<unknown> {
+    const t0 = Date.now();
+    let response: JsonRpcResponse;
+    try {
+      response = await this.rpc("tools/call", {
+        name,
+        arguments: args ?? {},
+      });
+    } catch (err) {
+      this.logFailed("callTool", name, err, "tool_name");
+      throw err;
+    }
+    if (isJsonRpcError(response)) {
+      const safeMessage = safe(response.error.message);
+      this.logger.warn("mcp_http.failed", {
+        op: "callTool",
+        tool_name: name,
+        json_rpc_code: response.error.code,
+        error: safeMessage,
+      });
+      throw new McpHttpError(
+        `mcp-http: callTool '${name}' failed (json-rpc ${response.error.code}: ${safeMessage})`,
+        { jsonRpcCode: response.error.code },
+      );
+    }
+    this.logger.debug("mcp_http.tool_call", {
+      tool_name: name,
+      latency_ms: Date.now() - t0,
+    });
+    // Return the `result` envelope verbatim. Per MCP spec,
+    // tools/call returns `{ content: [{type, text|data, ...}], ...}`
+    // but the caller (e.g. listAvailableTemplateSlugs) is
+    // responsible for the tool-specific parse — we keep the
+    // transport layer free of any tool-specific schema knowledge.
+    return (response as JsonRpcSuccessTool).result;
   }
 }

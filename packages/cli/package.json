@@ -23,6 +23,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@opencoo/automation-n8n-mcp": "workspace:*",
     "@opencoo/engine-ingestion": "workspace:*",
     "@opencoo/engine-self-operating": "workspace:*",
     "@opencoo/guard-redaction-regex": "workspace:*",

@@ -72,6 +72,10 @@ import {
   giteaWikiAdapter,
 } from "@opencoo/wiki-gitea";
 import { guardRedactionRegex } from "@opencoo/guard-redaction-regex";
+import {
+  builderSkills,
+  listAvailableTemplateSlugs,
+} from "@opencoo/automation-n8n-mcp";
 
 import { createProductionAgentRunners } from "./agent-runners.js";
 
@@ -412,6 +416,13 @@ async function loadSourceAdapterFactories(
  *  (Docker network, reverse proxy, etc.). */
 const DEFAULT_MCP_BASE_URL = "http://localhost:3000/mcp";
 
+/** Minimal structural mirror of `McpToolCallClient` from
+ *  @opencoo/automation-n8n-mcp — declared locally to avoid the
+ *  cross-package type round-trip at the composition root signature. */
+interface McpToolCallClientShape {
+  callTool?(name: string, args?: Record<string, unknown>): Promise<unknown>;
+}
+
 export interface ComposeAgentRunnersArgs {
   readonly env: Record<string, string | undefined>;
   /** Production LlmRouter — typically the same instance the
@@ -425,10 +436,17 @@ export interface ComposeAgentRunnersArgs {
   /** Logger — error log lines route here with `safeError`
    *  applied. */
   readonly logger?: Logger;
-  /** v0.1 hardcoded set of n8n template slugs Surfacer can
-   *  propose. Mirrors the seed catalogue; full catalog-driven
-   *  resolution is the catalog-workflows compiler's job. */
+  /** Caller-supplied template catalog override (test path).
+   *  When undefined, the function calls n8n-mcp via the env-derived
+   *  client and falls back to the vendored builderSkills baseline
+   *  on any failure. */
   readonly availableTemplateSlugs?: readonly string[];
+  /** @internal Test seam — when present, listAvailableTemplateSlugs
+   *  receives this client instead of the env-derived
+   *  HttpMcpToolClient. Use `null` to simulate "n8n-mcp unreachable"
+   *  without touching env vars. Production callers leave this
+   *  undefined and let env-derivation run. (PR-O3, appendix #7). */
+  readonly n8nMcpClient?: McpToolCallClientShape | null;
 }
 
 export interface ComposedAgentRunners {
@@ -442,6 +460,9 @@ export interface ComposeAgentRunnersFromEnvOnlyArgs {
   readonly logger?: Logger;
   /** Closed set of n8n template slugs Surfacer can propose. */
   readonly availableTemplateSlugs?: readonly string[];
+  /** @internal Test seam — see `ComposeAgentRunnersArgs.n8nMcpClient`.
+   *  Threaded through to `tryComposeAgentRunnersFromEnv`. */
+  readonly n8nMcpClient?: McpToolCallClientShape | null;
 }
 
 export interface ComposedAgentRunnersBundle extends ComposedAgentRunners {
@@ -471,10 +492,16 @@ export interface ComposedAgentRunnersBundle extends ComposedAgentRunners {
  *  Used by the CLI's serve verb to open the registry alongside
  *  the self-op + ingestion engines without dragging the full
  *  ingestion WorkerContext composition.
+ *
+ *  PR-O3 (phase-a appendix #7): now async because
+ *  `tryComposeAgentRunnersFromEnv` performs an outbound MCP call
+ *  to n8n-mcp at boot to populate the Surfacer template catalog.
+ *  The orchestrator (`composeStartedEngineWithBundle` in
+ *  `serve.ts`) already awaits the bundle.
  */
-export function tryComposeAgentRunnersBundleFromEnv(
+export async function tryComposeAgentRunnersBundleFromEnv(
   args: ComposeAgentRunnersFromEnvOnlyArgs,
-): ComposedAgentRunnersBundle | null {
+): Promise<ComposedAgentRunnersBundle | null> {
   const logger = args.logger ?? new ConsoleLogger();
 
   let databaseUrl: string;
@@ -513,7 +540,7 @@ export function tryComposeAgentRunnersBundleFromEnv(
     provider: createMultiProviderDispatcher(args.env, logger),
   });
 
-  const composed = tryComposeAgentRunnersFromEnv({
+  const composed = await tryComposeAgentRunnersFromEnv({
     env: args.env,
     router,
     pgPool,
@@ -521,6 +548,7 @@ export function tryComposeAgentRunnersBundleFromEnv(
     ...(args.availableTemplateSlugs !== undefined
       ? { availableTemplateSlugs: args.availableTemplateSlugs }
       : {}),
+    ...(args.n8nMcpClient !== undefined ? { n8nMcpClient: args.n8nMcpClient } : {}),
   });
   if (composed === null) {
     // tryComposeAgentRunnersFromEnv already logged the reason.
@@ -569,13 +597,28 @@ export function tryComposeAgentRunnersBundleFromEnv(
  *  Per-dispatch domain slug resolution lives in the runner
  *  closures (`agent-runners.ts`): each closure reads
  *  `ctx.instance.scopeDomainIds[0]` and looks up the
- *  corresponding `domains.slug`. No new env var is needed
- *  (THREAT-MODEL §2 invariant 9 — feature config lives in
- *  Postgres + UI, not env).
+ *  corresponding `domains.slug`. No new env var is needed for the
+ *  per-dispatch slug (THREAT-MODEL §2 invariant 9 — feature
+ *  config lives in Postgres + UI, not env).
+ *
+ *  PR-O3 (phase-a appendix #7) — Surfacer activation: the
+ *  function is now async. It optionally constructs a SECOND
+ *  `HttpMcpToolClient` pointed at the n8n-mcp server (via
+ *  `N8N_MCP_BASE_URL` + `N8N_MCP_BEARER_TOKEN`) and calls the
+ *  adapter's `listAvailableTemplateSlugs` to fetch the closed
+ *  list of template slugs Surfacer is allowed to propose. When
+ *  either env var is unset OR the n8n-mcp call fails, the
+ *  vendored `builderSkills` baseline is used so Surfacer remains
+ *  registered (no longer omitted by default — round-2 fix #2 of
+ *  PR-N3 still applies, but only when BOTH the n8n-mcp call AND
+ *  the vendored fallback yield 0 slugs). N8N_MCP_BASE_URL +
+ *  N8N_MCP_BEARER_TOKEN are infrastructure-config (NOT feature
+ *  config) and follow the same `_FILE` Docker-secrets convention
+ *  as MCP_BEARER_TOKEN.
  */
-export function tryComposeAgentRunnersFromEnv(
+export async function tryComposeAgentRunnersFromEnv(
   args: ComposeAgentRunnersArgs,
-): ComposedAgentRunners | null {
+): Promise<ComposedAgentRunners | null> {
   const logger = args.logger ?? new ConsoleLogger();
   const bearer = readWithFile(args.env, "MCP_BEARER_TOKEN");
   if (bearer === undefined) {
@@ -612,32 +655,59 @@ export function tryComposeAgentRunnersFromEnv(
   definitions.register(LINT_DEFINITION);
   definitions.register(SURFACER_DEFINITION);
 
-  // Round-2 fix #2 on PR #57 (Copilot review): Surfacer's
-  // `availableTemplateSlugs` is the closed list of n8n workflow
-  // templates the LLM is allowed to propose. `runSurfacer`
-  // rejects every candidate with an unknown slug, so an empty
-  // list silently drops EVERY automation Surfacer would surface
-  // — invisible failure at scheduled-cadence cron tick. v0.1
-  // ships no template catalog wiring (the catalog-workflows
-  // class exists but the slug list isn't sourced from it yet),
-  // so when the operator hasn't supplied a non-empty list we
-  // OMIT Surfacer from the runner registry entirely. The
-  // operator sees a clear warn line at boot;
-  // `agents seed`-ed Surfacer instances dispatch and the
-  // dispatcher's runner-missing path throws (with the BullMQ
-  // retry/DLQ surfacing the misconfig) instead of running
-  // silently against an empty catalog.
+  // PR-O3 (phase-a appendix #7) — Surfacer activation via n8n-mcp.
   //
-  // TODO(v0.2): wire `availableTemplateSlugs` from the
-  // catalog-workflows domain's compiled page index — Surfacer
-  // becomes registered automatically when the catalog has at
-  // least one entry.
-  const availableTemplateSlugs = args.availableTemplateSlugs ?? [];
+  // 1. Resolve the SURFACER TEMPLATE CATALOG. The list is the
+  //    closed set of n8n template slugs the Surfacer LLM is
+  //    allowed to propose; `runSurfacer` rejects every candidate
+  //    with an unknown slug, so the list MUST be non-empty for
+  //    Surfacer to do useful work.
+  //
+  // 2. Source order:
+  //    a. Caller-supplied `availableTemplateSlugs` (test path) —
+  //       wins outright; useful for fixed-shape unit tests.
+  //    b. n8n-mcp `search_templates` (production path) — when
+  //       N8N_MCP_BASE_URL + N8N_MCP_BEARER_TOKEN are set, point
+  //       a SECOND `HttpMcpToolClient` at n8n-mcp and ask for
+  //       the patterns-mode catalog. Boot-tolerant: any failure
+  //       (env unset, construction throw, callTool throw, empty
+  //       result) falls back to (c).
+  //    c. Vendored `builderSkills` baseline — the ~3-template
+  //       snapshot bundled with the adapter. Always non-empty.
+  //
+  //    With (c) as the floor, Surfacer is REGISTERED in
+  //    production by default — closing the round-2 fix #2
+  //    "omitted" path for the realistic operator deployment.
+  //    Surfacer is omitted only when the caller explicitly
+  //    passes `availableTemplateSlugs: []` AND the n8n-mcp call
+  //    yields 0 slugs (corner case for tests + the empty-vendor
+  //    edge case that `builderSkills` can in theory expose).
+  let availableTemplateSlugs: readonly string[];
+  if (args.availableTemplateSlugs !== undefined) {
+    // Caller wins (test path).
+    availableTemplateSlugs = args.availableTemplateSlugs;
+  } else {
+    // Test seam (n8nMcpClient) wins over env-derivation. `null`
+    // simulates "n8n-mcp unreachable"; an object value injects a
+    // stub that satisfies McpToolCallClient. Production callers
+    // leave args.n8nMcpClient undefined and the env-derived
+    // HttpMcpToolClient is constructed.
+    const n8nMcpClient =
+      args.n8nMcpClient === undefined
+        ? tryConstructN8nMcpClient(args.env, logger)
+        : args.n8nMcpClient;
+    const fallbackSlugs = builderSkills.map((s) => s.slug);
+    availableTemplateSlugs = await listAvailableTemplateSlugs({
+      mcp: n8nMcpClient,
+      fallbackSlugs,
+      logger,
+    });
+  }
   const surfacerEnabled = availableTemplateSlugs.length > 0;
   if (!surfacerEnabled) {
     logger.warn("surfacer.template_catalog_empty", {
       reason:
-        "availableTemplateSlugs is empty — Surfacer is OMITTED from the runner registry. Heartbeat + Lint still run on cron; Surfacer instances will land on the dispatcher's runner-missing path until v0.2 wires the catalog-workflows domain.",
+        "availableTemplateSlugs is empty AND vendored fallback yielded 0 slugs — Surfacer is OMITTED from the runner registry. Heartbeat + Lint still run on cron.",
     });
   }
 
@@ -652,4 +722,37 @@ export function tryComposeAgentRunnersFromEnv(
   });
 
   return { mcp, definitions, runners };
+}
+
+/** Build an n8n-mcp `HttpMcpToolClient` from env, OR return null
+ *  on any boot-tolerance condition (env vars unset, construction
+ *  throw). The `listAvailableTemplateSlugs` caller treats null
+ *  identically to a callTool failure — falls back to the vendored
+ *  baseline and Surfacer remains registered. */
+function tryConstructN8nMcpClient(
+  env: Record<string, string | undefined>,
+  logger: Logger,
+): HttpMcpToolClient | null {
+  const n8nMcpBaseUrl = readWithFile(env, "N8N_MCP_BASE_URL");
+  const n8nMcpBearer = readWithFile(env, "N8N_MCP_BEARER_TOKEN");
+  if (n8nMcpBaseUrl === undefined || n8nMcpBearer === undefined) {
+    logger.warn("n8n_mcp.unavailable", {
+      reason:
+        "N8N_MCP_BASE_URL or N8N_MCP_BEARER_TOKEN not set — Surfacer will use vendored fallback templates",
+    });
+    return null;
+  }
+  try {
+    return new HttpMcpToolClient({
+      baseUrl: n8nMcpBaseUrl,
+      bearerToken: n8nMcpBearer,
+      logger,
+    });
+  } catch (err) {
+    logger.warn("n8n_mcp.unavailable", {
+      reason: "HttpMcpToolClient construction threw for n8n-mcp",
+      error: safeError(err),
+    });
+    return null;
+  }
 }
