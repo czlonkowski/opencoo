@@ -14,11 +14,18 @@
 // missing `pnpm install`. The hook automates the manual workaround.
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
+// ESM-canonical __dirname (root package.json sets `"type": "module"`).
+// Vitest's Vite transform polyfills `__dirname`, but relying on that
+// makes the test fragile against any future ESM-strictness shift —
+// matches the pattern in `tests/e2e/_setup/seed.ts`. Round-2 Copilot
+// finding on PR #62.
+const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
 const IMPL_PATH = resolve(REPO_ROOT, ".husky/_postmerge-impl.sh");
 
