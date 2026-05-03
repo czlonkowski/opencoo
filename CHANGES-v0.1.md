@@ -399,7 +399,54 @@ Two new infrastructure env vars (`MCP_BEARER_TOKEN`, `MCP_BASE_URL`), allow-list
 
 - **Surfacer is omitted from the production runner registry** until the template catalog is sourced (v0.2 — likely from `catalog-workflows` once the consumer wiring lands). Operators see `surfacer.template_catalog_empty` warn at boot; scheduled Surfacer instances land in the dispatcher's runner-missing DLQ path. Workaround: `UPDATE agent_instances SET enabled = false WHERE definition_slug = 'surfacer'` to silence the BullMQ retry storm until v0.2.
 - **Duplicate `pg.Pool` + `LlmRouter` per process.** The agent-runner bundle and the ingestion composition each open their own; both close paths are wired so neither leaks on SIGTERM, but it's wasteful. Refactor to shared instances is a follow-up — production works correctly today.
-- **gitea-wiki-mcp-server response surface for `wiki://` URIs.** The HTTP client carries `readResource(wiki://...)` and `listResources({uriPrefix:"wiki://..."})` calls correctly to the JSON-RPC `resources/read` / `resources/list` endpoints, but whether the server (today) responds to `wiki://` URIs as registered MCP resources is a separate, server-side concern — only `worldview://{slug}` is registered today per the gitea-wiki-mcp-server README. Operators should verify against their deployment's MCP server before relying on the runbook's "Heartbeat reads wiki pages" framing.
+- **gitea-wiki-mcp-server response surface for `wiki://` URIs.** The HTTP client carries `readResource(wiki://...)` and `listResources({uriPrefix:"wiki://..."})` calls correctly to the JSON-RPC `resources/read` / `resources/list` endpoints, but whether the server (today) responds to `wiki://` URIs as registered MCP resources is a separate, server-side concern — only `worldview://{slug}` is registered today per the gitea-wiki-mcp-server README. Operators should verify against their deployment's MCP server before relying on the runbook's "Heartbeat reads wiki pages" framing. **(Closed by appendix #7 PR-O1 — `wiki://{slug}/{path}` registered alongside `worldview://{slug}`.)**
+
+---
+
+## Appendix #7 (PR-O1, PR-O2, PR-O3) — Scheduled agents actually do their jobs
+
+Three PRs landed AFTER appendix #6 to close the deferred items the post-merge readiness review surfaced as blocking the partner-cutover demo. Appendix #6 turned the scheduler ON; appendix #7 makes what the scheduler dispatches produce real output. None of these block the `0.1.0-a` tag (already cut), but together they unblock the partner real-data demo where Heartbeat fires manually via CLI and produces a real wiki-derived report.
+
+### Added
+
+#### `wiki://` MCP resources in `gitea-wiki-mcp-server` (PR-O1, `ec3efb2` / #59)
+
+- **Closes the runner-stalling gap from appendix #6.** Pre-PR-O1 the server only registered `worldview://{slug}`; the appendix-#6 Heartbeat / Lint runners called `readResource(wiki://{slug}/{path})` and `listResources({uriPrefix: "wiki://{slug}/"})` and got `McpResourceNotFoundError` on every dispatch — DLQ'd, then retried, then DLQ'd again. New `src/resources/wiki.ts` mirrors `worldview.ts` byte-for-byte: same uniform-deny model (`McpError(InvalidRequest, "resource not accessible")` for every deny path — prevents existence-fingerprinting), same per-request `GiteaScopeChecker.check()` with 60s LRU cache, same static-bypass, same operator-log shape.
+- **Reader DELEGATES** to the existing `wiki-utils.readParsedPage()` and `path-safety.safeResolve()` rather than reinventing.
+- **Lister** returns sorted URIs across all visible repos, filtered to `.md` files only, capped at 500 entries (v0.1 ceiling; pagination defers until a deployment has > 500 pages per domain). Out-of-scope repos are silently omitted so neither path nor count leaks the principal's scope.
+- **MCP-SDK gotchas worked around** (each documented in source): `{+path}` (RFC 6570 reserved expansion) for slash-tolerant URI template variable; `resources/list` has no server-side prefix filter so PR-N3's `HttpMcpToolClient.listResources()` does client-side prefix matching; WHATWG URL normalization happens before the handler sees the URI (path-traversal test uses `Object.defineProperty` to bypass and exercise `safeResolve()` directly).
+
+#### `opencoo agents fire <slug>` manual-trigger CLI (PR-O2, `26126f1` / #61)
+
+- **Pre-cutover smoke verb for the partner.** Operators no longer wait for the next 8am cron tick to verify Heartbeat / Lint work — `opencoo agents fire heartbeat --dry-run` reports the resolved instance + runner status; `opencoo agents fire heartbeat` produces an `agent_runs` row within ~30s.
+- **Resolves slug → `agent_instances` row** via `loadInstanceById` (`--instance-id <uuid>`) or by-slug-name query (default; errors with the matching ids when 2+ enabled instances exist for a slug). RFC-4122 UUID-format pre-check on `--instance-id` so typos give a clear `invalid uuid: <value>` instead of a Postgres cast error.
+- **Calls `invokeAgent({trigger: 'http', inputs: {firedBy: 'cli'}})` directly via the agent harness, bypassing BullMQ.** No `sseBus` injection — CLI is operator-side; no UI is listening (asymmetry by design; the run is recorded in `agent_runs` for audit). The `agent_trigger` Postgres enum has no `'manual'` value in v0.1; `'http'` is the established convention for non-cron operator dispatches per existing harness/recorder/chat tests; the `inputs.firedBy` field is the precise audit discriminator.
+- **Per-slug runner-missing hint**: `slug === 'surfacer'` keeps the appendix-#6 hint with `N8N_MCP_*` env-vars guidance; other slugs get a generic `"check spelling; valid scheduled slugs: heartbeat, lint, surfacer"`.
+- **Boot-tolerance stderr** broadened to name all three failure-mode checks: `DATABASE_URL` + Postgres reachability, `MCP_BEARER_TOKEN` (or `N8N_MCP_BEARER_TOKEN`), compose-time logs above for the specific reason. Runbook §1 cross-referenced.
+- **Exit-code split honored**: typed `AgentInstanceNotFoundError` → exit 1; runtime errors (DB connection, generic throw) → exit 2.
+
+#### Surfacer activation via n8n-mcp `search_templates` (PR-O3, `951aae7` / #60)
+
+- **`McpToolClient` extended with optional `callTool(name, args?)` method** (HttpMcpToolClient + InMemoryMcpToolClient implement it; gitea-wiki-mcp client doesn't need it — backward-compatible).
+- **Second `HttpMcpToolClient` constructed for n8n-mcp** at boot via new `N8N_MCP_BASE_URL` + `N8N_MCP_BEARER_TOKEN` env vars (and `_FILE` variants). Allow-listed in the `no-feature-env-vars` ESLint rule with rationale matching `MCP_BEARER_TOKEN`. Same `clearTimeout`-disciplined `AbortController`, same `safe()` / `scrubPat` discipline, same `McpHttpError` typing. **Bearer never appears in any log payload** — verified by negative-assertion tests in both `http.test.ts` and `list-templates.test.ts`.
+- **`listAvailableTemplateSlugs()` in `automation-n8n-mcp`** calls `search_templates({searchMode: 'patterns'})` to source Surfacer's catalog. Live verification of n8n-mcp shows the `patterns` mode returns AGGREGATED CATEGORIES (~10 stable identifiers like `ai_automation`, `webhook_processing`), NOT per-template slugs — defensive parser also accepts speculative `items[].slug` / `slugs[]` shapes for forward-compatibility.
+- **Behavior change vs PR-N3 default**: Surfacer is now REGISTERED by default. Pre-PR-O3 it was OMITTED whenever `availableTemplateSlugs` was empty. Post-PR-O3, vendored `builderSkills` (~3 slugs: `dispatch-task` / `heartbeat-digest` / `lint-pages`) is the floor — Surfacer registers regardless of whether n8n-mcp is reachable, so operators see the runner active even on a clean local stack. The "explicit empty array → omit" path still works for tests.
+- **Boot-tolerance matrix** (4 named warns, all asserted by tests): `n8n_mcp.unavailable` (env vars unset), `surfacer.template_catalog_n8n_mcp_unreachable` (n8n-mcp throws), `surfacer.template_catalog_n8n_mcp_empty` (returns 0), `surfacer.template_catalog_empty` (vendored AND override empty — corner case → Surfacer omitted).
+- **`tryComposeAgentRunnersFromEnv` is now async** (cascading through `tryComposeAgentRunnersBundleFromEnv` → `composeStartedEngineWithBundle`; PR-N3 round-2's `composeStartedEngineWithBundle` already awaited the bundle).
+
+### Schema
+
+None. Appendix #7 is MCP-resource-registration + new CLI verb + boot-time env-derivation + docs.
+
+### Configuration
+
+Two new infrastructure env vars (`N8N_MCP_BASE_URL`, `N8N_MCP_BEARER_TOKEN`), allow-listed in the `no-feature-env-vars` ESLint rule with rationale comment matching `MCP_BEARER_TOKEN`'s shape (operator-level secret + URL for engine outbound auth; same as `GITEA_PAT`). Both accept the `_FILE` precedence variant for Docker-secrets deployments. Runbook §1 documents them as "if absent, Surfacer uses the vendored ~3-template baseline; absent does NOT break Heartbeat / Lint." No new feature env vars.
+
+### Residual advisories (non-blocking, tracked for the appendix #7 follow-up issue)
+
+- **Surfacer's category-level slugs are a soft semantic regression vs the per-template ideal.** n8n-mcp's `patterns` mode returns ~10 categories rather than the 2,700 individual templates. Surfacer proposes per-category candidates (e.g. `template_slug: "ai_automation"`); Builder rounds-trips them as workflow display labels (`opencoo-${templateSlug}`). Operator-facing semantics: less specific than the per-template ideal. v0.2 follow-up: cut over to a per-template `keyword` or `slugs` mode if/when n8n-mcp ships one; the defensive `items[].slug` / `slugs[]` parsing in `parseSlugs` is forward-compatible.
+- **Duplicate `pg.Pool` + `LlmRouter` per process.** Carried over from appendix #6 — the agent-runner bundle and the ingestion composition each open their own. Both close paths are wired so neither leaks on SIGTERM, but it's wasteful. Refactor to shared instances is a follow-up.
+- **Post-merge regression caught at appendix #7 close**: PR-O2 was branched before PR-O3 made `tryComposeAgentRunnersBundleFromEnv` async; the missing `await` only surfaced on `main` after both merged in sequence. One-line fix at `agents-fire.ts:191` (commit `153a198`); typecheck + 2192 root tests now pass. CI gap noted: per-PR builds pass when only one branch changes a function signature; the conflict surfaces only on the merge commit. Follow-up worth considering: a post-merge build hook (mentioned in the appendix #6 close) that runs `pnpm install && pnpm build` automatically.
 
 ---
 
