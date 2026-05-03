@@ -58,7 +58,7 @@ All LLM calls route through `packages/shared/llm-router/`. An ESLint boundary ru
 Eight BullMQ workers:
 
 1. **Scanner** (every 4h) — discover new/changed source docs, dedupe, queue.
-2. **Webhook receiver** — HMAC-verified, rate-limited, payload-capped; transport-only.
+2. **Webhook receiver** — HMAC-verified, rate-limited, payload-capped. For polling adapters, transport-only: persists `webhook_events` and hands off to Scanner. For webhook-native adapters that expose `webhook.enrichEvents` (PR-N2), additionally takes the **direct-intake fast path** — inserts `ingestion_intake` rows itself + enqueues `ingestion.scanner.classify` jobs inline. See §7 (Adapter boundaries — webhook-native vs polling adapters) for the contract.
 3. **Classifier** — Worker tier; structured-output-only (Zod-validated); path-allow-list validation rejects cross-domain writes silently to DLQ.
 4. **Compiler** — Thinker tier; per-domain LLM policy; atomic `wikiWrite` per run; populates frontmatter provenance (`schema_version`, `prompt_version`, `compiled_at`, `compiled_by_run_id`) and `page_citations` rows.
 5. **Index rebuilder** (every 6h) — keeps `index.md` current per domain.
