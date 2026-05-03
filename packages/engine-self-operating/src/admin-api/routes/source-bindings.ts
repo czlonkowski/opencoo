@@ -38,7 +38,7 @@ import { z } from "zod";
 
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
-import { scrubPat } from "@opencoo/shared/scrub";
+import { safeErrorMessage } from "@opencoo/shared/scrub";
 import {
   defaultReviewModeFor,
   getSourceAdapterDescriptor,
@@ -204,7 +204,7 @@ export function registerSourceBindingsRoutes(
       const lastEventAt = toIso(r.last_event_at);
       const lastError =
         r.latest_error_class !== null
-          ? scrubPat(r.latest_error_class).slice(0, 200)
+          ? safeErrorMessage(r.latest_error_class)
           : null;
       const status = computeBindingStatus({
         enabled: r.enabled,

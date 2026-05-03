@@ -52,12 +52,12 @@
  * the `Authorization` header, but NEVER appears in any log payload
  * or thrown error message. All inbound error strings — JSON-RPC
  * `error.message`, fetch reject `.message`, etc. — are passed
- * through `scrubPat` before being logged or wrapped, so an
- * upstream service that echoes the inbound `Authorization` header
- * back to us cannot cause a leak.
+ * through `safeErrorMessage` (scrub + cap at 200 chars) before
+ * being logged or wrapped, so an upstream service that echoes the
+ * inbound `Authorization` header back to us cannot cause a leak.
  */
 import type { Logger } from "@opencoo/shared/logger";
-import { scrubPat } from "@opencoo/shared/scrub";
+import { safeErrorMessage } from "@opencoo/shared/scrub";
 
 import { McpHttpError } from "./errors.js";
 import { McpResourceNotFoundError } from "./errors.js";
@@ -67,11 +67,6 @@ import type { McpListFilter, McpToolClient } from "./interface.js";
  *  gitea-wiki-mcp-server doesn't false-fail; short enough that a
  *  hung server doesn't block a lint run for minutes. */
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-
-/** Cap applied to every scrubbed error message before logging or
- *  wrapping in McpHttpError. Mirrors the same 200-char cap the
- *  CLI composition + engine-self-operating start.ts use. */
-const ERROR_MESSAGE_MAX_LENGTH = 200;
 
 export interface HttpMcpToolClientOptions {
   /** Full URL of the MCP endpoint (e.g.
@@ -146,9 +141,6 @@ function isJsonRpcError(r: JsonRpcResponse): r is JsonRpcError {
   return (r as JsonRpcError).error !== undefined;
 }
 
-function safe(s: string): string {
-  return scrubPat(s).slice(0, ERROR_MESSAGE_MAX_LENGTH);
-}
 
 /** Map a JSON-RPC error to `McpResourceNotFoundError` only when
  *  the canonical "resource not accessible" / "not found" wire
@@ -192,7 +184,7 @@ export class HttpMcpToolClient implements McpToolClient {
       throw err;
     }
     if (isJsonRpcError(response)) {
-      const safeMessage = safe(response.error.message);
+      const safeMessage = safeErrorMessage(response.error.message);
       if (isNotFoundError(response.error)) {
         this.logger.warn("mcp_http.failed", {
           op: "readResource",
@@ -236,7 +228,7 @@ export class HttpMcpToolClient implements McpToolClient {
       throw err;
     }
     if (isJsonRpcError(response)) {
-      const safeMessage = safe(response.error.message);
+      const safeMessage = safeErrorMessage(response.error.message);
       this.logger.warn("mcp_http.failed", {
         op: "listResources",
         json_rpc_code: response.error.code,
@@ -309,7 +301,7 @@ export class HttpMcpToolClient implements McpToolClient {
       // contain the bearer if the upstream / middleware echoed it
       // — scrub before wrapping.
       const raw = err instanceof Error ? err.message : String(err);
-      throw new McpHttpError(`mcp-http: ${method} fetch failed: ${safe(raw)}`);
+      throw new McpHttpError(`mcp-http: ${method} fetch failed: ${safeErrorMessage(raw)}`);
     } finally {
       clearTimeout(timer);
     }
@@ -325,7 +317,7 @@ export class HttpMcpToolClient implements McpToolClient {
       }
       throw new McpHttpError(
         `mcp-http: ${method} returned HTTP ${response.status}${
-          raw ? ` (${safe(raw)})` : ""
+          raw ? ` (${safeErrorMessage(raw)})` : ""
         }`,
         { httpStatus: response.status },
       );
@@ -337,7 +329,7 @@ export class HttpMcpToolClient implements McpToolClient {
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
       throw new McpHttpError(
-        `mcp-http: ${method} response was not valid JSON: ${safe(raw)}`,
+        `mcp-http: ${method} response was not valid JSON: ${safeErrorMessage(raw)}`,
       );
     }
     return parsed as JsonRpcResponse;
@@ -362,7 +354,7 @@ export class HttpMcpToolClient implements McpToolClient {
       op,
       ...(subject !== undefined ? { [subjectKind]: subject } : {}),
       ...(httpStatus !== undefined ? { http_status: httpStatus } : {}),
-      error: safe(raw),
+      error: safeErrorMessage(raw),
     });
   }
 
@@ -393,7 +385,7 @@ export class HttpMcpToolClient implements McpToolClient {
       throw err;
     }
     if (isJsonRpcError(response)) {
-      const safeMessage = safe(response.error.message);
+      const safeMessage = safeErrorMessage(response.error.message);
       this.logger.warn("mcp_http.failed", {
         op: "callTool",
         tool_name: name,

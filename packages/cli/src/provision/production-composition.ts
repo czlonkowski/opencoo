@@ -56,7 +56,7 @@ import {
   type LlmProvider,
 } from "@opencoo/shared/llm-router";
 import { ConsoleLogger, type Logger } from "@opencoo/shared/logger";
-import { scrubPat } from "@opencoo/shared/scrub";
+import { safeErrorMessage } from "@opencoo/shared/scrub";
 
 import {
   AgentDefinitionRegistry,
@@ -80,21 +80,6 @@ import {
 import { createProductionAgentRunners } from "./agent-runners.js";
 
 const COMPOSITION_NAME = "cli/serve" as const;
-
-/** Round-3 fix #3: shared scrub-and-cap helper. The two error-log
- *  sites in this file (`llm_router.provider_unavailable` and
- *  `source_adapter_factory.skipped`) both surface a thrown
- *  `Error.message` from a dynamic-import / provider-construction
- *  path. THREAT-MODEL §3.6 invariant 11 says scrub credential
- *  patterns + cap at 200 chars; this helper unifies the shape so
- *  a future log site can't drift back to the unscrubbed form
- *  Copilot flagged in round-3. Mirrors the `safeError` helper in
- *  `engine-ingestion/src/workers/production-context.ts`. */
-const ERROR_MESSAGE_MAX_LENGTH = 200;
-function safeError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  return scrubPat(raw).slice(0, ERROR_MESSAGE_MAX_LENGTH);
-}
 
 export interface ProductionCompositionResult {
   readonly workerContext: ProductionWorkerContext;
@@ -314,7 +299,7 @@ function createMultiProviderDispatcher(
       // Copilot flagged in round-3.
       logger.warn("llm_router.provider_unavailable", {
         provider: providerName,
-        error: safeError(err),
+        error: safeErrorMessage(err),
       });
       throw err;
     });
@@ -347,10 +332,11 @@ async function tryLoadAdapter(
     logger.warn("source_adapter_factory.skipped", {
       adapter_slug: slug,
       // Round-2 fix #2: scrub + cap. THREAT-MODEL §3.6 invariant 11.
-      // Round-3 fix #3: routed through the shared `safeError`
-      // helper so this site stays in lockstep with
+      // Round-3 fix #3: routed through the shared
+      // `safeErrorMessage` helper (PR-P3 consolidation, phase-a
+      // appendix #8) so this site stays in lockstep with
       // `llm_router.provider_unavailable`.
-      error: safeError(err),
+      error: safeErrorMessage(err),
     });
   }
 }
@@ -433,7 +419,7 @@ export interface ComposeAgentRunnersArgs {
    *  the ingestion composition. The runners reuse it for
    *  scope-check / binding / citation queries. */
   readonly pgPool: pg.Pool;
-  /** Logger — error log lines route here with `safeError`
+  /** Logger — error log lines route here with `safeErrorMessage`
    *  applied. */
   readonly logger?: Logger;
   /** Caller-supplied template catalog override (test path).
@@ -510,7 +496,7 @@ export async function tryComposeAgentRunnersBundleFromEnv(
   } catch (err) {
     logger.warn("mcp_http.unavailable", {
       reason: "DATABASE_URL not set — cannot open pool for agent runners",
-      error: safeError(err),
+      error: safeErrorMessage(err),
     });
     return null;
   }
@@ -521,7 +507,7 @@ export async function tryComposeAgentRunnersBundleFromEnv(
   } catch (err) {
     logger.warn("mcp_http.unavailable", {
       reason: "pg.Pool construction threw",
-      error: safeError(err),
+      error: safeErrorMessage(err),
     });
     return null;
   }
@@ -591,8 +577,8 @@ export async function tryComposeAgentRunnersBundleFromEnv(
  *
  *  THREAT-MODEL §3.6 invariant 11: the bearer token is read but
  *  NEVER appears in any log line; failures route through
- *  `safeError` so a cause's `.message` carrying the token stays
- *  redacted via the shared `scrubPat` pipeline.
+ *  `safeErrorMessage` so a cause's `.message` carrying the token
+ *  stays redacted via the shared `scrubPat` pipeline.
  *
  *  Per-dispatch domain slug resolution lives in the runner
  *  closures (`agent-runners.ts`): each closure reads
@@ -645,7 +631,7 @@ export async function tryComposeAgentRunnersFromEnv(
     logger.warn("mcp_http.unavailable", {
       reason: "HttpMcpToolClient construction threw",
       base_url: baseUrl,
-      error: safeError(err),
+      error: safeErrorMessage(err),
     });
     return null;
   }
@@ -751,7 +737,7 @@ function tryConstructN8nMcpClient(
   } catch (err) {
     logger.warn("n8n_mcp.unavailable", {
       reason: "HttpMcpToolClient construction threw for n8n-mcp",
-      error: safeError(err),
+      error: safeErrorMessage(err),
     });
     return null;
   }

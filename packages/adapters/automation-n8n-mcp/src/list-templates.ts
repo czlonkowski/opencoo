@@ -38,7 +38,7 @@
  * composition root in `production-composition.ts`.
  */
 import type { Logger } from "@opencoo/shared/logger";
-import { scrubPat } from "@opencoo/shared/scrub";
+import { safeErrorMessage } from "@opencoo/shared/scrub";
 
 /** Bound on the response size — an n8n-mcp deployment in the wild
  *  has ~2,700 templates, and we don't want a runaway response
@@ -46,11 +46,6 @@ import { scrubPat } from "@opencoo/shared/scrub";
  *  `patterns` mode aggregates templates into ~10 categories so
  *  100 is comfortably above the expected upper bound. */
 const N8N_MCP_TEMPLATES_LIMIT = 100;
-
-/** Cap applied to scrubbed error strings before logging — same
- *  200-char cap the rest of the codebase uses for THREAT-MODEL
- *  §3.6 invariant 11 compliance. */
-const ERROR_MESSAGE_MAX_LENGTH = 200;
 
 /** Local structural mirror of the engine-side `McpToolClient`
  *  port — only the `callTool` operation is exercised here. The
@@ -91,7 +86,7 @@ export async function listAvailableTemplateSlugs(
     });
   } catch (err) {
     args.logger.warn("surfacer.template_catalog_n8n_mcp_unreachable", {
-      error: safeError(err),
+      error: safeErrorMessage(err),
       fallback_count: args.fallbackSlugs.length,
     });
     return args.fallbackSlugs;
@@ -106,11 +101,6 @@ export async function listAvailableTemplateSlugs(
     return args.fallbackSlugs;
   }
   return [...new Set(slugs)].sort();
-}
-
-function safeError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  return scrubPat(raw).slice(0, ERROR_MESSAGE_MAX_LENGTH);
 }
 
 /** Defensively walk the n8n-mcp response and extract a string-array
