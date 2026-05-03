@@ -57,7 +57,7 @@ import {
   ConsoleLogger,
   type Logger,
 } from "@opencoo/shared/logger";
-import { scrubPat } from "@opencoo/shared/scrub";
+import { safeErrorMessage } from "@opencoo/shared/scrub";
 
 import {
   exitOk,
@@ -70,17 +70,6 @@ import {
 } from "../provision/production-composition.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
-
-/** Cap matches the THREAT-MODEL §3.6 invariant 11 ceiling used by
- *  `production-composition.ts:safeError`. The runner-throw branch
- *  surfaces `Error.message`; if a future runner closes over a
- *  credential value, the scrub + cap pipeline keeps it out of
- *  stderr. */
-const ERROR_MESSAGE_MAX_LENGTH = 200;
-function safeError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  return scrubPat(raw).slice(0, ERROR_MESSAGE_MAX_LENGTH);
-}
 
 interface MinimalInstanceRow {
   readonly id: string;
@@ -339,7 +328,7 @@ export async function runAgentsFire(args: AgentsFireArgs): Promise<void> {
       });
     } catch (err) {
       args.stderr.write(
-        pc.red(`agents fire: runner threw: ${safeError(err)}\n`),
+        pc.red(`agents fire: runner threw: ${safeErrorMessage(err)}\n`),
       );
       return exitRuntimeError();
     }
@@ -353,7 +342,7 @@ export async function runAgentsFire(args: AgentsFireArgs): Promise<void> {
   } catch (err) {
     if (isExitSentinel(err)) throw err;
     args.stderr.write(
-      pc.red(`agents fire: ${safeError(err)}\n`),
+      pc.red(`agents fire: ${safeErrorMessage(err)}\n`),
     );
     return exitRuntimeError();
   } finally {

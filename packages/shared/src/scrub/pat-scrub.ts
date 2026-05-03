@@ -2,8 +2,11 @@
  * scrubPat — redact known credential patterns from error strings.
  *
  * Used in `last_error` truncation (THREAT-MODEL §3.6 invariant 11:
- * no credential bytes in errors). The truncation pipeline is:
- *   `scrubPat(rawError).slice(0, 200)`
+ * no credential bytes in errors). Most callers should use the
+ * `safeErrorMessage(err)` wrapper from `./safe-error.ts` rather
+ * than inlining `scrubPat(rawError).slice(0, ERROR_MESSAGE_MAX_LENGTH)`
+ * — the wrapper is the single source of truth for the
+ * scrub-and-cap shape (PR-P3, phase-a appendix #8).
  *
  * Patterns (ordered most-specific first to avoid double-replace):
  *   1. Bearer token: `Bearer ` followed by any non-space run.

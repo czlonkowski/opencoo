@@ -23,7 +23,8 @@
     "format": "prettier --write .",
     "opencoo": "node packages/cli/dist/bin.js",
     "smoke:real-data": "node --experimental-strip-types scripts/smoke-real-data.ts",
-    "threat-model:preflight": "bash scripts/threat-model-preflight.sh"
+    "threat-model:preflight": "bash scripts/threat-model-preflight.sh",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@opencoo/eslint-plugin": "workspace:*",
@@ -36,6 +37,7 @@
     "eslint": "^9.18.0",
     "eslint-plugin-import-x": "^4.6.1",
     "fastify": "5.8.5",
+    "husky": "^9.1.7",
     "pg": "8.20.0",
     "prettier": "^3.4.2",
     "turbo": "^2.3.3",

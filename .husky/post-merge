@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+# .husky/post-merge — fires after `git merge` / `git pull`. Detects
+# whether the merge changed `pnpm-lock.yaml` or any `package.json` →
+# `pnpm install`. Always `pnpm build` afterward (stale `dist/` was
+# the appendix #6 + #7 close regression). Bypass: `HUSKY=0` or
+# `GIT_NO_VERIFY=1`. See docs/contributing.md "Git hooks" for detail.
+#
+# Phase-a appendix #8 PR-P2.
+
+. "$(dirname -- "$0")/_postmerge-impl.sh"

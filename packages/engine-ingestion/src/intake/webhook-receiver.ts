@@ -59,7 +59,7 @@ import {
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
 import type { Logger } from "@opencoo/shared/logger";
-import { scrubPat } from "@opencoo/shared/scrub";
+import { safeErrorMessage } from "@opencoo/shared/scrub";
 import type { SourceWebhookHelpers } from "@opencoo/shared/source-adapter";
 import type { WebhookVerifier } from "@opencoo/shared/webhook-verifier";
 
@@ -374,27 +374,21 @@ export function registerWebhookRoute(
       //   - We log the signature header NAME ("x-signature"), never
       //     the header VALUE.
       //   - We do not log the request body.
-      //   - We `scrubPat` + cap `verifyResult.reason` defensively
-      //     before logging. The current `HmacSha256Verifier` returns
-      //     a closed-enum static string ("signature header missing",
-      //     "signature is malformed (...)", "signature mismatch
-      //     (HMAC differs)", "signature length mismatch (...)") which
-      //     scrubs to itself. But the `WebhookVerifier` type contract
-      //     just permits `string` — a future custom verifier could
+      //   - We route `verifyResult.reason` through `safeErrorMessage`
+      //     (scrub + 200-char cap) defensively before logging. The
+      //     current `HmacSha256Verifier` returns a closed-enum static
+      //     string ("signature header missing", "signature is
+      //     malformed (...)", "signature mismatch (HMAC differs)",
+      //     "signature length mismatch (...)") which scrubs to
+      //     itself. But the `WebhookVerifier` type contract just
+      //     permits `string` — a future custom verifier could
       //     include user-supplied bytes (header values, body
-      //     fragments, credential patterns). Defense in depth: scrub
-      //     credential patterns and cap at 200 chars BEFORE the line
-      //     reaches the operator log, mirroring the `safeError`
-      //     helper in `workers/production-context.ts` and
-      //     `cli/provision/production-composition.ts`.
-      //   - Apply scrubPat BEFORE the slice so a credential pattern
-      //     straddling the 200-char boundary is still redacted as a
-      //     whole match.
-      const ERROR_REASON_MAX_LENGTH = 200;
-      const safeReason = scrubPat(verifyResult.reason).slice(
-        0,
-        ERROR_REASON_MAX_LENGTH,
-      );
+      //     fragments, credential patterns). Defense in depth.
+      //   - `safeErrorMessage` applies scrubPat BEFORE the slice so
+      //     a credential pattern straddling the 200-char boundary is
+      //     still redacted as a whole match (PR-P3, phase-a appendix
+      //     #8 — single source of truth in @opencoo/shared/scrub).
+      const safeReason = safeErrorMessage(verifyResult.reason);
       options.appLogger?.debug("webhook_receiver.signature_invalid", {
         bindingId,
         provider: provider ?? binding.adapterSlug,
@@ -455,13 +449,13 @@ export function registerWebhookRoute(
         // via recordWebhook, returning 500 here would tell the
         // upstream to retry which would just dedupe at the webhook
         // layer and not reach the intake layer.
-        // THREAT-MODEL §3.6 invariant 11: scrub + cap the error
-        // message before logging — defense in depth (the upsert
-        // SQL error wouldn't carry credential bytes, but the
-        // adapter's enrichEvents could surface upstream-API
-        // errors with bearer tokens in the stack — same handling
-        // shape as production-context.ts:safeError).
-        const ERROR_MESSAGE_MAX_LENGTH = 200;
+        // THREAT-MODEL §3.6 invariant 11: route the error message
+        // through `safeErrorMessage` (scrub + 200-char cap) before
+        // logging — defense in depth (the upsert SQL error wouldn't
+        // carry credential bytes, but the adapter's enrichEvents
+        // could surface upstream-API errors with bearer tokens in
+        // the stack — same handling shape as the rest of the
+        // codebase since PR-P3, phase-a appendix #8).
         try {
           const parsedEvents = adapterStub.webhook.parseEvents({ body: rawBody });
           const events = await adapterStub.webhook.enrichEvents!(parsedEvents);
@@ -492,9 +486,7 @@ export function registerWebhookRoute(
             await options.scannerClassifyQueue!.add("classify", job);
           }
         } catch (err) {
-          const safeReason = scrubPat(
-            err instanceof Error ? err.message : String(err),
-          ).slice(0, ERROR_MESSAGE_MAX_LENGTH);
+          const safeReason = safeErrorMessage(err);
           // Round-2 fix (S2, code-reviewer triage): this is a
           // data-loss event — signature was valid, webhook_events
           // row written with signature_ok=true, upstream got 200
