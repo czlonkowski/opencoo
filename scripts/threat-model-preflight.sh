@@ -97,6 +97,7 @@ cd "$REPO_ROOT" || {
 # Argument parsing.
 BASE_REF=""
 SHOW_HELP=0
+SHAPE_ONLY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h)
@@ -111,6 +112,10 @@ while [[ $# -gt 0 ]]; do
       BASE_REF="${1#--base=}"
       shift
       ;;
+    --shape-only)
+      SHAPE_ONLY=1
+      shift
+      ;;
     *)
       echo "preflight: unknown flag: $1 (try --help)" >&2
       exit 0
@@ -123,11 +128,20 @@ if [[ "$SHOW_HELP" -eq 1 ]]; then
 threat-model-preflight — pre-flight the THREAT-MODEL.md §5 checklist.
 
 Usage:
-  bash scripts/threat-model-preflight.sh [--base <ref>]
+  bash scripts/threat-model-preflight.sh [--base <ref>] [--shape-only]
 
 Flags:
   --base <ref>  Diff base for "new since" checks (4 + 5). Defaults to
                 the `0.1.0-a` tag if present, else HEAD~30.
+  --shape-only  Emit the markdown structure (header + 5 check headings
+                + footer) WITHOUT actually running `pnpm lint`,
+                `pnpm test:injection`, the `process.env.X` grep, or
+                the diff-since-base scans. Each check's body shows a
+                "(skipped — --shape-only)" placeholder. Used by the
+                unit test (tests/threat-model-preflight.test.ts) to
+                pin the CLI shape without paying the full ~30s cost
+                of the underlying checks. Maintainers run the script
+                WITHOUT this flag at tag time.
   --help        Show this message and exit.
 
 Output: markdown to stdout. Paste into
@@ -174,7 +188,9 @@ EOF
 #   no-update-append-only   (THREAT-MODEL §2 invariant 8)
 echo "### Check 1: pnpm lint passes (boundary rules covering §2 invariants 2/5/8/9/10)"
 echo
-if ! command -v pnpm >/dev/null 2>&1; then
+if [[ "$SHAPE_ONLY" -eq 1 ]]; then
+  echo "  (skipped — --shape-only)"
+elif ! command -v pnpm >/dev/null 2>&1; then
   echo "  ✗ pnpm not found in PATH — re-run after \`corepack enable && pnpm install\`."
 elif lint_out="$(pnpm -s lint 2>&1)"; then
   echo "  ✓ lint clean"
@@ -194,7 +210,9 @@ echo
 # The prompt-injection corpus per §4.2 — the phase-a ship-blocker.
 echo "### Check 2: pnpm test:injection passes (prompt-injection corpus, §4.2 phase-a ship-blocker)"
 echo
-if ! command -v pnpm >/dev/null 2>&1; then
+if [[ "$SHAPE_ONLY" -eq 1 ]]; then
+  echo "  (skipped — --shape-only)"
+elif ! command -v pnpm >/dev/null 2>&1; then
   echo "  ✗ pnpm not found in PATH."
 elif inj_out="$(pnpm -s test:injection 2>&1)"; then
   echo "  ✓ injection corpus passes"
@@ -242,20 +260,24 @@ echo
 # reads.
 echo "### Check 3: No raw \`process.env.X\` reads in production code"
 echo
-env_hits="$(grep -rn 'process\.env\.' packages/*/src/ 2>/dev/null \
-  | grep -vE '/(tests?|__tests__)/|\.test\.ts$|\.spec\.ts$|/dist/|/node_modules/|gitea-wiki-mcp-server/' \
-  | grep -vE ':[[:space:]]*(\*|//|/\*)' \
-  || true)"
-if [[ -z "$env_hits" ]]; then
-  echo "  ✓ no \`process.env.X\` hits in \`packages/*/src/\` (excluding test files, comments, and gitea-wiki-mcp-server which is eslint-ignored)"
+if [[ "$SHAPE_ONLY" -eq 1 ]]; then
+  echo "  (skipped — --shape-only)"
 else
-  echo "  ⚠ found \`process.env.X\` reads in production code — verify each is allow-listed:"
-  echo
-  echo '  ```'
-  echo "$env_hits" | sed 's/^/  /'
-  echo '  ```'
-  echo
-  echo "  (Cross-check against \`tools/eslint-plugin-opencoo/src/rules/no-feature-env-vars.ts\` allow-list.)"
+  env_hits="$(grep -rn 'process\.env\.' packages/*/src/ 2>/dev/null \
+    | grep -vE '/(tests?|__tests__)/|\.test\.ts$|\.spec\.ts$|/dist/|/node_modules/|gitea-wiki-mcp-server/' \
+    | grep -vE ':[[:space:]]*(\*|//|/\*)' \
+    || true)"
+  if [[ -z "$env_hits" ]]; then
+    echo "  ✓ no \`process.env.X\` hits in \`packages/*/src/\` (excluding test files, comments, and gitea-wiki-mcp-server which is eslint-ignored)"
+  else
+    echo "  ⚠ found \`process.env.X\` reads in production code — verify each is allow-listed:"
+    echo
+    echo '  ```'
+    echo "$env_hits" | sed 's/^/  /'
+    echo '  ```'
+    echo
+    echo "  (Cross-check against \`tools/eslint-plugin-opencoo/src/rules/no-feature-env-vars.ts\` allow-list.)"
+  fi
 fi
 echo
 
@@ -269,7 +291,9 @@ echo
 # every secret field in each new schema has the field set.
 echo "### Check 4: New \`credentialSchema\` exports since \`${BASE_REF}\`"
 echo
-if ! git rev-parse --verify --quiet "$BASE_REF" >/dev/null 2>&1; then
+if [[ "$SHAPE_ONLY" -eq 1 ]]; then
+  echo "  (skipped — --shape-only)"
+elif ! git rev-parse --verify --quiet "$BASE_REF" >/dev/null 2>&1; then
   echo "  ⚠ base ref \`${BASE_REF}\` not resolvable — skip and re-run with \`--base <ref>\`."
 else
   changed_files="$(git diff --name-only "$BASE_REF"..HEAD -- packages/adapters/ 2>/dev/null \
@@ -308,7 +332,9 @@ echo
 # packages/ — the maintainer cross-checks each against that const.
 echo "### Check 5: New internet-facing routes since \`${BASE_REF}\`"
 echo
-if ! git rev-parse --verify --quiet "$BASE_REF" >/dev/null 2>&1; then
+if [[ "$SHAPE_ONLY" -eq 1 ]]; then
+  echo "  (skipped — --shape-only)"
+elif ! git rev-parse --verify --quiet "$BASE_REF" >/dev/null 2>&1; then
   echo "  ⚠ base ref \`${BASE_REF}\` not resolvable — skip."
 else
   changed_files="$(git diff --name-only "$BASE_REF"..HEAD -- packages/ 2>/dev/null \

@@ -2,10 +2,10 @@
  * Tests for `scripts/threat-model-preflight.sh` (PR-P1, phase-a appendix #8).
  *
  * The pre-flight script is operator-grade tooling — its real test is
- * running it against `main`'s tip at tag time. These unit tests pin
- * the load-bearing surface so the script's CLI shape, exit code, and
- * the markdown headings the maintainer pastes into the sign-off doc
- * don't drift silently.
+ * running it against the worktree's HEAD at tag time. These unit
+ * tests pin the load-bearing surface so the script's CLI shape, exit
+ * code, and the markdown headings the maintainer pastes into the
+ * sign-off doc don't drift silently.
  *
  * What's tested here:
  *   - The script exists and is executable from the repo root.
@@ -19,19 +19,23 @@
  *     no automatable item is silently missing.
  *
  * What's NOT tested here:
- *   - The ✓/✗ result for each check — that depends on `main`'s state
- *     at test time and would brittle the suite. The pre-flight is
- *     advisory: the maintainer reads each check's result; the script's
- *     job is to enumerate every check, not to gate.
+ *   - The ✓/✗ result for each check — that depends on the worktree's
+ *     state at test time and would brittle the suite. The pre-flight
+ *     is advisory: the maintainer reads each check's result; the
+ *     script's job is to enumerate every check, not to gate.
  *   - The actual lint / test / grep invocations — those are
  *     observed in their own test suites.
  *
- * Performance note: the script runs `pnpm lint` + `pnpm test:injection`
- * serially, so a cold invocation takes 30-60s. We run the script ONCE
- * in `beforeAll` and assert against the captured output; this keeps
- * the suite fast and avoids 5x the wall-clock cost. We also raise
- * vitest's per-hook timeout to 10 minutes — under parallel test load
- * the script can spike well past the default 10s.
+ * Performance: the test invokes the script with `--shape-only`, which
+ * emits the markdown structure (header + 5 check headings + footer)
+ * WITHOUT actually running `pnpm lint`, `pnpm test:injection`, the
+ * `process.env.X` grep, or the diff-since-base scans. Each check's
+ * body shows a "(skipped — --shape-only)" placeholder. This keeps the
+ * unit test under 1s — without it, every `pnpm test` run would
+ * recursively invoke the injection lane (which `vitest.config.ts`
+ * explicitly excludes for speed) inside a vitest worker. The
+ * maintainer runs the script WITHOUT this flag at tag time. (Round-3
+ * Copilot finding #1.)
  */
 import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -45,17 +49,24 @@ const REPO_ROOT = path.resolve(
   "..",
 );
 const SCRIPT_PATH = path.join(REPO_ROOT, "scripts", "threat-model-preflight.sh");
-const SCRIPT_TIMEOUT_MS = 10 * 60_000;
+// `--shape-only` runs in <100ms; the previous full-checks invocation
+// took ~30s on a warm cache and minutes on cold. The default 10s
+// vitest timeout is more than enough now — keep the explicit cap as
+// a safety belt against a future regression that re-introduces real
+// work in the shape-only path.
+const SCRIPT_TIMEOUT_MS = 30_000;
 
 describe("scripts/threat-model-preflight.sh", () => {
   let result: SpawnSyncReturns<string>;
 
-  // Run the script ONCE for all 5 assertions. Without this the suite
-  // would run the script 5x — each run does `pnpm lint` and
-  // `pnpm test:injection` end-to-end, which is wasteful and pushes
-  // each test past vitest's default 10s timeout under parallel load.
+  // Run the script ONCE for all 5 assertions with `--shape-only` so
+  // the test pins the CLI shape without paying for the underlying
+  // checks (Round-3 finding #1: a full invocation in `pnpm test`
+  // recursively invokes `pnpm test:injection`, which
+  // `vitest.config.ts` explicitly excludes from the main suite for
+  // speed — recursion would 10× the suite cost on every PR run).
   beforeAll(() => {
-    result = spawnSync("bash", [SCRIPT_PATH], {
+    result = spawnSync("bash", [SCRIPT_PATH, "--shape-only"], {
       cwd: REPO_ROOT,
       encoding: "utf8",
       timeout: SCRIPT_TIMEOUT_MS,
