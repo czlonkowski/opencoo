@@ -96,7 +96,7 @@ describe("assertEnv", () => {
     );
   });
 
-  it("returns the present env unchanged when every required var is set", () => {
+  it("returns the resolved env when every required var is set inline", () => {
     const env = {
       DATABASE_URL: "postgres://x",
       REDIS_URL: "redis://x",
@@ -104,10 +104,17 @@ describe("assertEnv", () => {
       GITEA_URL: "http://x",
       GITEA_PAT: "p",
     };
-    expect(() => assertEnv(env)).not.toThrow();
+    const resolved = assertEnv(env);
+    expect(resolved).toEqual({
+      DATABASE_URL: "postgres://x",
+      REDIS_URL: "redis://x",
+      ENCRYPTION_KEY: "k",
+      GITEA_URL: "http://x",
+      GITEA_PAT: "p",
+    });
   });
 
-  it("throws when one required var is missing, naming it", () => {
+  it("throws when one required var is missing, naming both forms", () => {
     const env = {
       DATABASE_URL: "postgres://x",
       REDIS_URL: "redis://x",
@@ -115,7 +122,10 @@ describe("assertEnv", () => {
       GITEA_URL: "http://x",
       // GITEA_PAT missing
     };
-    expect(() => assertEnv(env)).toThrow(/GITEA_PAT/);
+    // Round-3 fix #1: error message names BOTH the inline and _FILE
+    // names so operators with Docker-secrets deployments know which
+    // knob to set.
+    expect(() => assertEnv(env)).toThrow(/GITEA_PAT \(or GITEA_PAT_FILE\)/);
   });
 
   it("throws when multiple required vars are missing, naming each", () => {
@@ -142,6 +152,63 @@ describe("assertEnv", () => {
       GITEA_PAT: "p",
     };
     expect(() => assertEnv(env)).toThrow(/REDIS_URL/);
+  });
+
+  it("honors _FILE precedence — `_FILE` variant satisfies the requirement (round-3 fix #1)", async () => {
+    // Write the secret to a temp file and point the smoke at it via
+    // the `_FILE` variant — same Docker-secrets convention the
+    // production composition uses (production-composition.ts +
+    // engine-scaffold/config.ts:53-67). The smoke MUST accept the
+    // `_FILE` form; an earlier draft rejected it and would have
+    // failed in every production deploy that uses Docker secrets.
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-env-"));
+    const file = path.join(dir, "gitea-pat");
+    fs.writeFileSync(file, "secret-pat-from-file\n", { mode: 0o600 });
+    try {
+      const env = {
+        DATABASE_URL: "postgres://x",
+        REDIS_URL: "redis://x",
+        ENCRYPTION_KEY: "k",
+        GITEA_URL: "http://x",
+        GITEA_PAT_FILE: file,
+        // Note: GITEA_PAT is intentionally absent — only the _FILE
+        // variant is set, mirroring a Docker-secrets deployment.
+      };
+      const resolved = assertEnv(env);
+      expect(resolved.GITEA_PAT).toBe("secret-pat-from-file");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("inline value is used when both `<NAME>` and `<NAME>_FILE` are set — `_FILE` WINS", async () => {
+    // readWithFile gives `_FILE` precedence; the resolved env reports
+    // the file value, not the inline. Pin so a future regression that
+    // flips the precedence (and silently masks rotated secrets in
+    // file-mounted deployments) lands in this test, not in production.
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-env-"));
+    const file = path.join(dir, "gitea-pat");
+    fs.writeFileSync(file, "from-file", { mode: 0o600 });
+    try {
+      const env = {
+        DATABASE_URL: "postgres://x",
+        REDIS_URL: "redis://x",
+        ENCRYPTION_KEY: "k",
+        GITEA_URL: "http://x",
+        GITEA_PAT: "from-inline",
+        GITEA_PAT_FILE: file,
+      };
+      const resolved = assertEnv(env);
+      expect(resolved.GITEA_PAT).toBe("from-file");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

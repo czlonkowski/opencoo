@@ -57,6 +57,7 @@ import {
   DrizzleCredentialStore,
   loadEncryptionKey,
 } from "@opencoo/shared/credential-store";
+import { readWithFile } from "@opencoo/shared/engine-scaffold";
 import { ConsoleLogger } from "@opencoo/shared/logger";
 
 // ----------------------------------------------------------------------------
@@ -64,8 +65,13 @@ import { ConsoleLogger } from "@opencoo/shared/logger";
 // ----------------------------------------------------------------------------
 
 /** Required env-var names. Mirrors `production-composition.ts`'s
- *  `requireWithFile` call list. The smoke considers an env var
- *  "present" when its value is a non-empty string. */
+ *  `requireWithFile` call list. Each name is resolved with the
+ *  `<NAME>` / `<NAME>_FILE` precedence the production composition root
+ *  uses (`packages/shared/src/engine-scaffold/config.ts` —
+ *  `readWithFile` reads the file at `_FILE` and falls back to the
+ *  inline var). Round-3 fix #1: an earlier draft only checked inline
+ *  env vars and would fail in Docker-secrets deployments where opencoo
+ *  itself boots fine. */
 export const REQUIRED_ENV_VARS = [
   "DATABASE_URL",
   "REDIS_URL",
@@ -73,6 +79,13 @@ export const REQUIRED_ENV_VARS = [
   "GITEA_URL",
   "GITEA_PAT",
 ] as const;
+
+export type RequiredEnvVar = (typeof REQUIRED_ENV_VARS)[number];
+
+/** Resolved env values — populated from inline env or the matching
+ *  `_FILE` Docker-secret pointer. The smoke threads these through to
+ *  every downstream consumer; no consumer should re-read `process.env`. */
+export type ResolvedEnv = Readonly<Record<RequiredEnvVar, string>>;
 
 /** How long we'll poll `/health` before giving up. */
 export const HEALTH_TIMEOUT_MS = 30_000;
@@ -119,17 +132,29 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   return { help, boot, port };
 }
 
-/** Throw if any required env var is missing or empty. */
-export function assertEnv(env: Record<string, string | undefined>): void {
-  const missing = REQUIRED_ENV_VARS.filter((k) => {
-    const v = env[k];
-    return typeof v !== "string" || v.length === 0;
-  });
+/** Resolve every required env var via the `_FILE` precedence
+ *  (Docker-secrets convention). Throws if any var is missing under
+ *  both the inline name and the `_FILE` variant. Returns the resolved
+ *  values so the caller can pass them downstream without re-reading
+ *  the env. */
+export function assertEnv(env: Record<string, string | undefined>): ResolvedEnv {
+  const resolved: Partial<Record<RequiredEnvVar, string>> = {};
+  const missing: RequiredEnvVar[] = [];
+  for (const name of REQUIRED_ENV_VARS) {
+    const value = readWithFile(env, name);
+    if (typeof value === "string" && value.length > 0) {
+      resolved[name] = value;
+    } else {
+      missing.push(name);
+    }
+  }
   if (missing.length > 0) {
+    const both = missing.map((n) => `${n} (or ${n}_FILE)`).join(", ");
     throw new Error(
-      `missing required env var(s): ${missing.join(", ")} — see docs/pilot-runbook.md`,
+      `missing required env var(s): ${both} — see docs/pilot-runbook.md`,
     );
   }
+  return resolved as ResolvedEnv;
 }
 
 export interface PollOptions {
@@ -165,7 +190,8 @@ export async function pollUntil<T>(
 // ----------------------------------------------------------------------------
 
 interface ProbeContext {
-  readonly env: Record<string, string | undefined>;
+  /** Resolved required env values (post-`_FILE`-precedence). */
+  readonly resolved: ResolvedEnv;
   readonly args: ParsedArgs;
   readonly stdout: { write: (s: string) => boolean };
   readonly stderr: { write: (s: string) => boolean };
@@ -248,12 +274,18 @@ async function provisionScaffolding(
   const webhookSecret = crypto.randomBytes(32).toString("hex");
 
   // Construct the credential store with the operator's vault key.
-  // `loadEncryptionKey` requires a NodeJS.ProcessEnv shape.
+  // Round-3 fix #1: feed `loadEncryptionKey` a synthesized env with
+  // ONLY `ENCRYPTION_KEY` populated from the post-`_FILE`-precedence
+  // resolved value. The loader's own `_FILE` lookup is then a no-op
+  // (we already resolved it), but we still get its base64-decode +
+  // 32-byte length validation.
   const credentialStore = new DrizzleCredentialStore({
     db: drizzle(pool) as unknown as ConstructorParameters<
       typeof DrizzleCredentialStore
     >[0]["db"],
-    key: loadEncryptionKey(ctx.env as NodeJS.ProcessEnv),
+    key: loadEncryptionKey({
+      ENCRYPTION_KEY: ctx.resolved.ENCRYPTION_KEY,
+    } as NodeJS.ProcessEnv),
     logger: new ConsoleLogger(),
   });
   const credentialId = await credentialStore.write({
@@ -447,8 +479,9 @@ export async function run(args: RunArgs): Promise<number> {
     args.stdout.write(HELP_TEXT);
     return 0;
   }
+  let resolved: ResolvedEnv;
   try {
-    assertEnv(args.env);
+    resolved = assertEnv(args.env);
   } catch (err) {
     args.stderr.write(`smoke: ${(err as Error).message}\n`);
     return 1;
@@ -460,14 +493,14 @@ export async function run(args: RunArgs): Promise<number> {
     return 1;
   }
   const ctx: ProbeContext = {
-    env: args.env,
+    resolved,
     args: parsed,
     stdout: args.stdout,
     stderr: args.stderr,
     fetchFn: args.fetchFn ?? globalThis.fetch,
   };
   const pool = (args.poolFactory ?? ((u): pg.Pool => new pg.Pool({ connectionString: u })))(
-    args.env["DATABASE_URL"]!,
+    resolved.DATABASE_URL,
   );
   let scaffold: Scaffolding | undefined;
   try {
