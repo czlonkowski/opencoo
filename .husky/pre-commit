@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+# .husky/pre-commit — placeholder. v0.1 deliberately ships no
+# pre-commit hooks: per-commit linting / formatting risks slowing
+# every commit and we have CI for the regression sweep. If you need
+# fast pre-commit feedback locally, run `pnpm lint` / `pnpm test`
+# manually before committing.
+#
+# Created by `pnpm exec husky init` and kept intentionally empty so
+# Husky's `prepare` script has the directory it expects on a fresh
+# clone (PR-P2, phase-a appendix #8).
+
+exit 0
