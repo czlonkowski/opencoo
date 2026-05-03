@@ -90,7 +90,15 @@ export interface ServeStartedEngine {
   readonly sseBus?: ServeSseBus;
 }
 
-/** Matches `start({env})` from `@opencoo/engine-self-operating`. */
+/** Matches `start({env})` from `@opencoo/engine-self-operating`.
+ *
+ *  PR-N3 (phase-a appendix #6) extends the factory's input shape
+ *  with optional `agentRunners` + `agentDefinitions`. The
+ *  defaultStartFactory composes both via
+ *  `tryComposeAgentRunnersBundleFromEnv` and threads them into
+ *  `engine-self-operating.start({...})` so the AgentDispatcher
+ *  boots with a populated registry. Tests pass their own
+ *  factory and never hit the new wiring. */
 export type ServeStartFactory = (opts: {
   readonly env: Record<string, string | undefined>;
 }) => Promise<ServeStartedEngine>;
@@ -136,12 +144,145 @@ export interface ServeArgs {
 }
 
 /** @internal Default `startFactory` — dynamic-imports the engine
- *  so the verb's cold-start cost is paid only on boot. */
+ *  so the verb's cold-start cost is paid only on boot.
+ *
+ *  PR-N3 (phase-a appendix #6): also composes the production
+ *  AgentRunnerRegistry via `tryComposeAgentRunnersBundleFromEnv`
+ *  and threads it into `start({})` so the AgentDispatcher boots
+ *  with populated runner closures. On any composition failure
+ *  (missing `MCP_BEARER_TOKEN`, pg.Pool open failure, etc.) the
+ *  helper logs `mcp_http.unavailable` and returns null; we then
+ *  boot self-op with no runners — the management UI stays alive
+ *  and the operator fixes the env without restart.
+ *
+ *  Resource ownership: when the bundle is composed, its `pgPool`
+ *  is drained by the wrapped `close()` below AFTER the engine's
+ *  own close runs. */
+/** Minimal shape of the bundle the agent-runner composition
+ *  produces. Defined here (structurally) so tests can substitute
+ *  a fake bundle without dragging the real
+ *  `production-composition.ts` import surface. */
+interface AgentRunnersBundleLike {
+  readonly runners: unknown;
+  readonly definitions: unknown;
+  readonly router: unknown;
+  close(): Promise<void>;
+}
+
+/** Engine-start callable shape — narrowed to the fields
+ *  `composeStartedEngineWithBundle` actually invokes. */
+type EngineStartFn = (opts: {
+  readonly env: Record<string, string | undefined>;
+  readonly agentRunners?: unknown;
+  readonly agentDefinitions?: unknown;
+  readonly agentRouter?: unknown;
+}) => Promise<ServeStartedEngine>;
+
+interface ComposeStartedEngineArgs {
+  readonly env: Record<string, string | undefined>;
+  readonly bundle: AgentRunnersBundleLike | null;
+  readonly start: EngineStartFn;
+  /** Logger for the round-2 fix #3 boot-failure-close-failed
+   *  warn line. */
+  readonly logger: {
+    warn(message: string, fields?: Record<string, unknown>): void;
+  };
+}
+
+/** Round-2 fix #3 on PR #57 (Copilot review): exported helper so
+ *  tests can drive the boot-tolerance path without
+ *  dynamic-importing the real engine-self-operating package
+ *  (which opens Postgres + Fastify + BullMQ at construction
+ *  time). The helper:
+ *
+ *    1. Calls `start(...)` with the bundle's runners/router
+ *       threaded through (only when the bundle is non-null).
+ *    2. On `start()` rejection: closes the bundle (best-effort,
+ *       logs `agent_runners.boot_failure_close_failed` on
+ *       close-failure) BEFORE re-throwing the original boot
+ *       error.
+ *    3. On `start()` success: wraps `engine.close` so the
+ *       bundle's pg.Pool drains AFTER the engine's own close on
+ *       the SIGTERM path.
+ *
+ *  Without (2), a bundle's pg.Pool leaks when the engine itself
+ *  fails to boot — observable as Postgres connections that
+ *  never get released until the OS reaps the process. */
+export async function composeStartedEngineWithBundle(
+  args: ComposeStartedEngineArgs,
+): Promise<ServeStartedEngine> {
+  const { env, bundle, start, logger } = args;
+  let engine: ServeStartedEngine;
+  try {
+    engine = await start({
+      env,
+      // Round-2 fix #1 on PR #57: thread the LlmRouter from the
+      // bundle through into the AgentDispatcher. Without
+      // `agentRouter`, the dispatcher's per-dispatch context falls
+      // back to the empty-object cast at agent-dispatcher.ts:404
+      // and the FIRST scheduled Heartbeat / Lint / Surfacer crashes
+      // with `TypeError: ctx.router.generateObject is not a function`.
+      ...(bundle !== null
+        ? {
+            agentRunners: bundle.runners,
+            agentDefinitions: bundle.definitions,
+            agentRouter: bundle.router,
+          }
+        : {}),
+    });
+  } catch (err) {
+    if (bundle !== null) {
+      // Drain the bundle's pg.Pool BEFORE re-throwing so the
+      // process can exit cleanly. Best-effort: a close-failure
+      // here gets a separate warn so a stuck pool surfaces with
+      // its own log line, then we re-throw the ORIGINAL boot
+      // error so the caller (runServe) routes the right cause.
+      await bundle.close().catch((closeErr: unknown) => {
+        logger.warn("agent_runners.boot_failure_close_failed", {
+          error:
+            closeErr instanceof Error
+              ? closeErr.message
+              : String(closeErr),
+        });
+      });
+    }
+    throw err;
+  }
+  if (bundle === null) {
+    return engine;
+  }
+  // Wrap close() so the runner bundle's pg.Pool drains after
+  // the engine's own close on the SIGTERM path.
+  const baseClose = engine.close.bind(engine);
+  return Object.assign(engine, {
+    async close(): Promise<void> {
+      await baseClose();
+      await bundle.close();
+    },
+  });
+}
+
 async function defaultStartFactory(opts: {
   readonly env: Record<string, string | undefined>;
 }): Promise<ServeStartedEngine> {
   const mod = await import("@opencoo/engine-self-operating");
-  return mod.start({ env: opts.env });
+  const composition = await import(
+    "../provision/production-composition.js"
+  );
+  const sharedLogger = await import("@opencoo/shared/logger");
+  // Compose runners before start() so the dispatcher boots
+  // populated. Boot-tolerant: bundle === null → empty registry,
+  // engine still boots, scheduled jobs no-op (with one failed
+  // agent_runs row per dispatch surfacing the misconfig).
+  const bundle = composition.tryComposeAgentRunnersBundleFromEnv({
+    env: opts.env,
+  });
+  return composeStartedEngineWithBundle({
+    env: opts.env,
+    bundle,
+    start: mod.start as unknown as EngineStartFn,
+    logger: new sharedLogger.ConsoleLogger(),
+  });
 }
 
 /** @internal Default ingestion `startFactory`. PR-M2 (phase-a

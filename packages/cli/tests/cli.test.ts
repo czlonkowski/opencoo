@@ -24,7 +24,11 @@ import {
   formatSecret,
   inspectSecret,
 } from "../src/lib/credential-redact.js";
-import { runServe, type ServeArgs } from "../src/commands/serve.js";
+import {
+  composeStartedEngineWithBundle,
+  runServe,
+  type ServeArgs,
+} from "../src/commands/serve.js";
 import { runSourceForget } from "../src/commands/source-forget.js";
 import { runRecompile } from "../src/commands/recompile.js";
 import { parseAndDispatch } from "../src/parse.js";
@@ -849,6 +853,91 @@ describe("runServe", () => {
     await serve;
   });
 
+  // PR-N3 (phase-a appendix #6) — the orchestrator's
+  // `defaultStartFactory` composes the production
+  // AgentRunnerRegistry from env BEFORE calling
+  // `engine-self-operating.start({...})`. The two assertions
+  // below pin the boot-tolerance contract — present token →
+  // populated bundle threaded into start; missing token → null
+  // bundle + warn line surfaced by the upstream helper.
+  //
+  // These tests drive the same composition helper the default
+  // factory invokes, so the wiring path is identical.
+  it("composes a populated AgentRunnerRegistry when MCP_BEARER_TOKEN is set (PR-N3)", async () => {
+    const composition = await import(
+      "../src/provision/production-composition.js"
+    );
+    const records: Array<{ message: string }> = [];
+    const captureLogger = {
+      debug: (m: string): void => void records.push({ message: m }),
+      info: (m: string): void => void records.push({ message: m }),
+      warn: (m: string): void => void records.push({ message: m }),
+      error: (m: string): void => void records.push({ message: m }),
+    } as unknown as Parameters<
+      typeof composition.tryComposeAgentRunnersBundleFromEnv
+    >[0]["logger"];
+    const bundle = composition.tryComposeAgentRunnersBundleFromEnv({
+      env: {
+        DATABASE_URL: "postgres://test:test@localhost:65535/none",
+        MCP_BEARER_TOKEN: "static-bearer-do-not-leak",
+        MCP_BASE_URL: "http://localhost:3000/mcp",
+      },
+      logger: captureLogger,
+    });
+    expect(bundle).not.toBeNull();
+    expect(bundle?.runners.get("heartbeat")).toBeTypeOf("function");
+    expect(bundle?.runners.get("lint")).toBeTypeOf("function");
+    // Round-2 fix #2 on PR #57: empty template catalog →
+    // Surfacer omitted from the registry (logged at boot).
+    expect(bundle?.runners.get("surfacer")).toBeUndefined();
+    // The 3 definitions stay registered (Lint reads them for
+    // automation_drift); only the Surfacer runner closure is
+    // omitted.
+    expect(bundle?.definitions.list().length).toBe(3);
+    // No `mcp_http.unavailable` warn — the bundle was composed.
+    expect(
+      records.find((r) => r.message === "mcp_http.unavailable"),
+    ).toBeUndefined();
+    // Round-2 fix #2: clear warn line at boot when Surfacer is
+    // omitted so the operator can see why scheduled Surfacer
+    // doesn't fire.
+    expect(
+      records.find((r) => r.message === "surfacer.template_catalog_empty"),
+    ).toBeDefined();
+    await bundle?.close();
+  });
+
+  it("returns a null bundle + logs mcp_http.unavailable when MCP_BEARER_TOKEN is missing (PR-N3 boot-tolerance)", async () => {
+    const composition = await import(
+      "../src/provision/production-composition.js"
+    );
+    const records: Array<{ level: string; message: string; data?: unknown }> = [];
+    const captureLogger = {
+      debug: (m: string, d?: unknown): void =>
+        void records.push({ level: "debug", message: m, data: d }),
+      info: (m: string, d?: unknown): void =>
+        void records.push({ level: "info", message: m, data: d }),
+      warn: (m: string, d?: unknown): void =>
+        void records.push({ level: "warn", message: m, data: d }),
+      error: (m: string, d?: unknown): void =>
+        void records.push({ level: "error", message: m, data: d }),
+    } as unknown as Parameters<
+      typeof composition.tryComposeAgentRunnersBundleFromEnv
+    >[0]["logger"];
+    const bundle = composition.tryComposeAgentRunnersBundleFromEnv({
+      env: {
+        DATABASE_URL: "postgres://test:test@localhost:65535/none",
+        // MCP_BEARER_TOKEN intentionally absent
+      },
+      logger: captureLogger,
+    });
+    expect(bundle).toBeNull();
+    const warn = records.find(
+      (r) => r.level === "warn" && r.message === "mcp_http.unavailable",
+    );
+    expect(warn).toBeDefined();
+  });
+
   it("does not abort if engine-ingestion fails to boot — logs and continues", async () => {
     // Boot-tolerant: if engine-ingestion fails (missing prod
     // composition deps in PR-M1), the operator still gets
@@ -889,5 +978,175 @@ describe("runServe", () => {
 
     expect(selfOpEngine.close).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledWith(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// composeStartedEngineWithBundle — round-2 fix #3 on PR #57 (Copilot review)
+// ---------------------------------------------------------------------------
+//
+// The helper wraps `engine-self-operating.start({...})` with bundle-cleanup
+// semantics: on start() rejection, the bundle's pg.Pool is drained BEFORE
+// the boot error re-throws so the process can exit without leaking
+// connections; on start() success, engine.close() is wrapped to drain the
+// bundle on SIGTERM.
+
+describe("composeStartedEngineWithBundle (round-2 fix #3 on PR #57)", () => {
+  it("threads bundle.runners + agentRouter into start() when bundle is present", async () => {
+    const start = vi.fn(async () => ({
+      close: async (): Promise<void> => undefined,
+    }));
+    const sentinelRouter = { __sentinel: "router" };
+    const bundle = {
+      runners: { __sentinel: "runners" },
+      definitions: { __sentinel: "definitions" },
+      router: sentinelRouter,
+      close: vi.fn(async () => undefined),
+    };
+    const logger = { warn: vi.fn() };
+    await composeStartedEngineWithBundle({
+      env: { DATABASE_URL: "postgres://x" },
+      bundle,
+      start: start as Parameters<typeof composeStartedEngineWithBundle>[0]["start"],
+      logger,
+    });
+    expect(start).toHaveBeenCalledTimes(1);
+    const startArgs = start.mock.calls[0]?.[0] as {
+      readonly agentRunners?: unknown;
+      readonly agentDefinitions?: unknown;
+      readonly agentRouter?: unknown;
+    };
+    expect(startArgs.agentRunners).toBe(bundle.runners);
+    expect(startArgs.agentDefinitions).toBe(bundle.definitions);
+    expect(startArgs.agentRouter).toBe(sentinelRouter);
+  });
+
+  it("omits agent fields from start() args when bundle is null (boot-tolerant)", async () => {
+    const start = vi.fn(async () => ({
+      close: async (): Promise<void> => undefined,
+    }));
+    const logger = { warn: vi.fn() };
+    await composeStartedEngineWithBundle({
+      env: { DATABASE_URL: "postgres://x" },
+      bundle: null,
+      start: start as Parameters<typeof composeStartedEngineWithBundle>[0]["start"],
+      logger,
+    });
+    const startArgs = start.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect("agentRunners" in startArgs).toBe(false);
+    expect("agentDefinitions" in startArgs).toBe(false);
+    expect("agentRouter" in startArgs).toBe(false);
+  });
+
+  it("CLOSES the bundle's pool when start() rejects, then re-throws the original error (round-2 fix #3)", async () => {
+    const bootError = new Error("self-op start blew up");
+    const start = vi.fn(async () => {
+      throw bootError;
+    });
+    const closeSpy = vi.fn(async () => undefined);
+    const bundle = {
+      runners: {},
+      definitions: {},
+      router: {},
+      close: closeSpy,
+    };
+    const logger = { warn: vi.fn() };
+    let caught: unknown;
+    try {
+      await composeStartedEngineWithBundle({
+        env: {},
+        bundle,
+        start: start as Parameters<typeof composeStartedEngineWithBundle>[0]["start"],
+        logger,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBe(bootError);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    // No close-failure warn line because closeSpy resolved cleanly.
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("logs `agent_runners.boot_failure_close_failed` when bundle.close ALSO throws (best-effort cleanup)", async () => {
+    const bootError = new Error("self-op start blew up");
+    const closeError = new Error("pool already destroyed");
+    const start = vi.fn(async () => {
+      throw bootError;
+    });
+    const bundle = {
+      runners: {},
+      definitions: {},
+      router: {},
+      close: vi.fn(async () => {
+        throw closeError;
+      }),
+    };
+    const logger = { warn: vi.fn() };
+    let caught: unknown;
+    try {
+      await composeStartedEngineWithBundle({
+        env: {},
+        bundle,
+        start: start as Parameters<typeof composeStartedEngineWithBundle>[0]["start"],
+        logger,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    // The ORIGINAL boot error must propagate — the close-failure
+    // is a side-channel observation, not a replacement.
+    expect(caught).toBe(bootError);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "agent_runners.boot_failure_close_failed",
+      expect.objectContaining({ error: closeError.message }),
+    );
+  });
+
+  it("does NOT close the bundle when start() rejects with bundle === null (no-op cleanup)", async () => {
+    const bootError = new Error("self-op start blew up");
+    const start = vi.fn(async () => {
+      throw bootError;
+    });
+    const logger = { warn: vi.fn() };
+    let caught: unknown;
+    try {
+      await composeStartedEngineWithBundle({
+        env: {},
+        bundle: null,
+        start: start as Parameters<typeof composeStartedEngineWithBundle>[0]["start"],
+        logger,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBe(bootError);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("on start() success, wraps engine.close so the bundle drains AFTER the engine's own close", async () => {
+    const order: string[] = [];
+    const engineCloseSpy = vi.fn(async () => {
+      order.push("engine.close");
+    });
+    const bundleCloseSpy = vi.fn(async () => {
+      order.push("bundle.close");
+    });
+    const start = vi.fn(async () => ({ close: engineCloseSpy }));
+    const bundle = {
+      runners: {},
+      definitions: {},
+      router: {},
+      close: bundleCloseSpy,
+    };
+    const logger = { warn: vi.fn() };
+    const engine = await composeStartedEngineWithBundle({
+      env: {},
+      bundle,
+      start: start as Parameters<typeof composeStartedEngineWithBundle>[0]["start"],
+      logger,
+    });
+    await engine.close();
+    expect(order).toEqual(["engine.close", "bundle.close"]);
   });
 });

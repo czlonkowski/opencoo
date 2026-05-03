@@ -36,6 +36,7 @@ import {
   loadEncryptionKey,
 } from "@opencoo/shared/credential-store";
 import { ConsoleLogger, type Logger } from "@opencoo/shared/logger";
+import type { LlmRouter } from "@opencoo/shared/llm-router";
 import { scrubPat } from "@opencoo/shared/scrub";
 import { drizzle } from "drizzle-orm/node-postgres";
 import {
@@ -171,6 +172,18 @@ export interface StartOptions
    *  the dispatcher synthesises an empty registry — runners that
    *  don't depend on definition lookups still work. */
   readonly agentDefinitions?: AgentDefinitionRegistry;
+  /** Phase-a appendix #6 PR-N3 round-2 — production LlmRouter
+   *  threaded into `AgentDispatcher`. Without this, the dispatcher
+   *  falls back to the `({} as unknown) as LlmRouter` empty-object
+   *  cast (agent-dispatcher.ts:404) and the FIRST scheduled
+   *  Heartbeat / Lint / Surfacer dispatch crashes with
+   *  `TypeError: ctx.router.generateObject is not a function`.
+   *  The orchestrator (`packages/cli/src/commands/serve.ts`) builds
+   *  the router inside `tryComposeAgentRunnersBundleFromEnv` and
+   *  passes the SAME instance here AND into the runner closures,
+   *  so per-domain `llm_policy` enforcement matches the ingestion
+   *  side. */
+  readonly agentRouter?: LlmRouter;
 }
 
 /** Round-3 fix #4: scrub-and-cap helper for `scheduler.*` error
@@ -354,6 +367,19 @@ export async function start(
         runners: options.agentRunners,
         logger,
         sseBus,
+        // Round-2 fix #1 (Copilot review on PR #57): thread the
+        // production LlmRouter so the dispatch context's
+        // `ctx.router` is the real instance, not the
+        // `({} as unknown) as LlmRouter` empty-object cast.
+        // Without this, the FIRST scheduled Heartbeat/Lint/
+        // Surfacer dispatch crashes with `TypeError:
+        // ctx.router.generateObject is not a function` and the
+        // run loops on BullMQ retries until DLQ. Conditional
+        // spread keeps the field absent when not provided so
+        // exactOptionalPropertyTypes doesn't flag undefined.
+        ...(options.agentRouter !== undefined
+          ? { router: options.agentRouter }
+          : {}),
       });
     } catch (err) {
       logger.error("scheduler.compose_failed", {

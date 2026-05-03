@@ -67,6 +67,20 @@ const DEFAULT_ALLOW_LIST = [
   // convention.
   "GITEA_PROVISION_ORG",
   "GITEA_PROVISION_ORG_FILE",
+  // Phase-a appendix #6 PR-N3 — gitea-wiki-mcp-server transport
+  // for the production AgentRunnerRegistry. `MCP_BEARER_TOKEN`
+  // is a static bearer (same value the gitea-wiki-mcp-server is
+  // configured with); `MCP_BASE_URL` defaults to
+  // http://localhost:3000/mcp and overrides for non-default
+  // deployments. Both are infrastructure-config (same shape as
+  // GITEA_PAT / REDIS_URL — point at an external service the
+  // operator owns), NOT feature config — feature config still
+  // lives in Postgres + UI per THREAT-MODEL §2 invariant 9.
+  // Same `_FILE` Docker-secrets convention as the rest.
+  "MCP_BEARER_TOKEN",
+  "MCP_BEARER_TOKEN_FILE",
+  "MCP_BASE_URL",
+  "MCP_BASE_URL_FILE",
 ];
 
 function isIdentifier(
