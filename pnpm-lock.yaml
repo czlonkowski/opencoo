@@ -11,6 +11,9 @@ importers:
       '@opencoo/eslint-plugin':
         specifier: workspace:*
         version: link:tools/eslint-plugin-opencoo
+      '@opencoo/shared':
+        specifier: workspace:*
+        version: link:packages/shared
       '@types/node':
         specifier: ^22.10.5
         version: 22.19.17

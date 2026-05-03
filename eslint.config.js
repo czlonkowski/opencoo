@@ -53,6 +53,11 @@ export default tseslint.config(
       "**/coverage/**",
       "**/.turbo/**",
       ".turbo/**",
+      // Claude Code agent worktrees mirror the repo on disk. ESLint
+      // walks them recursively otherwise, surfacing duplicate parses
+      // of every file at a deeper path the opencoo-scope globs do
+      // not match. Out-of-tree to lint.
+      ".claude/worktrees/**",
     ],
   },
 
