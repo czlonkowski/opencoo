@@ -2,8 +2,9 @@
 
 > Versioned per release tag. Pre-filled by `pnpm threat-model:preflight`
 > against the candidate closing commit; the maintainer reviews each
-> item, spot-checks the cited `path:line` refs for the four judgment
-> items, and signs the closure block at the bottom.
+> item, spot-checks the cited `path:line` refs for the 8 maintainer-
+> judgment items remaining after the 5 automatable checks (items 2,
+> 3, 4, 5, 6, 7, 8, 11), and signs the closure block at the bottom.
 >
 > Companion docs: `THREAT-MODEL.md` (the source-of-truth checklist),
 > `IMPLEMENTATION-PLAN.md` §1.3 (phase-a exit gate), `CHANGES-v0.1.md`

@@ -2,11 +2,11 @@
 # scripts/threat-model-preflight.sh — PR-P1 (phase-a appendix #8).
 #
 # Runs the five automatable checks from THREAT-MODEL.md §5 against the
-# current `main` tip and writes a markdown-paste-ready fragment to
-# stdout. The maintainer pastes the output into
+# worktree's current HEAD and writes a markdown-paste-ready fragment
+# to stdout. The maintainer pastes the output into
 # docs/threat-model-signoff-0.1.0-a.md (or the per-tag equivalent) and
-# spot-checks the four remaining judgment items against the cited
-# path:line refs.
+# spot-checks the 8 remaining maintainer-judgment items (items 2, 3,
+# 4, 5, 6, 7, 8, 11) against the cited path:line refs.
 #
 # What it covers:
 #
