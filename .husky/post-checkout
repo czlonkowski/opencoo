@@ -1,0 +1,25 @@
+#!/usr/bin/env sh
+# .husky/post-checkout — fires after `git checkout`. Same install +
+# build logic as post-merge so switching branches (e.g. `git checkout
+# main` after a remote merge) leaves the workspace in a buildable
+# state. Git passes three positional args:
+#   $1  previous HEAD ref
+#   $2  new HEAD ref
+#   $3  flag — 1 = branch checkout, 0 = single-file checkout
+# Only act on branch checkouts (flag=1); single-file checkouts don't
+# move HEAD and shouldn't trigger an install/build cycle.
+#
+# Phase-a appendix #8 PR-P2.
+
+# Short-circuit on file-checkout (flag=0). Also short-circuit when
+# the flag isn't supplied — defensive against being invoked manually.
+if [ "${3:-}" != "1" ]; then
+  exit 0
+fi
+
+# Map post-checkout's $1 (previous HEAD) onto ORIG_HEAD so the shared
+# impl can diff with the same machinery the post-merge path uses.
+ORIG_HEAD="$1"
+export ORIG_HEAD
+
+. "$(dirname -- "$0")/_postmerge-impl.sh"
