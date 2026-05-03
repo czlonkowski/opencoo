@@ -40,7 +40,7 @@ Optional:
 - `LLM_DEBUG_LOG=1` — surfaces full prompts + responses on the SSE bus and in `llm_usage_debug`. **never set in production** (THREAT-MODEL §2 invariant 11). the management UI displays a banner whenever the gate is on so reviewers know.
 - per-provider keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OLLAMA_BASE_URL`) — wired by the `LlmRouter` lazily; only required for the providers the operator actually selects in domain LLM policy.
 
-every var also accepts a `_FILE` suffix variant (Docker secrets pattern). `_FILE` wins when both are set.
+The required `_URL`-style vars and `ENCRYPTION_KEY` accept a `_FILE` suffix variant (Docker secrets pattern) — namely `DATABASE_URL_FILE`, `REDIS_URL_FILE`, `GITEA_URL_FILE`, `GITEA_PAT_FILE`, `ENCRYPTION_KEY_FILE`, `SESSION_HMAC_KEY_FILE`, `GITEA_BASE_URL_FILE`, `OPENCOO_ADMIN_PAT_FILE`. `_FILE` wins when both are set; the loader at `packages/shared/src/engine-scaffold/config.ts:53-67` reads the file and trims a single trailing newline. Variables that are NOT URLs or secrets — `PORT`, `NODE_ENV`, `LOG_LEVEL`, `LLM_DEBUG_LOG`, `TELEMETRY_ENDPOINT`, and per-provider keys like `OPENROUTER_API_KEY` — do NOT have a `_FILE` form (they're never read through `readWithFile`).
 
 ## 2. First-boot sequence
 
@@ -172,7 +172,7 @@ Before declaring pilot-ready, the operator runs the following spot-check (mirror
 These are deliberate phase-a / phase-b deferrals. tracking each in the appendix #5 follow-up issue:
 
 - **Heartbeat / Lint / Surfacer scheduled agents do not fire on cron yet.** `agents seed` writes the `agent_instances` rows with `schedule_cron` populated (PR-M2 wired this), but the `AgentRunnerRegistry` boots empty because production agent runners need an `HttpMcpToolClient` — that wiring is a phase-b PR (PR 23+). the `/api/admin/scheduler` route enumerates the seeded rows; it returns an empty `nextFireAt` until the registry is populated. there is no manual-trigger CLI today either; tracking this gap in the appendix #5 follow-up issue.
-- **DLQ retry workers for `output_deliveries` are not automated.** failed deliveries surface as `output.delivery.dlq` SSE events with the row in Postgres at `status = 'failed'`. manual operator recovery is the v0.1 path: re-enable the binding or re-deliver via psql.
+- **DLQ retry workers for `output_deliveries` are not automated.** failed deliveries surface as `output_delivery_dlq` SSE events (underscore form per `packages/engine-self-operating/src/admin-api/routes/events.ts:122`) with the row in Postgres at `status = 'failed'`. manual operator recovery is the v0.1 path: re-enable the binding or re-deliver via psql.
 - **Per-domain LLM-policy aware scheduling defers to v0.2.** if a domain's LLM policy points at an unavailable provider, the scheduler dispatches anyway; the LLM router error-bubbles via `LlmPolicyViolationError`. operators can pause the domain manually via the management UI's Domains tab.
 - **Cron timezone awareness defers to v0.2.** every `defaultScheduleCron` is UTC. operators in non-UTC offsets adjust the cron expression manually until v0.2 lands.
 - **Scheduler UI in the management console defers to phase-b.** `/api/admin/scheduler` (read-only) is the v0.1 surface; operators inspect via curl or psql.
@@ -184,7 +184,7 @@ Operator ticks each box before declaring the deployment pilot-ready:
 
 - [ ] All required env vars set; `opencoo doctor` returns exit 0 with all checks green (or only the expected `gitea_team` warn when `OPENCOO_ADMIN_PAT` is unset).
 - [ ] At least one source binding created via the management UI; status pill shows `ok`; `last_event_at` populated.
-- [ ] Real webhook event observed end-to-end: `source.event.received` → `ingestion.intake.created` → `compile.completed` events all land on the Activity feed within 60s of the upstream trigger.
+- [ ] Real webhook event observed end-to-end against a real adapter (Asana / Drive — NOT the generic `source-webhook`): `webhook_events` row appears in Postgres within ~1s of upstream trigger; an `agent_run` SSE event with `definitionSlug = 'ingestion.scanner.classify'` and `status = 'success'` lands on the Activity feed within ~30s; the corresponding `ingestion_intake` row reaches `status = 'compiled'`. (See §4 for the full marker list. The generic `source-webhook` adapter is excluded here because its `scan()` is a no-op — see `pnpm smoke:real-data --help`.)
 - [ ] Wiki page rendered in Gitea with populated frontmatter (`schema_version`, `prompt_version`, `compiled_at`, `compiled_by_run_id`) and a `Worldview-Impact` git trailer on the commit.
 - [ ] Activity feed populated with at least 5 events; no console errors in the management UI; no red rows in `agent_runs`.
 - [ ] PRD §5 success criteria 1, 2, 4, 6, 7, 8 verified manually:
