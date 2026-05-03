@@ -260,13 +260,16 @@ export async function start(
             // means a single Queue + a single Redis connection
             // serve both producers — webhook deliveries and
             // periodic scans land on the same backlog the
-            // Compile worker dequeues from. Optional in tests
-            // that omit `ctx.enqueue`; in those cases the
-            // receiver gracefully falls back to the legacy
-            // per-event `intake.scanner` enqueue path.
-            ...(ctx.enqueue !== undefined
-              ? { scannerClassifyQueue: ctx.enqueue }
-              : {}),
+            // Compile worker dequeues from.
+            //
+            // Round-3 (Copilot #1): no conditional spread here —
+            // `ctx.enqueue` is required in mode='workers' and the
+            // boot-validation block above (the missing-fields check
+            // that includes `enqueue`) throws before we ever reach
+            // this line if it's absent. The non-null assertion
+            // mirrors the other four fields validated in the same
+            // block.
+            scannerClassifyQueue: ctx.enqueue!,
             appLogger: ctx.logger,
           });
           return server;
