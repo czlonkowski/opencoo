@@ -87,8 +87,11 @@ const DEFAULT_ALLOW_LIST = [
   // URL for an outbound call to a SECOND MCP server — the
   // n8n-mcp instance, distinct from the gitea-wiki-mcp server).
   // When unset, Surfacer falls back to the vendored
-  // ~25-template baseline; absent does NOT break Heartbeat /
-  // Lint. Read via `requireWithFile` / `readWithFile`, never via
+  // ~3-template baseline (`builderSkills` in
+  // `packages/adapters/automation-n8n-mcp/vendor/n8n-skills/`,
+  // currently dispatch-task / heartbeat-digest / lint-pages);
+  // absent does NOT break Heartbeat / Lint. Read via
+  // `requireWithFile` / `readWithFile`, never via
   // `process.env.X`. Same `_FILE` Docker-secrets convention as
   // the rest. Infrastructure-config — NOT feature config (which
   // still lives in Postgres + UI per THREAT-MODEL §2 invariant 9).
