@@ -495,7 +495,16 @@ export function registerWebhookRoute(
           const safeReason = scrubPat(
             err instanceof Error ? err.message : String(err),
           ).slice(0, ERROR_MESSAGE_MAX_LENGTH);
-          options.appLogger?.warn("webhook_receiver.direct_intake_failed", {
+          // Round-2 fix (S2, code-reviewer triage): this is a
+          // data-loss event — signature was valid, webhook_events
+          // row written with signature_ok=true, upstream got 200
+          // (and so will not retry per HTTP webhook convention),
+          // and we then lost the document. Operators want this on
+          // the standard error-rate alert path, not buried with
+          // routine warns. The DLQ enqueue below is what gives
+          // operators a recovery handle; the `error` log line is
+          // what pages them to look.
+          options.appLogger?.error("webhook_receiver.direct_intake_failed", {
             bindingId,
             provider: provider ?? binding.adapterSlug,
             eventId: eventId ?? null,

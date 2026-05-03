@@ -58,11 +58,37 @@ function signHex(body: string): string {
   return createHmac("sha256", SECRET).update(body).digest("hex");
 }
 
+/**
+ * Minimal Logger-shape stub the receiver accepts via `appLogger`.
+ * Same shape used by the sibling `webhook-receiver.test.ts` —
+ * captures every level so the round-2 (S2) error-level assertion
+ * for `webhook_receiver.direct_intake_failed` can fire.
+ */
+interface LoggerRecorder {
+  debug: ReturnType<typeof vi.fn>;
+  info: ReturnType<typeof vi.fn>;
+  warn: ReturnType<typeof vi.fn>;
+  error: ReturnType<typeof vi.fn>;
+  child: ReturnType<typeof vi.fn>;
+}
+
+function makeLoggerRecorder(): LoggerRecorder {
+  const recorder: LoggerRecorder = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: vi.fn(() => recorder),
+  };
+  return recorder;
+}
+
 interface FixtureOptions {
   readonly webhookHelpers: Partial<SourceWebhookHelpers> & {
     parseEvents: SourceWebhookHelpers["parseEvents"];
   };
   readonly withClassifyQueue?: boolean;
+  readonly appLogger?: LoggerRecorder;
 }
 
 async function makeFixture(opts: FixtureOptions) {
@@ -114,6 +140,13 @@ async function makeFixture(opts: FixtureOptions) {
             scannerClassifyQueue as unknown as Parameters<
               typeof buildWebhookReceiver
             >[0]["scannerClassifyQueue"],
+        }
+      : {}),
+    ...(opts.appLogger !== undefined
+      ? {
+          appLogger: opts.appLogger as unknown as Parameters<
+            typeof buildWebhookReceiver
+          >[0]["appLogger"],
         }
       : {}),
   });
@@ -333,10 +366,16 @@ describe("webhook receiver — direct-intake branch", () => {
     await app.close();
   });
 
-  it("enrichEvents throws → 200 + DLQ enqueue + scrubbed warn log (does not crash receiver)", async () => {
-    // The upstream provider should NOT retry — recordWebhook already
-    // wrote the signature_ok=true row, so the receiver returns 200 to
-    // suppress retries and DLQ-enqueues for operator triage.
+  it("enrichEvents throws → 200 + DLQ enqueue + ERROR-level log (data-loss event, does not crash receiver)", async () => {
+    // PR-N2 round-2 (S2): direct-intake failure is a data-loss event
+    // — signature was valid, webhook_events row written with
+    // signature_ok=true, upstream got 200 (so it will not retry),
+    // and we then lost the document. The receiver MUST log at
+    // `error` level (not `warn`) so this surfaces on operator
+    // alert paths, AND DLQ-enqueue for recovery. The 200 response
+    // is intentional: a 5xx would just trigger upstream retries
+    // that recordWebhook would dedupe anyway.
+    const appLogger = makeLoggerRecorder();
     const enrichEvents = vi.fn(async () => {
       throw new Error("simulated enrichment failure");
     });
@@ -359,6 +398,7 @@ describe("webhook receiver — direct-intake branch", () => {
           ],
           enrichEvents,
         },
+        appLogger,
       });
 
     const body = '{"event":"throw"}';
@@ -378,14 +418,34 @@ describe("webhook receiver — direct-intake branch", () => {
     const intakeRows = await db.execute(`SELECT id FROM ingestion_intake`);
     expect(intakeRows.rows).toHaveLength(0);
     expect(scannerClassifyQueue.add).not.toHaveBeenCalled();
+
+    // DLQ enqueue — operator-recovery handle.
     expect(dlqQueue.add).toHaveBeenCalledTimes(1);
-    const [name, payload] = dlqQueue.add.mock.calls[0]! as [
+    const [dlqName, dlqPayload] = dlqQueue.add.mock.calls[0]! as [
       string,
       Record<string, unknown>,
     ];
-    expect(name).toBe("intake.dlq");
-    expect(payload).toMatchObject({ bindingId });
-    expect(String(payload["reason"])).toMatch(/direct-intake failed/);
+    expect(dlqName).toBe("intake.dlq");
+    expect(dlqPayload).toMatchObject({ bindingId });
+    expect(String(dlqPayload["reason"])).toMatch(/direct-intake failed/);
+
+    // PR-N2 round-2 (S2): error-level log — operator paging path.
+    expect(appLogger.error).toHaveBeenCalledTimes(1);
+    expect(appLogger.warn).not.toHaveBeenCalled();
+    const [logKey, logCtx] = appLogger.error.mock.calls[0]! as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(logKey).toBe("webhook_receiver.direct_intake_failed");
+    expect(logCtx).toMatchObject({
+      bindingId,
+      provider: "test-direct",
+      eventId: "evt-throw",
+    });
+    // The error reason is captured but scrubbed/capped — the
+    // free-text shape mirrors the PR-N1 signature_invalid log.
+    expect(typeof logCtx["errorReason"]).toBe("string");
+    expect(String(logCtx["errorReason"])).toMatch(/simulated enrichment failure/);
 
     await app.close();
   });
