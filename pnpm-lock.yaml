@@ -259,6 +259,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@opencoo/automation-n8n-mcp':
+        specifier: workspace:*
+        version: link:../adapters/automation-n8n-mcp
       '@opencoo/engine-ingestion':
         specifier: workspace:*
         version: link:../engine-ingestion
