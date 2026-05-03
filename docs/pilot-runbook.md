@@ -70,7 +70,7 @@ If composition of the ingestion engine fails (most often: missing `GITEA_PAT` or
 
 The pilot's first real binding. all UI paths assume the engine is running on `http://localhost:8080`.
 
-1. Open `http://localhost:8080` and sign in. the admin-API uses Gitea OAuth; the operator must be a member of `ADMIN_TEAM_SLUG`.
+1. Open `http://localhost:8080` and sign in. the admin-API authenticates with a Gitea Personal Access Token (`Authorization: Bearer <gitea-PAT>` per `packages/engine-self-operating/src/admin-api/auth.ts:5`); the PAT must belong to a member of `ADMIN_TEAM_SLUG`. Generate one in Gitea → Settings → Applications → Generate New Token (scopes: `read:user`, `read:organization`); paste it into the management UI's login screen, which stores it via `setPat` in browser storage. There is no OAuth flow in v0.1.
 2. Navigate to the **Sources** tab → click **+ New binding**.
 3. Choose adapter **`asana`**. fill the form rendered from `asanaBindingConfigSchema`:
    - **Asana PAT** — service-account token with read access on the project. encrypted at rest via `CredentialStore`.
