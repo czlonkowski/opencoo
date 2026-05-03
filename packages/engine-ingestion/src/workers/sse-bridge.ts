@@ -8,23 +8,22 @@
  * pattern as `bindOutputDlq` in `engine-self-operating`'s sse-bus.
  *
  * `failed` events ship the `Error.message` in the `errorMessage`
- * field — scrubbed via `scrubPat` before leaving the engine
- * boundary (THREAT-MODEL §3.6 invariant 11) and capped at 200
- * chars to keep the SSE frame small. The field is deliberately
- * named `errorMessage` (free text) rather than `errorClass` (the
- * 3-class retry taxonomy on `OpencooError`) so consumers can't
- * confuse the two surfaces.
+ * field — routed through `safeErrorMessage` before leaving the
+ * engine boundary (THREAT-MODEL §3.6 invariant 11): scrubbed for
+ * credential patterns and capped at 200 chars to keep the SSE
+ * frame small. The field is deliberately named `errorMessage`
+ * (free text) rather than `errorClass` (the 3-class retry
+ * taxonomy on `OpencooError`) so consumers can't confuse the two
+ * surfaces.
  */
 import type { Worker } from "bullmq";
 
-import { scrubPat } from "@opencoo/shared/scrub";
+import { safeErrorMessage } from "@opencoo/shared/scrub";
 
 import type {
   IngestionRunEvent,
   IngestionRunEventEmitter,
 } from "./context.js";
-
-const ERROR_MESSAGE_MAX_LENGTH = 200;
 
 /** Wire SSE run-event emission onto a BullMQ Worker. No-op when
  *  `bus` is undefined — keeps the production composition root
@@ -56,14 +55,13 @@ export function attachRunEvents(
   });
 
   worker.on("failed", (job, err) => {
-    const rawMessage = err instanceof Error ? err.message : String(err);
     const event: IngestionRunEvent = {
       runId: String(job?.id ?? "unknown"),
       definitionSlug,
       status: "failed",
       startedAt: new Date(job?.processedOn ?? Date.now()).toISOString(),
       endedAt: new Date().toISOString(),
-      errorMessage: scrubPat(rawMessage).slice(0, ERROR_MESSAGE_MAX_LENGTH),
+      errorMessage: safeErrorMessage(err),
     };
     bus.emitRunEvent(event);
   });
