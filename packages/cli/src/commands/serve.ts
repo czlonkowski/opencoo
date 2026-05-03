@@ -174,10 +174,17 @@ async function defaultStartFactory(opts: {
   });
   const engine = await mod.start({
     env: opts.env,
+    // Round-2 fix #1 on PR #57: thread the LlmRouter from the
+    // bundle through into the AgentDispatcher. Without
+    // `agentRouter`, the dispatcher's per-dispatch context falls
+    // back to the empty-object cast at agent-dispatcher.ts:404
+    // and the FIRST scheduled Heartbeat / Lint / Surfacer crashes
+    // with `TypeError: ctx.router.generateObject is not a function`.
     ...(bundle !== null
       ? {
           agentRunners: bundle.runners,
           agentDefinitions: bundle.definitions,
+          agentRouter: bundle.router,
         }
       : {}),
   });

@@ -448,6 +448,16 @@ export interface ComposedAgentRunnersBundle extends ComposedAgentRunners {
   /** A pg.Pool the bundle owns. The orchestrator closes it on
    *  SIGTERM. */
   readonly pgPool: pg.Pool;
+  /** The production LlmRouter the bundle constructed. The
+   *  orchestrator threads this into
+   *  `engine-self-operating.start({ agentRouter })` so the
+   *  AgentDispatcher's per-dispatch context exposes the SAME
+   *  router instance to every runner closure (round-2 fix #1
+   *  on PR #57). Without identity sharing, the dispatcher would
+   *  fall back to its `({} as unknown) as LlmRouter` empty-object
+   *  cast and the first scheduled agent dispatch would crash on
+   *  `ctx.router.generateObject is not a function`. */
+  readonly router: LlmRouter;
   /** A close hook that drains the bundle's resources (pg.Pool).
    *  Idempotent; safe to call multiple times. */
   close(): Promise<void>;
@@ -524,6 +534,13 @@ export function tryComposeAgentRunnersBundleFromEnv(
   return {
     ...composed,
     pgPool,
+    // Expose the SAME router instance the runner closures
+    // captured. The orchestrator threads this through
+    // `engine-self-operating.start({ agentRouter })` so the
+    // AgentDispatcher's dispatch context carries the production
+    // router rather than the empty-object cast (round-2 fix #1
+    // on PR #57).
+    router,
     async close(): Promise<void> {
       if (closed) return;
       closed = true;

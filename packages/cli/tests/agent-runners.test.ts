@@ -244,6 +244,35 @@ describe("tryComposeAgentRunnersFromEnv — boot-tolerance (PR-N3)", () => {
     expect(result?.definitions.list().length).toBe(3);
   });
 
+  it("exposes the LlmRouter on the bundle so the orchestrator can thread it into AgentDispatcher (round-2 fix #1 on PR #57)", async () => {
+    // tryComposeAgentRunnersBundleFromEnv constructs both a
+    // pg.Pool AND an LlmRouter, then captures both in the
+    // returned bundle. The orchestrator reads `bundle.router`
+    // and threads it into `engine-self-operating.start({
+    // agentRouter })` so the AgentDispatcher's per-dispatch
+    // ctx.router is the SAME instance the runner closures
+    // captured. Without identity sharing, the dispatcher falls
+    // back to its `({} as unknown) as LlmRouter` empty-object
+    // cast and the first scheduled agent dispatch crashes.
+    const composition = await import(
+      "../src/provision/production-composition.js"
+    );
+    const bundle = composition.tryComposeAgentRunnersBundleFromEnv({
+      env: {
+        DATABASE_URL: "postgres://test:test@127.0.0.1:65535/none",
+        MCP_BEARER_TOKEN: "static-bearer-do-not-leak",
+      },
+      logger: silentLogger(),
+    });
+    expect(bundle).not.toBeNull();
+    // The bundle MUST expose a router that has the LlmRouter
+    // surface — the dispatcher relies on `generateObject`.
+    expect(bundle?.router).toBeDefined();
+    expect(typeof bundle?.router.generateObject).toBe("function");
+    expect(typeof bundle?.router.generateText).toBe("function");
+    await bundle?.close();
+  });
+
   it("never logs the bearer token (THREAT-MODEL §3.6 #11)", () => {
     const TOKEN = "super-secret-token-do-not-leak-1234567890";
     const records: Array<{ level: string; message: string; data?: unknown }> = [];

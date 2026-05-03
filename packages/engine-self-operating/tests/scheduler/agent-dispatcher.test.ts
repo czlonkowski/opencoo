@@ -115,6 +115,10 @@ async function startDispatcher(args: {
   readonly runners?: AgentRunnerRegistry;
   readonly logs?: string[];
   readonly invocations?: string[];
+  /** Round-2 fix #1 on PR #57 — a router instance to thread
+   *  through. Tests pass a sentinel and assert the SAME instance
+   *  reaches the runner closure via `ctx.router`. */
+  readonly router?: ConstructorParameters<typeof AgentDispatcher>[0]["router"];
 }): Promise<DispatcherHarness> {
   const redis = new IORedisMock();
   const registry = args.registry ?? buildRegistryWith(TEST_DEFINITION);
@@ -150,6 +154,7 @@ async function startDispatcher(args: {
     logger,
     autorun: false,
     registerScheduleFn,
+    ...(args.router !== undefined ? { router: args.router } : {}),
   });
 
   return {
@@ -299,6 +304,64 @@ describe("AgentDispatcher dispatch handler", () => {
     } as unknown as Job<{ instanceId: string }>;
 
     await expect(handler(job)).rejects.toThrow(/runner/);
+  });
+
+  // Round-2 fix #1 on PR #57 (Copilot review). Without router
+  // threading, the dispatcher falls back to its
+  // `({} as unknown) as LlmRouter` empty-object cast at
+  // agent-dispatcher.ts:404 and the FIRST scheduled dispatch
+  // crashes with `TypeError: ctx.router.generateObject is not a
+  // function`. This test pins that the router instance handed to
+  // the dispatcher constructor is the SAME instance the runner
+  // closure observes via `ctx.router` — identity comparison
+  // (`toBe`) so a structural-equal clone would fail the test.
+  it("threads the constructor-supplied router through to ctx.router on dispatch (PR-N3 round-2)", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      scheduleCron: "0 8 * * *",
+    });
+
+    // Sentinel router — only identity matters; never invoked.
+    const sentinelRouter = {
+      __sentinel: "router-identity-pin",
+    } as unknown as ConstructorParameters<typeof AgentDispatcher>[0]["router"];
+
+    const observed: Array<{ router: unknown }> = [];
+    const runners: AgentRunnerRegistry = {
+      get(slug: string) {
+        if (slug !== TEST_DEFINITION.slug) return undefined;
+        return async (ctx) => {
+          observed.push({ router: ctx.router });
+          return { ok: true };
+        };
+      },
+    };
+
+    const harness = await startDispatcher({
+      fixture,
+      runners,
+      router: sentinelRouter,
+    });
+    activeHarness = harness;
+
+    const handler = harness.dispatcher.dispatchHandlerForTest();
+    const job = {
+      id: "job-router",
+      name: "dispatch",
+      data: { instanceId },
+      queueName: "selfop.dispatch",
+      attemptsMade: 0,
+      timestamp: Date.now(),
+    } as unknown as Job<{ instanceId: string }>;
+
+    await handler(job);
+
+    expect(observed).toHaveLength(1);
+    // Identity comparison — a structural-equal clone would fail
+    // here. This is the load-bearing assertion; without it the
+    // dispatcher's empty-object cast survives + the prod runner
+    // crashes on the first LLM call.
+    expect(observed[0]?.router).toBe(sentinelRouter);
   });
 
   it("propagates errors from the runner so BullMQ can apply its retry policy", async () => {
