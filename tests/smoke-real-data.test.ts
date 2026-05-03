@@ -32,6 +32,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   HEALTH_TIMEOUT_MS,
+  INTAKE_TIMEOUT_MS,
   REQUIRED_ENV_VARS,
   WEBHOOK_EVENT_TIMEOUT_MS,
   assertEnv,
@@ -275,32 +276,42 @@ describe("timeout constants are pinned", () => {
     expect(WEBHOOK_EVENT_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
     expect(WEBHOOK_EVENT_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
   });
-  // Round-3 fix #3: INTAKE_TIMEOUT_MS pin removed — the smoke no
-  // longer polls for an ingestion_intake row (source-webhook.scan()
-  // is a no-op so the Scanner never inserts one for this binding).
-  // The runbook §4 covers the full-chain verification against a real
-  // adapter (Asana / Drive) whose scan() does produce documents.
+  // PR-N2: INTAKE_TIMEOUT_MS is back. The receiver's direct-intake
+  // branch (fired when the bound adapter exposes `enrichEvents` AND
+  // the orchestrator wired `scannerClassifyQueue` — the smoke uses
+  // `source-webhook` which does both) writes the intake row inline
+  // before returning 200, so the practical floor is sub-second.
+  // Same generous CI cap as the webhook-event poll.
+  it("INTAKE_TIMEOUT_MS is at least 5s", () => {
+    expect(INTAKE_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
+    expect(INTAKE_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
+  });
 });
 
-describe("smoke scope is webhook-receiver layer (round-3 fix #3)", () => {
-  // Source-grep pin. The smoke MUST NOT poll for an ingestion_intake
-  // row — `source-webhook.scan()` is a no-op
-  // (packages/adapters/source-webhook/src/adapter.ts:263-268), so the
-  // Scanner pipeline never produces one for this binding. An earlier
-  // draft did poll for it and would always time out; round-3 caught
-  // the architectural mismatch. The full webhook → intake → compile
-  // → wiki chain requires an adapter whose scan() does produce
-  // documents (Asana, Drive); that path is covered by the runbook
-  // §4 manual walk against a real Asana binding, not by this script.
+describe("smoke scope is webhook → intake → classify-enqueue (PR-N2 re-expansion)", () => {
+  // PR-N2 re-expanded the smoke's scope. With the receiver's
+  // direct-intake branch (`packages/engine-ingestion/src/intake/
+  // webhook-receiver.ts`), the generic source-webhook adapter's
+  // `enrichEvents` impl flips the receiver into the path that
+  // INSERTs `ingestion_intake` rows inline + enqueues
+  // `ingestion.scanner.classify` jobs — closing the source-webhook
+  // chain that round-3 had to step around when source-webhook still
+  // only had a no-op `scan()`. The smoke now polls for the intake
+  // row to confirm the chain is actually live in production.
+  //
+  // The full chain past the intake row (compile → wiki write) still
+  // depends on the rest of the production composition working; the
+  // runbook §4 manual walk against an Asana binding remains the
+  // canonical end-to-end verification.
 
-  it("does NOT poll for an ingestion_intake row", () => {
-    expect(SCRIPT_SOURCE).not.toMatch(/awaitIntakeRow/);
-    expect(SCRIPT_SOURCE).not.toMatch(/SELECT.*FROM\s+ingestion_intake/i);
-    expect(SCRIPT_SOURCE).not.toMatch(/INTAKE_TIMEOUT_MS/);
+  it("polls for an ingestion_intake row via awaitIntakeRow", () => {
+    expect(SCRIPT_SOURCE).toMatch(/awaitIntakeRow/);
+    expect(SCRIPT_SOURCE).toMatch(/FROM\s+ingestion_intake/i);
+    expect(SCRIPT_SOURCE).toMatch(/INTAKE_TIMEOUT_MS/);
   });
 
-  it("documents the scope narrowing in the help text", () => {
-    expect(SCRIPT_SOURCE).toMatch(/webhook-receiver layer only/);
+  it("documents the expanded scope in the help text", () => {
+    expect(SCRIPT_SOURCE).toMatch(/webhook.*intake.*classify/i);
     expect(SCRIPT_SOURCE).toMatch(/runbook.*§4/);
   });
 });

@@ -58,7 +58,7 @@ All LLM calls route through `packages/shared/llm-router/`. An ESLint boundary ru
 Eight BullMQ workers:
 
 1. **Scanner** (every 4h) — discover new/changed source docs, dedupe, queue.
-2. **Webhook receiver** — HMAC-verified, rate-limited, payload-capped; transport-only.
+2. **Webhook receiver** — HMAC-verified, rate-limited, payload-capped. For polling adapters, transport-only: persists `webhook_events` and hands off to Scanner. For webhook-native adapters that expose `webhook.enrichEvents` (PR-N2), additionally takes the **direct-intake fast path** — inserts `ingestion_intake` rows itself + enqueues `ingestion.scanner.classify` jobs inline. See §7 (Adapter boundaries — webhook-native vs polling adapters) for the contract.
 3. **Classifier** — Worker tier; structured-output-only (Zod-validated); path-allow-list validation rejects cross-domain writes silently to DLQ.
 4. **Compiler** — Thinker tier; per-domain LLM policy; atomic `wikiWrite` per run; populates frontmatter provenance (`schema_version`, `prompt_version`, `compiled_at`, `compiled_by_run_id`) and `page_citations` rows.
 5. **Index rebuilder** (every 6h) — keeps `index.md` current per domain.
@@ -92,6 +92,13 @@ Six adapter interfaces. A new integration = one package implementing one interfa
 | `DocumentConverterAdapter` | Source bytes → clean Markdown; per-domain sovereignty gating | Docling sidecar (default) |
 
 `packages/adapters/source-drive/` is the reference `SourceAdapter` to model new ones after. Every adapter passes a shared contract-test suite (`packages/shared/adapter-contract-tests/*`).
+
+**Webhook-native vs polling adapters (PR-N2 / phase-a appendix #6).** The `SourceAdapter` port supports two ingestion shapes that meet at the same `ingestion_intake` table:
+
+- **Polling adapters** (`source-drive`) implement `scan(args)` and return changed documents on every cron tick. The Scanner pipeline (every 4h) is the producer; it inserts intake rows + enqueues `ingestion.scanner.classify` jobs.
+- **Webhook-native adapters** (`source-webhook`, `source-asana`) implement `webhook` helpers (`verifier`, `extractSignature`, `parseEvents`, optionally `handshakeFn` and **`enrichEvents`**) and a no-op `scan()`. When the adapter exposes `enrichEvents`, the engine-ingestion webhook receiver takes the **direct-intake fast path**: it inserts `ingestion_intake` rows itself + enqueues full `ScannerClassifyJob` payloads on `ingestion.scanner.classify` inline, without waiting for the periodic Scanner cron (whose `scan()` is a no-op for these adapters anyway). When `enrichEvents` is absent, the receiver falls back to the legacy per-event `intake.scanner` enqueue.
+
+Both paths converge on the same downstream Compile worker via the same `ingestion.scanner.classify` queue + the same `ingestion_intake` table. Adapters choose their shape based on the upstream system's API: polling fits change-feed APIs (Drive's Changes resource); webhook fits push-only APIs (Asana, Fireflies). Periodic `scan()` remains the canonical path for snapshot adapters; `enrichEvents` is the canonical path for webhook-native adapters.
 
 ## 8. Intended stack
 

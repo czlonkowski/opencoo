@@ -1,25 +1,33 @@
 #!/usr/bin/env node
 /**
- * scripts/smoke-real-data.ts (PR-M3, phase-a appendix #5).
+ * scripts/smoke-real-data.ts (PR-M3, phase-a appendix #5;
+ * scope re-expanded by PR-N2, phase-a appendix #6).
  *
  * Operator-grade probe — confirms the deployment is alive at the
- * webhook-receiver layer: the management UI's `/health` answers, an
- * HMAC-signed webhook delivery is accepted, the row lands in
- * `webhook_events`, and the script tears down its own scaffolding
- * before exit. **The smoke does NOT verify the full ingestion pipeline**
- * — `source-webhook.scan()` is a no-op by design
- * (`packages/adapters/source-webhook/src/adapter.ts:263-268`), so the
- * Scanner pipeline never produces an `ingestion_intake` row from a
- * webhook event for this adapter. Verifying the full webhook → intake
- * → compile → wiki chain requires an adapter whose `scan()` produces
- * documents (Asana, Drive); the runbook §4 walks that path against a
- * real binding.
+ * webhook → intake → classify-enqueue layer: the management UI's
+ * `/health` answers, an HMAC-signed webhook delivery is accepted,
+ * a `webhook_events` row lands inline, AND the receiver's
+ * direct-intake branch (PR-N2) writes an `ingestion_intake` row
+ * before returning 200. The script tears down its own scaffolding
+ * before exit.
  *
- * Round-3 fix #3: an earlier draft of this script polled for an
- * `ingestion_intake` row after posting the webhook and would
- * always time out for the reason above. Scope narrowed to
- * "webhook delivery → DB persistence" only; the full-chain verification
- * is the runbook walk against Asana, not this script.
+ * What still defers to the runbook §4 manual walk: the full chain
+ * past the intake row (compile → wiki write) depends on the rest
+ * of the production composition working — Compile worker, LLM
+ * router, GuardAdapter, WikiAdapter — and is best verified end-to-
+ * end against a real Asana / Drive binding.
+ *
+ * # PR-N2 scope re-expansion (vs PR-M3)
+ *
+ * PR-M3 deliberately dropped the intake-row poll because
+ * source-webhook's `scan()` is a no-op and the periodic Scanner
+ * never produced intake rows from a webhook event. PR-N2 closes
+ * that gap on the receiver side: when the bound adapter exposes
+ * `webhook.enrichEvents` (source-webhook does, since PR-N2) AND
+ * the orchestrator wired `scannerClassifyQueue` (it does, since
+ * PR-N2), the receiver inserts the intake row itself and enqueues
+ * the per-document classify job inline. The smoke now polls for
+ * that intake row to confirm the chain is live in production.
  *
  * The script is deliberately minimal — it talks SQL via `pg` and HTTP
  * via the global `fetch`. No new top-level deps. No engine imports
@@ -97,6 +105,12 @@ export const HEALTH_TIMEOUT_MS = 30_000;
  *  failure mode while removing the false-positive on slow first
  *  acquires. */
 export const WEBHOOK_EVENT_TIMEOUT_MS = 10_000;
+/** How long we'll wait for the ingestion_intake row to land
+ *  (PR-N2 re-expansion). The receiver's direct-intake branch
+ *  writes the row inline before returning 200, so the practical
+ *  floor is also sub-second; same generous CI cap as the
+ *  webhook_events poll. */
+export const INTAKE_TIMEOUT_MS = 10_000;
 
 export interface ParsedArgs {
   readonly help: boolean;
@@ -207,22 +221,29 @@ Usage:
 Required env (read from .env / shell, identical to \`pnpm opencoo\`):
   DATABASE_URL, REDIS_URL, ENCRYPTION_KEY, GITEA_URL, GITEA_PAT
 
-What it does (webhook-receiver layer only):
+What it does (webhook delivery → Postgres-row verification):
   1. Asserts the env above is set.
   2. Polls http://localhost:<port>/health (default 8080) for ${HEALTH_TIMEOUT_MS / 1000}s.
   3. Provisions a transient test domain + a generic-webhook source binding.
   4. Posts a fixture HMAC-signed event to /webhooks/<binding-id>.
-  5. Confirms the row landed in webhook_events.
-  6. Tears down the test scaffolding and exits 0.
+  5. Confirms the row landed in webhook_events (Postgres poll).
+  6. Confirms an ingestion_intake row landed (Postgres poll). The PR-N2
+     direct-intake branch fires when the bound adapter exposes
+     enrichEvents — source-webhook does, since PR-N2.
+  7. Tears down the test scaffolding and exits 0.
 
 Scope:
-  This probe verifies the HTTP receiver + HMAC verify + DB persistence
-  path. It does NOT verify the full webhook → intake → compile → wiki
-  chain, because the generic source-webhook adapter's scan() is a no-op
-  by design — Scanner only enqueues documents it can fetch, and webhook
-  adapters push events without a scannable source. To verify the full
-  chain end-to-end, bind a real Asana / Drive source and follow the
-  manual walk in docs/pilot-runbook.md §4.
+  Steps 5–6 verify webhook delivery → \`webhook_events\` row →
+  \`ingestion_intake\` row via Postgres polling. The probe does NOT
+  inspect Redis / BullMQ — the \`ingestion.scanner.classify\` job is
+  enqueued by the same code path that writes the intake row, but
+  this script does not poll the queue itself; that's a separate
+  Redis check. The probe also does NOT verify compile → wiki write
+  (depends on the Compile worker, LLM router, GuardAdapter, and
+  WikiAdapter all being composed and reachable). To verify the full
+  chain end-to-end through compile → wiki write, bind a real Asana /
+  Drive source and follow the manual walk in
+  docs/pilot-runbook.md §4.
 
 Exit codes:
   0  every step green
@@ -430,6 +451,37 @@ async function awaitWebhookEvent(
   ctx.stdout.write(`smoke: webhook_events row landed\n`);
 }
 
+async function awaitIntakeRow(
+  pool: pg.Pool,
+  scaffold: Scaffolding,
+  ctx: ProbeContext,
+): Promise<void> {
+  // PR-N2: the receiver's direct-intake branch (fires when the
+  // bound adapter exposes `webhook.enrichEvents` AND the
+  // orchestrator wired `scannerClassifyQueue`) writes the
+  // `ingestion_intake` row inline before returning 200.
+  // source-webhook satisfies both prerequisites since PR-N2, so a
+  // fresh smoke binding produces a row visible immediately.
+  await pollUntil(
+    async () => {
+      const { rows } = await pool.query<{ id: string }>(
+        `SELECT id FROM ingestion_intake
+         WHERE binding_id = $1
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [scaffold.bindingId],
+      );
+      return rows[0] ?? null;
+    },
+    {
+      timeoutMs: INTAKE_TIMEOUT_MS,
+      intervalMs: 250,
+      label: "ingestion_intake row",
+    },
+  );
+  ctx.stdout.write(`smoke: ingestion_intake row landed\n`);
+}
+
 async function teardown(
   pool: pg.Pool,
   scaffold: Scaffolding,
@@ -454,11 +506,13 @@ async function teardown(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    // Round-3 fix #3: no ingestion_intake DELETE — source-webhook's
-    // scan() is a no-op so the Scanner never inserts intake rows for
-    // this binding. Defensive DELETE retained as a safety net in case
-    // a future operator binds the smoke fixture to an adapter that
-    // does scan; cost is one trivial WHERE-no-rows query.
+    // PR-N2: ingestion_intake DELETE is now load-bearing — the
+    // receiver's direct-intake branch (fired when the bound adapter
+    // exposes `webhook.enrichEvents`) writes one intake row per
+    // delivery for this binding. Without this DELETE, the smoke
+    // would leak rows on every run. The order matters: intake rows
+    // FK to sources_bindings, so this must precede the bindings
+    // DELETE below.
     await client.query("DELETE FROM ingestion_intake WHERE binding_id = $1", [
       scaffold.bindingId,
     ]);
@@ -544,7 +598,10 @@ export async function run(args: RunArgs): Promise<number> {
     scaffold = await provisionScaffolding(pool, ctx);
     await postFixtureWebhook(scaffold, ctx);
     await awaitWebhookEvent(pool, scaffold, ctx);
-    args.stdout.write(`smoke: green (webhook-receiver layer)\n`);
+    await awaitIntakeRow(pool, scaffold, ctx);
+    args.stdout.write(
+      `smoke: green (webhook → intake → classify-enqueue chain)\n`,
+    );
     return 0;
   } catch (err) {
     args.stderr.write(`smoke: ${(err as Error).message}\n`);

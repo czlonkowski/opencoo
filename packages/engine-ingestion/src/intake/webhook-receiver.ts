@@ -33,6 +33,12 @@
  *      row. NO scanner enqueue.
  *   7. On signature ok + fresh insert: 200 + scanner enqueue.
  *
+ *   PR-N2 step 7 has three branches in priority order — direct
+ *   intake (adapter has `enrichEvents` AND
+ *   `scannerClassifyQueue` is wired), per-event legacy enqueue,
+ *   and the pre-PR-G binding-level fallback. See the inline
+ *   comment at the call site for the full state machine.
+ *
  * Body size cap: 5MB (Q13). Request bodies above the cap get a
  * 413 from Fastify before the handler ever runs.
  *
@@ -47,6 +53,7 @@ import { eq } from "drizzle-orm";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 
 import {
+  domains,
   sourcesBindings,
 } from "@opencoo/shared/db/schema";
 import type { CredentialStore } from "@opencoo/shared/credential-store";
@@ -58,6 +65,8 @@ import type { WebhookVerifier } from "@opencoo/shared/webhook-verifier";
 
 import type { SourceAdapterStub } from "./adapter-registry.js";
 import { recordWebhook } from "./record-webhook.js";
+import { upsertIntake } from "./upsert-intake.js";
+import type { ScannerClassifyJob } from "../pipelines/scanner.js";
 
 export const WEBHOOK_BODY_LIMIT_BYTES = 5 * 1024 * 1024; // 5 MB
 
@@ -87,6 +96,25 @@ export interface WebhookReceiverOptions {
   readonly verifier: WebhookVerifier;
   readonly scannerQueue: WebhookQueueLike;
   readonly dlqQueue: WebhookQueueLike;
+  /**
+   * (PR-N2, phase-a appendix #6) Producer-side BullMQ Queue handle
+   * for `ingestion.scanner.classify` — the SAME queue the Scanner
+   * pipeline enqueues onto for periodic-scan documents. When this
+   * is wired AND the resolved adapter exposes
+   * `webhook.enrichEvents`, the receiver takes the **direct-intake
+   * fast path**: it inserts `ingestion_intake` rows itself + enqueues
+   * full `ScannerClassifyJob` payloads inline, eliminating the
+   * pre-PR-N2 stall where webhook-native bindings (asana, generic
+   * webhook) wrote `webhook_events` rows that the periodic
+   * `adapter.scan()` cron never picked up because their `scan()` is
+   * a no-op by design.
+   *
+   * Optional for backward compatibility — when undefined OR when
+   * the adapter has no `enrichEvents`, the receiver falls back to
+   * the legacy `intake.scanner` enqueue path (binding-level marker
+   * job, scanner cron picks it up on the next tick).
+   */
+  readonly scannerClassifyQueue?: WebhookQueueLike;
   /** Enables Fastify's built-in request logger when true. Only
    *  consulted by `buildWebhookReceiver` (which constructs its own
    *  Fastify app); ignored by `registerWebhookRoute` (which
@@ -102,6 +130,14 @@ interface BindingRow {
   readonly adapterSlug: string;
   readonly credentialsId: string | null;
   readonly webhookSecretCredentialsId: string | null;
+  /** Domain slug joined in via `domains.slug` — needed only by the
+   *  PR-N2 direct-intake branch (the legacy `intake.scanner` job
+   *  carries only the bindingId; the new
+   *  `ingestion.scanner.classify` job needs the domainSlug because
+   *  the Compilation Worker uses it to resolve per-domain LLM
+   *  policy + wiki repo). Always populated — every
+   *  `sources_bindings` row has a non-null `domain_id` FK. */
+  readonly domainSlug: string;
 }
 
 /**
@@ -184,14 +220,23 @@ export function registerWebhookRoute(
     const { bindingId } = req.params;
 
     // Step 1: resolve the binding.
+    // PR-N2 join: pulls domains.slug in the same SELECT so the
+    // direct-intake branch doesn't need a second round-trip. The
+    // periodic Scanner pipeline does the same JOIN
+    // (`pipelines/scanner.ts:runScanner`) — keeping the receiver
+    // and scanner symmetric means the operator-visible
+    // domainSlug on a `ingestion.scanner.classify` job is the same
+    // string regardless of which producer enqueued it.
     const bindingRows = await options.db
       .select({
         id: sourcesBindings.id,
         adapterSlug: sourcesBindings.adapterSlug,
         credentialsId: sourcesBindings.credentialsId,
         webhookSecretCredentialsId: sourcesBindings.webhookSecretCredentialsId,
+        domainSlug: domains.slug,
       })
       .from(sourcesBindings)
+      .innerJoin(domains, eq(sourcesBindings.domainId, domains.id))
       .where(eq(sourcesBindings.id, bindingId))
       .limit(1);
     const binding: BindingRow | undefined = bindingRows[0];
@@ -373,18 +418,112 @@ export function registerWebhookRoute(
     }
 
     // Step 7: ok-path.
-    // (PR-G) If the adapter exposes parseEvents, unpack the raw body
-    // into individual SourceWebhookEvents, then optionally enrich them
-    // via enrichEvents?. Each resulting event gets its own scanner job.
-    // Backward-compat: when webhook helpers are absent, fall back to
-    // the pre-PR-G single-job enqueue path.
+    //
+    // Three branches, in priority order:
+    //
+    //   A. (PR-N2) Direct-intake fast path — the adapter exposes
+    //      `webhook.enrichEvents` AND the caller wired a
+    //      `scannerClassifyQueue`. The receiver inserts
+    //      `ingestion_intake` rows itself + enqueues full
+    //      `ScannerClassifyJob` payloads on
+    //      `ingestion.scanner.classify` inline. Closes the
+    //      source-webhook chain — pre-PR-N2, webhook-native
+    //      bindings stalled at `webhook_events` because their
+    //      `scan()` is a no-op.
+    //
+    //   B. (PR-G) Per-event legacy enqueue — adapter has
+    //      `parseEvents` (and optionally `enrichEvents`) but no
+    //      `scannerClassifyQueue` was supplied. One
+    //      `intake.scanner` job per parsed event. Same shape as
+    //      pre-PR-N2 receivers; documented here so callers that
+    //      haven't yet wired the new option don't crash.
+    //
+    //   C. (Pre-PR-G) Binding-level fallback — adapter doesn't
+    //      expose `parseEvents`. One `intake.scanner` marker job
+    //      per delivery; the scanner pipeline takes it from there.
     if (writeResult.created || writeResult.firstValidDelivery) {
-      if (hasWebhookHelpers(adapterStub)) {
-        const parsedEvents = adapterStub.webhook.parseEvents({ body: rawBody });
+      const directIntakeAvailable =
+        hasWebhookHelpers(adapterStub) &&
+        adapterStub.webhook.enrichEvents !== undefined &&
+        options.scannerClassifyQueue !== undefined;
 
-        // (PR-G) enrichEvents hook — called after parseEvents, before
-        // any scanner enqueues. Returns the (possibly augmented) event
-        // array. When undefined, behavior is identical to pre-PR-G.
+      if (directIntakeAvailable) {
+        // Branch A — direct intake. Wrap in try/catch so a
+        // malformed enrichment payload OR a transient pg blip on
+        // the upsertIntake call doesn't crash the receiver — we
+        // already accepted (and persisted) the webhook delivery
+        // via recordWebhook, returning 500 here would tell the
+        // upstream to retry which would just dedupe at the webhook
+        // layer and not reach the intake layer.
+        // THREAT-MODEL §3.6 invariant 11: scrub + cap the error
+        // message before logging — defense in depth (the upsert
+        // SQL error wouldn't carry credential bytes, but the
+        // adapter's enrichEvents could surface upstream-API
+        // errors with bearer tokens in the stack — same handling
+        // shape as production-context.ts:safeError).
+        const ERROR_MESSAGE_MAX_LENGTH = 200;
+        try {
+          const parsedEvents = adapterStub.webhook.parseEvents({ body: rawBody });
+          const events = await adapterStub.webhook.enrichEvents!(parsedEvents);
+
+          for (const event of events) {
+            // Idempotency: same `(binding, source_doc_id,
+            // source_revision)` returns null and we skip the
+            // enqueue. This makes the receiver's direct-intake
+            // branch replay-safe even when the upstream sends
+            // two logically-distinct events that happen to
+            // dedupe at the intake layer (e.g. an enrichEvents
+            // impl that appends a snapshot whose revision
+            // matches a prior snapshot for the same project).
+            const intakeId = await upsertIntake(
+              options.db,
+              bindingId,
+              event.doc,
+            );
+            if (intakeId === null) continue;
+            const job: ScannerClassifyJob = {
+              bindingId,
+              intakeId,
+              domainSlug: binding.domainSlug,
+              sourceRef: event.doc.sourceRef,
+              contentBase64: event.doc.contentBytes.toString("base64"),
+              fetchedAt: event.doc.fetchedAt.toISOString(),
+            };
+            await options.scannerClassifyQueue!.add("classify", job);
+          }
+        } catch (err) {
+          const safeReason = scrubPat(
+            err instanceof Error ? err.message : String(err),
+          ).slice(0, ERROR_MESSAGE_MAX_LENGTH);
+          // Round-2 fix (S2, code-reviewer triage): this is a
+          // data-loss event — signature was valid, webhook_events
+          // row written with signature_ok=true, upstream got 200
+          // (and so will not retry per HTTP webhook convention),
+          // and we then lost the document. Operators want this on
+          // the standard error-rate alert path, not buried with
+          // routine warns. The DLQ enqueue below is what gives
+          // operators a recovery handle; the `error` log line is
+          // what pages them to look.
+          options.appLogger?.error("webhook_receiver.direct_intake_failed", {
+            bindingId,
+            provider: provider ?? binding.adapterSlug,
+            eventId: eventId ?? null,
+            errorReason: safeReason,
+          });
+          await options.dlqQueue.add("intake.dlq", {
+            webhookId: writeResult.webhookId,
+            bindingId,
+            provider,
+            eventId,
+            reason: `direct-intake failed: ${safeReason}`,
+          });
+          // Still return 200 — recordWebhook already wrote the
+          // signature_ok=true row; the upstream provider should
+          // not retry. Operator triage via the DLQ.
+        }
+      } else if (hasWebhookHelpers(adapterStub)) {
+        // Branch B — per-event legacy enqueue.
+        const parsedEvents = adapterStub.webhook.parseEvents({ body: rawBody });
         const events =
           adapterStub.webhook.enrichEvents !== undefined
             ? await adapterStub.webhook.enrichEvents(parsedEvents)
@@ -402,8 +541,7 @@ export function registerWebhookRoute(
           });
         }
       } else {
-        // Pre-PR-G path: no parseEvents — enqueue a single binding-level
-        // scanner job. The scanner pipeline fetches all pending events.
+        // Branch C — pre-PR-G binding-level fallback.
         await options.scannerQueue.add("intake.scanner", {
           webhookId: writeResult.webhookId,
           bindingId,

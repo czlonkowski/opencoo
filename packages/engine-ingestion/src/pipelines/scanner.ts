@@ -27,16 +27,13 @@
  * is a v0.2 concern.
  */
 
-import { createHash } from "node:crypto";
-
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 import type { Logger } from "@opencoo/shared/logger";
-import type {
-  SourceAdapter,
-  SourceChangedDocument,
-} from "@opencoo/shared/source-adapter";
+import type { SourceAdapter } from "@opencoo/shared/source-adapter";
+
+import { upsertIntake } from "../intake/upsert-intake.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
@@ -241,25 +238,10 @@ export async function runScanner(args: RunScannerArgs): Promise<ScannerResult> {
   };
 }
 
-/**
- * Insert into ingestion_intake. Returns the new row's id, or
- * `null` when the (binding_id, source_doc_id, source_revision)
- * UNIQUE constraint already matches an existing row (dedupe).
- */
-async function upsertIntake(
-  db: Db,
-  bindingId: string,
-  doc: SourceChangedDocument,
-): Promise<string | null> {
-  const contentHash = createHash("sha256")
-    .update(doc.contentBytes)
-    .digest("hex");
-  const result = (await db.execute(sql`
-    INSERT INTO ingestion_intake (binding_id, source_doc_id, source_revision, content_hash)
-    VALUES (${bindingId}::uuid, ${doc.sourceDocId}, ${doc.sourceRevision}, ${contentHash})
-    ON CONFLICT (binding_id, source_doc_id, source_revision) DO NOTHING
-    RETURNING id::text AS id
-  `)) as unknown as ExecResult<{ id: string }>;
-  if (result.rows.length === 0) return null;
-  return result.rows[0]?.id ?? null;
-}
+// Re-export the shared upsert helper under the historical name so any
+// existing import path (`@opencoo/engine-ingestion/.../pipelines/scanner`
+// or sibling-package consumers via the package barrel) keeps resolving.
+// PR-N2 extracted the implementation to `intake/upsert-intake.ts` so the
+// webhook receiver's direct-intake branch can call the same code path
+// without dragging in the rest of the scanner pipeline module.
+export { upsertIntake };

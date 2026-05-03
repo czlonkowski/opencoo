@@ -228,6 +228,7 @@ export function buildWebhookHelpers(
   opts: BuildWebhookHelpersOptions,
 ): SourceWebhookHelpers {
   const verifier: WebhookVerifier = new HmacSha256Verifier();
+  const defaultKind: ContentKind = opts.defaultContentKind ?? "document";
 
   return {
     verifier,
@@ -240,6 +241,77 @@ export function buildWebhookHelpers(
       readonly fetchedAt?: Date;
     }): readonly SourceWebhookEvent[] {
       return parseWebhookBody(body, opts, fetchedAt ?? new Date());
+    },
+    /**
+     * (PR-N2, phase-a appendix #6) Re-resolve `metadata.contentKind`
+     * for every event by re-running the per-binding `contentKindMap`
+     * jsonpath rules against each event's body. Idempotent — for
+     * events emitted by this adapter's own `parseEvents`, the kind
+     * is already set, and re-resolution returns the same value.
+     *
+     * Why is this an explicit hook instead of "just leave parseEvents
+     * to do it"? The engine-ingestion webhook receiver uses
+     * `adapter.webhook.enrichEvents !== undefined` as the load-bearing
+     * flag that flips its **direct-intake fast path** on (rather than
+     * the legacy `intake.scanner` enqueue). Webhook-native adapters
+     * with `enrichEvents` produce `ingestion_intake` rows directly via
+     * the receiver; periodic `scan()` remains the canonical path for
+     * snapshot adapters (Drive, etc.) per `docs/ARCHITECTURE.md` §7
+     * (Adapter boundaries — webhook-native vs polling adapters).
+     *
+     * Defense in depth: a future caller that hand-builds a
+     * `SourceWebhookEvent` from outside `parseEvents` would skip the
+     * jsonpath resolution. enrichEvents catches those by re-deriving
+     * the kind from `event.doc.contentBytes`.
+     *
+     * Round-3 (Copilot #3): on `JSON.parse` failure, the event is
+     * preserved with the existing/defaulted `metadata.contentKind`
+     * rather than dropped — graceful degradation is the v0.1
+     * choice. The receiver still ingests the bytes; the Compiler
+     * decides what to do with an unrecognized content kind via its
+     * existing `'document'`-fallback path. (Adapter-emitted events
+     * never hit this branch — `parseEvents` rejects malformed
+     * bodies upstream with `ValidationError`.)
+     */
+    async enrichEvents(
+      events: readonly SourceWebhookEvent[],
+    ): Promise<readonly SourceWebhookEvent[]> {
+      return events.map((event) => {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(event.doc.contentBytes.toString("utf8"));
+        } catch {
+          // Malformed body — leave existing metadata.contentKind in
+          // place (parseEvents would have already rejected this body
+          // for adapter-emitted events; defense in depth for
+          // hand-built events). Fall back to the default.
+          return {
+            ...event,
+            doc: {
+              ...event.doc,
+              metadata: {
+                ...event.doc.metadata,
+                contentKind: event.doc.metadata?.["contentKind"] ?? defaultKind,
+              },
+            },
+          };
+        }
+        const contentKind = resolveContentKind(
+          payload,
+          opts.contentKindMap,
+          defaultKind,
+        );
+        return {
+          ...event,
+          doc: {
+            ...event.doc,
+            metadata: {
+              ...event.doc.metadata,
+              contentKind,
+            },
+          },
+        };
+      });
     },
   };
 }
