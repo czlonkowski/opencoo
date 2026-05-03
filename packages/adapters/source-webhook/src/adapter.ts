@@ -256,15 +256,22 @@ export function buildWebhookHelpers(
      * the legacy `intake.scanner` enqueue). Webhook-native adapters
      * with `enrichEvents` produce `ingestion_intake` rows directly via
      * the receiver; periodic `scan()` remains the canonical path for
-     * snapshot adapters (Drive, etc.) per `docs/ARCHITECTURE.md` §10.
+     * snapshot adapters (Drive, etc.) per `docs/ARCHITECTURE.md` §7
+     * (Adapter boundaries — webhook-native vs polling adapters).
      *
      * Defense in depth: a future caller that hand-builds a
      * `SourceWebhookEvent` from outside `parseEvents` would skip the
      * jsonpath resolution. enrichEvents catches those by re-deriving
-     * the kind from `event.doc.contentBytes`. The contentBytes shape
-     * (one event = one whole JSON body) is part of the adapter's
-     * contract; a malformed body causes the receiver to drop the
-     * event with no intake row written (fail-closed).
+     * the kind from `event.doc.contentBytes`.
+     *
+     * Round-3 (Copilot #3): on `JSON.parse` failure, the event is
+     * preserved with the existing/defaulted `metadata.contentKind`
+     * rather than dropped — graceful degradation is the v0.1
+     * choice. The receiver still ingests the bytes; the Compiler
+     * decides what to do with an unrecognized content kind via its
+     * existing `'document'`-fallback path. (Adapter-emitted events
+     * never hit this branch — `parseEvents` rejects malformed
+     * bodies upstream with `ValidationError`.)
      */
     async enrichEvents(
       events: readonly SourceWebhookEvent[],
