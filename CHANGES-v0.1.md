@@ -446,7 +446,55 @@ Two new infrastructure env vars (`N8N_MCP_BASE_URL`, `N8N_MCP_BEARER_TOKEN`), al
 
 - **Surfacer's category-level slugs are a soft semantic regression vs the per-template ideal.** n8n-mcp's `patterns` mode returns ~10 categories rather than the 2,700 individual templates. Surfacer proposes per-category candidates (e.g. `template_slug: "ai_automation"`); Builder rounds-trips them as workflow display labels (`opencoo-${templateSlug}`). Operator-facing semantics: less specific than the per-template ideal. v0.2 follow-up: cut over to a per-template `keyword` or `slugs` mode if/when n8n-mcp ships one; the defensive `items[].slug` / `slugs[]` parsing in `parseSlugs` is forward-compatible.
 - **Duplicate `pg.Pool` + `LlmRouter` per process.** Carried over from appendix #6 — the agent-runner bundle and the ingestion composition each open their own. Both close paths are wired so neither leaks on SIGTERM, but it's wasteful. Refactor to shared instances is a follow-up.
-- **Post-merge regression caught at appendix #7 close**: PR-O2 was branched before PR-O3 made `tryComposeAgentRunnersBundleFromEnv` async; the missing `await` only surfaced on `main` after both merged in sequence. One-line fix at `agents-fire.ts:191` (commit `153a198`); typecheck + 2192 root tests now pass. CI gap noted: per-PR builds pass when only one branch changes a function signature; the conflict surfaces only on the merge commit. Follow-up worth considering: a post-merge build hook (mentioned in the appendix #6 close) that runs `pnpm install && pnpm build` automatically.
+- **Post-merge regression caught at appendix #7 close**: PR-O2 was branched before PR-O3 made `tryComposeAgentRunnersBundleFromEnv` async; the missing `await` only surfaced on `main` after both merged in sequence. One-line fix at `agents-fire.ts:191` (commit `153a198`); typecheck + 2192 root tests now pass. CI gap noted: per-PR builds pass when only one branch changes a function signature; the conflict surfaces only on the merge commit. Follow-up worth considering: a post-merge build hook (mentioned in the appendix #6 close) that runs `pnpm install && pnpm build` automatically. **(Closed by appendix #8 PR-P2 — Husky-driven post-merge install+build hook now runs automatically; bypass via `HUSKY=0` or `GIT_NO_VERIFY=1`.)**
+
+---
+
+## Appendix #8 (PR-P1, PR-P2, PR-P3) — Tag-readiness sweep
+
+Three PRs landed AFTER appendix #7 to close the maintainer-side `0.1.0-a` exit-gate item AND eliminate two recurring footguns. None of these add new product surface; all are low-risk during partner cutover testing. After appendix #8: engineering-side work for `0.1.0-a` is complete.
+
+### Added
+
+#### THREAT-MODEL §5 pre-flight sign-off doc + helper script (PR-P1, `11dbda4` / #64)
+
+- **Closes one of two open `0.1.0-a` exit-gate items.** Maintainer's tag-time §5 review drops from a half-day re-read to ~10 min — review + sign the pre-filled doc.
+- New `scripts/threat-model-preflight.sh` runs the 5 automatable §5 checks (lint output, `pnpm test:injection` corpus per §4.2, `process.env.X` grep against production code, new `credentialSchema` exports since base, new internet-facing routes since base). Emits paste-ready markdown fragment. Registered as `pnpm threat-model:preflight`. New `--shape-only` flag for the test seam (28ms vs ~35s without).
+- New `docs/threat-model-signoff-0.1.0-a.md` is the versioned per-tag sign-off artifact. Header (closing commit + timestamp + maintainer placeholder) → 12-item §5 checklist (status / evidence / sign-off line per item) → §7 residual-risk delta section → closure block (GO / STOP / MORE-WORK). Pre-filled with helper-script output + `path:line` cites for the 8 maintainer-judgment items (items 2, 3, 4, 5, 6, 7, 8, 11 — the 4 that don't need maintainer eyes are 1, 9, 10, 12).
+- **§7 promotion decision documented**: appendix-#7 advisories (Surfacer category-as-slug regression, duplicate `pg.Pool`+`LlmRouter`) stay in `CHANGES-v0.1.md` Residual — flagged as not-security residuals (product semantics + operational efficiency, no unmitigated threat).
+- **Stale §7 entry #11 flagged for tag-time deletion**: "No hard LLM spend cap" was closed by PR 07's `llm_budget_monthly_cap_usd` with fail-closed enforcement.
+- Round-3 hardening: outer markdown fence switched to 4-backticks (CommonMark §4.5: opening fence sets delimiter length; inner 3-backtick fences in captured output now render as literal text); "four judgment items" copy aligned to "8" across 4 cross-references.
+
+#### Post-merge install + build hook via Husky (PR-P2, `3cc4d5d` / #62)
+
+- **Eliminates the merge-order regression class** hit twice in #6/#7 close. After `git pull` / `git merge` / `git checkout <branch>`, runs `pnpm install` if lockfile / `package.json` changed and ALWAYS runs `pnpm build` afterward.
+- Adds Husky as dev dep + `.husky/{post-merge,post-checkout}` driven by shared `_postmerge-impl.sh`. Detection via `git diff $ORIG_HEAD HEAD -- pnpm-lock.yaml '*/package.json' package.json`. Bypass via `HUSKY=0` or `GIT_NO_VERIFY=1`.
+- `docs/contributing.md` documents the hook + when it fires + bypass + scope (macOS / Linux / WSL supported; Windows native untested).
+- CI unchanged (`actions/checkout@v4` doesn't trigger `prepare`; CI's `pnpm install --frozen-lockfile` + `pnpm build` happen as separate steps already).
+- 12 use-case tests cover bypass envs, missing `ORIG_HEAD`, change detection, install + build failure paths, post-checkout file-mode short-circuit. Hermetic — uses fake-pnpm shim via per-test temp dir; no Docker, no real `pnpm` cache touched.
+- Round-2 fixes: ESM-canonical `__dirname` pattern (was Vitest-polyfilled-only); dropped unused `mkdirSync` import; corrected stale env-override comment.
+
+#### `safeErrorMessage` consolidation at `@opencoo/shared/scrub` (PR-P3, `56a5131` / #63)
+
+- **Single source of truth for the scrub-and-cap pattern** reviewers flagged across PR-N3 + PR-O2 + PR-O3. Pure refactor; no behavior change.
+- New `safeErrorMessage(err: unknown)` + `ERROR_MESSAGE_MAX_LENGTH = 200` exported from `@opencoo/shared/scrub`. Doc-comment names the contract precisely (cap value, scrub-then-cap order, Error/string/POJO coercion, the alternative cap-then-scrub failure mode + concrete 5-char-remnant example).
+- **Plan said 3 sites; investigation found 9** — 5 explicit `function safeError`, 1 local `safe(s: string)` with 7 call sites, 3 inline `scrubPat(...).slice(0, 200)`. All 9 had byte-identical semantics; all 9 migrated to satisfy the acceptance criterion that grep returns only the new shared helper.
+- Round-2 hardening (Copilot): `try/catch` around `String(err)` because hostile `toString()` / `[Symbol.toPrimitive]` can throw — fallback marker `[unstringifiable error value]` so failure-handling path stays alive (preserves the "never throws" contract). 2 new tests (`toString` throw + `Symbol.toPrimitive` throw paths).
+- Net production change: −73 LoC plus the new ~55-line helper and ~150-line / 15-test unit suite. The straddling-boundary test (a 36-char base64url credential STARTING at byte 195) locks in the order contract for future maintainers.
+
+### Schema
+
+None. Appendix #8 is tooling + docs + a pure refactor.
+
+### Configuration
+
+No new env vars. Husky reads `HUSKY` / `GIT_NO_VERIFY` (its own well-known bypass envs) plus `OPENCOO_PNPM_BIN` / `OPENCOO_POSTMERGE_TEST_CHANGED_FILES` / `OPENCOO_POSTMERGE_BUILD_LOG` (shell-script test seams; never read from TypeScript so the `no-feature-env-vars` ESLint rule doesn't apply).
+
+### Residual advisories (non-blocking, tracked for the appendix #8 follow-up issue)
+
+- **`vitest.config.ts` `poolMatchGlobs` workaround for the threat-model-preflight test** is now redundant after PR-P1's `--shape-only` flag (test runs in 28ms; no IPC congestion possible). Kept as defense-in-depth at zero cost; documented in the config comment. v0.2 cleanup: remove when migrating to vitest's `projects` config.
+- **Husky `core.hooksPath` writes to shared `.git/config`**, which in a worktree affects every worktree of the repo simultaneously. This matches the standard Husky pattern and was the existing setup before PR-P2; documented in `docs/contributing.md`. Not an issue today; flagged for the case where opencoo contributors with multiple long-running worktrees might want isolated hooks.
+- **Merge-order conflict pattern**: PR-P2 + PR-P1 both added scripts to root `package.json` at the same anchor; the merge surfaced as a conflict on PR-P1. Resolved by keeping both scripts (purely additive). Validates the scenario the PR-P2 hook is designed to catch in the post-merge direction; the pre-merge conflict surface is a different (smaller) class.
 
 ---
 
