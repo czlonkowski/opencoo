@@ -107,8 +107,10 @@ interface SlugRow {
  *  up its slug. Throws when scope is empty (the upstream
  *  agent body would also throw, but a clearer message here helps
  *  the operator pinpoint the misconfigured row). */
+type DrizzleDb = ReturnType<typeof drizzle>;
+
 async function resolveDomainSlug(
-  pool: Pool,
+  db: DrizzleDb,
   ctx: AgentRunContext,
   override: string | undefined,
 ): Promise<string> {
@@ -119,7 +121,6 @@ async function resolveDomainSlug(
       `agent-runners: instance ${ctx.instance.id} has empty scope_domain_ids — cannot resolve domain slug`,
     );
   }
-  const db = drizzle(pool);
   const result = (await db.execute(sql`
     SELECT slug FROM domains WHERE id = ${scope[0]}::uuid LIMIT 1
   `)) as unknown as { rows: SlugRow[] };
@@ -137,25 +138,30 @@ export function createProductionAgentRunners(
 ): AgentRunnerRegistry {
   // The runner closure shape is `(ctx) => Promise<unknown>`. We
   // dispatch to the underlying `run*` with `(ctx, args)` where
-  // args is the production-deps bundle. The cast through
-  // `unknown` is required because `RunHeartbeatArgs.db` is typed
-  // against drizzle's `PgDatabase` shape, but production wires a
-  // raw `pg.Pool` — drizzle wraps the pool internally inside the
-  // runner. Same dance the dispatcher does (see
-  // `engine-self-operating/src/start.ts:344-347`).
+  // args is the production-deps bundle. The runners' run*
+  // functions accept a Drizzle `PgDatabase` (calling
+  // `db.execute(sql\`...\`)`), so we wrap the raw `pg.Pool` once
+  // at registry-construction time and hand the wrapped db to
+  // every closure plus the slug resolver. Wrapping per dispatch
+  // (the prior pattern) was both wasteful and only covered the
+  // resolver path — the runner closures were still passing the
+  // raw pool, which threw `args.db.execute is not a function`
+  // on first dispatch (PR-Q2, phase-a appendix #9).
+  const drizzleDb: DrizzleDb = drizzle(deps.db);
+
   const heartbeat: AgentRunner = async (ctx: AgentRunContext) => {
-    const domainSlug = await resolveDomainSlug(deps.db, ctx, deps.domainSlug);
+    const domainSlug = await resolveDomainSlug(drizzleDb, ctx, deps.domainSlug);
     return runHeartbeat(ctx, {
-      db: deps.db,
+      db: drizzleDb,
       mcp: deps.mcp,
       domainSlug,
     } as unknown as Parameters<typeof runHeartbeat>[1]);
   };
 
   const lint: AgentRunner = async (ctx: AgentRunContext) => {
-    const domainSlug = await resolveDomainSlug(deps.db, ctx, deps.domainSlug);
+    const domainSlug = await resolveDomainSlug(drizzleDb, ctx, deps.domainSlug);
     return runLint(ctx, {
-      db: deps.db,
+      db: drizzleDb,
       mcp: deps.mcp,
       domainSlug,
       definitions: deps.definitions,
@@ -163,9 +169,9 @@ export function createProductionAgentRunners(
   };
 
   const surfacer: AgentRunner = async (ctx: AgentRunContext) => {
-    const domainSlug = await resolveDomainSlug(deps.db, ctx, deps.domainSlug);
+    const domainSlug = await resolveDomainSlug(drizzleDb, ctx, deps.domainSlug);
     return runSurfacer(ctx, {
-      db: deps.db,
+      db: drizzleDb,
       mcp: deps.mcp,
       domainSlug,
       availableTemplateSlugs: deps.availableTemplateSlugs,
