@@ -338,8 +338,30 @@ export function buildAsanaWebhookHelpers(
     if (cachedClient !== undefined) return cachedClient;
     if (factoryInvoked) return undefined;
     if (opts.makeAsanaClient !== undefined) {
+      // Fail-open: if `makeAsanaClient` throws (miswired
+      // composition, malformed PAT JSON, transient SDK boot error)
+      // we MUST NOT propagate the throw out of `enrichEvents` —
+      // the receiver's webhook hot-path treats enrich failures as
+      // "skip enrichment, continue with the bare event," not "kill
+      // the entire delivery." Mark the factory as invoked so the
+      // next dispatch doesn't retry the same broken closure
+      // (caching a `null` result), and log via the supplied logger
+      // so the operator still sees the misconfig. Copilot triage
+      // on PR-Q8.
       factoryInvoked = true;
-      cachedClient = opts.makeAsanaClient();
+      try {
+        cachedClient = opts.makeAsanaClient();
+      } catch (err) {
+        cachedClient = undefined;
+        // Mirror the existing soft-fail pattern in this file
+        // (line 401 / 470 / 670 — `console.warn` for snapshot-fetch
+        // failures). The receiver's webhook hot-path treats enrich
+        // failures as "skip enrichment, continue with the bare
+        // event," not "kill the entire delivery."
+        console.warn("source-asana: makeAsanaClient threw; enrich will skip", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       return cachedClient;
     }
     return undefined;

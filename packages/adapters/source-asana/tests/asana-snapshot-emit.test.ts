@@ -760,6 +760,69 @@ describe("makeAsanaClient — lazy injection (PR-Q8)", () => {
     expect(payload.incomplete_count).toBe(99);
     expect(make).not.toHaveBeenCalled();
   });
+
+  it("fails open when makeAsanaClient throws (Copilot triage)", async () => {
+    // The receiver's webhook hot-path treats enrich failures as
+    // "skip enrichment, continue with the bare event," not "kill
+    // the entire delivery." If `makeAsanaClient` throws (miswired
+    // composition, malformed PAT JSON, transient SDK boot error),
+    // `enrichEvents` MUST still produce the raw event and absorb
+    // the throw with a soft warn — otherwise a single bad binding
+    // takes down the whole ingestion path.
+    const { store, credentialId } = await seedCredential();
+    const projectGid = "proj-fail-open";
+    const make = vi.fn(() => {
+      throw new Error("simulated SDK boot failure");
+    });
+    // Silence the soft warn during the test.
+    const consoleWarnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+
+    const adapter = createAsanaSourceAdapter({
+      credentialStore: store,
+      credentialId,
+      config: {
+        projectGid,
+        snapshotMode: "on-event",
+        webhookSecretCredentialId: credentialId,
+      },
+      makeAsanaClient: make,
+    });
+
+    const baseEvent: SourceWebhookEvent = {
+      eventId: "evt-fail-open",
+      eventType: "created",
+      doc: {
+        sourceDocId: "t-fail-open:added",
+        sourceRevision: "evt-fail-open",
+        sourceRef: "asana:task/t-fail-open",
+        fetchedAt: new Date(),
+        contentBytes: Buffer.from("{}", "utf8"),
+        metadata: { projectGid },
+      },
+    };
+
+    const result = await adapter.webhook!.enrichEvents!([baseEvent]);
+
+    // The bare event survives; no snapshot event was added.
+    expect(result.length).toBe(1);
+    expect(result[0]!.eventId).toBe("evt-fail-open");
+    // Soft warn was emitted with the factory error message.
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("makeAsanaClient threw"),
+      expect.objectContaining({
+        error: expect.stringContaining("simulated SDK boot failure"),
+      }),
+    );
+    // Factory was NOT retried on a hypothetical second dispatch
+    // (would just reproduce the throw and double-log).
+    const result2 = await adapter.webhook!.enrichEvents!([baseEvent]);
+    expect(result2.length).toBe(1);
+    expect(make).toHaveBeenCalledTimes(1);
+
+    consoleWarnSpy.mockRestore();
+  });
 });
 
 describe("enrichEvents — snapshot 1 MiB ceiling (Fix #3)", () => {

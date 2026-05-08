@@ -111,7 +111,7 @@ interface DomainRow {
 /** PR-Q8 — resolve the seed scope-domain id from the operator's
  *  `--domain <slug>` arg, with single-domain auto-pick.
  *
- *  Three paths:
+ *  Four paths:
  *    1. `slug` provided — SELECT by slug; not-found is a clean fail.
  *    2. `slug` undefined + zero domains → fail with `+ New domain` hint.
  *    3. `slug` undefined + one domain → auto-pick; this is the typical
