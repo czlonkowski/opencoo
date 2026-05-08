@@ -1,15 +1,18 @@
-// Lazy provider module for OpenRouter (test-only, gated on
-// RUN_REAL_LLM=1 in the engine-ingestion classifier injection
-// corpus). OpenRouter speaks the OpenAI Chat Completions wire
-// format, so we drive it through `@ai-sdk/openai-compatible`.
+// Lazy provider module for OpenRouter. OpenRouter speaks the
+// OpenAI Chat Completions wire format, so we drive it through
+// `@ai-sdk/openai-compatible`.
 //
-// This file lives alongside the four production providers
+// This file lives alongside the four other providers
 // (openai, anthropic, google, ollama) so the existing
 // `opencoo/no-direct-llm-sdk` ESLint allowlist
-// (packages/shared/src/llm-router/providers/**) covers it. It is
-// NOT wired into the closed PROVIDERS tuple in llm-policy.ts —
-// production code never selects it; only the corpus driver
-// constructs it directly.
+// (packages/shared/src/llm-router/providers/**) covers it.
+//
+// Phase-a appendix #9 PR-Q4: wired into the closed PROVIDERS
+// tuple in llm-policy.ts so domain LLM policy can target
+// `provider: "openrouter"` directly. Previously the factory was
+// reachable only through the real-LLM corpus driver — production
+// code paths threw `Unknown provider: openrouter` because the
+// closed tuple rejected the value.
 //
 // Spec: https://openrouter.ai/docs#api  (OpenAI-compatible v1)
 
@@ -23,7 +26,15 @@ import type {
 } from "../interface.js";
 
 export interface OpenRouterProviderOptions {
-  readonly apiKey: string;
+  // `apiKey` is optional at the type level so the multi-provider
+  // dispatcher in `production-composition.ts` can call this
+  // factory uniformly with `apiKeyOpts(opts)` (which omits the
+  // field entirely when `OPENROUTER_API_KEY` is unset). At
+  // runtime we require it — see the construction-time guard
+  // below. A missing key surfaces a clear `LlmProviderError`
+  // naming `OPENROUTER_API_KEY` instead of a downstream HTTP
+  // 401 from `@ai-sdk/openai-compatible`.
+  readonly apiKey?: string;
   readonly baseUrl?: string;
 }
 
@@ -40,6 +51,11 @@ export async function createOpenRouterProvider(
     );
   }
 
+  if (opts.apiKey === undefined || opts.apiKey.length === 0) {
+    throw new LlmProviderError(
+      "OpenRouter provider requires apiKey (set OPENROUTER_API_KEY)",
+    );
+  }
   const client = mod.createOpenAICompatible({
     name: "openrouter",
     baseURL: opts.baseUrl ?? "https://openrouter.ai/api/v1",

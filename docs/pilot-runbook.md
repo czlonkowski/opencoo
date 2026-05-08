@@ -36,6 +36,7 @@ opencoo's env-var allow-list is short by design (THREAT-MODEL §2 invariant 9 �
 | `MCP_BASE_URL` | Full URL of the gitea-wiki-mcp-server's `/mcp` endpoint. | optional; defaults to `http://localhost:3000/mcp` |
 | `N8N_MCP_BEARER_TOKEN` | Static bearer the engine uses to talk to the [n8n-mcp](https://github.com/czlonkowski/n8n-mcp) MCP server (must match that server's own bearer). Surfacer's template catalog is sourced via this server's `search_templates` tool. **If absent, Surfacer uses the vendored ~3-template baseline** bundled with the `automation-n8n-mcp` adapter; absent does NOT break Heartbeat / Lint. | n8n-mcp's own bearer; see the n8n-mcp project README for setup |
 | `N8N_MCP_BASE_URL` | Full URL of the n8n-mcp server's `/mcp` endpoint. | optional alongside `N8N_MCP_BEARER_TOKEN`; both must be set together to activate the live template catalog |
+| `OPENROUTER_API_KEY` | OpenRouter API key. **Optional** — set when domain LLM policy points at `provider=openrouter`. The multi-provider dispatcher threads this into `createProvider("openrouter")` lazily; absent does NOT break boot. PR-Q4 (phase-a appendix #9) added the `openrouter` arm to the closed `PROVIDERS` tuple. | operator-owned (https://openrouter.ai/) |
 
 Optional:
 

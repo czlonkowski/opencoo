@@ -262,6 +262,7 @@ const PROVIDER_ENV_OPTS: Readonly<
   anthropic: { envVar: "ANTHROPIC_API_KEY", field: "apiKey" },
   google: { envVar: "GOOGLE_API_KEY", field: "apiKey" },
   ollama: { envVar: "OLLAMA_BASE_URL", field: "baseUrl" },
+  openrouter: { envVar: "OPENROUTER_API_KEY", field: "apiKey" },
 };
 
 function providerOptsFromEnv(

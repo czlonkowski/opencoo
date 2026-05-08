@@ -5,6 +5,7 @@ import { createAnthropicProvider } from "./anthropic.js";
 import { createGoogleProvider } from "./google.js";
 import { createOllamaProvider } from "./ollama.js";
 import { createOpenAiProvider } from "./openai.js";
+import { createOpenRouterProvider } from "./openrouter.js";
 
 export interface ProviderOptions {
   readonly apiKey?: string;
@@ -35,6 +36,8 @@ export async function createProvider(
       return createGoogleProvider(apiKeyOpts(opts));
     case "ollama":
       return createOllamaProvider(baseUrlOpts(opts));
+    case "openrouter":
+      return createOpenRouterProvider(apiKeyOpts(opts));
     default:
       throw new LlmProviderError(`Unknown provider: ${name as string}`);
   }
