@@ -189,6 +189,46 @@ describe("CredentialForm", () => {
         "webhook_secret.x_hook_secret": "shh",
       });
     });
+
+    it("uses a semantic <h3> for section headings (Copilot a11y triage)", () => {
+      const { container } = render(
+        <CredentialForm schema={GROUPED_SCHEMA} onSubmit={() => undefined} />,
+      );
+      // Section heading must be a real heading element so assistive
+      // tech can navigate between sections — not a styled `<p>`.
+      const headings = container.querySelectorAll("h3[data-section-heading]");
+      expect(headings.length).toBe(2); // "Auth" + "Webhook secret"
+      // role=heading is implicit on h3; verify via the role API.
+      expect(screen.getByRole("heading", { name: "Auth", level: 3 }))
+        .toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Webhook secret", level: 3 }))
+        .toBeInTheDocument();
+    });
+
+    it("re-emits a section heading after a non-dotted gap (Copilot triage)", () => {
+      // Schema where two `auth.*` runs are separated by a non-dotted
+      // `baseUrl` field. Without the lastSection reset, the second
+      // `auth.*` run would be silently un-headed because the cursor
+      // would still equal "auth" from the first run.
+      const INTERLEAVED_SCHEMA: CredentialSchema = {
+        type: "object",
+        properties: {
+          "auth.token": { type: "string", secret: true },
+          baseUrl: { type: "string" },
+          "auth.workspace_gid": { type: "string" },
+        },
+        required: ["auth.token", "baseUrl", "auth.workspace_gid"],
+      };
+      render(
+        <CredentialForm schema={INTERLEAVED_SCHEMA} onSubmit={() => undefined} />,
+      );
+      // Two "Auth" headings — one above each contiguous run.
+      const authHeadings = screen.getAllByRole("heading", {
+        name: "Auth",
+        level: 3,
+      });
+      expect(authHeadings.length).toBe(2);
+    });
   });
 
   it("submit button label swaps to `saving…` while submitting (no spinner)", async () => {

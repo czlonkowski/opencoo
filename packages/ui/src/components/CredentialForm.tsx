@@ -336,6 +336,14 @@ export function CredentialForm(props: CredentialFormProps): JSX.Element {
   // section heading exactly once, above its FIRST field. The
   // internal data shape stays dot-keyed (see `setValues` below)
   // — this is purely a render-time transformation.
+  //
+  // `lastSection` is reset to undefined whenever a non-dotted key
+  // appears between two dotted runs of the same section (Copilot
+  // PR-Q11 review): an interleaving like `auth.x → baseUrl →
+  // auth.y` should re-emit the "Auth" heading on `auth.y` so the
+  // visual grouping mirrors the actual layout. Without the reset,
+  // `lastSection` would still equal "auth" when `auth.y` lands and
+  // the heading would be silently skipped.
   let lastSection: string | undefined;
 
   return (
@@ -347,13 +355,16 @@ export function CredentialForm(props: CredentialFormProps): JSX.Element {
         const labelText = humanise(leaf);
         const showSectionHeading =
           section !== undefined && section !== lastSection;
-        if (section !== undefined) lastSection = section;
+        // Update the cursor for both dotted and non-dotted keys so
+        // a re-entry into a previously-shown section after a
+        // non-dotted gap re-emits its heading (see comment above).
+        lastSection = section;
         return (
           <Fragment key={key}>
             {showSectionHeading && section !== undefined ? (
-              <p style={SECTION_HEADING_STYLE} data-section-heading>
+              <h3 style={SECTION_HEADING_STYLE} data-section-heading>
                 {humanise(section)}
-              </p>
+              </h3>
             ) : null}
             <FieldRow
               fieldKey={key}
