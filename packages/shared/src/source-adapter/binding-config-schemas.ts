@@ -52,9 +52,14 @@ export interface BindingConfigField {
    *  only supports `array-of-string` in v0.1, so this is always
    *  `{ type: "string" }` here. */
   readonly items?: { readonly type: "string" };
-  /** Min length for string fields / min array size for array
-   *  fields. The server uses this to reject empty values that
-   *  Zod's `.min(1)` would otherwise catch. */
+  /** Min length for string fields. The server uses this to
+   *  reject empty values that Zod's `.string().min(1)` would
+   *  otherwise catch. NOTE: the v0.1 server does NOT honour
+   *  `minLength` for array fields — array-required gating relies
+   *  on the array being non-empty + present in `required[]`.
+   *  Adapter authors who want array-min-N enforcement should
+   *  surface that via the Zod schema's `.array(...).min(N)` and
+   *  rely on the persisted-config Zod parse at scan-time. */
   readonly minLength?: number;
   /** When true, the UI hides the field (still surfaced in JSON
    *  Schema for completeness — used for fields the adapter

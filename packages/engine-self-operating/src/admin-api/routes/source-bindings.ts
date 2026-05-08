@@ -721,7 +721,13 @@ function validateBindingConfigAgainstSchema(
   }
 
   if (missing.length > 0) {
-    return { ok: false, missing };
+    // PR-Q9 round-2: dedupe so a required field with a wrong-shape
+    // value (e.g. `projectGid: 12345` as a number) doesn't appear
+    // twice in the diagnostic — once from the required-loop and
+    // once from the shape-loop. Operator-facing payload reads
+    // cleaner and tests don't have to special-case duplicates.
+    const deduped = Array.from(new Set(missing));
+    return { ok: false, missing: deduped };
   }
   return { ok: true };
 }

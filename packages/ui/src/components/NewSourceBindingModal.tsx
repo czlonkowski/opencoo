@@ -112,7 +112,9 @@ interface AdapterDescriptor {
   readonly credentialSchema: AnyCredentialSchema;
   /** PR-Q9: optional on the wire so older fixtures and tests
    *  stay compatible. The wizard treats absence as "no config
-   *  step" (skips straight to submit). */
+   *  step" — the wizard still ADVANCES to the config step (so the
+   *  Create button stays in the same place), but renders no inputs
+   *  and the operator just clicks Create. */
   readonly bindingConfigSchema?: BindingConfigSchema;
 }
 
@@ -277,7 +279,16 @@ export function NewSourceBindingModal(
       if (field === undefined) continue;
       // Hidden fields are never user-supplied — skip the gate.
       if (field.hidden === true) continue;
-      const v = configValues[req] ?? "";
+      // PR-Q9 round-2: an unedited input still satisfies the
+      // required-gate when the schema declares a default
+      // (`buildConfigBody` falls back to the same default). Without
+      // this fallback the wizard would block submit on a field the
+      // server would have accepted.
+      const editedRaw = configValues[req];
+      const v =
+        editedRaw !== undefined && editedRaw.length > 0
+          ? editedRaw
+          : (defaultAsRaw(field) ?? "");
       if (v.length === 0) {
         next[req] = t("sources.create.errors.requiredField");
       }
@@ -297,7 +308,19 @@ export function NewSourceBindingModal(
     const out: Record<string, unknown> = {};
     for (const [key, field] of Object.entries(schema.properties)) {
       if (field.hidden === true) continue;
-      const raw = configValues[key];
+      // PR-Q9 round-2 (Copilot triage): when the operator hasn't
+      // touched the input, fall back to the schema-declared
+      // default so the value the wizard PREVIEWED is also the
+      // value the API receives. Otherwise a field with `default:
+      // "auto"` would be displayed as "auto" in the input but
+      // omitted from the submit body — the server's required-gate
+      // would 422 if it were required, or the persisted row
+      // would lose the default.
+      const editedRaw = configValues[key];
+      const raw =
+        editedRaw !== undefined && editedRaw.length > 0
+          ? editedRaw
+          : defaultAsRaw(field);
       if (raw === undefined || raw.length === 0) continue;
       if (field.type === "boolean") {
         out[key] = raw === "true";
@@ -710,6 +733,17 @@ function effectiveFieldValue(
   if (typeof field.default === "number") return String(field.default);
   if (typeof field.default === "string") return field.default;
   // array default — render CSV.
+  return field.default.join(", ");
+}
+
+/** Coerce a schema-declared default into the same string form
+ *  `configValues` uses (booleans → "true"/"false"; numbers →
+ *  String(n); arrays → CSV). PR-Q9 round-2 (Copilot triage). */
+function defaultAsRaw(field: BindingConfigField): string | undefined {
+  if (field.default === undefined) return undefined;
+  if (typeof field.default === "boolean") return field.default ? "true" : "false";
+  if (typeof field.default === "number") return String(field.default);
+  if (typeof field.default === "string") return field.default;
   return field.default.join(", ");
 }
 

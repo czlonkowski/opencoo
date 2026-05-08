@@ -553,32 +553,52 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
     expect(row.rows[0]!.config).toEqual({});
   });
 
-  it("PR-Q9: rejects non-object `config` (string, array, null) with 422", async () => {
+  it("PR-Q9: rejects non-object `config` payloads with 422", async () => {
+    // Three non-object shapes a buggy client could send: a bare
+    // string, an array (Zod's `z.record` rejects), and `null`.
+    // All three round-trip through one fixture — the validator
+    // rejects before any credential/binding write so the DB
+    // stays clean across iterations. Reviewer triage on PR-Q9
+    // round-2 caught that the original test only exercised the
+    // string case despite naming all three.
     const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
     cleanup = f.close;
     await setupAdmin(f);
     await seedDomain(f.raw, "wiki-main");
     const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
-    const res = await f.app.inject({
-      method: "POST",
-      url: "/api/admin/source-bindings",
-      headers: {
-        authorization: `Bearer ${ADMIN_PAT}`,
-        "x-csrf-token": csrfToken,
-        cookie: `opencoo_csrf=${cookie}`,
-        "content-type": "application/json",
-      },
-      payload: {
-        adapter_slug: "drive",
-        target_domain_slug: "wiki-main",
-        credentials: {
-          service_account_json: SECRET_TOKEN,
-          root_folder_id: "1XYZ",
+    const cases: ReadonlyArray<{
+      readonly label: string;
+      readonly config: unknown;
+    }> = [
+      { label: "string", config: "not-an-object" },
+      { label: "array", config: ["nope"] },
+      { label: "null", config: null },
+    ];
+    for (const { label, config } of cases) {
+      const res = await f.app.inject({
+        method: "POST",
+        url: "/api/admin/source-bindings",
+        headers: {
+          authorization: `Bearer ${ADMIN_PAT}`,
+          "x-csrf-token": csrfToken,
+          cookie: `opencoo_csrf=${cookie}`,
+          "content-type": "application/json",
         },
-        config: "not-an-object",
-      },
-    });
-    expect(res.statusCode).toBe(422);
+        payload: {
+          adapter_slug: "drive",
+          target_domain_slug: "wiki-main",
+          credentials: {
+            service_account_json: SECRET_TOKEN,
+            root_folder_id: "1XYZ",
+          },
+          config,
+        },
+      });
+      expect(
+        res.statusCode,
+        `case "${label}" should 422, got ${res.statusCode}`,
+      ).toBe(422);
+    }
   });
 
   it("audit-log 'source_binding.create' written with adapter+domain metadata", async () => {
