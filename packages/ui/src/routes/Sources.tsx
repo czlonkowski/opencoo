@@ -15,6 +15,7 @@ import { Badge, type BadgeTone } from "../components/Badge.js";
 import { Btn } from "../components/Btn.js";
 import { Card } from "../components/Card.js";
 import { NewSourceBindingModal } from "../components/NewSourceBindingModal.js";
+import { SourceBindingDetail } from "../components/SourceBindingDetail.js";
 import { fetchAdmin } from "../lib/api.js";
 import type { SourceBinding } from "../types.js";
 
@@ -53,6 +54,9 @@ export function Sources(props: SourcesProps = {}): JSX.Element {
   const [rows, setRows] = useState<ReadonlyArray<SourceBinding> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  /** PR-Q10 — when a row is clicked the binding lands here and the
+   *  drill-down modal opens. `null` keeps the modal closed. */
+  const [selected, setSelected] = useState<SourceBinding | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
 
   const fetchOpts =
@@ -111,23 +115,51 @@ export function Sources(props: SourcesProps = {}): JSX.Element {
             <div className="t-micro">{t("sources.columns.lastEvent")}</div>
             <div className="t-micro">{t("sources.columns.lastError")}</div>
             <div className="t-micro">{t("sources.columns.status")}</div>
-            {rows.map((b) => (
-              <div key={b.id} style={{ display: "contents" }}>
-                <div style={{ fontFamily: "var(--font-mono)", fontSize: "var(--fs-mono)" }}>{b.name}</div>
-                <div style={{ color: "var(--ink-3)" }}>{b.adapterSlug}</div>
-                <div>{b.domainSlug}</div>
-                <div style={{ color: "var(--ink-2)" }}>{b.reviewMode}</div>
-                <div style={{ color: "var(--ink-3)", fontSize: "var(--fs-micro)", fontFamily: "var(--font-mono)" }}>
-                  {b.lastEventAt !== null ? formatRelativeTime(b.lastEventAt, t) : "—"}
+            {rows.map((b) => {
+              // PR-Q10 — every cell shares the same row-level click target
+              // so the operator can drill in from any column. The grid
+              // uses `display: contents` so we can't wrap the cells in a
+              // single clickable element without breaking the layout.
+              // Adding the handler on each cell is the simplest path that
+              // preserves the existing 7-column grid.
+              const onRowClick = (): void => setSelected(b);
+              const onRowKey = (e: React.KeyboardEvent): void => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setSelected(b);
+                }
+              };
+              const cellStyle: React.CSSProperties = {
+                cursor: "pointer",
+                padding: "4px 0",
+              };
+              const cellProps = {
+                role: "button",
+                tabIndex: 0,
+                onClick: onRowClick,
+                onKeyDown: onRowKey,
+                "aria-label": t("sources.detail.title") + " " + b.name,
+              } as const;
+              return (
+                <div key={b.id} style={{ display: "contents" }} data-binding-id={b.id}>
+                  <div style={{ ...cellStyle, fontFamily: "var(--font-mono)", fontSize: "var(--fs-mono)" }} {...cellProps}>{b.name}</div>
+                  <div style={{ ...cellStyle, color: "var(--ink-3)" }} {...cellProps}>{b.adapterSlug}</div>
+                  <div style={cellStyle} {...cellProps}>{b.domainSlug}</div>
+                  <div style={{ ...cellStyle, color: "var(--ink-2)" }} {...cellProps}>{b.reviewMode}</div>
+                  <div style={{ ...cellStyle, color: "var(--ink-3)", fontSize: "var(--fs-micro)", fontFamily: "var(--font-mono)" }} {...cellProps}>
+                    {b.lastEventAt !== null ? formatRelativeTime(b.lastEventAt, t) : "—"}
+                  </div>
+                  <div style={{ ...cellStyle, color: "var(--ink-3)", fontSize: "var(--fs-micro)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} {...cellProps}>
+                    {b.lastError ?? ""}
+                  </div>
+                  <div style={cellStyle} {...cellProps}>
+                    {b.status !== null
+                      ? <Badge tone={STATUS_TONE[b.status]}>{t(`sources.status.${b.status}`)}</Badge>
+                      : <span />}
+                  </div>
                 </div>
-                <div style={{ color: "var(--ink-3)", fontSize: "var(--fs-micro)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {b.lastError ?? ""}
-                </div>
-                {b.status !== null
-                  ? <Badge tone={STATUS_TONE[b.status]}>{t(`sources.status.${b.status}`)}</Badge>
-                  : <span />}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Card>
@@ -141,6 +173,23 @@ export function Sources(props: SourcesProps = {}): JSX.Element {
             setRefreshNonce((n) => n + 1);
           }}
           onClose={(): void => setCreateOpen(false)}
+        />
+      ) : null}
+      {selected !== null ? (
+        <SourceBindingDetail
+          binding={selected}
+          {...(props.fetchImpl !== undefined
+            ? { fetchImpl: props.fetchImpl as typeof fetch }
+            : {})}
+          onClose={(): void => setSelected(null)}
+          onChanged={(): void => {
+            // Refetch the rows so a Disable/Delete action surfaces
+            // immediately. The modal closes itself once onChanged
+            // returns; clearing `selected` here keeps the Sources
+            // tab in a consistent post-action state.
+            setSelected(null);
+            setRefreshNonce((n) => n + 1);
+          }}
         />
       ) : null}
     </div>

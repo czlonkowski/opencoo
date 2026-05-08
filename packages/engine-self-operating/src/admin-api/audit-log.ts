@@ -52,6 +52,12 @@ export const AUDIT_LOG_ACTIONS = [
   // caller username; PAT bytes NEVER recorded.
   "domain.create",
   "source_binding.create",
+  // Phase-a appendix #9 (PR-Q10) — Sources row drill-down
+  // actions. `update` covers `enabled` toggles via PATCH; `delete`
+  // covers binding teardown via DELETE. Metadata captures binding_id
+  // + caller_username + (for update) the prev/new enabled flag.
+  "source_binding.update",
+  "source_binding.delete",
   // Logout — records the operator-initiated session-end so an
   // audit-log read can correlate an action burst with the
   // operator's session window.
