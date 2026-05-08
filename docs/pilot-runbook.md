@@ -36,13 +36,14 @@ opencoo's env-var allow-list is short by design (THREAT-MODEL §2 invariant 9 �
 | `MCP_BASE_URL` | Full URL of the gitea-wiki-mcp-server's `/mcp` endpoint. | optional; defaults to `http://localhost:3000/mcp` |
 | `N8N_MCP_BEARER_TOKEN` | Static bearer the engine uses to talk to the [n8n-mcp](https://github.com/czlonkowski/n8n-mcp) MCP server (must match that server's own bearer). Surfacer's template catalog is sourced via this server's `search_templates` tool. **If absent, Surfacer uses the vendored ~3-template baseline** bundled with the `automation-n8n-mcp` adapter; absent does NOT break Heartbeat / Lint. | n8n-mcp's own bearer; see the n8n-mcp project README for setup |
 | `N8N_MCP_BASE_URL` | Full URL of the n8n-mcp server's `/mcp` endpoint. | optional alongside `N8N_MCP_BEARER_TOKEN`; both must be set together to activate the live template catalog |
+| `OPENROUTER_API_KEY` | OpenRouter API key. **Optional** — set when domain LLM policy points at `provider=openrouter`. The multi-provider dispatcher threads this into `createProvider("openrouter")` lazily; absent does NOT break boot. PR-Q4 (phase-a appendix #9) added the `openrouter` arm to the closed `PROVIDERS` tuple. | operator-owned (https://openrouter.ai/) |
 
 Optional:
 
 - `OPENCOO_ADMIN_PAT` — Gitea PAT used by `opencoo doctor` to verify admin-team membership without `--admin-pat` on the command line.
 - `LOG_LEVEL=debug` — verbose engine logs, useful for pilot triage. unset in steady-state production.
 - `LLM_DEBUG_LOG=1` — surfaces full prompts + responses on the SSE bus and in `llm_usage_debug`. **never set in production** (THREAT-MODEL §2 invariant 11). the management UI displays a banner whenever the gate is on so reviewers know.
-- per-provider keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OLLAMA_BASE_URL`) — wired by the `LlmRouter` lazily; only required for the providers the operator actually selects in domain LLM policy.
+- per-provider keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OLLAMA_BASE_URL`, `OPENROUTER_API_KEY`) — wired by the `LlmRouter` lazily; only required for the providers the operator actually selects in domain LLM policy. (`OPENROUTER_API_KEY` is documented in the table above; the others are infrastructure config and follow the same lazy-resolve pattern.)
 
 The required `_URL`-style vars and `ENCRYPTION_KEY` accept a `_FILE` suffix variant (Docker secrets pattern) — namely `DATABASE_URL_FILE`, `REDIS_URL_FILE`, `GITEA_URL_FILE`, `GITEA_PAT_FILE`, `ENCRYPTION_KEY_FILE`, `SESSION_HMAC_KEY_FILE`, `GITEA_BASE_URL_FILE`, `OPENCOO_ADMIN_PAT_FILE`, `MCP_BEARER_TOKEN_FILE`, `MCP_BASE_URL_FILE`, `N8N_MCP_BEARER_TOKEN_FILE`, `N8N_MCP_BASE_URL_FILE`. `_FILE` wins when both are set; the loader at `packages/shared/src/engine-scaffold/config.ts:53-67` reads the file and trims a single trailing newline. Variables that are NOT URLs or secrets — `PORT`, `NODE_ENV`, `LOG_LEVEL`, `LLM_DEBUG_LOG`, `TELEMETRY_ENDPOINT`, and per-provider keys like `OPENROUTER_API_KEY` — do NOT have a `_FILE` form (they're never read through `readWithFile`).
 

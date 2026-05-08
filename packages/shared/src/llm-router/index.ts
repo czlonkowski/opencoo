@@ -32,9 +32,11 @@ export {
 } from "./router.js";
 export { MockLlmClient } from "./testing/mock-llm-client.js";
 
-// OpenRouter provider helper — test-only, gated on RUN_REAL_LLM=1
-// in the classifier injection corpus. NOT registered in the closed
-// PROVIDERS tuple; production code never selects it.
+// OpenRouter provider helper. Used by the real-LLM test driver
+// (RUN_REAL_LLM=1 / classifier injection corpus) for direct
+// construction; in production it's reached via `createProvider`
+// (PR-Q4, phase-a appendix #9 — `"openrouter"` is now part of
+// the closed PROVIDERS tuple).
 export {
   createOpenRouterProvider,
   type OpenRouterProviderOptions,

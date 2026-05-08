@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-export const PROVIDERS = ["openai", "anthropic", "google", "ollama"] as const;
+export const PROVIDERS = [
+  "openai",
+  "anthropic",
+  "google",
+  "ollama",
+  "openrouter",
+] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
 
 export const llmPolicyTierSchema = z.object({
