@@ -52,6 +52,11 @@ import {
 import type { Logger } from "@opencoo/shared/logger";
 import type { LlmRouter } from "@opencoo/shared/llm-router";
 
+/** Module-level alias for the Drizzle wrapper around node-postgres'
+ *  `pg.Pool`. Used by `createProductionAgentRunners` (wrap once at
+ *  registry construction) and the `resolveDomainSlug` helper. */
+type DrizzleDb = ReturnType<typeof drizzle>;
+
 export interface ProductionAgentRunnersDeps {
   /** Postgres pool — handed verbatim to each runner that needs
    *  Drizzle access (Heartbeat for the scope cross-check, Lint
@@ -107,8 +112,6 @@ interface SlugRow {
  *  up its slug. Throws when scope is empty (the upstream
  *  agent body would also throw, but a clearer message here helps
  *  the operator pinpoint the misconfigured row). */
-type DrizzleDb = ReturnType<typeof drizzle>;
-
 async function resolveDomainSlug(
   db: DrizzleDb,
   ctx: AgentRunContext,
