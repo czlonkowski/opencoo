@@ -366,4 +366,80 @@ describe("LlmPolicyEditor", () => {
       model: "moonshotai/kimi-k2.6",
     });
   });
+
+  it("preserves unknown extra keys on round-trip (Copilot triage / v0.2 forward-compat)", async () => {
+    // PR-Q13 documented "Pass-through of unknown extra keys preserves
+    // v0.2 future-shape compatibility." The reviewer flagged this
+    // as untested. Pass an unknown top-level field, mutate one tier
+    // through the dropdowns, and assert the unknown field survives
+    // verbatim on the next emitted onChange.
+    const onChange = vi.fn();
+    const value = {
+      thinker: { provider: "openai", model: "gpt-4o" },
+      worker: { provider: "openai", model: "gpt-4o-mini" },
+      light: { provider: "openai", model: "gpt-4o-mini" },
+      local_only: false,
+      // v0.2-shaped extra key the editor doesn't know about. The
+      // editor MUST round-trip this as-is; otherwise a one-tier
+      // dropdown change silently drops server-pushed v0.2 state.
+      v0_2_priority_routing: {
+        sticky_session_id: "abc-123",
+        max_tokens_override: 4096,
+      },
+      another_unknown: "preserve me",
+    };
+    const user = userEvent.setup();
+    render(<LlmPolicyEditor value={value} onChange={onChange} />);
+
+    // Mutate one tier — pick a different anthropic model — to
+    // trigger a fresh `onChange`.
+    const provSelect = document.querySelector(
+      "select[name='worker.provider']",
+    ) as HTMLSelectElement;
+    await user.selectOptions(provSelect, "anthropic");
+    const last = onChange.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+
+    expect(last["worker"]).toEqual({
+      provider: "anthropic",
+      // Provider-switch clears `model` until the operator picks
+      // one from the new catalog (intentional — picking a Claude
+      // model when the operator selected Anthropic is the human's
+      // call). The unknown-extras pass-through is what we're
+      // pinning here; the worker.model state is incidental.
+      model: "",
+    });
+    // Unknown extras MUST survive verbatim.
+    expect(last["v0_2_priority_routing"]).toEqual({
+      sticky_session_id: "abc-123",
+      max_tokens_override: 4096,
+    });
+    expect(last["another_unknown"]).toBe("preserve me");
+  });
+
+  it("renders a stale model as an '(unknown)' option without dropping it (Copilot triage)", () => {
+    // Drift case: the persisted policy has a model that is no longer
+    // in the current catalog (catalog was trimmed, or the value came
+    // from a v0.2 server pin). The dropdown's `value` MUST match an
+    // actual `<option>` so React doesn't silently coerce to the
+    // first option. Render an explicit "(unknown)" option marked
+    // `value={state.model}` to keep the displayed value and the
+    // emitted state in sync.
+    const onChange = vi.fn();
+    const value = {
+      thinker: { provider: "openai", model: "gpt-3.5-legacy-not-in-catalog" },
+      worker: { provider: "openai", model: "gpt-4o" },
+      light: { provider: "openai", model: "gpt-4o-mini" },
+      local_only: false,
+    };
+    render(<LlmPolicyEditor value={value} onChange={onChange} />);
+
+    const sel = document.querySelector(
+      "select[name='thinker.model']",
+    ) as HTMLSelectElement;
+    expect(sel.value).toBe("gpt-3.5-legacy-not-in-catalog");
+    // The fallback option is rendered with the literal model id and
+    // an "(unknown)" suffix.
+    const opts = Array.from(sel.options).map((o) => o.text);
+    expect(opts).toContain("gpt-3.5-legacy-not-in-catalog (unknown)");
+  });
 });

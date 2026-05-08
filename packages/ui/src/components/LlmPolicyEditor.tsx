@@ -572,6 +572,21 @@ function TierRow(props: TierRowProps): JSX.Element {
                   {m}
                 </option>
               ))}
+              {/* Stale-model fallback (PR-Q13 review): when the
+                  incoming `state.model` is non-empty but missing
+                  from the current provider's catalog (e.g. a DB
+                  row that pre-dates a catalog edit, or a v0.2
+                  server-pushed pin), surface it as an explicit
+                  "(unknown)" option so the dropdown's `value`
+                  matches an actual `<option>` and React doesn't
+                  silently drop back to the first option. The
+                  emitted state stays the stale value until the
+                  operator picks a new one. */}
+              {state.model !== "" && !models.includes(state.model) ? (
+                <option key={state.model} value={state.model}>
+                  {state.model} (unknown)
+                </option>
+              ) : null}
               {isOpenRouter ? (
                 <option value={CUSTOM_SENTINEL}>Other model…</option>
               ) : null}
