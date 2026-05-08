@@ -7,11 +7,15 @@
  * `app.listen()` collided on `:8080` with `EADDRINUSE` and the
  * webhook receiver was unreachable.
  *
- * The fix: the orchestrator captures the FastifyInstance the
- * self-op engine built, threads it into the ingestion factory as
- * `serverFactory`, and the ingestion engine mounts its
- * `/webhooks/:bindingId` route + workers onto the SHARED app
- * instead of building a second listener.
+ * The fix: a preflight step composes the ingestion `WorkerContext`
+ * BEFORE either engine boots; the orchestrator threads the self-op
+ * Fastify instance into the ingestion factory as `sharedFastify`,
+ * and a pre-listen hook on the self-op engine mounts the ingestion
+ * `/webhooks/:bindingId` route (+ encapsulated content-type parser)
+ * onto the SHARED app BEFORE `app.listen()` fires — no second
+ * listener, no parser collision with `/api/admin/*`. (Earlier
+ * iterations of this docstring read "as `serverFactory`"; the
+ * actual factory option is `sharedFastify`.)
  *
  * These tests pin three invariants:
  *
