@@ -37,6 +37,11 @@ export interface SourceBinding {
    *  Sources tab (PR-A) does not require this field — it is optional here
    *  to preserve backward-compat with the Sources route's existing usage. */
   readonly pendingEventsCount?: number;
+  /** Count of webhook_events rows with `signature_ok=false` in the last 24h.
+   *  PR-Q10 addition — surfaced by the Sources row drill-down so the operator
+   *  can see HMAC failures without re-querying. Optional for backward-compat
+   *  with older clients. */
+  readonly sigFailCount24h?: number;
 }
 
 export interface PromptManifestEntry {

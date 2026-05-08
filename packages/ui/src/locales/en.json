@@ -109,6 +109,49 @@
         "requiredField": "Required.",
         "generic": "Could not create binding. Try again or check the audit log."
       }
+    },
+    "detail": {
+      "title": "Source binding",
+      "subtitle": "Webhook URL, recent activity, and lifecycle actions.",
+      "labels": {
+        "webhookUrl": "webhook url",
+        "bindingId": "binding id",
+        "domain": "domain",
+        "adapter": "adapter",
+        "reviewMode": "review mode",
+        "enabled": "enabled",
+        "pendingEvents": "pending events",
+        "sigFailures": "signature failures (24h)",
+        "lastError": "last error",
+        "noLastError": "—",
+        "lastEvent": "last event"
+      },
+      "copy": {
+        "copy": "Copy",
+        "copied": "copied",
+        "manualHint": "Select the URL above and copy manually."
+      },
+      "actions": {
+        "disable": "Disable",
+        "enable": "Enable",
+        "delete": "Delete",
+        "close": "Close",
+        "confirmDisableTitle": "Disable this binding?",
+        "confirmDisableBody": "Inbound webhook events will still be accepted (HMAC verified, audit row written) but the scanner queue will not dispatch them, so no compile fires.",
+        "confirmDisable": "Confirm disable",
+        "confirmEnableTitle": "Enable this binding?",
+        "confirmEnableBody": "Once re-enabled, queued and incoming events will resume compile dispatch.",
+        "confirmEnable": "Confirm enable",
+        "confirmDeleteTitle": "Delete this binding?",
+        "confirmDeleteBody": "Removes the binding row and clears its webhook events and ingestion intake history. Append-only audit (page citations, redaction events) is retained — if it blocks the delete, disable the binding instead.",
+        "confirmDelete": "Confirm delete",
+        "cancel": "Cancel"
+      },
+      "errors": {
+        "patchFailed": "Could not update the binding. Try again or check the audit log.",
+        "deleteFailed": "Could not delete the binding. Try again or check the audit log.",
+        "deleteFkRestricted": "This binding has audit history that prevents deletion. Disable it instead."
+      }
     }
   },
   "llmPolicy": {

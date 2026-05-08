@@ -57,6 +57,18 @@ const reviewModeUpdateSchema = z
   })
   .strict();
 
+/** PR-Q10 — `PATCH /api/admin/source-bindings/:id` body. v0.1 only
+ *  exposes the `enabled` toggle; review-mode flips go through the
+ *  dedicated `/review-mode` endpoint and binding metadata edits are
+ *  v0.2. The `.strict()` rejects any other key so a body like
+ *  `{enabled: false, review_mode: 'auto'}` doesn't smuggle a second
+ *  state change through the audit row. */
+const bindingPatchSchema = z
+  .object({
+    enabled: z.boolean(),
+  })
+  .strict();
+
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
 /** 3-state health, or `null` for neutral (paused or never-fired binding).
@@ -87,6 +99,11 @@ interface BindingRow {
    *  Used by the Review Dashboard to surface bindings that need attention.
    *  Phase-a appendix #4 PR-C addition. */
   readonly pendingEventsCount: number;
+  /** Count of webhook_events rows with `signature_ok=false` in the last 24h.
+   *  Already computed for status derivation; surfaced on the row so the
+   *  Sources row drill-down (PR-Q10) can show the operator how many HMAC
+   *  failures landed without re-querying. */
+  readonly sigFailCount24h: number;
 }
 
 /** Coerce pg's timestamp result (Date when node-postgres parsed it,
@@ -226,6 +243,7 @@ export function registerSourceBindingsRoutes(
         lastEventAt,
         lastError,
         pendingEventsCount: r.pending_events_count,
+        sigFailCount24h: r.sig_fail_count_24h,
       };
     });
     return { rows };
@@ -501,6 +519,146 @@ export function registerSourceBindingsRoutes(
       });
 
       return reply.code(200).send({ reviewMode });
+    },
+  );
+
+  // PR-Q10 — toggle `enabled`. The Sources row drill-down modal
+  // calls this to disable / re-enable a binding without going through
+  // psql. CSRF-gated; writes 'source_binding.update' audit row with
+  // prev/new flags so the audit trail is unambiguous.
+  args.app.patch(
+    "/api/admin/source-bindings/:id",
+    { preHandler: requireCsrf },
+    async (req, reply) => {
+      const ctx = requireAdminContext(req);
+      const id = (req.params as { id: string }).id;
+      if (!z.string().uuid().safeParse(id).success) {
+        return reply.code(400).send({ error: "invalid_id" });
+      }
+      const parsed = bindingPatchSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(422).send({
+          error: "validation_failed",
+          issues: parsed.error.issues,
+        });
+      }
+      const { enabled } = parsed.data;
+
+      // Existence + prev_enabled snapshot for the audit row.
+      const existing = (await args.db.execute(sql`
+        SELECT enabled
+        FROM sources_bindings
+        WHERE id = ${id}::uuid
+        LIMIT 1
+      `)) as unknown as { rows: Array<{ enabled: boolean }> };
+      const prev = existing.rows[0];
+      if (prev === undefined) {
+        return reply.code(404).send({ error: "not_found", id });
+      }
+
+      // No-op fast path. Returning the row keeps the response shape
+      // stable; we still write the audit so the operator's intent is
+      // captured (clicking Disable on an already-disabled binding is
+      // a meaningful audit event — confirms the operator inspected
+      // the state).
+      const updated = (await args.db.execute(sql`
+        UPDATE sources_bindings
+        SET enabled = ${enabled},
+            updated_at = NOW()
+        WHERE id = ${id}::uuid
+        RETURNING id::text AS id, enabled
+      `)) as unknown as { rows: Array<{ id: string; enabled: boolean }> };
+      const row = updated.rows[0];
+      if (row === undefined) {
+        return reply.code(500).send({ error: "update_returned_no_row" });
+      }
+
+      await writeAuditLog(args.db, {
+        action: "source_binding.update",
+        userId: ctx.userId,
+        metadata: {
+          binding_id: id,
+          prev_enabled: prev.enabled,
+          new_enabled: enabled,
+          caller_username: ctx.username,
+        },
+        sourceIp: req.ip,
+        userAgent: req.headers["user-agent"],
+      });
+
+      return reply.code(200).send({ id: row.id, enabled: row.enabled });
+    },
+  );
+
+  // PR-Q10 — delete binding. The Sources row drill-down's confirm-
+  // gated Delete action calls this. The schema uses `ON DELETE
+  // RESTRICT` for every binding-id FK; we explicitly clear the two
+  // tables the operator can reasonably expect to lose with the
+  // binding (`webhook_events` + `ingestion_intake`) inside a single
+  // transaction so a partial cascade can't strand orphans.
+  //
+  // Other tables — `page_citations`, `redaction_events`, `erasure_log`,
+  // `miner_runs` — hold append-only audit (THREAT-MODEL §2 invariant 8);
+  // the endpoint surfaces 409 if any of those FKs block the delete so
+  // the operator chooses the correct path (disable, then archive
+  // separately) rather than silently nuking history.
+  args.app.delete(
+    "/api/admin/source-bindings/:id",
+    { preHandler: requireCsrf },
+    async (req, reply) => {
+      const ctx = requireAdminContext(req);
+      const id = (req.params as { id: string }).id;
+      if (!z.string().uuid().safeParse(id).success) {
+        return reply.code(400).send({ error: "invalid_id" });
+      }
+
+      // Existence check before the transaction so we can return 404
+      // without holding a write lock.
+      const existing = (await args.db.execute(sql`
+        SELECT id FROM sources_bindings WHERE id = ${id}::uuid LIMIT 1
+      `)) as unknown as { rows: Array<{ id: string }> };
+      if (existing.rows[0] === undefined) {
+        return reply.code(404).send({ error: "not_found", id });
+      }
+
+      try {
+        await args.db.transaction(async (tx) => {
+          await tx.execute(sql`
+            DELETE FROM webhook_events WHERE binding_id = ${id}::uuid
+          `);
+          await tx.execute(sql`
+            DELETE FROM ingestion_intake WHERE binding_id = ${id}::uuid
+          `);
+          await tx.execute(sql`
+            DELETE FROM sources_bindings WHERE id = ${id}::uuid
+          `);
+        });
+      } catch (err) {
+        // Most likely cause: another append-only audit table holds a
+        // RESTRICT FK against this binding. Surface 409 — the operator
+        // should disable instead of delete, or archive that history
+        // first. The error class name is logged but never the message
+        // body (which Postgres may include row identifiers in).
+        req.log?.warn({
+          msg: "binding_delete.failed",
+          binding_id: id,
+          err: err instanceof Error ? err.name : "unknown",
+        });
+        return reply.code(409).send({ error: "fk_restricted" });
+      }
+
+      await writeAuditLog(args.db, {
+        action: "source_binding.delete",
+        userId: ctx.userId,
+        metadata: {
+          binding_id: id,
+          caller_username: ctx.username,
+        },
+        sourceIp: req.ip,
+        userAgent: req.headers["user-agent"],
+      });
+
+      return reply.code(200).send({ deleted: true });
     },
   );
 }
