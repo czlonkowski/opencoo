@@ -254,7 +254,9 @@ export async function composeProductionFromEnv(
 /** Provider-specific env-var → ProviderOptions field mapping.
  *  Centralised so a future env-var rename doesn't require touching
  *  the resolver below. Per-provider keys aren't new — already
- *  standard `@ai-sdk/*` practice. */
+ *  standard `@ai-sdk/*` practice. Current keys: `OPENAI_API_KEY`,
+ *  `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OLLAMA_BASE_URL`,
+ *  `OPENROUTER_API_KEY` (PR-Q4 / appendix #9). */
 const PROVIDER_ENV_OPTS: Readonly<
   Record<string, { readonly envVar: string; readonly field: "apiKey" | "baseUrl" }>
 > = {
