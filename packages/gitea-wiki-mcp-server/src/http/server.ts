@@ -13,12 +13,22 @@
  * Discovery endpoints are mounted BEFORE the auth middleware so unauthenticated
  * clients can fetch them.
  *
- * Transport is stateless: a new StreamableHTTPServerTransport per request.
- * CORS exposes the MCP session headers so browser-based clients work.
+ * Transport is stateless: every POST builds BOTH a fresh `McpServer`
+ * (via the `createMcpServer` factory) AND a fresh
+ * `StreamableHTTPServerTransport`, then closes them when the response
+ * finishes. The shared-server-with-per-request-transport shape that this
+ * file used previously raced under concurrent load and tripped
+ * "Already connected to a transport. Call close() before connecting to
+ * a new transport, or use a separate Protocol instance per connection."
+ * (the SDK Protocol class only supports one transport at a time). The
+ * upstream SDK example `simpleStatelessStreamableHttp.ts` uses the same
+ * per-request factory pattern. CORS exposes the MCP session headers so
+ * browser-based clients work.
  */
 import express, { type Request, type Response } from "express";
 import cors, { type CorsOptions } from "cors";
 import rateLimit from "express-rate-limit";
+import type { AddressInfo } from "node:net";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isOAuthEnabled, type Config } from "../config.js";
@@ -33,12 +43,20 @@ import { verifyGiteaSignature } from "./webhook-verify.js";
 type RequestWithRawBody = Request & { rawBody?: Buffer };
 
 export interface HttpServerHandle {
+  /** The bound socket address. Useful for tests that listen on port 0 and
+   *  need to discover the assigned port. Production callers can ignore it. */
+  readonly address: AddressInfo;
   close: () => Promise<void>;
 }
 
+/** Factory that returns a fresh, fully-registered `McpServer` per call.
+ *  Built once by `createServer()` and threaded through here so the HTTP
+ *  layer can spin up an isolated server per POST. */
+export type CreateMcpServer = () => McpServer;
+
 export async function startHttpServer(
   config: Config,
-  mcpServer: McpServer,
+  createMcpServer: CreateMcpServer,
   registry: RepoRegistry,
   gitSync: GitSync,
 ): Promise<HttpServerHandle> {
@@ -146,7 +164,13 @@ export async function startHttpServer(
     publicUrl: config.publicUrl,
   };
 
-  // MCP endpoint — bearer auth then streamable HTTP transport per request.
+  // MCP endpoint — bearer auth then per-request server + transport.
+  // Every POST gets a fresh `McpServer` AND a fresh
+  // `StreamableHTTPServerTransport`. This is the upstream SDK's stateless
+  // pattern (see simpleStatelessStreamableHttp.ts) — sharing one server
+  // across requests races on `server.connect(transport)` and trips the
+  // "Already connected" guard whenever the lint agent (or any client)
+  // dispatches multiple resource reads in parallel.
   app.post(
     "/mcp",
     mcpLimiter,
@@ -159,13 +183,21 @@ export async function startHttpServer(
         : (req.body?.method ?? "?");
       console.error(`[mcp] ${who} → ${method}`);
 
+      const mcpServer = createMcpServer();
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined, // stateless
         enableJsonResponse: true,
       });
-      res.on("close", () => {
+
+      // Tear both down when the client disconnects OR the response finishes,
+      // otherwise the per-request server holds onto registered handlers
+      // until GC. Errors from close() are operational, never client-facing.
+      const cleanup = (): void => {
         transport.close().catch(() => undefined);
-      });
+        mcpServer.close().catch(() => undefined);
+      };
+      res.on("close", cleanup);
+
       try {
         await mcpServer.connect(transport);
         await transport.handleRequest(req, res, req.body);
@@ -232,14 +264,33 @@ export async function startHttpServer(
     res.status(404).json({ error: "not_found" });
   });
 
-  const httpServer = app.listen(config.port, config.host, () => {
-    const oauthNote = isOAuthEnabled(config) ? " +oauth" : "";
-    console.error(
-      `[http] listening on http://${config.host}:${config.port} (paths: /mcp, /refresh/:slug, /health${oauthNote})`,
-    );
-  });
+  // Bind synchronously via a Promise so the resolved handle carries the real
+  // AddressInfo (config.port may be 0 for ephemeral binding in tests).
+  const httpServer = await new Promise<import("node:http").Server>(
+    (resolve, reject) => {
+      const s = app.listen(config.port, config.host, () => {
+        const addr = s.address();
+        if (!addr || typeof addr === "string") {
+          reject(new Error("[http] failed to determine bound address"));
+          return;
+        }
+        const oauthNote = isOAuthEnabled(config) ? " +oauth" : "";
+        console.error(
+          `[http] listening on http://${addr.address}:${addr.port} (paths: /mcp, /refresh/:slug, /health${oauthNote})`,
+        );
+        resolve(s);
+      });
+      s.once("error", reject);
+    },
+  );
+
+  const address = httpServer.address();
+  if (!address || typeof address === "string") {
+    throw new Error("[http] address unavailable after listen");
+  }
 
   return {
+    address,
     async close() {
       await new Promise<void>((resolve, reject) => {
         httpServer.close((err) => (err ? reject(err) : resolve()));
