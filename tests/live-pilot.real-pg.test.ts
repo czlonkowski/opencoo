@@ -43,7 +43,11 @@
  *
  * # Gating
  *
- *   RUN_REAL_PILOT=1 — required; without it the test skips silently.
+ *   RUN_REAL_PILOT=1 — required to drive the full chain. Without
+ *     it, the file still loads under vitest and runs a single
+ *     documentation-passing assertion via `describe.skipIf(ENABLED)`
+ *     so the suite stays discoverable; the heavy beforeAll bootstrap
+ *     is gated and never fires.
  *   RUN_REAL_LLM=1 (optional) — present in env so a future sub-PR
  *     can wire a real OpenRouter dispatch without test-shape churn;
  *     today the policy-apply path is route-only (no provider call).
@@ -210,7 +214,15 @@ afterAll(async () => {
     server = null;
   }
   await disposeEnvironment();
-  if (HAS_DOCKER) await stopCompose().catch(() => undefined);
+  // Tear compose down only when we own the lifecycle: the suite
+  // actually started it (ENABLED) AND we're not on CI (the
+  // workflow's failure handler captures `docker compose logs` /
+  // `inspect` artifacts AFTER vitest exits, so leaving compose up
+  // there preserves them; the workflow's own teardown step then
+  // releases the runner).
+  if (ENABLED && HAS_DOCKER && !process.env.CI) {
+    await stopCompose().catch(() => undefined);
+  }
 }, 60_000);
 
 describe.runIf(ENABLED)(

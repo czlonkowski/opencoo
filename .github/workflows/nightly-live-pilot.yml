@@ -80,6 +80,10 @@ jobs:
             docker inspect "$c" > "tests/_artifacts/live-pilot/inspect-$c.json" 2>&1 || true
           done
 
+      # The vitest afterAll skips `stopCompose` when CI=true (set
+      # automatically by GitHub Actions) so the "Capture compose
+      # diagnostics on failure" step above can read live container
+      # state. This step is the SOLE compose-down path on CI.
       - name: Tear down compose (best-effort)
         if: always()
         run: docker compose -f compose.e2e.yml down -v --remove-orphans

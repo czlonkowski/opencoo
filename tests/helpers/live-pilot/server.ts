@@ -18,9 +18,12 @@
  *     username + a synthetic admin team slug (the real Gitea is
  *     used for repo provisioning + wiki commits via the existing
  *     e2e helpers; only the auth/whoami round-trip is mocked).
- *   - the `webhook` adapter (the smoke-test path) plus the
- *     `asana` SourceAdapter wired with `snapshotMode: 'off'` so
- *     no AsanaClient is needed for this test's parseEvents path.
+ *   - the `asana` SourceAdapter wired with `snapshotMode: 'off'`
+ *     so no AsanaClient is needed for this test's parseEvents
+ *     path. (Only Asana is registered today — the live-pilot test
+ *     drives the Q7 per-adapter signature path through Asana
+ *     specifically. Add other adapters here when a Q-fix needs
+ *     them.)
  *
  * Helpers exposed:
  *   - `buildLivePilotServer` — constructs + listens; returns
