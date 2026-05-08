@@ -116,6 +116,17 @@ describe("HttpMcpToolClient — readResource", () => {
     expect(parsed.jsonrpc).toBe("2.0");
     expect(parsed.method).toBe("resources/read");
     expect(parsed.params.uri).toBe("wiki://exec/index.md");
+
+    // MCP Streamable HTTP transport requires the client to advertise
+    // BOTH `application/json` and `text/event-stream` in `Accept` —
+    // gitea-wiki-mcp-server returns 406 ("Client must accept both
+    // application/json and text/event-stream") otherwise.
+    const acceptHeader = new Headers(
+      calls[0]?.init.headers as Record<string, string> | undefined,
+    ).get("accept");
+    expect(acceptHeader).toMatch(
+      /application\/json.*text\/event-stream|text\/event-stream.*application\/json/,
+    );
   });
 
   it("attaches `Authorization: Bearer ${token}` header on every request", async () => {

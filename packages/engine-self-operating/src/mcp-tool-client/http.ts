@@ -291,7 +291,10 @@ export class HttpMcpToolClient implements McpToolClient {
         headers: {
           authorization: `Bearer ${this.bearerToken}`,
           "content-type": "application/json",
-          accept: "application/json",
+          // MCP HTTP transport requires both content types per the
+          // Streamable HTTP spec — gitea-wiki-mcp-server returns 406
+          // when only `application/json` is offered.
+          accept: "application/json, text/event-stream",
         },
         body,
         signal: controller.signal,
