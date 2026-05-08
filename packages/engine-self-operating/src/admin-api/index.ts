@@ -45,6 +45,7 @@ import {
 import { registerEventsRoute } from "./routes/events.js";
 import { registerHeartbeatRoutes } from "./routes/heartbeat.js";
 import { registerLintFindingsRoutes } from "./routes/lint-findings.js";
+import { registerLlmModelsRoute } from "./routes/llm-models.js";
 import { registerLogoutRoute } from "./routes/logout.js";
 import { registerMarketplaceUpdatesRoutes } from "./routes/marketplace-updates.js";
 import { registerPipelinesRoutes } from "./routes/pipelines.js";
@@ -192,6 +193,9 @@ export async function registerAdminApi(
     db: args.db,
     sessionHmacKey: args.sessionHmacKey,
   });
+  // PR-Q13 (phase-a appendix #9) — read-only model catalog
+  // for the per-tier model dropdown in the LLM-policy editor.
+  registerLlmModelsRoute({ app: guardedApp });
   registerLogoutRoute({ app: guardedApp, db: args.db });
 
   // Phase-a appendix #4 PR-B — Activity tab routes.
