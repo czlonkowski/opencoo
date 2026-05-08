@@ -14,6 +14,7 @@ export {
   createFirefliesSourceAdapter,
   extractFirefliesSignature,
   extractFirefliesWebhookSecret,
+  wrapFirefliesWebhookSecret,
   firefliesBindingConfigSchema,
   type BuildFirefliesWebhookHelpersArgs,
   type CreateFirefliesSourceAdapterArgs,

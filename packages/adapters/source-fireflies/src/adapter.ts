@@ -217,6 +217,21 @@ export function extractFirefliesWebhookSecret(plaintext: Buffer): Buffer {
 }
 
 /**
+ * Symmetric to `extractFirefliesWebhookSecret`: wrap a raw secret
+ * into the JSON-on-disk shape the admin-API write path produces.
+ *
+ * Fireflies doesn't currently expose a registration-handshake
+ * protocol (no `handshakeFn` on this adapter), so this helper is
+ * not reached by the receiver today. Implemented for symmetry with
+ * the extract path so a future Fireflies handshake addition
+ * round-trips cleanly without a separate landing PR (PR-Q7 round-2,
+ * Copilot triage).
+ */
+export function wrapFirefliesWebhookSecret(rawSecret: string): Buffer {
+  return Buffer.from(JSON.stringify({ signing_secret: rawSecret }), "utf8");
+}
+
+/**
  * Build a deterministic event id from `(meetingId, revision OR
  * transcriptId, action)`. Fireflies doesn't ship a per-event
  * gid, but the combination above is stable across replays
@@ -284,6 +299,7 @@ export function buildFirefliesWebhookHelpers(
     verifier,
     extractSignature: extractFirefliesSignature,
     extractWebhookSecret: extractFirefliesWebhookSecret,
+    wrapWebhookSecret: wrapFirefliesWebhookSecret,
     parseEvents: ({ body, fetchedAt }) => {
       const parsed = parseFirefliesWebhookBody(body);
 

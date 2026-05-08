@@ -178,6 +178,18 @@ export function extractWebhookCredentialSecret(plaintext: Buffer): Buffer {
   return Buffer.from(inner, "utf8");
 }
 
+/**
+ * Symmetric to `extractWebhookCredentialSecret`: wrap a raw secret
+ * into the JSON-on-disk shape the admin-API write path produces.
+ *
+ * The generic webhook adapter has no registration-handshake
+ * protocol, so this helper is not reached today. Provided for
+ * symmetry + future-proofing (PR-Q7 round-2, Copilot triage).
+ */
+export function wrapWebhookCredentialSecret(rawSecret: string): Buffer {
+  return Buffer.from(JSON.stringify({ signing_secret: rawSecret }), "utf8");
+}
+
 const ONE_MIB = 1024 * 1024;
 
 /**
@@ -278,6 +290,7 @@ export function buildWebhookHelpers(
     verifier,
     extractSignature: extractWebhookSignature,
     extractWebhookSecret: extractWebhookCredentialSecret,
+    wrapWebhookSecret: wrapWebhookCredentialSecret,
     parseEvents({
       body,
       fetchedAt,

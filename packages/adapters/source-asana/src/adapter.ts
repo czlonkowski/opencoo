@@ -228,6 +228,20 @@ export function extractAsanaWebhookSecret(plaintext: Buffer): Buffer {
 }
 
 /**
+ * Wrap a raw Asana `X-Hook-Secret` value (the bytes Asana ships
+ * during the registration handshake) into the same JSON-on-disk
+ * shape the admin-API write path produces, so a subsequent signed
+ * delivery can `extractAsanaWebhookSecret(...)` it cleanly.
+ *
+ * Symmetric pair to `extractAsanaWebhookSecret` — together they
+ * close the round-trip for handshake-acquired bindings (PR-Q7
+ * round-2, Copilot triage).
+ */
+export function wrapAsanaWebhookSecret(rawSecret: string): Buffer {
+  return Buffer.from(JSON.stringify({ x_hook_secret: rawSecret }), "utf8");
+}
+
+/**
  * Detect Asana's registration handshake. Returns the secret to echo,
  * or null if this is a normal event delivery.
  */
@@ -561,6 +575,7 @@ export function buildAsanaWebhookHelpers(
     verifier,
     extractSignature: extractAsanaSignature,
     extractWebhookSecret: extractAsanaWebhookSecret,
+    wrapWebhookSecret: wrapAsanaWebhookSecret,
     handshakeFn: detectAsanaHandshake,
     parseEvents: parseEventsFn,
     ...(snapshotMode === "on-event" ? { enrichEvents: enrichEventsImpl } : {}),

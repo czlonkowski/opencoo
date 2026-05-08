@@ -272,11 +272,26 @@ export function registerWebhookRoute(
       ? (adapterStub.webhook.handshakeFn?.(allHeaders) ?? null)
       : null;
     if (handshakeResult !== null) {
-      // Persist the webhook secret to CredentialStore.
+      // Persist the webhook secret to CredentialStore. PR-Q7 round-2
+      // (Copilot triage on PR #74): if the adapter implements
+      // `extractWebhookSecret` it MUST also implement
+      // `wrapWebhookSecret`, otherwise the next signed delivery
+      // would route through extract-against-raw-bytes and 500 + DLQ
+      // with `credential_unwrap_failed`. Use the wrap helper to
+      // produce the same JSON-on-disk shape the admin-API write
+      // path produces (`{x_hook_secret: "..."}` for asana, etc.).
+      // Fallback for adapters with no helpers preserves the pre-Q7
+      // raw-bytes contract.
+      const adapterWebhookForHandshake = hasWebhookHelpers(adapterStub)
+        ? adapterStub.webhook
+        : null;
+      const wrappedHandshakePlaintext =
+        adapterWebhookForHandshake?.wrapWebhookSecret?.(handshakeResult.secret) ??
+        Buffer.from(handshakeResult.secret, "utf8");
       const newCredId = await options.credentialStore.write({
         name: `${binding.adapterSlug}:webhook-secret:${bindingId}`,
         schemaRef: handshakeResult.schemaRef ?? `${binding.adapterSlug}:webhook_secret`,
-        plaintext: Buffer.from(handshakeResult.secret, "utf8"),
+        plaintext: wrappedHandshakePlaintext,
       });
 
       // UPDATE sources_bindings.webhook_secret_credentials_id.
@@ -352,9 +367,20 @@ export function registerWebhookRoute(
     // stubs registered for tests).
     const usedAdapterSignatureExtractor =
       adapterWebhook?.extractSignature !== undefined;
-    const signature = usedAdapterSignatureExtractor
-      ? adapterWebhook!.extractSignature!(allHeaders)
-      : req.headers["x-signature"];
+    // The legacy fallback reads `req.headers["x-signature"]` directly;
+    // Fastify exposes that as `string | string[] | undefined` because
+    // a client can send the same header multiple times. The verifier
+    // calls `.replace()` on the value and crashes (turning a 401 into
+    // a 500) if it ever sees an array. Normalise to the LAST string
+    // — that matches Asana's `findHeaderValue` semantics for adapters
+    // that route through `extractSignature`. Copilot triage on PR-Q7.
+    let signature: string | undefined;
+    if (usedAdapterSignatureExtractor) {
+      signature = adapterWebhook!.extractSignature!(allHeaders);
+    } else {
+      const raw = req.headers["x-signature"];
+      signature = Array.isArray(raw) ? raw[raw.length - 1] : raw;
+    }
     // Diagnostic header label for the rejection log line below.
     // When the adapter routes through `extractSignature`, we cannot
     // know the literal header name without an adapter-side metadata

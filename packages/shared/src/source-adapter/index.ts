@@ -179,6 +179,26 @@ export interface SourceWebhookHelpers {
    * undefined.
    */
   extractWebhookSecret?(plaintext: Buffer): Buffer;
+  /**
+   * Symmetric to `extractWebhookSecret`: wrap a raw secret string
+   * (e.g. the value Asana ships in `X-Hook-Secret` on the
+   * registration handshake) into the same JSON-on-disk shape the
+   * admin-API write path produces, so a subsequent signed delivery
+   * can `extractWebhookSecret(...)` it cleanly.
+   *
+   * For source-asana the implementation is:
+   *
+   *   `Buffer.from(JSON.stringify({x_hook_secret: rawSecret}), "utf8")`
+   *
+   * Optional from PR-Q7: when omitted, the receiver persists the
+   * handshake secret as raw UTF-8 bytes (the pre-Q7 contract).
+   * Adapters that implement `extractWebhookSecret` MUST also
+   * implement `wrapWebhookSecret` so handshake-acquired bindings
+   * round-trip through the same shape — otherwise the next signed
+   * delivery would route through `extractWebhookSecret` against a
+   * raw-bytes blob and 500 + DLQ with `credential_unwrap_failed`.
+   */
+  wrapWebhookSecret?(rawSecret: string): Buffer;
   /** Unpack a verified body into one or more events. Adapter
    *  is responsible for shape-validating the body — a
    *  malformed body throws ValidationError. */

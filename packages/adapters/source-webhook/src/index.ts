@@ -24,6 +24,7 @@ export {
   buildWebhookHelpers,
   createSourceWebhookAdapter,
   extractWebhookCredentialSecret,
+  wrapWebhookCredentialSecret,
   extractWebhookSignature,
   type BuildWebhookHelpersOptions,
   type CreateSourceWebhookAdapterArgs,
