@@ -163,8 +163,10 @@ function FeedView(): JSX.Element {
       ]);
     });
 
-    // In test environments EventSource is not available and the client
-    // marks itself as "open" immediately — treat that as connected.
+    // The fetch-streaming client does a real connect (PR-Q1); test
+    // suites stub `openSseClient` directly, so the readyState here
+    // reflects whatever the stub returns. Treat `open` as connected
+    // so the LIVE indicator flips immediately when a stub is in use.
     if (client.readyState === "open") {
       setConnected(true);
     }
