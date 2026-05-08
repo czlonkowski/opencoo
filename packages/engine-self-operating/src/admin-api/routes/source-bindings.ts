@@ -693,6 +693,15 @@ function validateBindingConfigAgainstSchema(
     const value = config[required];
     const field = schema.properties[required];
     if (field === undefined) continue;
+    // Defensive: skip required-gating on `hidden` fields (PR-Q9
+    // review). Today no adapter lists a hidden field as required —
+    // hidden fields are auto-backfilled by handshake / scan flows
+    // (asana / fireflies `webhookSecretCredentialId`). If a future
+    // adapter mis-marks one as required, the wizard would have no
+    // input for it AND the server would reject the create — this
+    // skip keeps the symmetry with the client-side `field.hidden`
+    // skip in `BindingConfigFields`.
+    if (field.hidden === true) continue;
     if (!isFieldValuePresent(field, value)) {
       missing.push(required);
     }
