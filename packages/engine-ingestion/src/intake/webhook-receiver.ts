@@ -350,10 +350,24 @@ export function registerWebhookRoute(
     // legacy `x-signature` header. Only fall back to `x-signature`
     // when no adapter helper exists at all (legacy adapters / bare
     // stubs registered for tests).
-    const signature =
-      adapterWebhook?.extractSignature !== undefined
-        ? adapterWebhook.extractSignature(allHeaders)
-        : req.headers["x-signature"];
+    const usedAdapterSignatureExtractor =
+      adapterWebhook?.extractSignature !== undefined;
+    const signature = usedAdapterSignatureExtractor
+      ? adapterWebhook!.extractSignature!(allHeaders)
+      : req.headers["x-signature"];
+    // Diagnostic header label for the rejection log line below.
+    // When the adapter routes through `extractSignature`, we cannot
+    // know the literal header name without an adapter-side metadata
+    // surface (PR-Q7 review follow-up: a future
+    // `extractSignature.headerName` static could surface it
+    // verbatim). For now the sentinel `"adapter:<slug>"` tells
+    // operators "the adapter chose its own header" and the slug
+    // points them at the right adapter source for the canonical
+    // name. Falls back to the literal `"x-signature"` for adapters
+    // that haven't migrated.
+    const diagnosticHeaderLabel = usedAdapterSignatureExtractor
+      ? `adapter:${binding.adapterSlug}`
+      : "x-signature";
     const provider = req.headers["x-provider"] ?? binding.adapterSlug;
     const eventId = req.headers["x-event-id"];
 
@@ -450,7 +464,7 @@ export function registerWebhookRoute(
         bindingId,
         provider: provider ?? binding.adapterSlug,
         eventId: eventId ?? null,
-        signatureHeaderName: "x-signature",
+        signatureHeaderName: diagnosticHeaderLabel,
         errorReason: safeReason,
       });
 

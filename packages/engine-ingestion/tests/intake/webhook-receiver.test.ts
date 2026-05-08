@@ -773,6 +773,12 @@ describe("webhook receiver — PR-Q7 per-adapter routing", () => {
 
     const scannerQueue = makeRecorder();
     const dlqQueue = makeRecorder();
+    const appLogger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
     const app = buildWebhookReceiver({
       db: fixture.db,
       credentialStore,
@@ -780,6 +786,7 @@ describe("webhook receiver — PR-Q7 per-adapter routing", () => {
       verifier: new HmacSha256Verifier(),
       scannerQueue: scannerQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["scannerQueue"],
       dlqQueue: dlqQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["dlqQueue"],
+      appLogger,
     });
 
     const body = '{"events":[]}';
@@ -801,6 +808,20 @@ describe("webhook receiver — PR-Q7 per-adapter routing", () => {
 
     expect(res.statusCode).toBe(401);
     expect(scannerQueue.add).not.toHaveBeenCalled();
+
+    // Reviewer triage: the rejection log line MUST identify the
+    // adapter-routed signature path, not the legacy `"x-signature"`
+    // sentinel. Operators reading the log otherwise see a misleading
+    // "looked at x-signature" trail when the adapter actually checked
+    // a different header.
+    expect(appLogger.debug).toHaveBeenCalledWith(
+      "webhook_receiver.signature_invalid",
+      expect.objectContaining({
+        bindingId: fixture.bindingId,
+        signatureHeaderName: "adapter:asana",
+      }),
+    );
+
     await app.close();
   });
 
