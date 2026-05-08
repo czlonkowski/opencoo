@@ -88,6 +88,149 @@ describe("CredentialForm", () => {
     expect(screen.getByText(/· optional/i)).toBeInTheDocument();
   });
 
+  describe("grouped (dot-path) field keys — PR-Q11", () => {
+    const GROUPED_SCHEMA: CredentialSchema = {
+      type: "object",
+      properties: {
+        "auth.personal_access_token": {
+          type: "string",
+          secret: true,
+          description: "Gitea PAT",
+        },
+        "auth.workspace_gid": { type: "string", description: "workspace id" },
+        "webhook_secret.x_hook_secret": { type: "string", secret: true },
+      },
+      required: [
+        "auth.personal_access_token",
+        "auth.workspace_gid",
+        "webhook_secret.x_hook_secret",
+      ],
+    };
+
+    it("renders ONE 'Auth' section heading above the first field of that section", () => {
+      render(<CredentialForm schema={GROUPED_SCHEMA} onSubmit={() => undefined} />);
+      const headings = screen.getAllByText("Auth", { selector: "[data-section-heading]" });
+      expect(headings.length).toBe(1);
+    });
+
+    it("renders 'Webhook secret' as the second section heading (humanised, not 'Webhook_secret')", () => {
+      render(<CredentialForm schema={GROUPED_SCHEMA} onSubmit={() => undefined} />);
+      const heading = screen.getByText("Webhook secret", {
+        selector: "[data-section-heading]",
+      });
+      expect(heading).toBeInTheDocument();
+      // Sanity: raw underscored form not present as a heading.
+      expect(
+        screen.queryByText("Webhook_secret", { selector: "[data-section-heading]" }),
+      ).toBeNull();
+    });
+
+    it("renders the leaf as a humanised label, not the dot-path", () => {
+      render(<CredentialForm schema={GROUPED_SCHEMA} onSubmit={() => undefined} />);
+      // First-letter capital, underscores → spaces, lowercase rest.
+      expect(screen.getByText("Personal access token")).toBeInTheDocument();
+      expect(screen.getByText("Workspace gid")).toBeInTheDocument();
+      expect(screen.getByText("X hook secret")).toBeInTheDocument();
+      // Negative: the dot-path leak is gone.
+      expect(screen.queryByText("auth.personal_access_token")).toBeNull();
+      expect(screen.queryByText("auth.workspace_gid")).toBeNull();
+      expect(screen.queryByText("webhook_secret.x_hook_secret")).toBeNull();
+    });
+
+    it("still surfaces the `· required` marker next to a leaf label", () => {
+      render(<CredentialForm schema={GROUPED_SCHEMA} onSubmit={() => undefined} />);
+      // Three required fields → three "· required" markers.
+      const markers = screen.getAllByText(/· required/i);
+      expect(markers.length).toBe(3);
+    });
+
+    it("still surfaces the `stored encrypted` mono-note for grouped secret fields", () => {
+      const { container } = render(
+        <CredentialForm schema={GROUPED_SCHEMA} onSubmit={() => undefined} />,
+      );
+      // Two secret fields → two filled-disc glyphs in the encrypted-note spans.
+      const glyphs = container.querySelectorAll("svg title");
+      const titles = Array.from(glyphs)
+        .map((t) => t.textContent ?? "")
+        .filter((s) => /stored encrypted/i.test(s));
+      expect(titles.length).toBe(2);
+    });
+
+    it("preserves dot-keyed names on inputs and submits dot-keyed values", async () => {
+      const onSubmit = vi.fn().mockResolvedValue(undefined);
+      const user = userEvent.setup();
+      render(<CredentialForm schema={GROUPED_SCHEMA} onSubmit={onSubmit} />);
+      const pat = document.querySelector(
+        "input[name='auth.personal_access_token']",
+      ) as HTMLInputElement;
+      const gid = document.querySelector(
+        "input[name='auth.workspace_gid']",
+      ) as HTMLInputElement;
+      const hook = document.querySelector(
+        "input[name='webhook_secret.x_hook_secret']",
+      ) as HTMLInputElement;
+      expect(pat).not.toBeNull();
+      expect(gid).not.toBeNull();
+      expect(hook).not.toBeNull();
+      // data-secret attribute preserved on grouped secret fields.
+      expect(pat.dataset["secret"]).toBe("true");
+      expect(hook.dataset["secret"]).toBe("true");
+      expect(gid.dataset["secret"]).toBeUndefined();
+
+      await user.type(pat, "tokABC");
+      await user.type(gid, "1234567890");
+      await user.type(hook, "shh");
+      await user.click(screen.getByRole("button"));
+
+      // Dot-keyed body — the parent modal nests these via `auth[k] = body['auth.${k}']`.
+      expect(onSubmit).toHaveBeenCalledWith({
+        "auth.personal_access_token": "tokABC",
+        "auth.workspace_gid": "1234567890",
+        "webhook_secret.x_hook_secret": "shh",
+      });
+    });
+
+    it("uses a semantic <h3> for section headings (Copilot a11y triage)", () => {
+      const { container } = render(
+        <CredentialForm schema={GROUPED_SCHEMA} onSubmit={() => undefined} />,
+      );
+      // Section heading must be a real heading element so assistive
+      // tech can navigate between sections — not a styled `<p>`.
+      const headings = container.querySelectorAll("h3[data-section-heading]");
+      expect(headings.length).toBe(2); // "Auth" + "Webhook secret"
+      // role=heading is implicit on h3; verify via the role API.
+      expect(screen.getByRole("heading", { name: "Auth", level: 3 }))
+        .toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Webhook secret", level: 3 }))
+        .toBeInTheDocument();
+    });
+
+    it("re-emits a section heading after a non-dotted gap (Copilot triage)", () => {
+      // Schema where two `auth.*` runs are separated by a non-dotted
+      // `baseUrl` field. Without the lastSection reset, the second
+      // `auth.*` run would be silently un-headed because the cursor
+      // would still equal "auth" from the first run.
+      const INTERLEAVED_SCHEMA: CredentialSchema = {
+        type: "object",
+        properties: {
+          "auth.token": { type: "string", secret: true },
+          baseUrl: { type: "string" },
+          "auth.workspace_gid": { type: "string" },
+        },
+        required: ["auth.token", "baseUrl", "auth.workspace_gid"],
+      };
+      render(
+        <CredentialForm schema={INTERLEAVED_SCHEMA} onSubmit={() => undefined} />,
+      );
+      // Two "Auth" headings — one above each contiguous run.
+      const authHeadings = screen.getAllByRole("heading", {
+        name: "Auth",
+        level: 3,
+      });
+      expect(authHeadings.length).toBe(2);
+    });
+  });
+
   it("submit button label swaps to `saving…` while submitting (no spinner)", async () => {
     let resolveOuter: (() => void) | undefined;
     const onSubmit = vi.fn().mockImplementation(

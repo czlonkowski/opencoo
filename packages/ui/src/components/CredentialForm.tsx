@@ -40,7 +40,7 @@
  * var(--ease-write); fields fade-in staggered 20ms apart, max
  * 6 fields staggered (cap to avoid waterfall).
  */
-import { useState, type CSSProperties, type FormEventHandler } from "react";
+import { Fragment, useState, type CSSProperties, type FormEventHandler } from "react";
 import { useTranslation } from "react-i18next";
 
 import { GlyphFilledDisc } from "./Glyph.js";
@@ -87,6 +87,54 @@ const LABEL_STYLE: CSSProperties = {
   alignItems: "baseline",
   gap: "var(--space-2)",
 };
+
+// Section heading sits above the FIRST field of a `section.leaf`
+// run. Same t-micro token treatment as the field label so the
+// hierarchy reads as one mono column with a slightly stronger
+// upper line. We deliberately do NOT introduce a new design
+// token here — see CLAUDE.md / design-system rules.
+const SECTION_HEADING_STYLE: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontWeight: 600,
+  fontSize: "var(--fs-micro)",
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  color: "var(--fg-3)",
+  margin: 0,
+  paddingTop: "var(--space-2)",
+};
+
+/**
+ * Split `auth.personal_access_token` into `["auth",
+ * "personal_access_token"]`. Splits on the FIRST `.` only —
+ * leaves any trailing dots inside the leaf alone (defensive;
+ * the engine schemas don't currently nest deeper, but if they
+ * did, we'd want the leaf to keep showing meaningfully rather
+ * than fragment further).
+ */
+function splitFieldKey(key: string): { section: string | undefined; leaf: string } {
+  const idx = key.indexOf(".");
+  if (idx === -1) return { section: undefined, leaf: key };
+  return { section: key.slice(0, idx), leaf: key.slice(idx + 1) };
+}
+
+/**
+ * Humanise an underscored identifier for display:
+ *   `personal_access_token` → `Personal access token`
+ *   `webhook_secret`        → `Webhook secret`
+ *   `x_hook_secret`         → `X hook secret`
+ *
+ * First-letter capital only — NOT title-case-every-word. Per
+ * design-system rules the surrounding label-row keeps its
+ * uppercase mono treatment via CSS `text-transform`; this
+ * function only normalises the underlying string so we don't
+ * leak schema dot-paths.
+ */
+function humanise(s: string): string {
+  if (s.length === 0) return s;
+  const spaced = s.replace(/_/g, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
+}
 
 const REQUIRED_MARKER_STYLE: CSSProperties = {
   fontFamily: "var(--font-mono)",
@@ -160,6 +208,7 @@ const SUBMIT_BTN_BASE_STYLE: CSSProperties = {
 
 interface FieldRowProps {
   readonly fieldKey: string;
+  readonly labelText: string;
   readonly prop: CredentialSchemaProperty;
   readonly required: boolean;
   readonly value: string;
@@ -194,7 +243,7 @@ function FieldRow(props: FieldRowProps): JSX.Element {
       } as CSSProperties}
     >
       <label htmlFor={inputId} style={LABEL_STYLE}>
-        <span>{props.fieldKey}</span>
+        <span>{props.labelText}</span>
         <span
           style={
             props.required
@@ -283,31 +332,60 @@ export function CredentialForm(props: CredentialFormProps): JSX.Element {
       : {}),
   };
 
+  // Track the most recently rendered section so we emit the
+  // section heading exactly once, above its FIRST field. The
+  // internal data shape stays dot-keyed (see `setValues` below)
+  // — this is purely a render-time transformation.
+  //
+  // `lastSection` is reset to undefined whenever a non-dotted key
+  // appears between two dotted runs of the same section (Copilot
+  // PR-Q11 review): an interleaving like `auth.x → baseUrl →
+  // auth.y` should re-emit the "Auth" heading on `auth.y` so the
+  // visual grouping mirrors the actual layout. Without the reset,
+  // `lastSection` would still equal "auth" when `auth.y` lands and
+  // the heading would be silently skipped.
+  let lastSection: string | undefined;
+
   return (
     <form noValidate onSubmit={onSubmit} style={FORM_STYLE}>
       {fieldKeys.map((key, idx) => {
         const prop = props.schema.properties[key];
         if (prop === undefined) return null;
+        const { section, leaf } = splitFieldKey(key);
+        const labelText = humanise(leaf);
+        const showSectionHeading =
+          section !== undefined && section !== lastSection;
+        // Update the cursor for both dotted and non-dotted keys so
+        // a re-entry into a previously-shown section after a
+        // non-dotted gap re-emits its heading (see comment above).
+        lastSection = section;
         return (
-          <FieldRow
-            key={key}
-            fieldKey={key}
-            prop={prop}
-            required={props.schema.required.includes(key)}
-            value={values[key] ?? ""}
-            onChange={(v): void => {
-              setValues((cur) => ({ ...cur, [key]: v }));
-              if (errors[key] !== undefined) {
-                setErrors((er) => {
-                  const next = { ...er };
-                  delete next[key];
-                  return next;
-                });
-              }
-            }}
-            error={errors[key]}
-            staggerIndex={idx}
-          />
+          <Fragment key={key}>
+            {showSectionHeading && section !== undefined ? (
+              <h3 style={SECTION_HEADING_STYLE} data-section-heading>
+                {humanise(section)}
+              </h3>
+            ) : null}
+            <FieldRow
+              fieldKey={key}
+              labelText={labelText}
+              prop={prop}
+              required={props.schema.required.includes(key)}
+              value={values[key] ?? ""}
+              onChange={(v): void => {
+                setValues((cur) => ({ ...cur, [key]: v }));
+                if (errors[key] !== undefined) {
+                  setErrors((er) => {
+                    const next = { ...er };
+                    delete next[key];
+                    return next;
+                  });
+                }
+              }}
+              error={errors[key]}
+              staggerIndex={idx}
+            />
+          </Fragment>
         );
       })}
       <div style={SUBMIT_ROW_STYLE}>
