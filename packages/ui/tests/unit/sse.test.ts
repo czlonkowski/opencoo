@@ -106,6 +106,12 @@ function installFetchHarness(opts: { status?: number } = {}): FetchHarness {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).fetch = fetchMock as unknown as typeof fetch;
 
+  // Harness owns the fetch override; the lifecycle hook below
+  // (`afterEach`) restores `globalThis.fetch` to its original
+  // implementation so the mock cannot leak across files. Vitest's
+  // `restoreAllMocks` only undoes `vi.spyOn` / `vi.fn` registered
+  // mocks, not raw assignments to globals.
+
   return {
     async next(): Promise<StreamHandle> {
       // If a fetch has already landed but no one consumed it, hand it off.
@@ -132,6 +138,8 @@ async function flush(): Promise<void> {
 
 // ─── Lifecycle ───────────────────────────────────────────────────────────────
 
+const ORIGINAL_FETCH: typeof fetch = globalThis.fetch;
+
 beforeEach(() => {
   clearPat();
   vi.useRealTimers();
@@ -140,6 +148,12 @@ beforeEach(() => {
 afterEach(() => {
   clearPat();
   vi.restoreAllMocks();
+  // Restore the original `fetch` — `installFetchHarness` overwrites
+  // `globalThis.fetch` directly (a raw assignment, not a vi.spyOn),
+  // which `vi.restoreAllMocks()` cannot revert. Without this hook,
+  // the mocked fetch would leak into any later test file that
+  // touches `globalThis.fetch`.
+  globalThis.fetch = ORIGINAL_FETCH;
 });
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

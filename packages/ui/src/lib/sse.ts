@@ -46,6 +46,10 @@ interface RawFrame {
   readonly type: string;
   readonly data: string;
   readonly id: string | undefined;
+  /** Whether the segment contained at least one `data:` line. Per the
+   *  SSE spec, frames with no data fields update the `lastEventId`
+   *  cursor but MUST NOT dispatch an event to listeners. */
+  readonly hasData: boolean;
 }
 
 const INITIAL_BACKOFF_MS = 500;
@@ -100,7 +104,12 @@ export function parseSseChunk(buffer: string): {
       // Empty frame (e.g. a stray pair of newlines) — skip.
       continue;
     }
-    frames.push({ type, data: dataLines.join("\n"), id });
+    frames.push({
+      type,
+      data: dataLines.join("\n"),
+      id,
+      hasData: dataLines.length > 0,
+    });
   }
   return { frames, rest };
 }
@@ -131,18 +140,30 @@ export function openSseClient(url: string): SseClient {
 
   function dispatch(frame: RawFrame): void {
     if (isClosed()) return;
+    // Cursor update happens for every frame that carries an `id:`
+    // field — even ones with no `data:`, per the SSE spec.
     if (frame.id !== undefined) lastEventId = frame.id;
+    // Frames without any `data:` fields are cursor-only; they MUST
+    // NOT dispatch an event (`MessageEvent` would have no payload to
+    // deliver). The prior EventSource-based helper got this for free
+    // from the platform; keep parity here.
+    if (!frame.hasData) return;
     const set = listeners.get(frame.type);
     if (set === undefined || set.size === 0) return;
+    // Parity with `EventSource`: when `data:` is present but empty,
+    // deliver the empty string (not `undefined`) — `MessageEvent.data`
+    // would have been `""` and `JSON.parse("")` would throw, so
+    // consumers that fall back to the raw string still get one.
     let parsed: unknown;
     if (frame.data.length === 0) {
-      parsed = undefined;
+      parsed = "";
     } else {
       try {
         parsed = JSON.parse(frame.data);
       } catch {
-        // Server emitted a non-JSON payload — pass the raw string through
-        // so consumers that expect plain text still receive something.
+        // Server emitted a non-JSON payload — pass the raw string
+        // through so consumers that expect plain text still receive
+        // something.
         parsed = frame.data;
       }
     }
