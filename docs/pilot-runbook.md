@@ -160,6 +160,16 @@ pnpm smoke:real-data         # in terminal 2; exits 0 in <30s on green
 
 The Asana walkthrough above (§4 steps 1–6) and the scripted smoke test different surfaces; running both gives independent signals — the smoke catches receiver / DB / direct-intake regressions, the Asana walk catches Compile + wiki regressions.
 
+### Live-pilot regression test (PR-Q14, phase-a appendix #9)
+
+`tests/live-pilot.real-pg.test.ts` (registered as `pnpm test:live-pilot`) is the canonical "did the appendix-#9 chain regress?" probe. It spins compose-spun postgres + redis + gitea, drives `migrate` + `agents seed` + the admin API + a synthetic Asana-shaped webhook + a Heartbeat run + the Sources drill-down PATCH/DELETE in one process, asserting that every Q-fix from Q1–Q13 is still wired. Gated by `RUN_REAL_PILOT=1`; runs nightly via `.github/workflows/nightly-live-pilot.yml` against `main`. Operators reproducing a nightly red can:
+
+```
+RUN_REAL_PILOT=1 pnpm test:live-pilot
+```
+
+When the live-pilot test is green, the §4 manual walk above is the next signal — the live-pilot covers wire-up; the manual walk covers the LLM-bound compile → wiki-write tail the in-band test deliberately stops short of (planner Q3: don't burn provider credits in CI).
+
 ## 5. Common failures and how to recover
 
 - **`doctor: ENCRYPTION_KEY` is `unset` or invalid.** regenerate via `openssl rand -base64 32` (NOT `-hex 32` — the loader base64-decodes the value and requires exactly 32 raw bytes; a hex string decodes to ~47 bytes), write to `.env`, restart `pnpm opencoo`. the vault refuses any other byte length — that protects every encrypted credential row from a weak-key downgrade.

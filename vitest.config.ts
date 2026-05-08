@@ -31,6 +31,14 @@ export default defineConfig({
       // it in — bringing up Docker compose on every PR run
       // would 10× the CI time. (PR 32 / plan #149.)
       "tests/e2e/**",
+      // Live-pilot regression test (PR-Q14, phase-a appendix
+      // #9). Same Docker-compose dependency as the e2e suite
+      // PLUS a `RUN_REAL_PILOT=1` env-var gate. Excluded from
+      // the default `pnpm test` so PR runs stay fast; runs
+      // nightly via `.github/workflows/nightly-live-pilot.yml`
+      // and on demand via `pnpm test:live-pilot`.
+      "tests/live-pilot.real-pg.test.ts",
+      "tests/helpers/live-pilot/**",
     ],
     environment: "node",
     testTimeout: 10_000,

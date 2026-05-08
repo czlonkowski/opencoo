@@ -1,0 +1,95 @@
+name: nightly-live-pilot (phase-a appendix #9)
+
+# Live-pilot regression test (PR-Q14 / phase-a appendix #9).
+# Runs the appendix-#9 chain (Q1-Q13) end-to-end against
+# compose-spun postgres + redis + gitea every night at 06:00
+# UTC. Runs against `main` so a regression in any merged Q-fix
+# surfaces before the next pilot-cutover window opens.
+#
+# Manual dispatch lets the operator re-run after a fix without
+# waiting for the next cron tick.
+#
+# This is intentionally NOT wired to PRs — bringing up the full
+# compose stack for every PR would 10x CI time, and the existing
+# per-package CI plus `vitest.e2e.config.ts` already provide
+# regression coverage at the unit + e2e tier on every PR.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-live-pilot
+  cancel-in-progress: false
+
+jobs:
+  live-pilot:
+    name: live-pilot end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build @opencoo/eslint-plugin
+        run: pnpm --filter @opencoo/eslint-plugin build
+
+      - name: Build workspaces
+        run: pnpm build
+
+      # ubuntu-latest already ships docker; the compose
+      # controller's `--wait` + per-container health poll
+      # handles bring-up timing.
+      - name: Run live-pilot test
+        env:
+          # The test gates on RUN_REAL_PILOT=1; without it the
+          # body skips with a documentation-only assertion.
+          RUN_REAL_PILOT: "1"
+          # Optional — when present, the test's LLM-policy
+          # round-trip can be extended to dispatch a real
+          # OpenRouter call. The current PR-Q14 body does not
+          # call out to a provider; the secret is forwarded
+          # for forward-compat with a v0.2 lift that adds a
+          # real provider exercise. Missing secret = test
+          # still passes; the env value is empty string.
+          RUN_REAL_LLM: ${{ secrets.OPENROUTER_API_KEY != '' && '1' || '' }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: pnpm test:live-pilot
+
+      - name: Capture compose logs + container inspect on failure
+        if: failure()
+        run: |
+          mkdir -p tests/_artifacts/live-pilot
+          docker compose -f compose.e2e.yml logs --no-color --timestamps > tests/_artifacts/live-pilot/compose-logs.txt 2>&1 || true
+          for c in opencoo-e2e-postgres opencoo-e2e-redis opencoo-e2e-gitea; do
+            docker inspect "$c" > "tests/_artifacts/live-pilot/inspect-$c.json" 2>&1 || true
+          done
+
+      - name: Tear down compose (best-effort)
+        if: always()
+        run: docker compose -f compose.e2e.yml down -v --remove-orphans
+
+      - name: Upload compose logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-pilot-compose-logs
+          path: |
+            tests/_artifacts/live-pilot/**
+          if-no-files-found: ignore
+          retention-days: 14
