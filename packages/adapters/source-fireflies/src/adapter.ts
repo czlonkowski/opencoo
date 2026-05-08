@@ -176,6 +176,47 @@ export function extractFirefliesSignature(
 }
 
 /**
+ * (PR-Q7) Unwrap the inner `signing_secret` from the credential
+ * plaintext bytes the admin-API source-bindings write path stored.
+ *
+ * Mirrors `source-asana`'s `extractAsanaWebhookSecret`. The admin-API
+ * encrypts `JSON.stringify(webhookCreds.webhook_secret)`, which for
+ * Fireflies is the shape declared in
+ * `SOURCE_ADAPTER_CREDENTIAL_SCHEMAS.fireflies.credentialSchema.properties.webhook_secret`:
+ *   `{"signing_secret":"<the-actual-hmac-secret>"}`.
+ *
+ * Real Fireflies upstreams sign the request body with the raw
+ * `signing_secret` value — never with the wrapped JSON shape — so the
+ * receiver MUST unwrap before calling the HMAC verifier.
+ *
+ * Throws on malformed JSON or a missing inner field — both indicate a
+ * credential-write-side bug worth surfacing to the operator.
+ */
+export function extractFirefliesWebhookSecret(plaintext: Buffer): Buffer {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(plaintext.toString("utf8"));
+  } catch (err) {
+    throw new Error(
+      `source-fireflies: webhook credential plaintext is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      "source-fireflies: webhook credential plaintext must be a JSON object with a signing_secret field",
+    );
+  }
+  const inner = (parsed as Record<string, unknown>)["signing_secret"];
+  if (typeof inner !== "string" || inner.length === 0) {
+    throw new Error(
+      "source-fireflies: webhook credential is missing the signing_secret field (or it is not a non-empty string) — check the binding's webhook_secret credential write",
+    );
+  }
+  return Buffer.from(inner, "utf8");
+}
+
+/**
  * Build a deterministic event id from `(meetingId, revision OR
  * transcriptId, action)`. Fireflies doesn't ship a per-event
  * gid, but the combination above is stable across replays
@@ -242,6 +283,7 @@ export function buildFirefliesWebhookHelpers(
   return {
     verifier,
     extractSignature: extractFirefliesSignature,
+    extractWebhookSecret: extractFirefliesWebhookSecret,
     parseEvents: ({ body, fetchedAt }) => {
       const parsed = parseFirefliesWebhookBody(body);
 

@@ -179,6 +179,55 @@ export function extractAsanaSignature(
 }
 
 /**
+ * (PR-Q7) Unwrap the inner `x_hook_secret` from the credential
+ * plaintext bytes the admin-API source-bindings write path stored.
+ *
+ * The admin-API encrypts `JSON.stringify(webhookCreds.webhook_secret)`,
+ * which for Asana is the full `webhook_secret` shape declared in
+ * `SOURCE_ADAPTER_CREDENTIAL_SCHEMAS.asana.credentialSchema.properties.webhook_secret`:
+ *   `{"x_hook_secret":"<the-actual-hmac-secret>"}`.
+ *
+ * Real Asana upstreams sign the request body with the raw
+ * `x_hook_secret` value — never with the wrapped JSON shape — so the
+ * receiver MUST unwrap before calling the HMAC verifier. Pre-Q7 the
+ * receiver passed the wrapped bytes through, which produced the
+ * "signature mismatch" 401 reported in this branch.
+ *
+ * Throws on malformed JSON or a missing inner field — both indicate a
+ * credential-write-side bug worth surfacing to the operator (the
+ * receiver routes the throw to a 500 + DLQ entry rather than a quiet
+ * 401, so the bad credential gets noticed).
+ */
+export function extractAsanaWebhookSecret(plaintext: Buffer): Buffer {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(plaintext.toString("utf8"));
+  } catch (err) {
+    throw new Error(
+      `source-asana: webhook credential plaintext is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      // ES2022 cause-chain — engine-ingestion's safeErrorMessage
+      // walks the cause when scrubbing; preserving the original
+      // helps an operator find the credential write that produced
+      // it without leaking secret bytes (the JSON parse error
+      // message itself never includes the parsed bytes).
+      { cause: err },
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      "source-asana: webhook credential plaintext must be a JSON object with an x_hook_secret field",
+    );
+  }
+  const inner = (parsed as Record<string, unknown>)["x_hook_secret"];
+  if (typeof inner !== "string" || inner.length === 0) {
+    throw new Error(
+      "source-asana: webhook credential is missing the x_hook_secret field (or it is not a non-empty string) — check the binding's webhook_secret credential write",
+    );
+  }
+  return Buffer.from(inner, "utf8");
+}
+
+/**
  * Detect Asana's registration handshake. Returns the secret to echo,
  * or null if this is a normal event delivery.
  */
@@ -511,6 +560,7 @@ export function buildAsanaWebhookHelpers(
   return {
     verifier,
     extractSignature: extractAsanaSignature,
+    extractWebhookSecret: extractAsanaWebhookSecret,
     handshakeFn: detectAsanaHandshake,
     parseEvents: parseEventsFn,
     ...(snapshotMode === "on-event" ? { enrichEvents: enrichEventsImpl } : {}),

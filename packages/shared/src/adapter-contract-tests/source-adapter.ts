@@ -480,7 +480,13 @@ function runWebhookAssertions(
         ...fixture.headers,
       };
       delete headersWithoutSig[fixture.signatureHeaderName];
-      const sig = wh.extractSignature(headersWithoutSig);
+      // PR-Q7: extractSignature is optional on the interface but
+      // every webhook-mode adapter under test exposes it (the
+      // contract above asserts that). Local check pins the
+      // assumption so a regression surfaces here, not as a
+      // runtime null dereference further down.
+      expect(typeof wh.extractSignature).toBe("function");
+      const sig = wh.extractSignature?.(headersWithoutSig);
       expect(sig).toBeUndefined();
       const result = wh.verifier.verify({
         body: fixture.body,

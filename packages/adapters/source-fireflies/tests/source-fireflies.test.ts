@@ -32,6 +32,7 @@ import {
   buildFirefliesWebhookHelpers,
   createFirefliesSourceAdapter,
   extractFirefliesSignature,
+  extractFirefliesWebhookSecret,
   firefliesBindingConfigSchema,
 } from "../src/index.js";
 import { buildMockFirefliesWebhookFixture } from "../src/testing/mock-fireflies-events.js";
@@ -238,6 +239,48 @@ describe("source-fireflies — signature extraction", () => {
         "x-hook-signature": "also-wrong",
       }),
     ).toBeUndefined();
+  });
+});
+
+// PR-Q7: extractFirefliesWebhookSecret unwraps the inner signing_secret
+// from the JSON-stringified webhook_secret blob the admin-API stored.
+describe("source-fireflies — extractFirefliesWebhookSecret (PR-Q7)", () => {
+  it("unwraps the signing_secret field from the JSON credential blob", () => {
+    const wrapped = Buffer.from(
+      JSON.stringify({ signing_secret: "fireflies-real-secret" }),
+      "utf8",
+    );
+    const unwrapped = extractFirefliesWebhookSecret(wrapped);
+    expect(unwrapped.toString("utf8")).toBe("fireflies-real-secret");
+  });
+
+  it("throws when plaintext is not valid JSON", () => {
+    const malformed = Buffer.from("not-json", "utf8");
+    expect(() => extractFirefliesWebhookSecret(malformed)).toThrow(
+      /not valid JSON/i,
+    );
+  });
+
+  it("throws when signing_secret field is missing", () => {
+    const noField = Buffer.from(
+      JSON.stringify({ x_hook_secret: "wrong-field" }),
+      "utf8",
+    );
+    expect(() => extractFirefliesWebhookSecret(noField)).toThrow(
+      /missing the signing_secret field/i,
+    );
+  });
+
+  it("the helper bundle exposes extractWebhookSecret wired to the adapter", () => {
+    const helpers = buildFirefliesWebhookHelpers();
+    expect(typeof helpers.extractWebhookSecret).toBe("function");
+    const wrapped = Buffer.from(
+      JSON.stringify({ signing_secret: "round-trip" }),
+      "utf8",
+    );
+    expect(helpers.extractWebhookSecret!(wrapped).toString("utf8")).toBe(
+      "round-trip",
+    );
   });
 });
 

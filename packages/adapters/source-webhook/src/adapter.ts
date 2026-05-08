@@ -134,6 +134,50 @@ export function extractWebhookSignature(
   return findHeaderValue(headers, WEBHOOK_SIGNATURE_HEADER);
 }
 
+/**
+ * (PR-Q7) Unwrap the inner `signing_secret` from the credential
+ * plaintext bytes the admin-API source-bindings write path stored.
+ *
+ * Mirrors source-asana / source-fireflies. The generic webhook
+ * adapter's webhook_secret schema (see
+ * `SOURCE_ADAPTER_CREDENTIAL_SCHEMAS.webhook.credentialSchema.properties.webhook_secret`)
+ * declares a single `signing_secret` field. The admin-API encrypts
+ * `JSON.stringify({ signing_secret: "..." })`; senders sign the
+ * request body with the raw inner secret value, so the receiver MUST
+ * unwrap before calling the HMAC verifier.
+ *
+ * Throws on malformed JSON or a missing inner field — both indicate a
+ * credential-write-side bug worth surfacing to the operator. THREAT-
+ * MODEL §3.6 invariant 11: the error message NEVER includes secret
+ * bytes; the JSON-parse error path could in theory leak parsed bytes
+ * through Node's reporter, so the engine-ingestion receiver routes
+ * the throw through `safeErrorMessage` (scrub + 200-char cap) before
+ * any logging.
+ */
+export function extractWebhookCredentialSecret(plaintext: Buffer): Buffer {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(plaintext.toString("utf8"));
+  } catch (err) {
+    throw new Error(
+      `source-webhook: webhook credential plaintext is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      "source-webhook: webhook credential plaintext must be a JSON object with a signing_secret field",
+    );
+  }
+  const inner = (parsed as Record<string, unknown>)["signing_secret"];
+  if (typeof inner !== "string" || inner.length === 0) {
+    throw new Error(
+      "source-webhook: webhook credential is missing the signing_secret field (or it is not a non-empty string) — check the binding's webhook_secret credential write",
+    );
+  }
+  return Buffer.from(inner, "utf8");
+}
+
 const ONE_MIB = 1024 * 1024;
 
 /**
@@ -233,6 +277,7 @@ export function buildWebhookHelpers(
   return {
     verifier,
     extractSignature: extractWebhookSignature,
+    extractWebhookSecret: extractWebhookCredentialSecret,
     parseEvents({
       body,
       fetchedAt,

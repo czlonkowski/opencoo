@@ -326,18 +326,75 @@ export function registerWebhookRoute(
     );
 
     // Step 4: verify signature on the raw body.
-    // Receiver uses the fixed `x-signature` header per orchestrator
-    // override 5; adapter-exported verifier symmetry (extractSignature)
-    // enables per-scheme customisation post-v0.1 when adapters need
-    // different header names (e.g. Asana's `x-hook-signature`).
+    //
+    // PR-Q7 — per-adapter signature header + inner-secret extraction:
+    //   - When the adapter exposes `webhook.extractSignature`, we ask
+    //     it for the signature header value (Asana sends
+    //     `x-hook-signature`, Fireflies sends `x-fireflies-signature`,
+    //     generic webhook sends `x-signature`). When absent, we fall
+    //     back to the legacy `req.headers["x-signature"]` so adapters
+    //     that haven't migrated continue to work.
+    //   - When the adapter exposes `webhook.extractWebhookSecret`, we
+    //     unwrap the credential plaintext (the admin-API source-bindings
+    //     write path stores the entire `webhook_secret` object as JSON,
+    //     e.g. `{"x_hook_secret":"..."}` — no upstream signs with that
+    //     wrapper shape). When absent, we pass the raw plaintext bytes
+    //     to the verifier (the pre-Q7 contract).
     const rawBody = req.body as Buffer;
-    const signature = req.headers["x-signature"];
+    const adapterWebhook = hasWebhookHelpers(adapterStub)
+      ? adapterStub.webhook
+      : null;
+    // PR-Q7: when the adapter exposes `extractSignature`, that helper
+    // is authoritative — adapters with a source-specific header
+    // (Asana's `x-hook-signature`) MUST NOT silently accept the
+    // legacy `x-signature` header. Only fall back to `x-signature`
+    // when no adapter helper exists at all (legacy adapters / bare
+    // stubs registered for tests).
+    const signature =
+      adapterWebhook?.extractSignature !== undefined
+        ? adapterWebhook.extractSignature(allHeaders)
+        : req.headers["x-signature"];
     const provider = req.headers["x-provider"] ?? binding.adapterSlug;
     const eventId = req.headers["x-event-id"];
 
+    // Resolve the HMAC secret bytes. If the adapter exposes
+    // extractWebhookSecret, defer to it — but a malformed credential
+    // (missing inner field, non-JSON bytes) must NOT crash the
+    // receiver: route to DLQ + 500 so the operator sees a credential-
+    // write-side bug rather than a generic verifier mismatch. THREAT-
+    // MODEL §3.6 invariant 11: the error message goes through
+    // `safeErrorMessage` before any logging path so credential bytes
+    // (if any leaked into the parse error) get scrubbed.
+    let secretBytes: Buffer;
+    try {
+      secretBytes =
+        adapterWebhook?.extractWebhookSecret?.(credential.plaintext) ??
+        credential.plaintext;
+    } catch (err) {
+      const safeReason = safeErrorMessage(err);
+      options.appLogger?.error(
+        "webhook_receiver.credential_unwrap_failed",
+        {
+          bindingId,
+          adapterSlug: binding.adapterSlug,
+          errorReason: safeReason,
+        },
+      );
+      await options.dlqQueue.add("intake.dlq", {
+        bindingId,
+        provider: binding.adapterSlug,
+        reason: `credential unwrap failed: ${safeReason}`,
+      });
+      reply.code(500);
+      return {
+        accepted: false,
+        reason: `credential unwrap failed`,
+      };
+    }
+
     const verifyResult = options.verifier.verify({
       body: rawBody,
-      secret: credential.plaintext,
+      secret: secretBytes,
       signature,
     });
 

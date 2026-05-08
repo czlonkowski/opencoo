@@ -318,10 +318,26 @@ async function provisionScaffolding(
   // credential row — `provisionScaffolding` rethrows before
   // `Scaffolding` is constructed, so the outer `finally` in `run()`
   // never reaches `teardown()` (it gates on `scaffold !== undefined`).
+  //
+  // PR-Q7: the credential plaintext mirrors the admin-API
+  // source-bindings write path (encryptBindingCredentials): the FULL
+  // `webhook_secret` object is JSON.stringify'd and stored, NOT the
+  // raw secret bytes. The receiver then unwraps it via the bound
+  // adapter's `extractWebhookSecret` helper before calling the HMAC
+  // verifier. The generic webhook adapter (this smoke uses
+  // adapter_slug='webhook') extracts `signing_secret` per
+  // `SOURCE_ADAPTER_CREDENTIAL_SCHEMAS.webhook.credentialSchema.properties.webhook_secret`.
+  // Pre-Q7 the smoke wrote raw bytes here; that worked only because
+  // the receiver also passed raw bytes through to the verifier — a
+  // real Asana / Fireflies webhook would have failed signature
+  // verification under that scheme.
   const credentialId = await credentialStore.write({
     name: `smoke:webhook-secret:${stamp}`,
     schemaRef: "smoke:webhook_secret",
-    plaintext: Buffer.from(webhookSecret, "utf8"),
+    plaintext: Buffer.from(
+      JSON.stringify({ signing_secret: webhookSecret }),
+      "utf8",
+    ),
   });
 
   let domainId: string;
