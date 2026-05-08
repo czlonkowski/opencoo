@@ -340,6 +340,31 @@ describe("smoke script SQL shape (round-2 fix #1)", () => {
     expect(SCRIPT_SOURCE).toMatch(/plaintext:\s*Buffer\.from/);
   });
 
+  // PR-Q7: the smoke MUST wrap the secret in `{ signing_secret: ... }`
+  // before encrypting — that's the shape the admin-API stores and the
+  // shape the receiver's per-adapter extractWebhookSecret unwraps.
+  // Pre-Q7 the smoke wrote raw bytes here; that worked only because
+  // the receiver also passed raw bytes through to the verifier (the
+  // bug Q7 fixes). Pin the new shape so a regression doesn't bring
+  // back the silent-401 mode.
+  it("encrypts the JSON-wrapped {signing_secret} blob (PR-Q7)", () => {
+    // Block of the form
+    //   plaintext: Buffer.from(
+    //     JSON.stringify({ signing_secret: webhookSecret }),
+    //     "utf8",
+    //   ),
+    // The JSON.stringify call must be inside the plaintext: line.
+    expect(SCRIPT_SOURCE).toMatch(
+      /plaintext:\s*Buffer\.from\(\s*JSON\.stringify\(\s*{\s*signing_secret:/,
+    );
+    // And it must NOT write raw bytes (the pre-Q7 hack). The new
+    // contract says: never `Buffer.from(webhookSecret, "utf8")`
+    // standalone; always wrap.
+    expect(SCRIPT_SOURCE).not.toMatch(
+      /plaintext:\s*Buffer\.from\(\s*webhookSecret\s*,\s*["']utf8["']\s*\)/,
+    );
+  });
+
   it("does NOT raw-INSERT into the credentials table", () => {
     // The schemaless `INSERT INTO credentials (provider, payload)`
     // shape from the round-1 cut would die against the real schema.

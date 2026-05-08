@@ -23,6 +23,8 @@ export {
   WEBHOOK_SIGNATURE_HEADER,
   buildWebhookHelpers,
   createSourceWebhookAdapter,
+  extractWebhookCredentialSecret,
+  wrapWebhookCredentialSecret,
   extractWebhookSignature,
   type BuildWebhookHelpersOptions,
   type CreateSourceWebhookAdapterArgs,

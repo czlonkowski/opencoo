@@ -139,10 +139,66 @@ export interface SourceWebhookHelpers {
    *  Headers may carry `string | string[] | undefined` — Fastify
    *  preserves multi-value headers as arrays. Adapters should
    *  take the last value or join as appropriate; Asana's
-   *  signature headers are always single-valued in practice. */
-  extractSignature(headers: Readonly<Record<string, string | string[] | undefined>>):
+   *  signature headers are always single-valued in practice.
+   *
+   *  Optional from PR-Q7: when omitted, the receiver falls back
+   *  to `headers["x-signature"]` for backwards compatibility with
+   *  adapters that haven't been migrated. New adapters with a
+   *  source-specific header (Asana, Fireflies) MUST set this. */
+  extractSignature?(headers: Readonly<Record<string, string | string[] | undefined>>):
     | string
     | undefined;
+  /**
+   * (PR-Q7) Unwraps the inner HMAC secret from the credential plaintext.
+   *
+   * The admin-API source-bindings route stores webhook secrets as
+   * `JSON.stringify(webhookCreds.webhook_secret)` — the FULL
+   * `webhook_secret` object the operator submitted, e.g.
+   * `{"x_hook_secret":"<asana-secret>"}` for Asana,
+   * `{"signing_secret":"<fireflies-secret>"}` for Fireflies / generic
+   * webhook (see
+   * `engine-self-operating/src/admin-api/routes/source-bindings.ts:660-664`).
+   * No real upstream signs payloads with that wrapper shape — they
+   * sign with the raw inner secret value. The receiver must therefore
+   * unwrap before calling the verifier.
+   *
+   * Implementations should:
+   *   - JSON.parse `plaintext.toString("utf8")`.
+   *   - Read the schema-defined inner field
+   *     (`x_hook_secret` for Asana, `signing_secret` for
+   *     Fireflies / generic webhook).
+   *   - Return `Buffer.from(value, "utf8")`.
+   *   - Throw a clean error if the JSON is malformed or the field
+   *     is missing — that's a credential-write-side bug worth
+   *     surfacing rather than a silent HMAC mismatch.
+   *
+   * Optional from PR-Q7: when omitted, the receiver passes the raw
+   * plaintext bytes to the verifier (the pre-Q7 contract). Adapters
+   * whose admin-API write-path stores a JSON-wrapped secret MUST
+   * set this; bare-bytes adapters (or test stubs) can leave it
+   * undefined.
+   */
+  extractWebhookSecret?(plaintext: Buffer): Buffer;
+  /**
+   * Symmetric to `extractWebhookSecret`: wrap a raw secret string
+   * (e.g. the value Asana ships in `X-Hook-Secret` on the
+   * registration handshake) into the same JSON-on-disk shape the
+   * admin-API write path produces, so a subsequent signed delivery
+   * can `extractWebhookSecret(...)` it cleanly.
+   *
+   * For source-asana the implementation is:
+   *
+   *   `Buffer.from(JSON.stringify({x_hook_secret: rawSecret}), "utf8")`
+   *
+   * Optional from PR-Q7: when omitted, the receiver persists the
+   * handshake secret as raw UTF-8 bytes (the pre-Q7 contract).
+   * Adapters that implement `extractWebhookSecret` MUST also
+   * implement `wrapWebhookSecret` so handshake-acquired bindings
+   * round-trip through the same shape — otherwise the next signed
+   * delivery would route through `extractWebhookSecret` against a
+   * raw-bytes blob and 500 + DLQ with `credential_unwrap_failed`.
+   */
+  wrapWebhookSecret?(rawSecret: string): Buffer;
   /** Unpack a verified body into one or more events. Adapter
    *  is responsible for shape-validating the body — a
    *  malformed body throws ValidationError. */

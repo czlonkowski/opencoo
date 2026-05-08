@@ -20,6 +20,8 @@ export {
   buildSnapshotEvent,
   createAsanaSourceAdapter,
   extractAsanaSignature,
+  extractAsanaWebhookSecret,
+  wrapAsanaWebhookSecret,
   type BuildAsanaWebhookHelpersOptions,
   type CreateAsanaSourceAdapterArgs,
 } from "./adapter.js";

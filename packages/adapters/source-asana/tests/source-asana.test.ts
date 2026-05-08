@@ -28,6 +28,7 @@ import {
   buildAsanaWebhookHelpers,
   createAsanaSourceAdapter,
   extractAsanaSignature,
+  extractAsanaWebhookSecret,
 } from "../src/index.js";
 import { buildMockAsanaWebhookFixture } from "../src/testing/mock-asana-events.js";
 
@@ -245,6 +246,81 @@ describe("source-asana — signature extraction", () => {
         "x-hook-secret": "wrong-header",
       }),
     ).toBeUndefined();
+  });
+});
+
+// PR-Q7: extractWebhookSecret unwraps the inner x_hook_secret value
+// from the JSON-stringified webhook_secret blob the admin-API stored.
+// Real Asana webhooks sign with the raw inner value — never the wrapper —
+// so the receiver MUST unwrap before the HMAC verifier sees it.
+describe("source-asana — extractAsanaWebhookSecret (PR-Q7)", () => {
+  it("unwraps the x_hook_secret field from the JSON credential blob", () => {
+    const wrapped = Buffer.from(
+      JSON.stringify({ x_hook_secret: "the-real-secret-value" }),
+      "utf8",
+    );
+    const unwrapped = extractAsanaWebhookSecret(wrapped);
+    expect(unwrapped.toString("utf8")).toBe("the-real-secret-value");
+  });
+
+  it("preserves UTF-8 byte fidelity for non-ASCII secrets", () => {
+    const inner = "ąśćż-secret-łŁ-🔑";
+    const wrapped = Buffer.from(
+      JSON.stringify({ x_hook_secret: inner }),
+      "utf8",
+    );
+    const unwrapped = extractAsanaWebhookSecret(wrapped);
+    expect(unwrapped.toString("utf8")).toBe(inner);
+  });
+
+  it("throws when plaintext is not valid JSON (credential-write-side bug)", () => {
+    const malformed = Buffer.from("not-json-at-all", "utf8");
+    expect(() => extractAsanaWebhookSecret(malformed)).toThrow(
+      /not valid JSON/i,
+    );
+  });
+
+  it("throws when JSON root is not an object (e.g. an array)", () => {
+    const arrayJson = Buffer.from(JSON.stringify(["a", "b"]), "utf8");
+    expect(() => extractAsanaWebhookSecret(arrayJson)).toThrow(
+      /must be a JSON object/i,
+    );
+  });
+
+  it("throws when x_hook_secret field is missing", () => {
+    const noField = Buffer.from(JSON.stringify({ other: "value" }), "utf8");
+    expect(() => extractAsanaWebhookSecret(noField)).toThrow(
+      /missing the x_hook_secret field/i,
+    );
+  });
+
+  it("throws when x_hook_secret is an empty string", () => {
+    const empty = Buffer.from(JSON.stringify({ x_hook_secret: "" }), "utf8");
+    expect(() => extractAsanaWebhookSecret(empty)).toThrow(
+      /missing the x_hook_secret field|not a non-empty string/i,
+    );
+  });
+
+  it("throws when x_hook_secret is not a string", () => {
+    const notString = Buffer.from(
+      JSON.stringify({ x_hook_secret: 12345 }),
+      "utf8",
+    );
+    expect(() => extractAsanaWebhookSecret(notString)).toThrow(
+      /not a non-empty string/i,
+    );
+  });
+
+  it("the helper bundle exposes extractWebhookSecret wired to the adapter", () => {
+    const helpers = buildAsanaWebhookHelpers();
+    expect(typeof helpers.extractWebhookSecret).toBe("function");
+    const wrapped = Buffer.from(
+      JSON.stringify({ x_hook_secret: "round-trip-test" }),
+      "utf8",
+    );
+    expect(helpers.extractWebhookSecret!(wrapped).toString("utf8")).toBe(
+      "round-trip-test",
+    );
   });
 });
 

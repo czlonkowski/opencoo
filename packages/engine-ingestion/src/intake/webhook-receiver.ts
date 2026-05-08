@@ -272,11 +272,26 @@ export function registerWebhookRoute(
       ? (adapterStub.webhook.handshakeFn?.(allHeaders) ?? null)
       : null;
     if (handshakeResult !== null) {
-      // Persist the webhook secret to CredentialStore.
+      // Persist the webhook secret to CredentialStore. PR-Q7 round-2
+      // (Copilot triage on PR #74): if the adapter implements
+      // `extractWebhookSecret` it MUST also implement
+      // `wrapWebhookSecret`, otherwise the next signed delivery
+      // would route through extract-against-raw-bytes and 500 + DLQ
+      // with `credential_unwrap_failed`. Use the wrap helper to
+      // produce the same JSON-on-disk shape the admin-API write
+      // path produces (`{x_hook_secret: "..."}` for asana, etc.).
+      // Fallback for adapters with no helpers preserves the pre-Q7
+      // raw-bytes contract.
+      const adapterWebhookForHandshake = hasWebhookHelpers(adapterStub)
+        ? adapterStub.webhook
+        : null;
+      const wrappedHandshakePlaintext =
+        adapterWebhookForHandshake?.wrapWebhookSecret?.(handshakeResult.secret) ??
+        Buffer.from(handshakeResult.secret, "utf8");
       const newCredId = await options.credentialStore.write({
         name: `${binding.adapterSlug}:webhook-secret:${bindingId}`,
         schemaRef: handshakeResult.schemaRef ?? `${binding.adapterSlug}:webhook_secret`,
-        plaintext: Buffer.from(handshakeResult.secret, "utf8"),
+        plaintext: wrappedHandshakePlaintext,
       });
 
       // UPDATE sources_bindings.webhook_secret_credentials_id.
@@ -326,18 +341,100 @@ export function registerWebhookRoute(
     );
 
     // Step 4: verify signature on the raw body.
-    // Receiver uses the fixed `x-signature` header per orchestrator
-    // override 5; adapter-exported verifier symmetry (extractSignature)
-    // enables per-scheme customisation post-v0.1 when adapters need
-    // different header names (e.g. Asana's `x-hook-signature`).
+    //
+    // PR-Q7 — per-adapter signature header + inner-secret extraction:
+    //   - When the adapter exposes `webhook.extractSignature`, we ask
+    //     it for the signature header value (Asana sends
+    //     `x-hook-signature`, Fireflies sends `x-fireflies-signature`,
+    //     generic webhook sends `x-signature`). When absent, we fall
+    //     back to the legacy `req.headers["x-signature"]` so adapters
+    //     that haven't migrated continue to work.
+    //   - When the adapter exposes `webhook.extractWebhookSecret`, we
+    //     unwrap the credential plaintext (the admin-API source-bindings
+    //     write path stores the entire `webhook_secret` object as JSON,
+    //     e.g. `{"x_hook_secret":"..."}` — no upstream signs with that
+    //     wrapper shape). When absent, we pass the raw plaintext bytes
+    //     to the verifier (the pre-Q7 contract).
     const rawBody = req.body as Buffer;
-    const signature = req.headers["x-signature"];
+    const adapterWebhook = hasWebhookHelpers(adapterStub)
+      ? adapterStub.webhook
+      : null;
+    // PR-Q7: when the adapter exposes `extractSignature`, that helper
+    // is authoritative — adapters with a source-specific header
+    // (Asana's `x-hook-signature`) MUST NOT silently accept the
+    // legacy `x-signature` header. Only fall back to `x-signature`
+    // when no adapter helper exists at all (legacy adapters / bare
+    // stubs registered for tests).
+    const usedAdapterSignatureExtractor =
+      adapterWebhook?.extractSignature !== undefined;
+    // The legacy fallback reads `req.headers["x-signature"]` directly;
+    // Fastify exposes that as `string | string[] | undefined` because
+    // a client can send the same header multiple times. The verifier
+    // calls `.replace()` on the value and crashes (turning a 401 into
+    // a 500) if it ever sees an array. Normalise to the LAST string
+    // — that matches Asana's `findHeaderValue` semantics for adapters
+    // that route through `extractSignature`. Copilot triage on PR-Q7.
+    let signature: string | undefined;
+    if (usedAdapterSignatureExtractor) {
+      signature = adapterWebhook!.extractSignature!(allHeaders);
+    } else {
+      const raw = req.headers["x-signature"];
+      signature = Array.isArray(raw) ? raw[raw.length - 1] : raw;
+    }
+    // Diagnostic header label for the rejection log line below.
+    // When the adapter routes through `extractSignature`, we cannot
+    // know the literal header name without an adapter-side metadata
+    // surface (PR-Q7 review follow-up: a future
+    // `extractSignature.headerName` static could surface it
+    // verbatim). For now the sentinel `"adapter:<slug>"` tells
+    // operators "the adapter chose its own header" and the slug
+    // points them at the right adapter source for the canonical
+    // name. Falls back to the literal `"x-signature"` for adapters
+    // that haven't migrated.
+    const diagnosticHeaderLabel = usedAdapterSignatureExtractor
+      ? `adapter:${binding.adapterSlug}`
+      : "x-signature";
     const provider = req.headers["x-provider"] ?? binding.adapterSlug;
     const eventId = req.headers["x-event-id"];
 
+    // Resolve the HMAC secret bytes. If the adapter exposes
+    // extractWebhookSecret, defer to it — but a malformed credential
+    // (missing inner field, non-JSON bytes) must NOT crash the
+    // receiver: route to DLQ + 500 so the operator sees a credential-
+    // write-side bug rather than a generic verifier mismatch. THREAT-
+    // MODEL §3.6 invariant 11: the error message goes through
+    // `safeErrorMessage` before any logging path so credential bytes
+    // (if any leaked into the parse error) get scrubbed.
+    let secretBytes: Buffer;
+    try {
+      secretBytes =
+        adapterWebhook?.extractWebhookSecret?.(credential.plaintext) ??
+        credential.plaintext;
+    } catch (err) {
+      const safeReason = safeErrorMessage(err);
+      options.appLogger?.error(
+        "webhook_receiver.credential_unwrap_failed",
+        {
+          bindingId,
+          adapterSlug: binding.adapterSlug,
+          errorReason: safeReason,
+        },
+      );
+      await options.dlqQueue.add("intake.dlq", {
+        bindingId,
+        provider: binding.adapterSlug,
+        reason: `credential unwrap failed: ${safeReason}`,
+      });
+      reply.code(500);
+      return {
+        accepted: false,
+        reason: `credential unwrap failed`,
+      };
+    }
+
     const verifyResult = options.verifier.verify({
       body: rawBody,
-      secret: credential.plaintext,
+      secret: secretBytes,
       signature,
     });
 
@@ -393,7 +490,7 @@ export function registerWebhookRoute(
         bindingId,
         provider: provider ?? binding.adapterSlug,
         eventId: eventId ?? null,
-        signatureHeaderName: "x-signature",
+        signatureHeaderName: diagnosticHeaderLabel,
         errorReason: safeReason,
       });
 

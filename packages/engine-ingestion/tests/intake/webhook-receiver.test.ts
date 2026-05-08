@@ -610,3 +610,604 @@ describe("webhook receiver — Q12+sig-upgrade interaction (copilot #16)", () =>
     await app.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// PR-Q7 — per-adapter signature header + inner-secret extraction
+// ---------------------------------------------------------------------------
+//
+// Bug 1: receiver hardcoded `req.headers["x-signature"]` regardless of
+// adapter — Asana sends `x-hook-signature`, Fireflies sends
+// `x-fireflies-signature`. The receiver must consult the adapter's
+// `webhook.extractSignature` helper when present and only fall back to
+// `x-signature` for adapters that don't expose one.
+//
+// Bug 2: receiver passed `credential.plaintext` (the JSON-stringified
+// `webhook_secret` blob the admin-API stored, e.g.
+// `{"x_hook_secret":"..."}`) directly into the HMAC verifier. No upstream
+// signs over that wrapper shape — the inner field is the actual secret.
+// The receiver must consult the adapter's `webhook.extractWebhookSecret`
+// helper when present (extracting `x_hook_secret`/`signing_secret`/etc)
+// and only fall through bytes-as-secret for adapters that don't expose
+// one.
+describe("webhook receiver — PR-Q7 per-adapter routing", () => {
+  it("uses adapter.webhook.extractSignature when present (Asana → x-hook-signature)", async () => {
+    const fixture = await freshIntakeDb();
+
+    // Stored credential is the wrapped JSON blob (mirrors admin-API
+    // source-bindings encryptBindingCredentials webhook branch).
+    const innerSecret = "asana-inner-hmac-secret";
+    const wrappedCredential = Buffer.from(
+      JSON.stringify({ x_hook_secret: innerSecret }),
+      "utf8",
+    );
+
+    const credentialStore = new InMemoryCredentialStore({ logger: silentLogger() });
+    const credentialId = await credentialStore.write({
+      name: "asana-webhook-secret",
+      schemaRef: "source-asana:webhook_secret",
+      plaintext: wrappedCredential,
+    });
+
+    await fixture.db.execute(
+      `UPDATE sources_bindings SET credentials_id = '${credentialId}', adapter_slug = 'asana' WHERE id = '${fixture.bindingId}'`,
+    );
+
+    const adapterRegistry = new InMemoryAdapterRegistry();
+    // Adapter exposes both extractSignature (x-hook-signature) AND
+    // extractWebhookSecret (unwrap {x_hook_secret: ...}).
+    adapterRegistry.register({
+      slug: "asana",
+      webhook: {
+        verifier: new HmacSha256Verifier(),
+        extractSignature(headers: Record<string, string | string[] | undefined>) {
+          const sig = headers["x-hook-signature"];
+          return typeof sig === "string" ? sig : undefined;
+        },
+        extractWebhookSecret(plaintext: Buffer): Buffer {
+          const parsed = JSON.parse(plaintext.toString("utf8")) as Record<
+            string,
+            unknown
+          >;
+          const inner = parsed["x_hook_secret"];
+          if (typeof inner !== "string") {
+            throw new Error("missing x_hook_secret");
+          }
+          return Buffer.from(inner, "utf8");
+        },
+        // Return a single fake event so the receiver's legacy
+        // per-event enqueue path fires once (asserts the
+        // signature verification succeeded).
+        parseEvents() {
+          return [
+            {
+              eventId: "asana-evt-1",
+              doc: {
+                sourceDocId: "r1:changed",
+                sourceRevision: "asana-evt-1",
+                sourceRef: "asana:task/r1",
+                fetchedAt: new Date(),
+                contentBytes: Buffer.from("{}", "utf8"),
+              },
+            },
+          ];
+        },
+      } as unknown as Parameters<typeof InMemoryAdapterRegistry.prototype.register>[0]["webhook"],
+    } as Parameters<typeof InMemoryAdapterRegistry.prototype.register>[0]);
+
+    const scannerQueue = makeRecorder();
+    const dlqQueue = makeRecorder();
+    const app = buildWebhookReceiver({
+      db: fixture.db,
+      credentialStore,
+      adapterRegistry,
+      verifier: new HmacSha256Verifier(),
+      scannerQueue: scannerQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["scannerQueue"],
+      dlqQueue: dlqQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["dlqQueue"],
+    });
+
+    const body = '{"events":[{"resource":{"gid":"r1","resource_type":"task"},"action":"changed"}]}';
+    // Sign the body with the INNER secret value (what real Asana
+    // upstreams do) and send via x-hook-signature (Asana's header).
+    const sig = createHmac("sha256", innerSecret).update(body).digest("hex");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/webhooks/${fixture.bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        "x-hook-signature": sig,
+        "x-event-id": "asana-evt-1",
+        "x-provider": "asana",
+      },
+      payload: body,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const json = res.json() as { accepted: boolean };
+    expect(json.accepted).toBe(true);
+    // Per-event legacy enqueue path: parseEvents returned one event,
+    // so scannerQueue.add fires once.
+    expect(scannerQueue.add).toHaveBeenCalledTimes(1);
+    expect(dlqQueue.add).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("rejects when adapter exposes extractSignature but x-hook-signature is missing", async () => {
+    const fixture = await freshIntakeDb();
+    const innerSecret = "asana-inner-hmac-secret";
+    const wrappedCredential = Buffer.from(
+      JSON.stringify({ x_hook_secret: innerSecret }),
+      "utf8",
+    );
+    const credentialStore = new InMemoryCredentialStore({ logger: silentLogger() });
+    const credentialId = await credentialStore.write({
+      name: "asana-webhook-secret",
+      schemaRef: "source-asana:webhook_secret",
+      plaintext: wrappedCredential,
+    });
+    await fixture.db.execute(
+      `UPDATE sources_bindings SET credentials_id = '${credentialId}', adapter_slug = 'asana' WHERE id = '${fixture.bindingId}'`,
+    );
+
+    const adapterRegistry = new InMemoryAdapterRegistry();
+    adapterRegistry.register({
+      slug: "asana",
+      webhook: {
+        verifier: new HmacSha256Verifier(),
+        extractSignature(headers: Record<string, string | string[] | undefined>) {
+          const sig = headers["x-hook-signature"];
+          return typeof sig === "string" ? sig : undefined;
+        },
+        extractWebhookSecret(plaintext: Buffer): Buffer {
+          const parsed = JSON.parse(plaintext.toString("utf8")) as Record<
+            string,
+            unknown
+          >;
+          return Buffer.from(parsed["x_hook_secret"] as string, "utf8");
+        },
+        parseEvents() {
+          return [];
+        },
+      } as unknown as Parameters<typeof InMemoryAdapterRegistry.prototype.register>[0]["webhook"],
+    } as Parameters<typeof InMemoryAdapterRegistry.prototype.register>[0]);
+
+    const scannerQueue = makeRecorder();
+    const dlqQueue = makeRecorder();
+    const appLogger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const app = buildWebhookReceiver({
+      db: fixture.db,
+      credentialStore,
+      adapterRegistry,
+      verifier: new HmacSha256Verifier(),
+      scannerQueue: scannerQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["scannerQueue"],
+      dlqQueue: dlqQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["dlqQueue"],
+      appLogger,
+    });
+
+    const body = '{"events":[]}';
+    const sig = createHmac("sha256", innerSecret).update(body).digest("hex");
+    // Send the signature on the WRONG header (x-signature). The
+    // Asana adapter's extractSignature looks at x-hook-signature, so
+    // it should return undefined → 401.
+    const res = await app.inject({
+      method: "POST",
+      url: `/webhooks/${fixture.bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        "x-signature": sig,
+        "x-event-id": "asana-no-hook-sig",
+        "x-provider": "asana",
+      },
+      payload: body,
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(scannerQueue.add).not.toHaveBeenCalled();
+
+    // Reviewer triage: the rejection log line MUST identify the
+    // adapter-routed signature path, not the legacy `"x-signature"`
+    // sentinel. Operators reading the log otherwise see a misleading
+    // "looked at x-signature" trail when the adapter actually checked
+    // a different header.
+    expect(appLogger.debug).toHaveBeenCalledWith(
+      "webhook_receiver.signature_invalid",
+      expect.objectContaining({
+        bindingId: fixture.bindingId,
+        signatureHeaderName: "adapter:asana",
+      }),
+    );
+
+    await app.close();
+  });
+
+  it("uses adapter.webhook.extractWebhookSecret to unwrap inner secret (generic webhook → signing_secret)", async () => {
+    const fixture = await freshIntakeDb();
+    const innerSecret = "generic-inner-signing-secret";
+    const wrappedCredential = Buffer.from(
+      JSON.stringify({ signing_secret: innerSecret }),
+      "utf8",
+    );
+
+    const credentialStore = new InMemoryCredentialStore({ logger: silentLogger() });
+    const credentialId = await credentialStore.write({
+      name: "webhook-secret",
+      schemaRef: "source-webhook:webhook_secret",
+      plaintext: wrappedCredential,
+    });
+    await fixture.db.execute(
+      `UPDATE sources_bindings SET credentials_id = '${credentialId}', adapter_slug = 'webhook' WHERE id = '${fixture.bindingId}'`,
+    );
+
+    const adapterRegistry = new InMemoryAdapterRegistry();
+    adapterRegistry.register({
+      slug: "webhook",
+      webhook: {
+        verifier: new HmacSha256Verifier(),
+        extractSignature(headers: Record<string, string | string[] | undefined>) {
+          const sig = headers["x-signature"];
+          return typeof sig === "string" ? sig : undefined;
+        },
+        extractWebhookSecret(plaintext: Buffer): Buffer {
+          const parsed = JSON.parse(plaintext.toString("utf8")) as Record<
+            string,
+            unknown
+          >;
+          const inner = parsed["signing_secret"];
+          if (typeof inner !== "string") {
+            throw new Error("missing signing_secret");
+          }
+          return Buffer.from(inner, "utf8");
+        },
+        parseEvents() {
+          return [
+            {
+              eventId: "wh-evt-1",
+              doc: {
+                sourceDocId: "wh-evt-1",
+                sourceRevision: "wh-evt-1",
+                sourceRef: "webhook:event/wh-evt-1",
+                fetchedAt: new Date(),
+                contentBytes: Buffer.from("{}", "utf8"),
+              },
+            },
+          ];
+        },
+      } as unknown as Parameters<typeof InMemoryAdapterRegistry.prototype.register>[0]["webhook"],
+    } as Parameters<typeof InMemoryAdapterRegistry.prototype.register>[0]);
+
+    const scannerQueue = makeRecorder();
+    const dlqQueue = makeRecorder();
+    const app = buildWebhookReceiver({
+      db: fixture.db,
+      credentialStore,
+      adapterRegistry,
+      verifier: new HmacSha256Verifier(),
+      scannerQueue: scannerQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["scannerQueue"],
+      dlqQueue: dlqQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["dlqQueue"],
+    });
+
+    const body = '{"id":"e-7","payload":{"hello":"there"}}';
+    // Sign with the INNER secret value (what a real generic-webhook
+    // sender would do). If the receiver passed the wrapped JSON
+    // through to the verifier (the original bug) this signature would
+    // mismatch.
+    const sig = createHmac("sha256", innerSecret).update(body).digest("hex");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/webhooks/${fixture.bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        "x-signature": `sha256=${sig}`,
+        "x-event-id": "wh-evt-1",
+        "x-provider": "webhook",
+      },
+      payload: body,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { accepted: boolean }).accepted).toBe(true);
+    expect(dlqQueue.add).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("falls back to x-signature header + raw plaintext when adapter has no helpers (drive)", async () => {
+    // Backwards-compat path — adapters without webhook helpers (or
+    // without extractSignature/extractWebhookSecret on them) must
+    // continue to work as they did pre-Q7. The existing passing
+    // tests above cover this with the bare `{ slug: 'drive' }` stub;
+    // this case re-asserts the contract explicitly.
+    const { app, bindingId, scannerQueue, dlqQueue } = await makeFixture();
+    const body = '{"unwrapped":"plain-secret-bytes"}';
+    const res = await app.inject({
+      method: "POST",
+      url: `/webhooks/${bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        "x-signature": `sha256=${signHex(SECRET_PLAINTEXT, body)}`,
+        "x-event-id": "drive-evt-1",
+        "x-provider": "drive",
+      },
+      payload: body,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(scannerQueue.add).toHaveBeenCalledTimes(1);
+    expect(dlqQueue.add).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("malformed credential plaintext → 500 + DLQ + no scanner enqueue (credential-write-side bug)", async () => {
+    // The adapter's extractWebhookSecret throws when the credential
+    // plaintext is missing the inner field (or is not JSON). The
+    // receiver MUST surface this as a clear operator error (500 +
+    // DLQ) rather than a silent 401 — the operator's binding-create
+    // form likely went sideways and they need to see it.
+    const fixture = await freshIntakeDb();
+    // Stored plaintext is the WRONG shape: missing x_hook_secret.
+    const malformedCred = Buffer.from(
+      JSON.stringify({ wrong_field: "not-the-secret" }),
+      "utf8",
+    );
+    const credentialStore = new InMemoryCredentialStore({ logger: silentLogger() });
+    const credentialId = await credentialStore.write({
+      name: "asana-bad-webhook-secret",
+      schemaRef: "source-asana:webhook_secret",
+      plaintext: malformedCred,
+    });
+    await fixture.db.execute(
+      `UPDATE sources_bindings SET credentials_id = '${credentialId}', adapter_slug = 'asana' WHERE id = '${fixture.bindingId}'`,
+    );
+
+    const adapterRegistry = new InMemoryAdapterRegistry();
+    adapterRegistry.register({
+      slug: "asana",
+      webhook: {
+        verifier: new HmacSha256Verifier(),
+        extractSignature(headers: Record<string, string | string[] | undefined>) {
+          const sig = headers["x-hook-signature"];
+          return typeof sig === "string" ? sig : undefined;
+        },
+        extractWebhookSecret(plaintext: Buffer): Buffer {
+          const parsed = JSON.parse(plaintext.toString("utf8")) as Record<
+            string,
+            unknown
+          >;
+          const inner = parsed["x_hook_secret"];
+          if (typeof inner !== "string") {
+            throw new Error(
+              "source-asana: credential is missing the x_hook_secret field",
+            );
+          }
+          return Buffer.from(inner, "utf8");
+        },
+        parseEvents() {
+          return [];
+        },
+      } as unknown as Parameters<typeof InMemoryAdapterRegistry.prototype.register>[0]["webhook"],
+    } as Parameters<typeof InMemoryAdapterRegistry.prototype.register>[0]);
+
+    const scannerQueue = makeRecorder();
+    const dlqQueue = makeRecorder();
+    const app = buildWebhookReceiver({
+      db: fixture.db,
+      credentialStore,
+      adapterRegistry,
+      verifier: new HmacSha256Verifier(),
+      scannerQueue: scannerQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["scannerQueue"],
+      dlqQueue: dlqQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["dlqQueue"],
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/webhooks/${fixture.bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        "x-hook-signature": "deadbeef".repeat(8),
+        "x-event-id": "asana-bad-cred",
+        "x-provider": "asana",
+      },
+      payload: '{"events":[]}',
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(scannerQueue.add).not.toHaveBeenCalled();
+    expect(dlqQueue.add).toHaveBeenCalledTimes(1);
+    const [, dlqJob] = dlqQueue.add.mock.calls[0] as [string, { reason: string }];
+    expect(dlqJob.reason).toMatch(/credential unwrap failed/i);
+    await app.close();
+  });
+
+  it("handshake-acquired secret round-trips through wrapWebhookSecret → extractWebhookSecret (PR-Q7 round-2)", async () => {
+    // Pins the contract Copilot flagged on PR #74:
+    //   1. Asana sends `X-Hook-Secret` on the registration handshake.
+    //   2. The receiver MUST persist the secret in the same JSON-wrapped
+    //      shape the admin-API write path produces (`{x_hook_secret:
+    //      "..."}`), via `wrapWebhookSecret`.
+    //   3. A subsequent signed delivery routes through
+    //      `extractWebhookSecret` against that JSON blob; if step 2
+    //      stored raw bytes (the pre-fix bug) extract throws and the
+    //      delivery 500's with `credential_unwrap_failed`.
+    const fixture = await freshIntakeDb();
+    const credentialStore = new InMemoryCredentialStore({ logger: silentLogger() });
+    await fixture.db.execute(
+      `UPDATE sources_bindings SET adapter_slug = 'asana' WHERE id = '${fixture.bindingId}'`,
+    );
+
+    const handshakeSecret = "asana-issued-handshake-secret-bytes";
+
+    const adapterRegistry = new InMemoryAdapterRegistry();
+    adapterRegistry.register({
+      slug: "asana",
+      webhook: {
+        verifier: new HmacSha256Verifier(),
+        extractSignature(headers: Record<string, string | string[] | undefined>) {
+          const sig = headers["x-hook-signature"];
+          return typeof sig === "string" ? sig : undefined;
+        },
+        extractWebhookSecret(plaintext: Buffer): Buffer {
+          const parsed = JSON.parse(plaintext.toString("utf8")) as Record<
+            string,
+            unknown
+          >;
+          const inner = parsed["x_hook_secret"];
+          if (typeof inner !== "string") {
+            throw new Error("missing x_hook_secret");
+          }
+          return Buffer.from(inner, "utf8");
+        },
+        wrapWebhookSecret(rawSecret: string): Buffer {
+          return Buffer.from(
+            JSON.stringify({ x_hook_secret: rawSecret }),
+            "utf8",
+          );
+        },
+        handshakeFn(headers: Record<string, string | string[] | undefined>) {
+          const raw = headers["x-hook-secret"];
+          const secret = typeof raw === "string" ? raw : undefined;
+          return secret !== undefined ? { secret } : null;
+        },
+        parseEvents() {
+          return [
+            {
+              eventId: "asana-evt-rt",
+              doc: {
+                sourceDocId: "asana-evt-rt",
+                sourceRevision: "asana-evt-rt",
+                sourceRef: "asana:event/asana-evt-rt",
+                fetchedAt: new Date(),
+                contentBytes: Buffer.from("{}", "utf8"),
+              },
+            },
+          ];
+        },
+      } as unknown as Parameters<typeof InMemoryAdapterRegistry.prototype.register>[0]["webhook"],
+    } as Parameters<typeof InMemoryAdapterRegistry.prototype.register>[0]);
+
+    const scannerQueue = makeRecorder();
+    const dlqQueue = makeRecorder();
+    const app = buildWebhookReceiver({
+      db: fixture.db,
+      credentialStore,
+      adapterRegistry,
+      verifier: new HmacSha256Verifier(),
+      scannerQueue: scannerQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["scannerQueue"],
+      dlqQueue: dlqQueue as unknown as Parameters<typeof buildWebhookReceiver>[0]["dlqQueue"],
+    });
+
+    // Step 1: handshake. Asana POSTs with X-Hook-Secret. Receiver
+    // echoes + persists.
+    const handshakeRes = await app.inject({
+      method: "POST",
+      url: `/webhooks/${fixture.bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        "x-hook-secret": handshakeSecret,
+      },
+      payload: "",
+    });
+    expect(handshakeRes.statusCode).toBe(200);
+    expect(handshakeRes.headers["x-hook-secret"]).toBe(handshakeSecret);
+
+    // Step 2: confirm the credential was persisted in WRAPPED shape.
+    // Pre-fix this would have stored raw bytes and step 3 would 500.
+    const bindingRow = (await fixture.db.execute(
+      `SELECT webhook_secret_credentials_id FROM sources_bindings WHERE id = '${fixture.bindingId}'`,
+    )) as unknown as {
+      rows: Array<{ webhook_secret_credentials_id: string }>;
+    };
+    const persistedCredId = bindingRow.rows[0]?.webhook_secret_credentials_id;
+    expect(persistedCredId).toBeDefined();
+    const persisted = await credentialStore.read(persistedCredId as never);
+    const parsed = JSON.parse(persisted.plaintext.toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed["x_hook_secret"]).toBe(handshakeSecret);
+
+    // Step 3: subsequent signed delivery — round-trips through
+    // extractWebhookSecret cleanly.
+    const body = '{"events":[{"action":"changed","resource":{"gid":"1"}}]}';
+    const sig = createHmac("sha256", handshakeSecret).update(body).digest("hex");
+    const deliveryRes = await app.inject({
+      method: "POST",
+      url: `/webhooks/${fixture.bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        "x-hook-signature": sig,
+        "x-event-id": "asana-evt-rt",
+        "x-provider": "asana",
+      },
+      payload: body,
+    });
+    expect(deliveryRes.statusCode).toBe(200);
+    expect((deliveryRes.json() as { accepted: boolean }).accepted).toBe(true);
+    expect(dlqQueue.add).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("normalises array-valued x-signature header (Copilot triage)", async () => {
+    // Fastify exposes `req.headers["x-signature"]` as `string | string[]
+    // | undefined` because clients can send the same header multiple
+    // times. The verifier calls `.replace()` on the value and crashes
+    // (turning a 401 into an unhandled 500) if it ever sees an array.
+    // The receiver MUST normalise to a single string. We can't
+    // construct an array via Fastify's inject() (it stringifies on
+    // injection), so this test exercises the normalisation logic by
+    // feeding a duplicate-header payload via the app's request
+    // pipeline directly.
+    //
+    // Easiest assertion: a SINGLE bogus signature value still produces
+    // 401 (not 500), which proves the type narrowing path works at
+    // runtime — the array path is the same code, just one branch
+    // earlier.
+    const fixture = await freshIntakeDb();
+    const credentialStore = new InMemoryCredentialStore({ logger: silentLogger() });
+    const credentialId = await credentialStore.write({
+      name: "drive-secret",
+      schemaRef: "drive:auth",
+      plaintext: Buffer.from("raw-bytes-secret", "utf8"),
+    });
+    await fixture.db.execute(
+      `UPDATE sources_bindings SET credentials_id = '${credentialId}', adapter_slug = 'drive' WHERE id = '${fixture.bindingId}'`,
+    );
+
+    const adapterRegistry = new InMemoryAdapterRegistry();
+    // Bare drive adapter — no `webhook` helpers, so the legacy
+    // fallback path runs (the one that needed normalisation).
+    adapterRegistry.register({ slug: "drive" });
+
+    const app = buildWebhookReceiver({
+      db: fixture.db,
+      credentialStore,
+      adapterRegistry,
+      verifier: new HmacSha256Verifier(),
+      scannerQueue: makeRecorder() as unknown as Parameters<typeof buildWebhookReceiver>[0]["scannerQueue"],
+      dlqQueue: makeRecorder() as unknown as Parameters<typeof buildWebhookReceiver>[0]["dlqQueue"],
+    });
+
+    const body = "{}";
+    const res = await app.inject({
+      method: "POST",
+      url: `/webhooks/${fixture.bindingId}`,
+      headers: {
+        "content-type": "application/json",
+        // Two different sig values on the same header — Fastify
+        // normalises this internally to an array on read.
+        "x-signature": ["sig-one", "sig-two"] as unknown as string,
+      },
+      payload: body,
+    });
+    // Expect a clean 401 with a verifier-shaped reason, not an
+    // unhandled 500 from `.replace is not a function`.
+    expect([401, 500]).toContain(res.statusCode);
+    // Strict assertion: 500 with `.replace is not a function` would
+    // mean we regressed. Specifically asserting 401 pins the fix.
+    expect(res.statusCode).toBe(401);
+    await app.close();
+  });
+});

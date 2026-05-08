@@ -21,6 +21,7 @@ import { ConsoleLogger } from "@opencoo/shared/logger";
 
 import {
   createSourceWebhookAdapter,
+  extractWebhookCredentialSecret,
   WEBHOOK_ADAPTER_SLUG,
   WEBHOOK_SIGNATURE_HEADER,
 } from "../src/index.js";
@@ -215,5 +216,68 @@ describe("source-webhook — contentKindMap routing", () => {
     // but the key observable: the event is emitted and has a valid doc.
     expect(events.length).toBe(1);
     expect(events[0]!.doc.contentBytes).toBeDefined();
+  });
+});
+
+// PR-Q7: extractWebhookCredentialSecret unwraps the inner signing_secret
+// from the JSON-stringified webhook_secret blob the admin-API stored.
+describe("source-webhook — extractWebhookCredentialSecret (PR-Q7)", () => {
+  it("unwraps the signing_secret field from the JSON credential blob", () => {
+    const wrapped = Buffer.from(
+      JSON.stringify({ signing_secret: "generic-webhook-secret" }),
+      "utf8",
+    );
+    const unwrapped = extractWebhookCredentialSecret(wrapped);
+    expect(unwrapped.toString("utf8")).toBe("generic-webhook-secret");
+  });
+
+  it("throws when plaintext is not valid JSON", () => {
+    const malformed = Buffer.from("definitely-not-json", "utf8");
+    expect(() => extractWebhookCredentialSecret(malformed)).toThrow(
+      /not valid JSON/i,
+    );
+  });
+
+  it("throws when JSON root is not an object", () => {
+    const arrayJson = Buffer.from(JSON.stringify(["a", "b"]), "utf8");
+    expect(() => extractWebhookCredentialSecret(arrayJson)).toThrow(
+      /must be a JSON object/i,
+    );
+  });
+
+  it("throws when signing_secret field is missing", () => {
+    const noField = Buffer.from(JSON.stringify({ other: "value" }), "utf8");
+    expect(() => extractWebhookCredentialSecret(noField)).toThrow(
+      /missing the signing_secret field/i,
+    );
+  });
+
+  it("throws when signing_secret is empty", () => {
+    const empty = Buffer.from(JSON.stringify({ signing_secret: "" }), "utf8");
+    expect(() => extractWebhookCredentialSecret(empty)).toThrow(
+      /missing the signing_secret field|not a non-empty string/i,
+    );
+  });
+
+  it("the helper bundle exposes extractWebhookSecret wired to the adapter", async () => {
+    const store = new InMemoryCredentialStore({ logger: silentLogger() });
+    const credentialId = await seedSecret(store, fixture.secret);
+    const adapter = createSourceWebhookAdapter({
+      credentialStore: store,
+      credentialId,
+      config: {
+        pathSegment: "hook",
+        signingSecretCredentialId: "82023cbc-7e47-4a1e-80fd-aacabd5649c0",
+        eventIdField: "$.event.id",
+      },
+    });
+    expect(typeof adapter.webhook!.extractWebhookSecret).toBe("function");
+    const wrapped = Buffer.from(
+      JSON.stringify({ signing_secret: "round-trip-via-helpers" }),
+      "utf8",
+    );
+    expect(
+      adapter.webhook!.extractWebhookSecret!(wrapped).toString("utf8"),
+    ).toBe("round-trip-via-helpers");
   });
 });
