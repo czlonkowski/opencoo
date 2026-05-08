@@ -105,11 +105,13 @@ describe("Activity route — feed sub-tab", () => {
     const fetchImpl = makeFetch({});
     render(<Activity fetchImpl={fetchImpl} />);
 
-    // Feed tab is active by default. The feed content area shows "connecting…"
-    // or "live" depending on EventSource availability. In jsdom there's no
-    // EventSource, so the sse.ts client marks itself open immediately.
-    // Use queryAllByText to avoid the "multiple elements" throw when the
-    // "feed" nav button also matches.
+    // Feed tab is active by default. The feed content area shows
+    // "connecting…" or "live" depending on the stubbed sse client's
+    // readyState (PR-Q1 replaced EventSource with a fetch-streaming
+    // client; tests still stub `openSseClient` directly, so the
+    // observed state depends on the stub).
+    // Use queryAllByText to avoid the "multiple elements" throw when
+    // the "feed" nav button also matches.
     const indicators = screen.queryAllByText(/connecting|live/i);
     expect(indicators.length).toBeGreaterThan(0);
   });

@@ -11,14 +11,15 @@
  *      chronological (insertion) order.
  *
  * Mocking strategy:
- *   EventSource is not available in jsdom. The SSE client (openSseClient)
- *   falls back to a no-op stub when EventSource is absent, so real SSE
- *   events cannot flow via the native path. Instead, we mock the entire
- *   `../../../src/lib/sse.js` module and replace `openSseClient` with a
- *   factory that returns a controllable stub. The stub exposes a `dispatch`
- *   helper so tests can push synthetic events directly into the registered
- *   listeners — exercising the Activity component's real handler code
- *   without any network or EventSource involvement.
+ *   PR-Q1 replaced the EventSource-based SSE client with a fetch-
+ *   streaming one (`openSseClient`), which would do a real connect
+ *   against `/api/admin/events` with a Bearer header in production.
+ *   In unit tests we mock the entire `../../../src/lib/sse.js`
+ *   module and replace `openSseClient` with a factory returning a
+ *   controllable stub. The stub exposes a `dispatch` helper so tests
+ *   can push synthetic events directly into the registered listeners
+ *   — exercising the Activity component's real handler code without
+ *   any network involvement.
  *
  *   Vitest hoists `vi.mock(...)` calls before all imports, so the mock is
  *   always in effect when Activity.tsx is evaluated.
