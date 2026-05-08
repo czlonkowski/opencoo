@@ -9,14 +9,25 @@
  * existing preview/apply flow stays unchanged.
  *
  * Per-provider behaviour:
- *   - openai/anthropic/google → catalog dropdown only.
+ *   - openai/anthropic/google → catalog dropdown only (or text
+ *     input if the catalog fetch failed — see catalogFallback).
  *   - ollama → catalog is empty by design (operator pulled an
  *     arbitrary local model); dropdown is replaced by a
- *     custom-input field.
+ *     custom-input field. Same fallback applies if a stored
+ *     model isn't in the fetched catalog (Comment 2).
  *   - openrouter → catalog dropdown PLUS an "Other model…"
  *     sentinel option that swaps into a custom-input field
  *     so power users can pin any of OpenRouter's hundreds of
- *     models without an extra catalog edit.
+ *     models without an extra catalog edit. Auto-flips into
+ *     custom-input mode when the persisted model isn't in the
+ *     fetched catalog (Comment 2).
+ *
+ * onChange gating (Copilot triage round-2, Comment 1):
+ *   The editor only emits onChange when ALL three tiers carry a
+ *   non-empty model. Partial states (provider-only, mid-edit
+ *   custom input) are reported via `onValidityChange` so the
+ *   parent can disable Preview/Apply and surface the i18n
+ *   "policy incomplete" message.
  *
  * The collapsible "Advanced (raw JSON)" section round-trips
  * dropdown ↔ textarea state. Edits in either surface flow to
@@ -46,6 +57,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { useTranslation } from "react-i18next";
 
 import { fetchAdmin } from "../lib/api.js";
 
@@ -89,6 +101,12 @@ export interface LlmPolicyValue {
 export interface LlmPolicyEditorProps {
   readonly value: LlmPolicyValue;
   readonly onChange: (next: LlmPolicyValue) => void;
+  /** Fired whenever the editor's "all three tiers have a model"
+   *  invariant flips. Parent surfaces (Preview/Apply buttons,
+   *  inline hint) toggle on this instead of the absence of
+   *  onChange. Optional — components that don't care can omit it
+   *  and they'll still get gated onChange events. */
+  readonly onValidityChange?: (isComplete: boolean) => void;
   /** @internal Test seam — defaults to fetchAdmin. */
   readonly fetchImpl?: typeof fetch;
 }
@@ -240,11 +258,15 @@ interface EditorState {
   readonly light: TierState;
   readonly local_only: boolean;
   /** Per-tier flag: did the operator explicitly opt into the
-   *  "Other model…" custom-input fallback? Used only by the
+   *  "Other model…" custom-input fallback? Used by the
    *  openrouter dropdown — once flipped, the input stays
    *  rendered even while the model string is empty (the
    *  operator hasn't typed yet). Without this flag the input
-   *  flickers back to the dropdown on the empty interim. */
+   *  flickers back to the dropdown on the empty interim.
+   *  Also auto-set on mount/policy-change for openrouter when
+   *  the incoming model isn't in the fetched catalog (Comment 2),
+   *  and for any provider when the catalog fetch failed and a
+   *  stored model needs to remain editable (Comment 3). */
   readonly customMode: Readonly<Record<Tier, boolean>>;
   /** Whatever extra keys came in via `value` — passed through
    *  unchanged so unknown shapes (v0.2 per-feature pins) survive
@@ -280,6 +302,16 @@ function stateToValue(s: EditorState): LlmPolicyValue {
   };
 }
 
+/** All three tiers carry a non-empty model — the gate the editor
+ *  uses before emitting onChange (Comment 1). */
+function isStateComplete(s: EditorState): boolean {
+  return (
+    s.thinker.model !== "" &&
+    s.worker.model !== "" &&
+    s.light.model !== ""
+  );
+}
+
 /** Stable round-trip serializer. Used to detect "did the
  *  textarea content actually change vs. just re-render?" so
  *  we don't re-emit onChange in a loop. */
@@ -296,6 +328,7 @@ interface CatalogResponse {
 }
 
 export function LlmPolicyEditor(props: LlmPolicyEditorProps): JSX.Element {
+  const { t } = useTranslation();
   const [catalog, setCatalog] = useState<
     Readonly<Record<Provider, readonly string[]>> | null
   >(null);
@@ -306,6 +339,28 @@ export function LlmPolicyEditor(props: LlmPolicyEditorProps): JSX.Element {
     canonicalize(stateToValue(valueToState(props.value))),
   );
   const [rawError, setRawError] = useState<string | null>(null);
+
+  // Track validity transitions so we only fire onValidityChange
+  // when the gate flips, not on every re-render.
+  const lastValidityRef = useRef<boolean | null>(null);
+  const onValidityChangeRef = useRef<typeof props.onValidityChange>(props.onValidityChange);
+  onValidityChangeRef.current = props.onValidityChange;
+
+  // Fire onValidityChange once on mount (and on every external
+  // re-seed below) so the parent reflects the current gate state
+  // immediately — without this, a freshly-rendered editor with a
+  // partial policy would leave the parent's "incomplete" hint
+  // hidden until the operator actually edits something. The
+  // empty-deps array is intentional: this runs once on mount;
+  // post-mount re-seeds are handled by the next effect (driven
+  // by `incomingKey`).
+  useEffect(() => {
+    const initial = isStateComplete(state);
+    if (lastValidityRef.current !== initial) {
+      lastValidityRef.current = initial;
+      onValidityChangeRef.current?.(initial);
+    }
+  }, []);
 
   // Re-seed when the parent updates `value` from outside (e.g.
   // domain switch). We keep the textarea + dropdowns in sync.
@@ -318,11 +373,17 @@ export function LlmPolicyEditor(props: LlmPolicyEditorProps): JSX.Element {
     setState(next);
     setRawText(canonicalize(stateToValue(next)));
     setRawError(null);
+    const isComplete = isStateComplete(next);
+    if (lastValidityRef.current !== isComplete) {
+      lastValidityRef.current = isComplete;
+      onValidityChangeRef.current?.(isComplete);
+    }
   }, [incomingKey, props.value]);
 
   // Load the catalog once on mount. If the fetch fails we still
-  // render — the dropdowns just have no options. The custom-input
-  // path keeps the editor functional in that degenerate case.
+  // render — the dropdowns just have no options, and the
+  // catalog-null fallback path (Comment 3) renders text inputs
+  // for every provider so a previously-saved model stays editable.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -349,14 +410,55 @@ export function LlmPolicyEditor(props: LlmPolicyEditorProps): JSX.Element {
     };
   }, [props.fetchImpl]);
 
+  // Auto-flip a tier into custom-input mode when its persisted
+  // model can't be matched against the fetched catalog (Comment 2).
+  // For openrouter and ollama this is the documented escape hatch;
+  // we set it once the catalog resolves so the editor doesn't
+  // briefly render a broken <select>. Other providers fall through
+  // to the catalog-null fallback path in TierRow when needed
+  // (Comment 3) — that path doesn't require customMode.
+  useEffect(() => {
+    if (catalog === null) return;
+    setState((prev) => {
+      let changed = false;
+      const nextCustomMode = { ...prev.customMode };
+      for (const tier of TIERS) {
+        const tierState = prev[tier];
+        if (tierState.model === "") continue;
+        const isOpenrouterOrOllama =
+          tierState.provider === "openrouter" || tierState.provider === "ollama";
+        if (!isOpenrouterOrOllama) continue;
+        const inCatalog = catalog[tierState.provider].includes(tierState.model);
+        if (!inCatalog && !prev.customMode[tier]) {
+          nextCustomMode[tier] = true;
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      return { ...prev, customMode: nextCustomMode };
+    });
+  }, [catalog]);
+
   /** Push a new editor state out via onChange + sync the
-   *  raw-JSON textarea. */
+   *  raw-JSON textarea. onChange is gated by the "all three tiers
+   *  have a non-empty model" invariant (Comment 1) — the editor
+   *  signals partial states via onValidityChange instead of
+   *  emitting a degenerate value. The textarea + internal state
+   *  always reflect the latest edit; only the parent-visible
+   *  callback is gated. */
   const commit = (next: EditorState): void => {
     setState(next);
     const value = stateToValue(next);
     setRawText(canonicalize(value));
     setRawError(null);
-    props.onChange(value);
+    const isComplete = isStateComplete(next);
+    if (lastValidityRef.current !== isComplete) {
+      lastValidityRef.current = isComplete;
+      props.onValidityChange?.(isComplete);
+    }
+    if (isComplete) {
+      props.onChange(value);
+    }
   };
 
   const onTierChange = (tier: Tier, partial: Partial<TierState>): void => {
@@ -412,7 +514,14 @@ export function LlmPolicyEditor(props: LlmPolicyEditorProps): JSX.Element {
     const next = valueToState(parsed as LlmPolicyValue);
     setState(next);
     setRawError(null);
-    props.onChange(stateToValue(next));
+    const isComplete = isStateComplete(next);
+    if (lastValidityRef.current !== isComplete) {
+      lastValidityRef.current = isComplete;
+      props.onValidityChange?.(isComplete);
+    }
+    if (isComplete) {
+      props.onChange(stateToValue(next));
+    }
   };
 
   return (
@@ -439,7 +548,7 @@ export function LlmPolicyEditor(props: LlmPolicyEditorProps): JSX.Element {
           onChange={(e): void => onLocalOnlyToggle(e.target.checked)}
           style={CHECKBOX_STYLE}
         />
-        <span>local-only — reject any cloud-provider call for this domain</span>
+        <span>{t("llmPolicy.editor.localOnly")}</span>
       </label>
 
       <div>
@@ -450,7 +559,7 @@ export function LlmPolicyEditor(props: LlmPolicyEditorProps): JSX.Element {
           onClick={(): void => setAdvancedOpen((v) => !v)}
           style={ADVANCED_HEADER_STYLE}
         >
-          <span>Advanced (raw JSON)</span>
+          <span>{t("llmPolicy.editor.advancedToggle")}</span>
           <span aria-hidden="true">{advancedOpen ? "−" : "+"}</span>
         </button>
         {advancedOpen ? (
@@ -484,9 +593,11 @@ export function LlmPolicyEditor(props: LlmPolicyEditorProps): JSX.Element {
 interface TierRowProps {
   readonly tier: Tier;
   readonly state: TierState;
-  /** OpenRouter only — operator-chose "Other model…" sentinel
-   *  flag. When true, render the custom-input field even if
-   *  the model string happens to match a catalog entry. */
+  /** OpenRouter/Ollama only — operator chose "Other model…"
+   *  sentinel (or the auto-flip kicked in for a stale openrouter
+   *  model that isn't in the fetched catalog). When true, render
+   *  the custom-input field even if the model string happens to
+   *  match a catalog entry. */
   readonly customMode: boolean;
   readonly catalog: Readonly<Record<Provider, readonly string[]>> | null;
   readonly catalogError: string | null;
@@ -496,27 +607,37 @@ interface TierRowProps {
 }
 
 function TierRow(props: TierRowProps): JSX.Element {
+  const { t } = useTranslation();
   const { tier, state, catalog } = props;
   const models = catalog !== null ? catalog[state.provider] : [];
-  // Ollama: empty catalog → custom-input.
-  // OpenRouter: catalog + sentinel → swap to input on opt-in.
-  // Other providers: dropdown only.
   const isOllama = state.provider === "ollama";
   const isOpenRouter = state.provider === "openrouter";
-  const useCustomInput = isOllama || (isOpenRouter && props.customMode);
+  // catalog === null means the fetch failed — fall back to a
+  // text input for every provider so a previously-saved model
+  // stays editable (Comment 3). Without this fallback openai/
+  // anthropic/google would render an empty <select> and the
+  // operator would be stuck.
+  const catalogFallback = catalog === null;
+  const useCustomInput =
+    isOllama || (isOpenRouter && props.customMode) || catalogFallback;
   // The dropdown value: when in custom-mode for openrouter we
   // pin the visible select to the sentinel; otherwise the
   // current model id (or "" for the placeholder option).
-  const dropdownValue = isOpenRouter && props.customMode
-    ? CUSTOM_SENTINEL
-    : state.model;
+  const dropdownValue =
+    isOpenRouter && props.customMode ? CUSTOM_SENTINEL : state.model;
+
+  // The "catalog unavailable" hint should ONLY render when no
+  // working model is set — once the operator has a value in
+  // the input, the hint is just noise (Comment 3).
+  const showCatalogUnavailableHint =
+    props.catalogError !== null && catalog === null && state.model === "";
 
   return (
     <div style={TIER_GRID_STYLE}>
       <div>
         <h3 style={TIER_LABEL_STYLE}>{tier}</h3>
         <label style={FIELD_LABEL_STYLE}>
-          <span style={CAPTION_STYLE}>provider</span>
+          <span style={CAPTION_STYLE}>{t("llmPolicy.editor.captionProvider")}</span>
           <select
             name={`${tier}.provider`}
             value={state.provider}
@@ -533,7 +654,7 @@ function TierRow(props: TierRowProps): JSX.Element {
       </div>
       <div>
         <label style={FIELD_LABEL_STYLE}>
-          <span style={CAPTION_STYLE}>model</span>
+          <span style={CAPTION_STYLE}>{t("llmPolicy.editor.captionModel")}</span>
           {useCustomInput ? (
             <input
               type="text"
@@ -542,8 +663,10 @@ function TierRow(props: TierRowProps): JSX.Element {
               onChange={(e): void => props.onModelChange(e.target.value)}
               placeholder={
                 isOllama
-                  ? "e.g. llama3.2:8b (operator-pulled)"
-                  : "e.g. owner/model-id"
+                  ? t("llmPolicy.editor.ollamaPlaceholder")
+                  : isOpenRouter
+                    ? t("llmPolicy.editor.openrouterPlaceholder")
+                    : t("llmPolicy.editor.customPlaceholder")
               }
               style={INPUT_STYLE}
             />
@@ -564,7 +687,7 @@ function TierRow(props: TierRowProps): JSX.Element {
               {/* Empty placeholder when nothing is picked yet */}
               {state.model === "" && models.length > 0 ? (
                 <option value="" disabled>
-                  pick a model
+                  {t("llmPolicy.editor.pickModel")}
                 </option>
               ) : null}
               {models.map((m) => (
@@ -584,16 +707,16 @@ function TierRow(props: TierRowProps): JSX.Element {
                   operator picks a new one. */}
               {state.model !== "" && !models.includes(state.model) ? (
                 <option key={state.model} value={state.model}>
-                  {state.model} (unknown)
+                  {state.model} {t("llmPolicy.editor.unknownSuffix")}
                 </option>
               ) : null}
               {isOpenRouter ? (
-                <option value={CUSTOM_SENTINEL}>Other model…</option>
+                <option value={CUSTOM_SENTINEL}>{t("llmPolicy.editor.otherModel")}</option>
               ) : null}
             </select>
           )}
         </label>
-        {props.catalogError !== null && catalog === null ? (
+        {showCatalogUnavailableHint ? (
           <div
             style={{
               marginTop: 4,
@@ -602,7 +725,7 @@ function TierRow(props: TierRowProps): JSX.Element {
               color: "var(--alert)",
             }}
           >
-            catalog unavailable — paste the model id directly
+            {t("llmPolicy.editor.catalogUnavailable")}
           </div>
         ) : null}
       </div>

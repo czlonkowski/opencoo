@@ -129,7 +129,21 @@
     "timerExpired": "expired",
     "diffExpired": "Token expired. Re-preview to continue.",
     "tokenMismatch": "The proposed policy changed since preview. Re-preview to continue.",
-    "applied": "Applied. New policy is active for new pipeline runs."
+    "applied": "Applied. New policy is active for new pipeline runs.",
+    "editor": {
+      "captionProvider": "dostawca",
+      "captionModel": "model",
+      "pickModel": "Wybierz model",
+      "advancedToggle": "Zaawansowane (surowy JSON)",
+      "localOnly": "tylko lokalnie — odrzuć każde wywołanie dostawcy chmurowego dla tej domeny",
+      "ollamaPlaceholder": "np. llama3.2:8b (model pobrany lokalnie)",
+      "openrouterPlaceholder": "np. owner/model-id",
+      "customPlaceholder": "wklej id modelu",
+      "otherModel": "Inny model…",
+      "unknownSuffix": "(nieznany)",
+      "catalogUnavailable": "katalog niedostępny — wklej id modelu ręcznie",
+      "incomplete": "polityka niekompletna — wybierz model dla każdego poziomu"
+    }
   },
   "prompts": {
     "title": "Prompts",

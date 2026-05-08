@@ -30,6 +30,13 @@ export function LlmPolicy(): JSX.Element {
   // identical to what the prior textarea serialised, so the
   // preview/apply server contract is unchanged.
   const [proposed, setProposed] = useState<LlmPolicyValue>({});
+  // Copilot triage round-2 (Comment 1): the editor only emits
+  // onChange when all three tiers carry a non-empty model. Until
+  // it does, Preview/Apply are disabled and an inline hint
+  // explains why. Default to true so a fully-populated incoming
+  // policy renders Preview enabled before the editor has had a
+  // chance to fire onValidityChange.
+  const [editorComplete, setEditorComplete] = useState<boolean>(true);
   const [preview, setPreview] = useState<SovereigntyDiffPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
@@ -151,7 +158,16 @@ export function LlmPolicy(): JSX.Element {
               <LlmPolicyEditor
                 value={proposed}
                 onChange={(next): void => setProposed(next)}
+                onValidityChange={(complete): void => setEditorComplete(complete)}
               />
+              {!editorComplete ? (
+                <div
+                  data-testid="editor-incomplete"
+                  style={{ color: "var(--ink-3)", fontFamily: "var(--font-mono)", fontSize: "var(--fs-micro)" }}
+                >
+                  {t("llmPolicy.editor.incomplete")}
+                </div>
+              ) : null}
               {appliedNotice !== null ? (
                 <div style={{ color: "var(--healthy)", fontFamily: "var(--font-mono)", fontSize: "var(--fs-micro)" }}>
                   {appliedNotice}
@@ -163,7 +179,11 @@ export function LlmPolicy(): JSX.Element {
                 </div>
               ) : null}
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <Btn variant="primary" onClick={(): void => void previewClick()}>
+                <Btn
+                  variant="primary"
+                  disabled={!editorComplete}
+                  onClick={(): void => void previewClick()}
+                >
                   {t("llmPolicy.preview")}
                 </Btn>
               </div>
