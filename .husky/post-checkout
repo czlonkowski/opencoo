@@ -17,6 +17,16 @@ if [ "${3:-}" != "1" ]; then
   exit 0
 fi
 
+# Fresh worktree creation: git passes the zero hash as $1 because no
+# previous HEAD existed in this checkout. node_modules isn't installed
+# yet, so any `pnpm build` step would fail with "turbo: command not
+# found". Skip — the operator runs `pnpm install && pnpm build` once
+# they're ready to work in the new worktree.
+if [ "$1" = "0000000000000000000000000000000000000000" ]; then
+  echo "[husky] post-checkout: fresh worktree (zero-hash ORIG); skipping install + build"
+  exit 0
+fi
+
 # Map post-checkout's $1 (previous HEAD) onto ORIG_HEAD so the shared
 # impl can diff with the same machinery the post-merge path uses.
 ORIG_HEAD="$1"
