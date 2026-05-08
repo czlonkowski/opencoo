@@ -1,1 +1,1 @@
-ALTER TABLE "output_deliveries" ALTER COLUMN "delivery_id" SET DATA TYPE uuid;
+ALTER TABLE "output_deliveries" ALTER COLUMN "delivery_id" SET DATA TYPE uuid USING "delivery_id"::uuid;
