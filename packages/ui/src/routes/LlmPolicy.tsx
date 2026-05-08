@@ -10,6 +10,10 @@ import { useTranslation } from "react-i18next";
 import { Btn } from "../components/Btn.js";
 import { Card } from "../components/Card.js";
 import { DiffPreviewDialog } from "../components/DiffPreviewDialog.js";
+import {
+  LlmPolicyEditor,
+  type LlmPolicyValue,
+} from "../components/LlmPolicyEditor.js";
 import { ApiValidationError, fetchAdmin } from "../lib/api.js";
 import type { Domain, SovereigntyDiffPreview } from "../types.js";
 
@@ -21,7 +25,11 @@ export function LlmPolicy(): JSX.Element {
   const { t } = useTranslation();
   const [domains, setDomains] = useState<DomainsResponse["rows"] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [proposed, setProposed] = useState<string>("");
+  // PR-Q13 (phase-a appendix #9) — `proposed` is the structured
+  // value the editor emits, NOT a raw-JSON string. The shape is
+  // identical to what the prior textarea serialised, so the
+  // preview/apply server contract is unchanged.
+  const [proposed, setProposed] = useState<LlmPolicyValue>({});
   const [preview, setPreview] = useState<SovereigntyDiffPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
@@ -42,22 +50,10 @@ export function LlmPolicy(): JSX.Element {
 
   const onSelect = (d: DomainsResponse["rows"][number]): void => {
     setSelectedId(d.id);
-    setProposed(JSON.stringify(d.llmPolicy ?? {}, null, 2));
+    setProposed((d.llmPolicy ?? {}) as LlmPolicyValue);
     setPreview(null);
     setAppliedNotice(null);
     setApplyError(null);
-  };
-
-  /** Parse the operator's textarea as JSON. Returns the parsed
-   *  value or `null` and sets the i18n'd error on failure. Centralises
-   *  the parse-and-error path that preview + apply both need. */
-  const parseProposed = (): unknown | null => {
-    try {
-      return JSON.parse(proposed);
-    } catch {
-      setApplyError(t("llmPolicy.invalidJson"));
-      return null;
-    }
   };
 
   /** Map a server `ApiValidationError` to an operator-friendly i18n
@@ -76,12 +72,10 @@ export function LlmPolicy(): JSX.Element {
   const previewClick = async (): Promise<void> => {
     if (selectedId === null) return;
     setApplyError(null);
-    const parsed = parseProposed();
-    if (parsed === null) return;
     try {
       const r = await fetchAdmin<SovereigntyDiffPreview>(
         `/api/admin/domains/${selectedId}/llm-policy/preview`,
-        { method: "POST", body: { proposed: parsed } },
+        { method: "POST", body: { proposed } },
       );
       setPreview(r);
     } catch (err) {
@@ -91,15 +85,13 @@ export function LlmPolicy(): JSX.Element {
 
   const applyClick = async (): Promise<void> => {
     if (selectedId === null || preview === null) return;
-    const parsed = parseProposed();
-    if (parsed === null) return;
     try {
       await fetchAdmin(`/api/admin/domains/${selectedId}/llm-policy/apply`, {
         method: "POST",
         // `confirmDiff: true` is the explicit "I saw the diff"
         // acknowledgment the server requires (in addition to the
         // replay-protected token) before mutating llm_policy.
-        body: { proposed: parsed, token: preview.token, confirmDiff: true },
+        body: { proposed, token: preview.token, confirmDiff: true },
       });
       setPreview(null);
       setAppliedNotice(t("llmPolicy.applied"));
@@ -152,22 +144,13 @@ export function LlmPolicy(): JSX.Element {
           {selected === null ? (
             <div style={{ color: "var(--ink-3)" }}>{t("llmPolicy.empty")}</div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <textarea
+            <div
+              style={{ display: "flex", flexDirection: "column", gap: 12 }}
+              aria-label={`llm-policy-${selected.slug}`}
+            >
+              <LlmPolicyEditor
                 value={proposed}
-                onChange={(e): void => setProposed(e.target.value)}
-                rows={14}
-                aria-label={`llm-policy-${selected.slug}`}
-                style={{
-                  width: "100%",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "var(--fs-mono)",
-                  padding: "10px 12px",
-                  background: "var(--paper)",
-                  border: "1px solid var(--rule)",
-                  borderRadius: "var(--radius-m)",
-                  color: "var(--ink)",
-                }}
+                onChange={(next): void => setProposed(next)}
               />
               {appliedNotice !== null ? (
                 <div style={{ color: "var(--healthy)", fontFamily: "var(--font-mono)", fontSize: "var(--fs-micro)" }}>
