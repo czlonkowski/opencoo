@@ -156,13 +156,17 @@ describe("/mcp POST — concurrent resources/read", () => {
       ),
     );
 
-    // Each POST must succeed independently. Pre-fix, racing POSTs trip the
-    // "Already connected to a transport" guard inside the SDK Protocol class
-    // and return 500 with that message in the error body.
+    // Each POST must succeed independently. Pre-fix, racing POSTs trip
+    // the "Already connected to a transport" guard inside the SDK
+    // Protocol class — but the SDK masks the underlying message, so
+    // racing requests surface as `{ "code": -32603, "message":
+    // "Internal error" }` with HTTP 500 (verified locally on the
+    // shared-server pattern: 6/8 fail). The HTTP-200 + JSON-RPC-result
+    // assertions catch the regression definitively. The body-substring
+    // guards are kept as belt-and-braces in case a future SDK release
+    // surfaces the original error string verbatim.
     for (const r of responses) {
       expect(r.status).toBe(200);
-      // No "Already connected" string anywhere in the response body, regardless
-      // of whether it parsed as JSON or arrived as raw SSE chunks.
       expect(r.text).not.toContain("Already connected");
       expect(r.text).not.toContain("connect()");
       // Must be a JSON-RPC result, not an error.

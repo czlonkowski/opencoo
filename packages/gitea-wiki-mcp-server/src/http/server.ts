@@ -189,13 +189,23 @@ export async function startHttpServer(
         enableJsonResponse: true,
       });
 
-      // Tear both down when the client disconnects OR the response finishes,
-      // otherwise the per-request server holds onto registered handlers
-      // until GC. Errors from close() are operational, never client-facing.
+      // Tear both down whether the response finishes normally OR the
+      // client disconnects mid-request. `res.on("close")` alone fires
+      // only on connection abort under keep-alive (Copilot triage on
+      // PR-Q12); successful keep-alive responses would leak the
+      // per-request server's registered handlers until GC. The
+      // `closed` flag guards against double-close — `finish` and
+      // `close` can both fire on the same response (finish first for
+      // a clean response, then close shortly after). Errors from
+      // close() are operational, never client-facing.
+      let closed = false;
       const cleanup = (): void => {
+        if (closed) return;
+        closed = true;
         transport.close().catch(() => undefined);
         mcpServer.close().catch(() => undefined);
       };
+      res.on("finish", cleanup);
       res.on("close", cleanup);
 
       try {
@@ -211,6 +221,12 @@ export async function startHttpServer(
             id: null,
           });
         }
+        // If `mcpServer.connect()` threw before the transport ever
+        // wired into `res`, neither `finish` nor `close` will fire on
+        // a status-500 path that already ended the response above.
+        // Run cleanup synchronously here so the per-request server
+        // never leaks its registered handlers.
+        cleanup();
       }
     },
   );
@@ -268,19 +284,41 @@ export async function startHttpServer(
   // AddressInfo (config.port may be 0 for ephemeral binding in tests).
   const httpServer = await new Promise<import("node:http").Server>(
     (resolve, reject) => {
-      const s = app.listen(config.port, config.host, () => {
+      const s = app.listen(config.port, config.host);
+      // Startup-only error listener — removed once `listening` resolves
+      // so post-startup errors flow to the persistent handler below
+      // (Copilot triage on PR-Q12: a settled Promise can't reject, so
+      // leaving this listener attached would silently swallow runtime
+      // socket errors). Listener naming + the `once` semantics make
+      // both code paths explicit.
+      const onStartupError = (err: Error): void => {
+        s.close();
+        reject(err);
+      };
+      s.once("error", onStartupError);
+      s.once("listening", () => {
+        s.removeListener("error", onStartupError);
         const addr = s.address();
         if (!addr || typeof addr === "string") {
+          s.close();
           reject(new Error("[http] failed to determine bound address"));
           return;
         }
+        // Persistent error handler — logs and does not crash the
+        // process. Operational concerns (caller's TaskGroup / SIGTERM
+        // path) own restart decisions; this just keeps the unhandled
+        // 'error' event from terminating the process silently.
+        s.on("error", (err) => {
+          console.error(
+            `[http] server error after startup: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
         const oauthNote = isOAuthEnabled(config) ? " +oauth" : "";
         console.error(
           `[http] listening on http://${addr.address}:${addr.port} (paths: /mcp, /refresh/:slug, /health${oauthNote})`,
         );
         resolve(s);
       });
-      s.once("error", reject);
     },
   );
 
