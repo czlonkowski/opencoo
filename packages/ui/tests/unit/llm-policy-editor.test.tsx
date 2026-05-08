@@ -24,7 +24,10 @@ import { describe, expect, it, vi } from "vitest";
 import { render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { LlmPolicyEditor } from "../../src/components/LlmPolicyEditor.js";
+import {
+  LlmPolicyEditor,
+  type LlmPolicyValue,
+} from "../../src/components/LlmPolicyEditor.js";
 
 const CATALOG_RESPONSE = {
   catalog: {
@@ -374,7 +377,10 @@ describe("LlmPolicyEditor", () => {
     // through the dropdowns, and assert the unknown field survives
     // verbatim on the next emitted onChange.
     const onChange = vi.fn();
-    const value = {
+    // v0.2-shaped extras are typed via the `[k: string]: unknown`
+    // index signature on `LlmPolicyValue`. Cast through `as const`
+    // so the literal `provider: "openai"` narrows to ProviderName.
+    const value: LlmPolicyValue = {
       thinker: { provider: "openai", model: "gpt-4o" },
       worker: { provider: "openai", model: "gpt-4o-mini" },
       light: { provider: "openai", model: "gpt-4o-mini" },
@@ -387,7 +393,7 @@ describe("LlmPolicyEditor", () => {
         max_tokens_override: 4096,
       },
       another_unknown: "preserve me",
-    };
+    } as const satisfies LlmPolicyValue;
     const user = userEvent.setup();
     render(<LlmPolicyEditor value={value} onChange={onChange} />);
 
@@ -425,12 +431,12 @@ describe("LlmPolicyEditor", () => {
     // `value={state.model}` to keep the displayed value and the
     // emitted state in sync.
     const onChange = vi.fn();
-    const value = {
+    const value: LlmPolicyValue = {
       thinker: { provider: "openai", model: "gpt-3.5-legacy-not-in-catalog" },
       worker: { provider: "openai", model: "gpt-4o" },
       light: { provider: "openai", model: "gpt-4o-mini" },
       local_only: false,
-    };
+    } as const satisfies LlmPolicyValue;
     render(<LlmPolicyEditor value={value} onChange={onChange} />);
 
     const sel = document.querySelector(
