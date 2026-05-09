@@ -45,6 +45,7 @@ import { useTranslation } from "react-i18next";
 
 import { Btn } from "./Btn.js";
 import { GlyphFilledDisc } from "./Glyph.js";
+import { ImpactPreviewDialog } from "./ImpactPreviewDialog.js";
 import { Modal } from "./Modal.js";
 import {
   ApiAuthError,
@@ -72,8 +73,9 @@ export interface SourceBindingDetailProps {
 
 /** Modal stage. `idle` is the Q10 detail view; `disable` / `enable`
  *  / `delete` flip to confirmation panels; `edit` (PR-R2) flips to
- *  the operational-settings + credential-rotation form. */
-type Stage = "idle" | "disable" | "enable" | "delete" | "edit";
+ *  the operational-settings + credential-rotation form; `forget`
+ *  (PR-R7) flips to the impact-preview dialog. */
+type Stage = "idle" | "disable" | "enable" | "delete" | "edit" | "forget";
 
 // ─── PR-R2 adapter-descriptor types (mirror NewSourceBindingModal) ───────────
 
@@ -926,6 +928,20 @@ export function SourceBindingDetail(
       </Modal>
     );
   }
+  if (stage === "forget") {
+    // PR-R7 — the ImpactPreviewDialog manages its own modal shell;
+    // we just hand it the binding-id + close/refresh callbacks. On
+    // confirm it bumps the parent's refresh nonce + closes the
+    // outer modal so the operator returns to the Sources list.
+    return (
+      <ImpactPreviewDialog
+        bindingId={props.binding.id}
+        onClose={props.onClose}
+        onConfirmed={props.onChanged}
+        {...(props.fetchImpl !== undefined ? { fetchImpl: props.fetchImpl } : {})}
+      />
+    );
+  }
   if (stage === "edit") {
     return (
       <Modal
@@ -1142,6 +1158,14 @@ export function SourceBindingDetail(
               {props.binding.enabled
                 ? t("sources.detail.actions.disable")
                 : t("sources.detail.actions.enable")}
+            </Btn>
+            {/* PR-R7 — Forget source: opens the impact preview dialog.
+             *  Sits between Disable and Delete in the destructive
+             *  group; the impact dialog itself carries the `--alert`
+             *  destructive Confirm button (this trigger is a neutral
+             *  ghost that delegates to the dialog). */}
+            <Btn variant="ghost" onClick={(): void => setStage("forget")}>
+              {t("sources.detail.actions.forget")}
             </Btn>
             <Btn variant="ghost" onClick={(): void => setStage("delete")}>
               {t("sources.detail.actions.delete")}

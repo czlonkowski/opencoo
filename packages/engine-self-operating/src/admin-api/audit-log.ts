@@ -66,6 +66,14 @@ export const AUDIT_LOG_ACTIONS = [
   // (NEVER plaintext or parsed credential fields).
   "source_binding.config_update",
   "source_binding.credentials_rotate",
+  // Phase-a appendix #10 (PR-R7) — Sources `forget` impact-preview-
+  // gated forget. Metadata captures binding_id + slug +
+  // {pages_recompiled, pages_deleted, citations_removed} as COUNTS
+  // (never path lists — paths can leak operator-internal naming),
+  // plus the cap state before/after the action and caller_username.
+  // Only the actual-forget path (`?dryRun=0`) writes audit; the
+  // dry-run preview is read-only and writes nothing.
+  "source_binding.forget",
   // Phase-a appendix #10 (PR-R1) — Domains tab drill-down
   // actions. `update` covers PATCH (display_name / locale /
   // is_aggregator); `disable` covers DELETE (soft-delete);

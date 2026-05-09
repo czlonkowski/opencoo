@@ -28,6 +28,7 @@ import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { Logger } from "@opencoo/shared/logger";
+import type { DeleteCap } from "@opencoo/shared/wiki-write";
 
 import { buildVerifyAdmin, type GiteaClient } from "./auth.js";
 import { issueCsrfToken } from "./csrf.js";
@@ -59,7 +60,10 @@ import {
   registerSchedulerRoute,
   type SchedulerSource,
 } from "./routes/scheduler.js";
-import { registerSourceBindingsRoutes } from "./routes/source-bindings.js";
+import {
+  registerSourceBindingsRoutes,
+  type ForgetJobEnqueueArgs,
+} from "./routes/source-bindings.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
@@ -123,6 +127,18 @@ export interface RegisterAdminApiArgs {
    *  incomplete — same boot-tolerance pattern as the rest of the
    *  admin API). */
   readonly dispatchAgentJob?: AgentDispatchEnqueue;
+  /** Phase-a appendix #10 PR-R7 — delete-cap probe + reserve for
+   *  the source-forget impact preview. Production passes the
+   *  ingestion engine's `wikiDeps.deleteCap` (single-process v0.1
+   *  shape: same instance the compiler workers reserve against).
+   *  When undefined the forget endpoint returns 503. */
+  readonly deleteCap?: DeleteCap;
+  /** Phase-a appendix #10 PR-R7 — composition-supplied enqueuer
+   *  for the actual forget action. The route plans the impact +
+   *  reserves the cap; this callable turns the plan into BullMQ
+   *  recompile + delete jobs. Tests inject a `vi.fn()`. When
+   *  undefined the forget endpoint returns 503. */
+  readonly forgetJobEnqueuer?: (args: ForgetJobEnqueueArgs) => Promise<void>;
 }
 
 export async function registerAdminApi(
@@ -177,6 +193,12 @@ export async function registerAdminApi(
       : {}),
     ...(args.ingestionQueue !== undefined
       ? { ingestionQueue: args.ingestionQueue }
+      : {}),
+    ...(args.deleteCap !== undefined
+      ? { deleteCap: args.deleteCap }
+      : {}),
+    ...(args.forgetJobEnqueuer !== undefined
+      ? { forgetJobEnqueuer: args.forgetJobEnqueuer }
       : {}),
   });
   registerLintFindingsRoutes({ app: guardedApp, db: args.db });
@@ -328,6 +350,7 @@ function makeGuardedApp(
 export type { GiteaClient, GiteaWhoamiResult, AdminContext } from "./auth.js";
 export type { ProvisionDomainRepoFn } from "./routes/domains.js";
 export type { AgentDispatchEnqueue } from "./routes/agents-dispatch.js";
+export type { ForgetJobEnqueueArgs } from "./routes/source-bindings.js";
 export {
   DISPATCHABLE_AGENT_SLUGS,
   type DispatchableAgentSlug,

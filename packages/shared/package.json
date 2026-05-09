@@ -105,6 +105,10 @@
     "./scrub": {
       "types": "./dist/scrub/index.d.ts",
       "default": "./dist/scrub/index.js"
+    },
+    "./forget": {
+      "types": "./dist/forget/index.d.ts",
+      "default": "./dist/forget/index.js"
     }
   },
   "files": [

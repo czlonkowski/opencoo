@@ -275,6 +275,26 @@ const TABLES_DDL = `
     reason text,
     created_at timestamp with time zone DEFAULT now() NOT NULL
   );
+
+  -- PR-R7 (phase-a appendix #10): page_citations underlies the
+  -- forget-impact-preview planner. Append-only per THREAT-MODEL §2
+  -- invariant 8 — the planner never writes here; it aggregates per
+  -- (domain_slug, page_path) to determine which pages would
+  -- recompile vs delete on source forget.
+  CREATE TABLE IF NOT EXISTS page_citations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    domain_slug text NOT NULL,
+    page_path text NOT NULL,
+    source_binding_id uuid NOT NULL REFERENCES sources_bindings(id) ON DELETE RESTRICT,
+    source_ref text NOT NULL,
+    compiled_by_run_id uuid REFERENCES agent_runs(id) ON DELETE SET NULL,
+    prompt_version text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS page_citations_domain_slug_page_path_idx
+    ON page_citations (domain_slug, page_path);
+  CREATE INDEX IF NOT EXISTS page_citations_source_binding_id_idx
+    ON page_citations (source_binding_id);
 `;
 
 export class MockGiteaClient implements GiteaClient {
@@ -345,6 +365,16 @@ export interface AdminFixtureOptions {
   readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>>; name?: string };
   /** Phase-a appendix #4 PR-B — injected SSE bus for heartbeat / run-lifecycle tests. */
   readonly sseBus?: SseBus;
+  /** PR-R7 (phase-a appendix #10) — read-only delete-cap state injection
+   *  for forget-impact-preview tests. The route reads `peek` to surface
+   *  today's cap budget and `reserve` to commit when the operator
+   *  confirms. Tests inject a fresh `InMemoryDeleteCap` (or a stub) so
+   *  the cap state is deterministic. */
+  readonly deleteCap?: import("@opencoo/shared/wiki-write").DeleteCap;
+  /** PR-R7 — enqueue callable for the actual-forget action. Tests inject
+   *  a `vi.fn()` to assert the route DID call it on `?dryRun=0` and did
+   *  NOT call it on `?dryRun=1`. */
+  readonly forgetJobEnqueuer?: (args: import("../../src/admin-api/routes/source-bindings.js").ForgetJobEnqueueArgs) => Promise<void>;
 }
 
 function silentLogger(): ConsoleLogger {
@@ -389,6 +419,12 @@ export async function makeAdminFixture(
       : {}),
     ...(opts.sseBus !== undefined
       ? { sseBus: opts.sseBus }
+      : {}),
+    ...(opts.deleteCap !== undefined
+      ? { deleteCap: opts.deleteCap }
+      : {}),
+    ...(opts.forgetJobEnqueuer !== undefined
+      ? { forgetJobEnqueuer: opts.forgetJobEnqueuer }
       : {}),
   });
 
