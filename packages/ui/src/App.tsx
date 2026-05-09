@@ -14,6 +14,7 @@ import {
 } from "./lib/api.js";
 import { clearPat, getPat, setPat } from "./lib/pat-store.js";
 import { Activity } from "./routes/Activity.js";
+import { Audit } from "./routes/Audit.js";
 import { Domains } from "./routes/Domains.js";
 import { LlmPolicy } from "./routes/LlmPolicy.js";
 import { Prompts } from "./routes/Prompts.js";
@@ -99,6 +100,7 @@ export function App(): JSX.Element {
     activity: <Activity />,
     review: <Review />,
     reports: <Reports />,
+    audit: <Audit />,
   };
 
   const titles: Record<Tab, string> = {
@@ -109,6 +111,7 @@ export function App(): JSX.Element {
     activity: t("activity.title"),
     review: t("review.title"),
     reports: t("reports.title"),
+    audit: t("audit.title"),
   };
 
   return (

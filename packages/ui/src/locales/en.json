@@ -12,7 +12,8 @@
     "activity": "activity",
     "review": "review",
     "reports": "reports",
-    "logout": "log out"
+    "logout": "log out",
+    "audit": "audit"
   },
   "auth": {
     "modalTitle": "opencoo",
@@ -417,6 +418,46 @@
         "lastFire": "last fired",
         "actions": "actions"
       }
+    }
+  },
+  "audit": {
+    "title": "Audit log",
+    "subtitle": "Append-only record of every state-changing admin action.",
+    "scopeAside": "Records who changed what, when. Reads are also recorded so the trail can't be mined silently. Metadata is sanitised at write time — secret bytes never reach this view.",
+    "filters": {
+      "action": "action",
+      "actorPlaceholder": "username substring or user UUID",
+      "resourcePlaceholder": "slug, binding id, or domain id",
+      "from": "from",
+      "to": "to",
+      "actionAll": "any action",
+      "actionSelected_one": "{{n}} action",
+      "actionSelected_other": "{{n}} actions",
+      "clear": "Clear filters"
+    },
+    "columns": {
+      "time": "time",
+      "action": "action",
+      "actor": "actor",
+      "resource": "resource"
+    },
+    "empty": "No audit-log rows match the current filters.",
+    "loadError": "Could not load audit log. Try again.",
+    "row": {
+      "expand": "Show details",
+      "collapse": "Hide details",
+      "metadata": "metadata",
+      "copy": "Copy JSON",
+      "copied": "copied",
+      "copyFailed": "Copy failed",
+      "showFull": "Show full payload",
+      "showLess": "Truncate",
+      "truncatedNote": "Payload truncated at {{kb}} KB."
+    },
+    "pagination": {
+      "prev": "Prev",
+      "next": "Next",
+      "page": "Page {{page}}"
     }
   }
 }
