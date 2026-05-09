@@ -250,6 +250,8 @@ export function ImpactPreviewDialog(
     impact !== null &&
     impact.dailyDeleteCapState.used + impact.pagesDeleted.length >
       impact.dailyDeleteCapState.cap;
+  const confirmDisabled =
+    impact === null || capExceeded || !acknowledged || confirming;
 
   const submitConfirm = async (): Promise<void> => {
     if (impact === null || capExceeded || !acknowledged) return;
@@ -314,11 +316,12 @@ export function ImpactPreviewDialog(
       <div style={SECTION_STYLE}>
         <p style={BODY_STYLE}>{t("forgetImpact.lead")}</p>
 
-        {loadError !== null ? (
+        {loadError !== null && (
           <p style={ERROR_TEXT_STYLE} role="alert">
             {loadError}
           </p>
-        ) : impact === null ? (
+        )}
+        {loadError === null && impact === null && (
           <p
             style={BODY_STYLE}
             role="status"
@@ -326,7 +329,8 @@ export function ImpactPreviewDialog(
           >
             {t("forgetImpact.loading")}
           </p>
-        ) : (
+        )}
+        {loadError === null && impact !== null && (
           <>
             <p style={IMPACT_SUMMARY_STYLE} data-testid="forget-impact-summary">
               {t("forgetImpact.summary", {
@@ -336,7 +340,7 @@ export function ImpactPreviewDialog(
               })}
             </p>
 
-            {impact.pagesDeleted.length > 0 ? (
+            {impact.pagesDeleted.length > 0 && (
               <ul
                 style={PATHS_LIST_STYLE}
                 data-testid="forget-impact-deleted-paths"
@@ -347,7 +351,7 @@ export function ImpactPreviewDialog(
                   </li>
                 ))}
               </ul>
-            ) : null}
+            )}
 
             {capExceeded ? (
               <p style={CAP_ALERT_STYLE} role="alert" data-testid="cap-alert">
@@ -366,7 +370,7 @@ export function ImpactPreviewDialog(
               </p>
             )}
 
-            {!capExceeded ? (
+            {!capExceeded && (
               <label style={CHECKBOX_ROW_STYLE}>
                 <input
                   type="checkbox"
@@ -382,15 +386,15 @@ export function ImpactPreviewDialog(
                   })}
                 </span>
               </label>
-            ) : null}
+            )}
           </>
         )}
 
-        {confirmError !== null ? (
+        {confirmError !== null && (
           <p style={ERROR_TEXT_STYLE} role="alert">
             {confirmError}
           </p>
-        ) : null}
+        )}
 
         <div style={FOOTER_STYLE}>
           <Btn
@@ -403,20 +407,12 @@ export function ImpactPreviewDialog(
           <button
             type="button"
             data-testid="forget-impact-confirm"
-            disabled={
-              impact === null ||
-              capExceeded ||
-              !acknowledged ||
-              confirming
-            }
+            disabled={confirmDisabled}
             onClick={(): void => {
               void submitConfirm();
             }}
             style={
-              impact === null ||
-              capExceeded ||
-              !acknowledged ||
-              confirming
+              confirmDisabled
                 ? DESTRUCTIVE_BTN_DISABLED_STYLE
                 : DESTRUCTIVE_BTN_STYLE
             }

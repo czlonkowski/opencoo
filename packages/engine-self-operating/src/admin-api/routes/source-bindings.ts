@@ -888,7 +888,8 @@ export function registerSourceBindingsRoutes(
         });
       }
       const now = new Date();
-      const capState = deleteCap.peek(plan.domainSlug as DomainSlug, now);
+      const domainSlug = plan.domainSlug as DomainSlug;
+      const capState = deleteCap.peek(domainSlug, now);
       const plannedDeletes = plan.pagesDeleted.length;
 
       if (dryRun) {
@@ -896,7 +897,7 @@ export function registerSourceBindingsRoutes(
           pagesRecompiled: plan.pagesRecompiled,
           pagesDeleted: plan.pagesDeleted,
           citationsRemoved: plan.citationsRemoved,
-          dailyDeleteCapState: { used: capState.used, cap: capState.cap },
+          dailyDeleteCapState: capState,
         });
       }
 
@@ -920,7 +921,7 @@ export function registerSourceBindingsRoutes(
       if (capState.used + plannedDeletes > capState.cap) {
         return reply.code(409).send({
           error: "daily_cap_exceeded",
-          dailyDeleteCapState: { used: capState.used, cap: capState.cap },
+          dailyDeleteCapState: capState,
         });
       }
 
@@ -929,17 +930,12 @@ export function registerSourceBindingsRoutes(
       // write delete cap.
       try {
         if (plannedDeletes > 0) {
-          deleteCap.reserve(
-            plan.domainSlug as DomainSlug,
-            plannedDeletes,
-            now,
-          );
+          deleteCap.reserve(domainSlug, plannedDeletes, now);
         }
       } catch (err) {
         // Defensive: a concurrent reserve between our peek and our
         // reserve could push us over the cap. Surface the same 409
         // shape so the UI handles it identically.
-        const after = deleteCap.peek(plan.domainSlug as DomainSlug, now);
         req.log?.warn({
           msg: "binding_forget.cap_reserve_failed",
           binding_id: id,
@@ -947,7 +943,7 @@ export function registerSourceBindingsRoutes(
         });
         return reply.code(409).send({
           error: "daily_cap_exceeded",
-          dailyDeleteCapState: { used: after.used, cap: after.cap },
+          dailyDeleteCapState: deleteCap.peek(domainSlug, now),
         });
       }
 
@@ -956,7 +952,7 @@ export function registerSourceBindingsRoutes(
       // carries COUNTS only; path lists never reach the audit
       // surface (THREAT-MODEL §3.13 — operator-internal naming
       // can leak via wiki paths).
-      const capAfter = deleteCap.peek(plan.domainSlug as DomainSlug, now);
+      const capAfter = deleteCap.peek(domainSlug, now);
       await writeAuditLog(args.db, {
         action: "source_binding.forget",
         userId: ctx.userId,
@@ -999,7 +995,7 @@ export function registerSourceBindingsRoutes(
         pagesRecompiled: plan.pagesRecompiled,
         pagesDeleted: plan.pagesDeleted,
         citationsRemoved: plan.citationsRemoved,
-        dailyDeleteCapState: { used: capAfter.used, cap: capAfter.cap },
+        dailyDeleteCapState: capAfter,
       });
     },
   );

@@ -47,9 +47,7 @@ export class InMemoryDeleteCap implements DeleteCap {
 
   reserve(domainSlug: DomainSlug, count: number, now: Date): void {
     const today = isoDate(now);
-    const prior = this.counts.get(domainSlug);
-    const current =
-      prior === undefined || prior.isoDate !== today ? 0 : prior.count;
+    const current = this.usedToday(domainSlug, today);
     const next = current + count;
     if (next > this.dailyLimit) {
       throw new WikiWriteCapExceededError(
@@ -60,10 +58,13 @@ export class InMemoryDeleteCap implements DeleteCap {
   }
 
   peek(domainSlug: DomainSlug, now: Date): DeleteCapState {
-    const today = isoDate(now);
+    return { used: this.usedToday(domainSlug, isoDate(now)), cap: this.dailyLimit };
+  }
+
+  /** Today's used count for `domainSlug`, with the date-rollover
+   *  reset baked in: a counter from a prior day reads as 0. */
+  private usedToday(domainSlug: DomainSlug, today: string): number {
     const prior = this.counts.get(domainSlug);
-    const used =
-      prior === undefined || prior.isoDate !== today ? 0 : prior.count;
-    return { used, cap: this.dailyLimit };
+    return prior === undefined || prior.isoDate !== today ? 0 : prior.count;
   }
 }
