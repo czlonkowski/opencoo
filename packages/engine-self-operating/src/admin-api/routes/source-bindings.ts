@@ -77,8 +77,21 @@ const bindingEnabledPatchSchema = z
 const bindingConfigPatchSchema = z
   .object({ config: z.record(z.string(), z.unknown()) })
   .strict();
+/** PR-R2 review fix-up — `credentials` body shape is now
+ *  `{auth?, webhook_secret?}`: either half is optional so the
+ *  operator can rotate just the auth credential without retyping
+ *  the webhook secret (and vice versa). The validator below
+ *  rejects an empty `{credentials: {}}` and rejects
+ *  `webhook_secret` for polling adapters. */
 const bindingCredentialsPatchSchema = z
-  .object({ credentials: z.record(z.string(), z.unknown()) })
+  .object({
+    credentials: z
+      .object({
+        auth: z.record(z.string(), z.unknown()).optional(),
+        webhook_secret: z.record(z.string(), z.unknown()).optional(),
+      })
+      .strict(),
+  })
   .strict();
 const bindingPatchSchema = z.union([
   bindingEnabledPatchSchema,
@@ -658,7 +671,7 @@ export function registerSourceBindingsRoutes(
         submittedCredentials: parsed.data.credentials,
         credentialStore: args.credentialStore,
         ctx,
-      });
+      } satisfies CredentialsPatchArgs);
     },
   );
 
@@ -863,7 +876,13 @@ async function handleConfigPatch(
     WHERE id = ${args.id}::uuid
     LIMIT 1
   `)) as unknown as {
-    rows: Array<{ adapter_slug: string; config: Record<string, unknown> }>;
+    // jsonb may be null when the column is missing a default — `prev.config ?? {}`
+    // below handles the runtime branch. Tightening the type to `... | null`
+    // documents reality.
+    rows: Array<{
+      adapter_slug: string;
+      config: Record<string, unknown> | null;
+    }>;
   };
   const prev = existing.rows[0];
   if (prev === undefined) {
@@ -930,27 +949,47 @@ interface CredentialsPatchArgs {
   readonly req: FastifyRequest;
   readonly reply: FastifyReply;
   readonly id: string;
-  readonly submittedCredentials: Record<string, unknown>;
+  readonly submittedCredentials: {
+    readonly auth?: unknown;
+    readonly webhook_secret?: unknown;
+  };
   readonly credentialStore: CredentialStore | undefined;
   readonly ctx: AdminContext;
 }
 
 /** PR-R2 `credentials`-only path. In-place rotation via
  *  `CredentialStore.rotate(id, plaintext)` — the binding's
- *  `credentials_id` is preserved; only the underlying credential
- *  row's plaintext + IV + rotated_at change. The audit row records
- *  the binding + the credentials_id + the caller; never plaintext or
- *  parsed credential fields (THREAT-MODEL §3.13). */
+ *  `credentials_id` (and `webhook_secret_credentials_id`) is preserved;
+ *  only the underlying credential row's plaintext + IV + rotated_at
+ *  change.
+ *
+ *  PR-R2 review fix-up — webhook adapters now rotate the
+ *  `webhook_secret_credentials_id` row when the body includes a
+ *  `webhook_secret` half. Either half is optional so the operator can
+ *  rotate just one. Polling adapters reject `webhook_secret` with 422
+ *  `webhook_secret_not_supported`; an empty `{credentials: {}}` is
+ *  rejected with 422 `credentials_empty`.
+ *
+ *  Audit metadata records `rotated_credentials: { auth, webhook_secret }`
+ *  mapping each rotated half to its `credentials.id` (or null when not
+ *  rotated). Plaintext NEVER appears in the metadata
+ *  (THREAT-MODEL §3.13). */
 async function handleCredentialsPatch(
   args: CredentialsPatchArgs,
 ): Promise<FastifyReply> {
   const existing = (await args.db.execute(sql`
-    SELECT adapter_slug, credentials_id::text AS credentials_id
+    SELECT adapter_slug,
+           credentials_id::text AS credentials_id,
+           webhook_secret_credentials_id::text AS webhook_secret_credentials_id
     FROM sources_bindings
     WHERE id = ${args.id}::uuid
     LIMIT 1
   `)) as unknown as {
-    rows: Array<{ adapter_slug: string; credentials_id: string | null }>;
+    rows: Array<{
+      adapter_slug: string;
+      credentials_id: string | null;
+      webhook_secret_credentials_id: string | null;
+    }>;
   };
   const prev = existing.rows[0];
   if (prev === undefined) {
@@ -965,16 +1004,19 @@ async function handleCredentialsPatch(
     });
   }
 
-  const credValidation = validateCredentialsAgainstSchema(
+  const credValidation = validateCredentialsForRotation(
     args.submittedCredentials,
     descriptor,
   );
   if (!credValidation.ok) {
     // Path-only diagnostic — never echoes the rejected values.
-    return args.reply.code(422).send({
-      error: "credential_schema_mismatch",
-      missing: credValidation.missing,
-    });
+    if (credValidation.code === "credential_schema_mismatch") {
+      return args.reply.code(422).send({
+        error: "credential_schema_mismatch",
+        missing: credValidation.missing,
+      });
+    }
+    return args.reply.code(422).send({ error: credValidation.code });
   }
 
   if (prev.credentials_id === null) {
@@ -994,23 +1036,56 @@ async function handleCredentialsPatch(
     });
   }
 
+  // Webhook-secret rotation requires the binding to have a
+  // `webhook_secret_credentials_id` row. Today every webhook adapter
+  // populates this on create, but a hand-INSERTed test row without it
+  // would otherwise drop the rotation silently — surface a structured
+  // 422 so the operator knows to recreate the binding.
+  if (
+    credValidation.hasWebhookSecret &&
+    prev.webhook_secret_credentials_id === null
+  ) {
+    return args.reply.code(422).send({
+      error: "binding_has_no_webhook_secret",
+    });
+  }
+
   const credentialsId = prev.credentials_id as CredentialId;
-  // Encode the validated plaintext per the same shape POST writes:
-  // polling = full object; webhook = just the `auth` half (the
-  // webhook_secret half lives on a separate credential row that
-  // R2 v0.1 does not rotate — that's deferred to a follow-up PR
-  // because it requires a second `webhook_secret_credentials_id`
-  // path that the wizard's body shape would have to flag).
-  const plaintextObj =
-    descriptor.mode === "polling"
-      ? args.submittedCredentials
-      : (args.submittedCredentials as { auth: Record<string, unknown> }).auth;
+  const webhookSecretId =
+    prev.webhook_secret_credentials_id === null
+      ? null
+      : (prev.webhook_secret_credentials_id as CredentialId);
+
+  // Track which credential ids were actually rotated. Audit metadata
+  // records `rotated_credentials: { auth, webhook_secret }` so the
+  // operator can later confirm which half was rotated. `null` =
+  // not rotated this request (load-bearing for the audit contract).
+  let rotatedAuthId: CredentialId | null = null;
+  let rotatedWebhookSecretId: CredentialId | null = null;
 
   try {
-    await args.credentialStore.rotate(
-      credentialsId,
-      Buffer.from(JSON.stringify(plaintextObj), "utf8"),
-    );
+    if (credValidation.hasAuth) {
+      // Polling: `auth` half IS the flat credentials object the
+      // schema describes; the credential row stores the same shape
+      // POST writes (the full object).
+      // Webhook: `auth` half is the auth sub-object specifically.
+      const authPlaintext = narrowAuthCredentials(args.submittedCredentials);
+      await args.credentialStore.rotate(
+        credentialsId,
+        Buffer.from(JSON.stringify(authPlaintext), "utf8"),
+      );
+      rotatedAuthId = credentialsId;
+    }
+    if (credValidation.hasWebhookSecret && webhookSecretId !== null) {
+      const webhookSecretPlaintext = narrowWebhookSecretCredentials(
+        args.submittedCredentials,
+      );
+      await args.credentialStore.rotate(
+        webhookSecretId,
+        Buffer.from(JSON.stringify(webhookSecretPlaintext), "utf8"),
+      );
+      rotatedWebhookSecretId = webhookSecretId;
+    }
   } catch (err) {
     args.req.log?.warn({
       msg: "binding_rotate.credential_store_failed",
@@ -1031,17 +1106,86 @@ async function handleCredentialsPatch(
     userId: args.ctx.userId,
     metadata: {
       binding_id: args.id,
-      credentials_id: credentialsId,
+      rotated_credentials: {
+        auth: rotatedAuthId,
+        webhook_secret: rotatedWebhookSecretId,
+      },
       caller_username: args.ctx.username,
     },
     sourceIp: args.req.ip,
     userAgent: args.req.headers["user-agent"],
   });
 
+  // `credentialsRotatedAt`: query the actual `credentials.rotated_at`
+  // for whichever halves rotated. If both rotated, surface the max so
+  // the timestamp reflects the latest write. Falls back to "now" on a
+  // read failure (defensive — the rotation already succeeded). */
+  const credentialsRotatedAt =
+    (await readMaxRotatedAt(args.db, [
+      rotatedAuthId,
+      rotatedWebhookSecretId,
+    ])) ?? new Date().toISOString();
+
   return args.reply.code(200).send({
     id: args.id,
-    credentialsRotatedAt: new Date().toISOString(),
+    credentialsRotatedAt,
   });
+}
+
+/** Read `rotated_at` for one or more credential ids and return the
+ *  max as ISO. `null` ids are skipped. Returns `null` on no rows or a
+ *  read failure — caller falls back to the request timestamp. */
+async function readMaxRotatedAt(
+  db: Db,
+  ids: ReadonlyArray<CredentialId | null>,
+): Promise<string | null> {
+  const present = ids.filter((id): id is CredentialId => id !== null);
+  if (present.length === 0) return null;
+  try {
+    const result = (await db.execute(sql`
+      SELECT MAX(rotated_at) AS rotated_at
+      FROM credentials
+      WHERE id = ANY(ARRAY[${sql.join(
+        present.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )}])
+    `)) as unknown as {
+      rows: Array<{ rotated_at: Date | string | null }>;
+    };
+    const row = result.rows[0];
+    if (row === undefined) return null;
+    return toIso(row.rotated_at);
+  } catch {
+    return null;
+  }
+}
+
+/** Narrow `submittedCredentials.auth` to a concrete object shape.
+ *  The validator already passed by the time we reach here; this
+ *  predicate documents intent (replacing an opaque `as` cast) and
+ *  defends against a shape regression introduced upstream. */
+function narrowAuthCredentials(
+  submitted: { readonly auth?: unknown; readonly webhook_secret?: unknown },
+): Record<string, unknown> {
+  const value = submitted.auth;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("invariant: auth half passed validation but is not an object");
+  }
+  return value as Record<string, unknown>;
+}
+
+/** Narrow `submittedCredentials.webhook_secret` to a concrete object
+ *  shape. Same intent-documenting predicate as `narrowAuthCredentials`. */
+function narrowWebhookSecretCredentials(
+  submitted: { readonly auth?: unknown; readonly webhook_secret?: unknown },
+): Record<string, unknown> {
+  const value = submitted.webhook_secret;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      "invariant: webhook_secret half passed validation but is not an object",
+    );
+  }
+  return value as Record<string, unknown>;
 }
 
 /** Sentinel thrown inside the DELETE transaction to roll it back when
@@ -1125,10 +1269,100 @@ async function probeDlqDepth(
   }
 }
 
+/** Result of a rotation-mode credentials validation. The discriminator
+ *  surfaces specific 422 failure modes so the caller emits a precise
+ *  error code (`webhook_secret_not_supported`, `credentials_empty`,
+ *  `credential_schema_mismatch`).
+ *
+ *  Path-only diagnostics — the validator never echoes submitted
+ *  values into the result so a 422 response can never leak secret
+ *  bytes (THREAT-MODEL §3.13). */
+type RotationCredValidation =
+  | { readonly ok: true; readonly hasAuth: boolean; readonly hasWebhookSecret: boolean }
+  | { readonly ok: false; readonly code: "webhook_secret_not_supported" }
+  | { readonly ok: false; readonly code: "credentials_empty" }
+  | { readonly ok: false; readonly code: "credential_schema_mismatch"; readonly missing: string[] };
+
+/** PR-R2 review fix-up — validate a partial-rotation `credentials`
+ *  body. EITHER half (auth, webhook_secret) is optional, but at
+ *  least one must be present. Polling adapters reject any
+ *  `webhook_secret` half. The submitted half(ves) are validated
+ *  against the corresponding sub-schema. */
+function validateCredentialsForRotation(
+  credentials: { readonly auth?: unknown; readonly webhook_secret?: unknown },
+  descriptor: SourceAdapterCredentialDescriptor,
+): RotationCredValidation {
+  const hasAuth = credentials.auth !== undefined;
+  const hasWebhookSecret = credentials.webhook_secret !== undefined;
+
+  // No-op rotation is meaningless — reject so the audit row never
+  // records an action that didn't change anything.
+  if (!hasAuth && !hasWebhookSecret) {
+    return { ok: false, code: "credentials_empty" };
+  }
+
+  // Polling adapters have no webhook_secret half — reject before
+  // we walk the schema so the operator gets the specific code.
+  if (descriptor.mode === "polling" && hasWebhookSecret) {
+    return { ok: false, code: "webhook_secret_not_supported" };
+  }
+
+  const missing: string[] = [];
+
+  if (descriptor.mode === "polling") {
+    // Polling: `auth` half is the flat credentials object the
+    // schema describes; we walk the polling schema directly.
+    const authValue = credentials.auth;
+    if (typeof authValue !== "object" || authValue === null) {
+      missing.push("auth");
+    } else {
+      walkPollingSchema(
+        descriptor.credentialSchema,
+        authValue as Record<string, unknown>,
+        "auth.",
+        missing,
+      );
+    }
+  } else {
+    if (hasAuth) {
+      const authValue = credentials.auth;
+      if (typeof authValue !== "object" || authValue === null) {
+        missing.push("auth");
+      } else {
+        walkPollingSchema(
+          descriptor.credentialSchema.properties.auth,
+          authValue as Record<string, unknown>,
+          "auth.",
+          missing,
+        );
+      }
+    }
+    if (hasWebhookSecret) {
+      const webhookSecretValue = credentials.webhook_secret;
+      if (typeof webhookSecretValue !== "object" || webhookSecretValue === null) {
+        missing.push("webhook_secret");
+      } else {
+        walkPollingSchema(
+          descriptor.credentialSchema.properties.webhook_secret,
+          webhookSecretValue as Record<string, unknown>,
+          "webhook_secret.",
+          missing,
+        );
+      }
+    }
+  }
+
+  if (missing.length > 0) {
+    return { ok: false, code: "credential_schema_mismatch", missing };
+  }
+  return { ok: true, hasAuth, hasWebhookSecret };
+}
+
 /** Validate credentials against the adapter's descriptor. Walks
  *  required fields without mentioning the field VALUES — only
  *  paths come back so a 422 response can never leak partial
- *  secret bytes. */
+ *  secret bytes. Used by the binding-create path, which still
+ *  requires BOTH halves on every webhook adapter. */
 function validateCredentialsAgainstSchema(
   credentials: Record<string, unknown>,
   descriptor: SourceAdapterCredentialDescriptor,

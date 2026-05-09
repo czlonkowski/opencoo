@@ -238,6 +238,138 @@ describe("SourceBindingDetail edit mode (PR-R2)", () => {
     expect(onChanged).toHaveBeenCalled();
   });
 
+  it("Save with AUTH-only credential changes posts ONE PATCH with `{credentials: { auth }}` (no webhook_secret key)", async () => {
+    const user = userEvent.setup();
+    const { fetchImpl, callsRef } = makeFetchMock();
+    const onChanged = vi.fn();
+    render(
+      <SourceBindingDetail
+        binding={makeBinding()}
+        onClose={() => undefined}
+        onChanged={onChanged}
+        fetchImpl={fetchImpl as unknown as typeof fetch}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+
+    // Fill ONLY the auth half — webhook_secret untouched.
+    const patInput = await screen.findByTestId(
+      "edit-cred-auth.personal_access_token",
+    );
+    const wsInput = screen.getByTestId("edit-cred-auth.workspace_gid");
+    await user.type(patInput, "new-pat-only");
+    await user.type(wsInput, "ws-only");
+
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      const patches = callsRef.current.filter((c) => c.method === "PATCH");
+      expect(patches.length).toBe(1);
+    });
+    const patches = callsRef.current.filter((c) => c.method === "PATCH");
+    // Body must NOT include `webhook_secret` — partial rotation
+    // sends only the half(ves) the operator actually edited.
+    expect(patches[0]!.body).toEqual({
+      credentials: {
+        auth: {
+          personal_access_token: "new-pat-only",
+          workspace_gid: "ws-only",
+        },
+      },
+    });
+    const credsBody = (patches[0]!.body as { credentials: Record<string, unknown> })
+      .credentials;
+    expect(Object.keys(credsBody)).not.toContain("webhook_secret");
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("Save with WEBHOOK_SECRET-only credential changes posts ONE PATCH with `{credentials: { webhook_secret }}` (no auth key)", async () => {
+    const user = userEvent.setup();
+    const { fetchImpl, callsRef } = makeFetchMock();
+    const onChanged = vi.fn();
+    render(
+      <SourceBindingDetail
+        binding={makeBinding()}
+        onClose={() => undefined}
+        onChanged={onChanged}
+        fetchImpl={fetchImpl as unknown as typeof fetch}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+
+    const hookInput = await screen.findByTestId(
+      "edit-cred-webhook_secret.x_hook_secret",
+    );
+    await user.type(hookInput, "hook-only");
+
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      const patches = callsRef.current.filter((c) => c.method === "PATCH");
+      expect(patches.length).toBe(1);
+    });
+    const patches = callsRef.current.filter((c) => c.method === "PATCH");
+    expect(patches[0]!.body).toEqual({
+      credentials: {
+        webhook_secret: { x_hook_secret: "hook-only" },
+      },
+    });
+    const credsBody = (patches[0]!.body as { credentials: Record<string, unknown> })
+      .credentials;
+    expect(Object.keys(credsBody)).not.toContain("auth");
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("Save with BOTH credential halves posts ONE PATCH with both keys (NOT split into two requests)", async () => {
+    const user = userEvent.setup();
+    const { fetchImpl, callsRef } = makeFetchMock();
+    const onChanged = vi.fn();
+    render(
+      <SourceBindingDetail
+        binding={makeBinding()}
+        onClose={() => undefined}
+        onChanged={onChanged}
+        fetchImpl={fetchImpl as unknown as typeof fetch}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+
+    // Fill BOTH halves.
+    await user.type(
+      await screen.findByTestId("edit-cred-auth.personal_access_token"),
+      "new-pat-both",
+    );
+    await user.type(
+      screen.getByTestId("edit-cred-auth.workspace_gid"),
+      "ws-both",
+    );
+    await user.type(
+      screen.getByTestId("edit-cred-webhook_secret.x_hook_secret"),
+      "hook-both",
+    );
+
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      const patches = callsRef.current.filter((c) => c.method === "PATCH");
+      expect(patches.length).toBe(1);
+    });
+    const patches = callsRef.current.filter((c) => c.method === "PATCH");
+    // Single PATCH carries both halves — the credentials sub-split
+    // is partial-rotation, NOT the config+credentials split. The
+    // server-side audit row records both rotated_credentials in one
+    // verb when both halves arrive together.
+    expect(patches[0]!.body).toEqual({
+      credentials: {
+        auth: {
+          personal_access_token: "new-pat-both",
+          workspace_gid: "ws-both",
+        },
+        webhook_secret: { x_hook_secret: "hook-both" },
+      },
+    });
+  });
+
   it("Save with credentials-only changes posts ONE PATCH with `{credentials}` body", async () => {
     const user = userEvent.setup();
     const { fetchImpl, callsRef } = makeFetchMock();
@@ -382,6 +514,85 @@ describe("SourceBindingDetail edit mode (PR-R2)", () => {
       "edit-config-projectGid-error",
     );
     expect(fieldErr.textContent).toMatch(/projectGid|required/i);
+  });
+
+  it("buildConfigBody emits an explicit [] for a required array field whose entries the operator deleted (no silent drop)", async () => {
+    const user = userEvent.setup();
+    const { callsRef } = makeFetchMock();
+    const onChanged = vi.fn();
+    // Use a binding whose persisted config seeds an array field.
+    // The descriptor returned by the mocked /api/admin/adapters
+    // declares `tags: type=array, items.type=string`, required.
+    const arrayDescriptor = {
+      slug: "asana",
+      mode: "webhook" as const,
+      credentialSchema: ASANA_DESCRIPTOR.credentialSchema,
+      bindingConfigSchema: {
+        type: "object",
+        properties: {
+          projectGid: { type: "string", minLength: 1 },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+          },
+        },
+        required: ["projectGid", "tags"],
+      },
+    };
+    const fetchWithArray = vi.fn(
+      async (input: RequestInfo, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const method = (init?.method ?? "GET").toUpperCase();
+        const body =
+          init?.body !== undefined ? JSON.parse(String(init.body)) : null;
+        callsRef.current.push({ url, method, body });
+        if (url === "/api/admin/adapters" && method === "GET") {
+          return new Response(
+            JSON.stringify({ adapters: [arrayDescriptor] }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (
+          url === `/api/admin/source-bindings/${BINDING_ID}` &&
+          method === "PATCH"
+        ) {
+          return new Response(JSON.stringify({ id: BINDING_ID }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+    const binding = makeBinding({
+      config: { projectGid: "OLD-GID", tags: ["alpha", "beta"] },
+    });
+    render(
+      <SourceBindingDetail
+        binding={binding}
+        onClose={() => undefined}
+        onChanged={onChanged}
+        fetchImpl={fetchWithArray as unknown as typeof fetch}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+
+    // Clear the array field — operator decided "this binding has no
+    // tags". The body must carry `tags: []`, NOT silently drop it.
+    const tagsInput = await screen.findByTestId("edit-config-tags");
+    await user.clear(tagsInput);
+
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      const patches = callsRef.current.filter((c) => c.method === "PATCH");
+      expect(patches.length).toBe(1);
+    });
+    const patches = callsRef.current.filter((c) => c.method === "PATCH");
+    const configBody = (patches[0]!.body as { config: Record<string, unknown> })
+      .config;
+    expect(configBody).toHaveProperty("tags");
+    expect(configBody["tags"]).toEqual([]);
   });
 
   it("Cancel reverts to view mode without making any PATCH calls", async () => {

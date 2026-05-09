@@ -555,12 +555,38 @@ export function SourceBindingDetail(
     return false;
   }, [configValues, initialConfigSeed]);
 
-  /** Compute whether the operator has filled any credential field.
-   *  Rotation is atomic — if ANY field is non-empty we treat it as
-   *  a rotation intent and require ALL required fields. */
-  const credentialsChanged = useMemo<boolean>(() => {
-    return Object.values(credentialValues).some((v) => v.length > 0);
-  }, [credentialValues]);
+  /** Per-section dirty state — keys mirror the input keys (see
+   *  `renderCredentialFields`): polling adapters use flat keys
+   *  (no prefix); webhook adapters split into `auth.<field>` and
+   *  `webhook_secret.<field>`.
+   *
+   *  PR-R2 review fix-up — partial-rotation aware. The route now
+   *  accepts `{credentials: { auth?, webhook_secret? }}`, so we
+   *  emit only the half(ves) the operator actually edited. */
+  const authDirty = useMemo<boolean>(() => {
+    if (adapterDescriptor === null) return false;
+    if (adapterDescriptor.mode === "polling") {
+      return Object.values(credentialValues).some((v) => v.length > 0);
+    }
+    for (const [key, value] of Object.entries(credentialValues)) {
+      if (key.startsWith("auth.") && value.length > 0) return true;
+    }
+    return false;
+  }, [adapterDescriptor, credentialValues]);
+
+  const webhookSecretDirty = useMemo<boolean>(() => {
+    if (adapterDescriptor === null) return false;
+    if (adapterDescriptor.mode === "polling") return false;
+    for (const [key, value] of Object.entries(credentialValues)) {
+      if (key.startsWith("webhook_secret.") && value.length > 0) return true;
+    }
+    return false;
+  }, [adapterDescriptor, credentialValues]);
+
+  const credentialsChanged = useMemo<boolean>(
+    () => authDirty || webhookSecretDirty,
+    [authDirty, webhookSecretDirty],
+  );
 
   /** Build the `config` body the route accepts. The route's UPDATE
    *  is a full jsonb REPLACE, so we emit the COMPLETE current state
@@ -581,12 +607,21 @@ export function SourceBindingDetail(
     const out: Record<string, unknown> = {};
     for (const [key, field] of Object.entries(schema.properties)) {
       if (field.hidden === true) continue;
+      // PR-R2 review fix-up — distinguish "operator never touched
+      // the field" (omit) from "operator typed and then cleared it"
+      // (emit a typed empty value so the route's required-gate fires
+      // with a path-level diagnostic instead of silently dropping
+      // the field). Tracking dirtiness for arrays is the load-bearing
+      // case: a required array with all entries deleted previously
+      // disappeared from the body and the route accepted it.
+      const wasTyped = configValues[key] !== undefined;
       const current = configValues[key] ?? defaultAsRaw(field);
       if (current === undefined) continue;
-      if (current.length === 0) continue;
       if (field.type === "boolean") {
+        if (current.length === 0) continue;
         out[key] = current === "true";
       } else if (field.type === "number") {
+        if (current.length === 0) continue;
         const n = Number(current);
         if (Number.isFinite(n)) out[key] = n;
       } else if (field.type === "array") {
@@ -594,36 +629,60 @@ export function SourceBindingDetail(
           .split(",")
           .map((s) => s.trim())
           .filter((s) => s.length > 0);
-        if (items.length > 0) out[key] = items;
+        if (items.length === 0 && !wasTyped) continue;
+        // Operator typed-then-cleared OR seeded value emptied — emit
+        // an explicit empty array so the route's required-array
+        // validator surfaces a 422 instead of accepting a silent drop.
+        out[key] = items;
       } else {
+        if (current.length === 0) continue;
         out[key] = current;
       }
     }
     return out;
   };
 
-  /** Build the `credentials` body. Polling adapters → flat object;
-   *  webhook adapters → `{auth: {...}, webhook_secret: {...}}`. */
+  /** Build the `credentials` body — partial-rotation aware. Returns
+   *  `{auth?, webhook_secret?}` containing only the half(ves) the
+   *  operator actually edited (see `authDirty` / `webhookSecretDirty`).
+   *
+   *  Polling adapters: the route's `auth` half IS the flat credentials
+   *  object the schema describes — we emit `{auth: {...}}` so the
+   *  server's polling-mode validator can find it under the same key.
+   *  (The route rejects `webhook_secret` for polling adapters with 422
+   *  `webhook_secret_not_supported`.) */
   const buildCredentialsBody = (): Record<string, unknown> => {
     if (adapterDescriptor === null) return {};
+    const out: Record<string, unknown> = {};
     if (adapterDescriptor.mode === "polling") {
-      const out: Record<string, string> = {};
+      if (!authDirty) return out;
       const schema = adapterDescriptor.credentialSchema as PollingCredentialSchema;
+      const auth: Record<string, string> = {};
       for (const k of Object.keys(schema.properties)) {
-        out[k] = credentialValues[k] ?? "";
+        const v = credentialValues[k] ?? "";
+        // Always include even an empty entry so a partially-typed
+        // form still surfaces the route's path-only 422 diagnostic.
+        auth[k] = v;
       }
+      out["auth"] = auth;
       return out;
     }
     const webhook = adapterDescriptor.credentialSchema as WebhookCredentialSchema;
-    const auth: Record<string, string> = {};
-    for (const k of Object.keys(webhook.properties.auth.properties)) {
-      auth[k] = credentialValues[`auth.${k}`] ?? "";
+    if (authDirty) {
+      const auth: Record<string, string> = {};
+      for (const k of Object.keys(webhook.properties.auth.properties)) {
+        auth[k] = credentialValues[`auth.${k}`] ?? "";
+      }
+      out["auth"] = auth;
     }
-    const webhookSecret: Record<string, string> = {};
-    for (const k of Object.keys(webhook.properties.webhook_secret.properties)) {
-      webhookSecret[k] = credentialValues[`webhook_secret.${k}`] ?? "";
+    if (webhookSecretDirty) {
+      const webhookSecret: Record<string, string> = {};
+      for (const k of Object.keys(webhook.properties.webhook_secret.properties)) {
+        webhookSecret[k] = credentialValues[`webhook_secret.${k}`] ?? "";
+      }
+      out["webhook_secret"] = webhookSecret;
     }
-    return { auth, webhook_secret: webhookSecret };
+    return out;
   };
 
   /** Map a 422 validation response into per-field errors keyed by the
@@ -637,7 +696,20 @@ export function SourceBindingDetail(
     fallbackI18nKey: string,
   ): void => {
     if (err instanceof ApiValidationError && err.status === 422) {
-      const body = err.body as { missing?: unknown } | undefined;
+      const body = err.body as { error?: unknown; missing?: unknown } | undefined;
+      // Specific 422 codes from the route's partial-rotation
+      // validator (PR-R2 review fix-up). Each maps to its own
+      // operator-facing string.
+      if (body?.error === "credentials_empty") {
+        setActionError(t("sourceBindingDetail.edit.errors.credentialsEmpty"));
+        return;
+      }
+      if (body?.error === "webhook_secret_not_supported") {
+        setActionError(
+          t("sourceBindingDetail.edit.errors.webhookSecretNotSupported"),
+        );
+        return;
+      }
       const missing = Array.isArray(body?.missing)
         ? (body!.missing as unknown[]).filter(
             (m): m is string => typeof m === "string",
@@ -1049,7 +1121,14 @@ export function SourceBindingDetail(
   );
 }
 
-/** Render an editable text input + helper + per-field error. The
+/** Local field renderer (NOT CredentialForm.tsx). The edit panel
+ *  needs controlled values that span config + credentials and a
+ *  single submit handler routing through the discriminated PATCH;
+ *  CredentialForm is self-contained with its own form/submit and
+ *  doesn't expose a controlled mode. Refactoring CredentialForm
+ *  to a controlled variant is a v0.2 design-system extraction.
+ *
+ *  Render an editable text input + helper + per-field error. The
  *  input id mirrors the field key so both `data-testid` queries
  *  and accessible label-for relationships work. */
 interface EditFieldProps {
