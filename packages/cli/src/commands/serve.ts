@@ -120,13 +120,31 @@ export interface ServeStartedEngine {
  *  `app.listen()` (Fastify rejects `addContentTypeParser` once
  *  ready). `bodyLimit` is `WEBHOOK_BODY_LIMIT_BYTES` (5 MB) so 5-MB
  *  webhook deliveries don't 413 on Fastify's default 1-MB cap.
- *  Test mocks ignore both fields. */
+ *  Test mocks ignore both fields.
+ *
+ *  PR-W1 (phase-a appendix #11): adds optional `deleteCap` +
+ *  `forgetJobEnqueuer` so the source-forget admin route stops
+ *  returning 503 in production. Both originate from the ingestion
+ *  preflight composition (so the cap instance is shared with the
+ *  compiler workers — single-process v0.1 shape). Test mocks
+ *  ignore both fields. */
 export type ServeStartFactory = (opts: {
   readonly env: Record<string, string | undefined>;
   readonly preListenHooks?: ReadonlyArray<
     (app: unknown) => void | Promise<void>
   >;
   readonly bodyLimit?: number;
+  /** PR-W1 (phase-a appendix #11) — `deleteCap` instance from the
+   *  ingestion preflight, threaded into self-op so the admin-API
+   *  forget route reads the SAME budget the compiler workers
+   *  reserve against. Typed `unknown` so the orchestrator stays on
+   *  the no-cross-engine-import side; the default factory narrows
+   *  back to `DeleteCap` at the engine boundary. */
+  readonly deleteCap?: unknown;
+  /** PR-W1 (phase-a appendix #11) — composition-built forget
+   *  enqueuer from the ingestion preflight. Same typed-unknown
+   *  treatment as `deleteCap`. */
+  readonly forgetJobEnqueuer?: unknown;
 }) => Promise<ServeStartedEngine>;
 
 /** Matches `start({env})` from `@opencoo/engine-ingestion`. The
@@ -193,6 +211,19 @@ export interface ServeIngestionPreflightResult {
    *  `/webhooks/:bindingId` + the raw-buffer parser on the supplied
    *  Fastify. Caller MUST run this before `app.listen()`. */
   readonly mountHook: (app: unknown) => void | Promise<void>;
+  /** PR-W1 (phase-a appendix #11) — the composition-built
+   *  `InMemoryDeleteCap` instance the workers reserve against. The
+   *  orchestrator forwards this verbatim into self-op's `start()`
+   *  so the admin-API forget route reads the SAME budget. Typed
+   *  `unknown` to keep this layer on the no-cross-engine-import
+   *  side; the engine narrows back to `DeleteCap` at consumption.
+   *  Optional for backward-compat with test factories that don't
+   *  bother synthesising a cap (the orchestrator omits the field
+   *  on the start call when undefined). */
+  readonly deleteCap?: unknown;
+  /** PR-W1 (phase-a appendix #11) — composition-built forget
+   *  enqueuer. Same typed-unknown treatment as `deleteCap`. */
+  readonly forgetJobEnqueuer?: unknown;
 }
 
 export type ServeIngestionPreflightFactory = (opts: {
@@ -273,6 +304,11 @@ type EngineStartFn = (opts: {
     (app: unknown) => void | Promise<void>
   >;
   readonly bodyLimit?: number;
+  /** PR-W1 (phase-a appendix #11) — passed verbatim into
+   *  `engine-self-operating.start({deleteCap})`. Typed `unknown`
+   *  to keep this layer on the no-cross-engine-import side. */
+  readonly deleteCap?: unknown;
+  readonly forgetJobEnqueuer?: unknown;
 }) => Promise<ServeStartedEngine>;
 
 interface ComposeStartedEngineArgs {
@@ -283,6 +319,11 @@ interface ComposeStartedEngineArgs {
     (app: unknown) => void | Promise<void>
   >;
   readonly bodyLimit?: number;
+  /** PR-W1 (phase-a appendix #11) — forwarded verbatim into
+   *  `engine-self-operating.start({deleteCap, forgetJobEnqueuer})`
+   *  so the source-forget admin route stops 503'ing in production. */
+  readonly deleteCap?: unknown;
+  readonly forgetJobEnqueuer?: unknown;
   /** Logger for the round-2 fix #3 boot-failure-close-failed
    *  warn line. */
   readonly logger: {
@@ -340,6 +381,19 @@ export async function composeStartedEngineWithBundle(
         ? { preListenHooks: args.preListenHooks }
         : {}),
       ...(args.bodyLimit !== undefined ? { bodyLimit: args.bodyLimit } : {}),
+      // PR-W1 (phase-a appendix #11) — wire the source-forget
+      // admin-route deps. When the orchestrator pre-composed an
+      // ingestion preflight, `args.deleteCap` is the SAME instance
+      // the workers' `wikiWrite` reservations target (single-process
+      // v0.1) and `args.forgetJobEnqueuer` is the BullMQ-backed
+      // callable that turns the route's plan into recompile + delete
+      // jobs. When preflight returned null, both are undefined and
+      // the route returns 503 — same boot-tolerance pattern as the
+      // rest of the admin API.
+      ...(args.deleteCap !== undefined ? { deleteCap: args.deleteCap } : {}),
+      ...(args.forgetJobEnqueuer !== undefined
+        ? { forgetJobEnqueuer: args.forgetJobEnqueuer }
+        : {}),
     });
   } catch (err) {
     if (bundle !== null) {
@@ -379,6 +433,8 @@ async function defaultStartFactory(opts: {
     (app: unknown) => void | Promise<void>
   >;
   readonly bodyLimit?: number;
+  readonly deleteCap?: unknown;
+  readonly forgetJobEnqueuer?: unknown;
 }): Promise<ServeStartedEngine> {
   const mod = await import("@opencoo/engine-self-operating");
   const composition = await import(
@@ -407,6 +463,13 @@ async function defaultStartFactory(opts: {
       ? { preListenHooks: opts.preListenHooks }
       : {}),
     ...(opts.bodyLimit !== undefined ? { bodyLimit: opts.bodyLimit } : {}),
+    // PR-W1 (phase-a appendix #11) — forward the preflight-built
+    // deleteCap + forgetJobEnqueuer into the engine so the admin
+    // API's source-forget route stops 503'ing.
+    ...(opts.deleteCap !== undefined ? { deleteCap: opts.deleteCap } : {}),
+    ...(opts.forgetJobEnqueuer !== undefined
+      ? { forgetJobEnqueuer: opts.forgetJobEnqueuer }
+      : {}),
   });
 }
 
@@ -469,6 +532,14 @@ async function defaultIngestionPreflightFactory(opts: {
   return {
     preflight: { composed: composed as unknown },
     mountHook,
+    // PR-W1 (phase-a appendix #11) — surface the composition's
+    // `deleteCap` + `forgetJobEnqueuer` so the orchestrator can
+    // forward them into self-op's `start({})`. Without these, the
+    // admin-API source-forget route returns 503 in production
+    // (the bug the wave-end Chrome QA caught: clicking "Forget
+    // source" → "Nie udało się załadować wpływu").
+    deleteCap: composed.deleteCap as unknown,
+    forgetJobEnqueuer: composed.forgetJobEnqueuer as unknown,
   };
 }
 
@@ -540,6 +611,10 @@ async function defaultIngestionStartFactory(opts: {
       // ingestion.scanner.classify Queue handle the composition
       // opened. Best-effort.
       await composed.workerContext.closeProducers().catch(() => undefined);
+      // PR-W1 (phase-a appendix #11) — drain the producer-side
+      // forget queues (`wiki.recompile` + `wiki.delete`) the
+      // composition opened. Best-effort.
+      await composed.closeForgetQueues().catch(() => undefined);
       await Promise.all([
         composed.pgPool.end().catch(() => undefined),
         composed.redis
@@ -656,6 +731,20 @@ export async function runServe(args: ServeArgs): Promise<void> {
             bodyLimit: SHARED_WEBHOOK_BODY_LIMIT,
           }
         : {}),
+      // PR-W1 (phase-a appendix #11) — forward the preflight's
+      // forget deps (deleteCap + enqueuer) so the source-forget
+      // admin route stops 503'ing in production. When preflight
+      // returned null, both fields stay omitted and the route's
+      // composition-incomplete branch surfaces (matching the rest
+      // of the admin API's boot-tolerance pattern). Conditional
+      // spread keeps undefined fields out of the call site to
+      // satisfy `exactOptionalPropertyTypes`.
+      ...(preflight?.deleteCap !== undefined
+        ? { deleteCap: preflight.deleteCap }
+        : {}),
+      ...(preflight?.forgetJobEnqueuer !== undefined
+        ? { forgetJobEnqueuer: preflight.forgetJobEnqueuer }
+        : {}),
     });
   } catch (err) {
     if (isExitSentinel(err)) throw err;
@@ -667,6 +756,9 @@ export async function runServe(args: ServeArgs): Promise<void> {
     if (preflight !== null) {
       const composed = preflight.preflight.composed as IngestionComposedResult;
       await composed.workerContext.closeProducers().catch(() => undefined);
+      // PR-W1 (phase-a appendix #11) — drain the producer-side
+      // forget queues alongside the scanner Queue.
+      await composed.closeForgetQueues().catch(() => undefined);
       await Promise.all([
         composed.pgPool.end().catch(() => undefined),
         composed.redis
@@ -726,6 +818,9 @@ export async function runServe(args: ServeArgs): Promise<void> {
     if (preflight !== null) {
       const composed = preflight.preflight.composed as IngestionComposedResult;
       await composed.workerContext.closeProducers().catch(() => undefined);
+      // PR-W1 (phase-a appendix #11) — drain the producer-side
+      // forget queues alongside the scanner Queue.
+      await composed.closeForgetQueues().catch(() => undefined);
       await Promise.all([
         composed.pgPool.end().catch(() => undefined),
         composed.redis
