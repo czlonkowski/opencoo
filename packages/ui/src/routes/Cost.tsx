@@ -106,6 +106,32 @@ const CHIP_STYLE_ACTIVE: CSSProperties = {
   color: "var(--ink)",
 };
 
+// Bucket-table cell styles. The four numeric cells share the same
+// shape (right-aligned mono), only the `key` cell is left-aligned.
+// The `totalUsd` cell uses `--ink` to anchor the eye on the cost
+// column; the rest use `--ink-2`.
+const TABLE_CELL_BASE: CSSProperties = {
+  padding: "8px 8px",
+  fontFamily: "var(--font-mono)",
+  fontSize: 12,
+};
+const TABLE_CELL_KEY: CSSProperties = { ...TABLE_CELL_BASE, color: "var(--ink)" };
+const TABLE_CELL_TOTAL: CSSProperties = {
+  ...TABLE_CELL_BASE,
+  color: "var(--ink)",
+  textAlign: "right",
+};
+const TABLE_CELL_NUMERIC: CSSProperties = {
+  ...TABLE_CELL_BASE,
+  color: "var(--ink-2)",
+  textAlign: "right",
+};
+
+// Background for each tier-split segment. Order matches the
+// canonical thinker → worker → light render order. Distinguishing
+// segments by paper-shift (no gradients per CLAUDE.md hard-no).
+const TIER_SEGMENT_BACKGROUNDS = ["var(--ink-2)", "var(--ink-3)", "var(--ink-4)"] as const;
+
 const MAX_BUCKETS = 100;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -206,21 +232,15 @@ interface HeaderCardProps {
 function HeaderCard(props: HeaderCardProps): JSX.Element {
   const { t } = useTranslation();
   const totalUsd = props.summary?.totalUsd ?? 0;
-  // Summed projection across every domain. The header card's
+  // Summed projection + cap across every domain. The header card's
   // "projected month-end" is the global aggregate; per-domain
-  // projection is shown in the burn-down list below.
-  const projectedEom =
-    props.summary?.budgetState.reduce(
-      (acc, b) => acc + b.projectedEomUsd,
-      0,
-    ) ?? 0;
-  const summedCap = props.summary?.budgetState.reduce(
-    (acc, b) => acc + (b.capUsd ?? 0),
-    0,
-  ) ?? 0;
-  // capLabel: a numeric vs-cap when at least one domain has a cap;
-  // a "no cap set" muted label otherwise.
-  const anyCap = props.summary?.budgetState.some((b) => b.capUsd !== null) ?? false;
+  // projection is shown in the burn-down list below. `anyCap` is
+  // true when at least one domain has a cap, gating the "vs cap"
+  // numeric label vs. a "no cap set" muted label.
+  const budgetState = props.summary?.budgetState ?? [];
+  const projectedEom = budgetState.reduce((acc, b) => acc + b.projectedEomUsd, 0);
+  const summedCap = budgetState.reduce((acc, b) => acc + (b.capUsd ?? 0), 0);
+  const anyCap = budgetState.some((b) => b.capUsd !== null);
 
   return (
     <Card>
@@ -498,15 +518,8 @@ function TierSplitCard(props: TierSplitCardProps): JSX.Element {
             }}
           >
             {ordered.map((seg, i) => {
-              const pct = total === 0 ? 0 : (seg.usd / total) * 100;
-              // Distinguish segments by paper-shift + a thin border
-              // between them — NO gradients (CLAUDE.md hard-no).
-              const bg =
-                i === 0
-                  ? "var(--ink-2)"
-                  : i === 1
-                    ? "var(--ink-3)"
-                    : "var(--ink-4)";
+              // Safe: guarded by `total === 0` early-return above.
+              const pct = (seg.usd / total) * 100;
               return (
                 <div
                   key={seg.key}
@@ -515,7 +528,7 @@ function TierSplitCard(props: TierSplitCardProps): JSX.Element {
                   style={{
                     width: `${pct}%`,
                     height: "100%",
-                    background: bg,
+                    background: TIER_SEGMENT_BACKGROUNDS[i],
                     borderRight:
                       i < ordered.length - 1 ? "1px solid var(--paper)" : "none",
                   }}
@@ -570,8 +583,14 @@ function BucketTable(props: BucketTableProps): JSX.Element {
   const truncated = props.buckets.length >= MAX_BUCKETS;
   return (
     <Card title={t("cost.table.title")}>
+      {/* `data-groupby` carries the active grouping for tests +
+       *  future per-grouping styling (e.g. a `groupBy === "agent"`
+       *  branch may want to render `domain.slug × agent.slug`
+       *  composite rows). It also keeps `groupBy` in the public
+       *  contract of `BucketTable` without an extra hidden node. */}
       <table
         data-testid="cost-bucket-table"
+        data-groupby={props.groupBy}
         style={{
           width: "100%",
           borderCollapse: "collapse",
@@ -607,60 +626,11 @@ function BucketTable(props: BucketTableProps): JSX.Element {
               key={bucket.key}
               style={{ borderBottom: "1px solid var(--rule)" }}
             >
-              <td
-                style={{
-                  padding: "8px 8px",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 12,
-                  color: "var(--ink)",
-                }}
-              >
-                {bucket.key}
-              </td>
-              <td
-                style={{
-                  padding: "8px 8px",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 12,
-                  color: "var(--ink)",
-                  textAlign: "right",
-                }}
-              >
-                {formatUsd(bucket.totalUsd)}
-              </td>
-              <td
-                style={{
-                  padding: "8px 8px",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 12,
-                  color: "var(--ink-2)",
-                  textAlign: "right",
-                }}
-              >
-                {formatTokens(bucket.tokensIn)}
-              </td>
-              <td
-                style={{
-                  padding: "8px 8px",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 12,
-                  color: "var(--ink-2)",
-                  textAlign: "right",
-                }}
-              >
-                {formatTokens(bucket.tokensOut)}
-              </td>
-              <td
-                style={{
-                  padding: "8px 8px",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 12,
-                  color: "var(--ink-2)",
-                  textAlign: "right",
-                }}
-              >
-                {bucket.runs}
-              </td>
+              <td style={TABLE_CELL_KEY}>{bucket.key}</td>
+              <td style={TABLE_CELL_TOTAL}>{formatUsd(bucket.totalUsd)}</td>
+              <td style={TABLE_CELL_NUMERIC}>{formatTokens(bucket.tokensIn)}</td>
+              <td style={TABLE_CELL_NUMERIC}>{formatTokens(bucket.tokensOut)}</td>
+              <td style={TABLE_CELL_NUMERIC}>{bucket.runs}</td>
             </tr>
           ))}
         </tbody>
@@ -670,11 +640,6 @@ function BucketTable(props: BucketTableProps): JSX.Element {
           {t("cost.table.truncated", { n: MAX_BUCKETS })}
         </div>
       ) : null}
-      {/* Reference unused variable to keep groupBy in the
-       *  bucket-table contract — a future `groupBy === "agent"`
-       *  branch may want to render `domain.slug × agent.slug`
-       *  composite rows. */}
-      <span data-groupby={props.groupBy} style={{ display: "none" }} />
     </Card>
   );
 }

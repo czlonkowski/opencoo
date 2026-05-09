@@ -229,72 +229,55 @@ export function registerCostSummaryRoute(
   });
 }
 
+/** Per-groupBy SQL fragments. Closed-enum keyed; the values are
+ *  hand-written SQL identifiers (never interpolated user input)
+ *  so `sql.raw` is safe — same pattern used elsewhere in the
+ *  admin-api for closed-enum identifiers (e.g. pipelines.ts).
+ *
+ *  Each row carries:
+ *    - keyExpr — the column projected as `key`
+ *    - groupExpr — the GROUP BY expression (matches keyExpr)
+ *    - join — extra JOIN clause (only the domain bucket needs one) */
+const BUCKET_DIMENSIONS: Readonly<
+  Record<GroupBy, { readonly keyExpr: string; readonly groupExpr: string; readonly join: string }>
+> = {
+  domain: {
+    keyExpr: "d.slug",
+    groupExpr: "d.slug",
+    join: "LEFT JOIN domains d ON d.id = u.domain_id",
+  },
+  tier: { keyExpr: "u.tier::text", groupExpr: "u.tier", join: "" },
+  model: { keyExpr: "u.model", groupExpr: "u.model", join: "" },
+  agent: {
+    keyExpr: "u.pipeline_or_agent",
+    groupExpr: "u.pipeline_or_agent",
+    join: "",
+  },
+};
+
 /** Build the bucket-aggregation SQL for a chosen groupBy. The
  *  groupBy is from a closed enum, not user-supplied identifier —
- *  every branch maps to a hand-written column expression so the
- *  query plan stays predictable and there's no string
- *  interpolation into the SQL identifier space. */
+ *  the column / GROUP BY expressions come from the static
+ *  `BUCKET_DIMENSIONS` map so the query plan stays predictable
+ *  and there's no string interpolation of user input into the
+ *  SQL identifier space. */
 function buildBucketQuery(
   groupBy: GroupBy,
   from: Date,
   to: Date,
 ): ReturnType<typeof sql> {
-  const rangeStart = from.toISOString();
-  const rangeEnd = to.toISOString();
-  if (groupBy === "domain") {
-    return sql`
-      SELECT
-        d.slug                                AS key,
-        COALESCE(SUM(u.cost_usd), 0)::text    AS total_usd,
-        COALESCE(SUM(u.tokens_in), 0)::text   AS tokens_in,
-        COALESCE(SUM(u.tokens_out), 0)::text  AS tokens_out,
-        COUNT(*)::text                        AS runs
-      FROM llm_usage u
-      LEFT JOIN domains d ON d.id = u.domain_id
-      WHERE u."timestamp" >= ${rangeStart}::timestamptz
-        AND u."timestamp" <= ${rangeEnd}::timestamptz
-      GROUP BY d.slug
-    `;
-  }
-  if (groupBy === "tier") {
-    return sql`
-      SELECT
-        u.tier::text                          AS key,
-        COALESCE(SUM(u.cost_usd), 0)::text    AS total_usd,
-        COALESCE(SUM(u.tokens_in), 0)::text   AS tokens_in,
-        COALESCE(SUM(u.tokens_out), 0)::text  AS tokens_out,
-        COUNT(*)::text                        AS runs
-      FROM llm_usage u
-      WHERE u."timestamp" >= ${rangeStart}::timestamptz
-        AND u."timestamp" <= ${rangeEnd}::timestamptz
-      GROUP BY u.tier
-    `;
-  }
-  if (groupBy === "model") {
-    return sql`
-      SELECT
-        u.model                               AS key,
-        COALESCE(SUM(u.cost_usd), 0)::text    AS total_usd,
-        COALESCE(SUM(u.tokens_in), 0)::text   AS tokens_in,
-        COALESCE(SUM(u.tokens_out), 0)::text  AS tokens_out,
-        COUNT(*)::text                        AS runs
-      FROM llm_usage u
-      WHERE u."timestamp" >= ${rangeStart}::timestamptz
-        AND u."timestamp" <= ${rangeEnd}::timestamptz
-      GROUP BY u.model
-    `;
-  }
-  // groupBy === "agent" — pipeline_or_agent column.
+  const dim = BUCKET_DIMENSIONS[groupBy];
   return sql`
     SELECT
-      u.pipeline_or_agent                   AS key,
-      COALESCE(SUM(u.cost_usd), 0)::text    AS total_usd,
-      COALESCE(SUM(u.tokens_in), 0)::text   AS tokens_in,
-      COALESCE(SUM(u.tokens_out), 0)::text  AS tokens_out,
-      COUNT(*)::text                        AS runs
+      ${sql.raw(dim.keyExpr)}              AS key,
+      COALESCE(SUM(u.cost_usd), 0)::text   AS total_usd,
+      COALESCE(SUM(u.tokens_in), 0)::text  AS tokens_in,
+      COALESCE(SUM(u.tokens_out), 0)::text AS tokens_out,
+      COUNT(*)::text                       AS runs
     FROM llm_usage u
-    WHERE u."timestamp" >= ${rangeStart}::timestamptz
-      AND u."timestamp" <= ${rangeEnd}::timestamptz
-    GROUP BY u.pipeline_or_agent
+    ${sql.raw(dim.join)}
+    WHERE u."timestamp" >= ${from.toISOString()}::timestamptz
+      AND u."timestamp" <= ${to.toISOString()}::timestamptz
+    GROUP BY ${sql.raw(dim.groupExpr)}
   `;
 }
