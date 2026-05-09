@@ -3,7 +3,16 @@
  */
 // Phase-a appendix #4: 'activity' = 5th tab (PR-B), 'review' = 6th (PR-C),
 // 'reports' = 7th (PR-D).
-export type Tab = "domains" | "sources" | "llmPolicy" | "prompts" | "activity" | "review" | "reports";
+// Phase-a appendix #10 PR-R4: 'audit' = 8th tab (audit-log viewer).
+export type Tab =
+  | "domains"
+  | "sources"
+  | "llmPolicy"
+  | "prompts"
+  | "activity"
+  | "review"
+  | "reports"
+  | "audit";
 
 export interface Domain {
   readonly id: string;
