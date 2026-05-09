@@ -478,10 +478,20 @@ export function SourceBindingDetail(
     }
   };
 
+  /** Return to view mode and scrub edit-mode form state. We reset
+   *  `configValues` to the persisted seed and CLEAR `credentialValues`
+   *  to `{}` so typed plaintext (especially secrets) doesn't sit in
+   *  React component state across Cancel and a re-entered Edit. The
+   *  modal stays mounted between Cancel and a re-Edit click — closing
+   *  this leak window is the security fix (PR-R2 second Copilot
+   *  fix-up). The `initialConfigSeed` memo already mirrors the open-
+   *  time seed so reusing it keeps the reset consistent. */
   const onIdle = (): void => {
     setStage("idle");
     setActionError(null);
     setFieldErrors({});
+    setConfigValues(initialConfigSeed);
+    setCredentialValues({});
   };
 
   /** Clear a single keyed entry from `fieldErrors` if present. Called
@@ -716,7 +726,14 @@ export function SourceBindingDetail(
           )
         : [];
       if (missing.length > 0) {
-        const fe: Record<string, string> = { ...fieldErrors };
+        // REPLACE the entire error map with the new diagnostic
+        // (PR-R2 second Copilot fix-up). Previously this merged
+        // `{ ...fieldErrors, [path]: ... }` from a closure-captured
+        // `fieldErrors`, which preserved stale errors from a prior
+        // attempt for fields the operator never re-touched. The
+        // server's 422 response is authoritative for the current
+        // body — anything not in `missing` is no longer wrong.
+        const fe: Record<string, string> = {};
         for (const path of missing) {
           fe[path] = t("sources.create.errors.requiredField");
         }
@@ -737,8 +754,16 @@ export function SourceBindingDetail(
   };
 
   const submitEdit = async (): Promise<void> => {
+    // PR-R2 second Copilot fix-up — do NOT pre-clear `fieldErrors`
+    // here. The previous flow was `setFieldErrors({})` → fetch →
+    // `apply422FieldErrors` merging from a closure-captured
+    // `fieldErrors`, which raced because React's state update was
+    // async; the closure could still see stale errors and preserve
+    // them. The new flow: leave the prior errors in place during
+    // the in-flight request, then on response REPLACE the map
+    // wholesale (422) or CLEAR it (200). The result reflects the
+    // latest server diagnostic only.
     setActionError(null);
-    setFieldErrors({});
     setSubmitting(true);
     let configOk = true;
     try {
@@ -756,6 +781,10 @@ export function SourceBindingDetail(
             },
           );
           if (!mountedRef.current) return;
+          // Success on the config PATCH — drop any stale field
+          // errors before the credentials PATCH (or the success
+          // exit) renders.
+          setFieldErrors({});
           props.onChanged();
         } catch (err) {
           if (!mountedRef.current) return;
@@ -777,6 +806,9 @@ export function SourceBindingDetail(
             },
           );
           if (!mountedRef.current) return;
+          // Success on the credentials PATCH — drop any stale
+          // field errors so the operator returns to a clean view.
+          setFieldErrors({});
           props.onChanged();
         } catch (err) {
           if (!mountedRef.current) return;

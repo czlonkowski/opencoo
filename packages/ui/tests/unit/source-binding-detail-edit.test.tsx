@@ -623,4 +623,180 @@ describe("SourceBindingDetail edit mode (PR-R2)", () => {
     const patches = callsRef.current.filter((c) => c.method === "PATCH");
     expect(patches.length).toBe(0);
   });
+
+  // ─── PR-R2 second Copilot fix-up — cancel hygiene + 422 stale-error race ──
+
+  it("Cancel clears typed credential plaintext + resets config; re-Edit reads a clean state", async () => {
+    // Issue 1 — onIdle must reset configValues + credentialValues so
+    // typed plaintext doesn't sit in component state across Cancel
+    // and re-entered Edit. Without the fix, hitting Edit again would
+    // surface the cancelled credential string in the input.
+    const user = userEvent.setup();
+    const { fetchImpl } = makeFetchMock();
+    const binding = makeBinding({
+      config: { projectGid: "PERSISTED-GID", reviewMode: "auto" },
+    });
+    render(
+      <SourceBindingDetail
+        binding={binding}
+        onClose={() => undefined}
+        onChanged={() => undefined}
+        fetchImpl={fetchImpl as unknown as typeof fetch}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+
+    // Type a new PAT (sensitive) and overwrite the persisted config
+    // value, then Cancel.
+    const projectGidInput = await screen.findByTestId("edit-config-projectGid");
+    await user.clear(projectGidInput);
+    await user.type(projectGidInput, "TYPED-AND-CANCELLED");
+    const patInput = screen.getByTestId(
+      "edit-cred-auth.personal_access_token",
+    );
+    await user.type(patInput, "secret-cancelled-pat");
+
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+    // Re-enter edit mode WITHOUT closing the modal first — this is
+    // the leak window the fix closes.
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+
+    // Credential field MUST be empty (credentials are never re-seeded
+    // for security; cancelled plaintext must not persist in state).
+    const patAgain = await screen.findByTestId(
+      "edit-cred-auth.personal_access_token",
+    );
+    expect((patAgain as HTMLInputElement).value).toBe("");
+
+    // Config field MUST reset to the persisted seed (NOT the cancelled
+    // typed value). Operator's cancelled edit is gone.
+    const projectAgain = screen.getByTestId(
+      "edit-config-projectGid",
+    ) as HTMLInputElement;
+    expect(projectAgain.value).toBe("PERSISTED-GID");
+  });
+
+  it("422 errors REPLACE the field-error map: stale errors don't carry over across attempts", async () => {
+    // Issue 2 — the first Save fails with errors on BOTH projectGid
+    // and workspaceGid. Operator corrects projectGid (typing clears
+    // its error via `clearFieldError`) but does NOT touch
+    // workspaceGid (its stale error stays in `fieldErrors`). Second
+    // Save fails on a THIRD field (a credential field) only.
+    //
+    // With the buggy `{ ...fieldErrors, [newPath]: error }` merge,
+    // workspaceGid's stale error would persist into the second
+    // result. With the REPLACE fix, only the new error is shown.
+    const user = userEvent.setup();
+    const twoFieldDescriptor = {
+      slug: "asana",
+      mode: "webhook" as const,
+      credentialSchema: ASANA_DESCRIPTOR.credentialSchema,
+      bindingConfigSchema: {
+        type: "object",
+        properties: {
+          projectGid: { type: "string", minLength: 1 },
+          workspaceGid: { type: "string", minLength: 1 },
+        },
+        required: ["projectGid", "workspaceGid"],
+      },
+    };
+    const callsRef: { current: FetchCall[] } = { current: [] };
+    let patchIdx = 0;
+    const responses = [
+      // First Save: 422 on BOTH projectGid AND workspaceGid.
+      {
+        status: 422,
+        body: {
+          error: "binding_config_schema_mismatch",
+          missing: ["projectGid", "workspaceGid"],
+        },
+      },
+      // Second Save: 422 on a different field only.
+      {
+        status: 422,
+        body: {
+          error: "binding_config_schema_mismatch",
+          missing: ["projectGid"],
+        },
+      },
+    ];
+    const fetchImpl = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      const body =
+        init?.body !== undefined ? JSON.parse(String(init.body)) : null;
+      callsRef.current.push({ url, method, body });
+      if (url === "/api/admin/adapters" && method === "GET") {
+        return new Response(
+          JSON.stringify({ adapters: [twoFieldDescriptor] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (
+        url === `/api/admin/source-bindings/${BINDING_ID}` &&
+        method === "PATCH"
+      ) {
+        const r = responses[patchIdx] ?? {
+          status: 200,
+          body: { id: BINDING_ID },
+        };
+        patchIdx += 1;
+        return new Response(JSON.stringify(r.body), {
+          status: r.status,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const binding = makeBinding({
+      config: { projectGid: "OLD", workspaceGid: "OLD-WS" },
+    });
+    render(
+      <SourceBindingDetail
+        binding={binding}
+        onClose={() => undefined}
+        onChanged={() => undefined}
+        fetchImpl={fetchImpl as unknown as typeof fetch}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+
+    // First Save attempt — both fields will 422.
+    const projectGidInput = await screen.findByTestId(
+      "edit-config-projectGid",
+    );
+    await user.clear(projectGidInput);
+    await user.type(projectGidInput, "bad-1");
+    const workspaceGidInput = screen.getByTestId("edit-config-workspaceGid");
+    await user.clear(workspaceGidInput);
+    await user.type(workspaceGidInput, "bad-2");
+
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    // Both errors land.
+    await screen.findByTestId("edit-config-projectGid-error");
+    expect(
+      screen.getByTestId("edit-config-workspaceGid-error"),
+    ).toBeInTheDocument();
+
+    // Second Save WITHOUT touching either field — server returns 422
+    // for projectGid only. workspaceGid's stale error must drop
+    // because the second response no longer lists it.
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      // The second-attempt response only flags projectGid.
+      expect(
+        screen.getByTestId("edit-config-projectGid-error"),
+      ).toBeInTheDocument();
+    });
+    // Workspace's stale error from the FIRST attempt must NOT persist
+    // — REPLACE semantics drop it because the second response didn't
+    // include it.
+    expect(
+      screen.queryByTestId("edit-config-workspaceGid-error"),
+    ).not.toBeInTheDocument();
+  });
 });
