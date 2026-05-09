@@ -42,6 +42,7 @@ import {
 } from "./routes/agents-dispatch.js";
 import { registerAuditLogReadRoutes } from "./routes/audit-log-read.js";
 import { registerAutomationCandidatesRoutes } from "./routes/automation-candidates.js";
+import { registerCostSummaryRoute } from "./routes/cost-summary.js";
 import { registerDomainsLlmPolicyRoutes } from "./routes/domains-llm-policy.js";
 import {
   registerDomainsRoutes,
@@ -59,6 +60,7 @@ import { registerRedactionEventsRoutes } from "./routes/redaction-events.js";
 import {
   registerSchedulerRoute,
   type SchedulerSource,
+  type SchedulerUpdate,
 } from "./routes/scheduler.js";
 import {
   registerSourceBindingsRoutes,
@@ -127,6 +129,12 @@ export interface RegisterAdminApiArgs {
    *  incomplete — same boot-tolerance pattern as the rest of the
    *  admin API). */
   readonly dispatchAgentJob?: AgentDispatchEnqueue;
+  /** Phase-a appendix #10 PR-R6 — scheduler / cadence editor.
+   *  Production passes the dispatcher's `updateSchedule` method;
+   *  when undefined the `PUT /api/admin/scheduler/:agent` route
+   *  registers but every call returns 503 (composition incomplete).
+   *  Same boot-tolerance pattern as `dispatchAgentJob`. */
+  readonly updateSchedule?: SchedulerUpdate;
   /** Phase-a appendix #10 PR-R7 — delete-cap probe + reserve for
    *  the source-forget impact preview. Production passes the
    *  ingestion engine's `wikiDeps.deleteCap` (single-process v0.1
@@ -205,6 +213,10 @@ export async function registerAdminApi(
   registerAutomationCandidatesRoutes({ app: guardedApp, db: args.db });
   registerMarketplaceUpdatesRoutes({ app: guardedApp, db: args.db });
   registerAuditLogReadRoutes({ app: guardedApp, db: args.db });
+  // Phase-a appendix #10 PR-R5 — cost analytics dashboard. Read-only
+  // aggregation over `llm_usage`; no new write surface, no new
+  // persistence table.
+  registerCostSummaryRoute({ app: guardedApp, db: args.db });
   // PR 29 read-only domains list + phase-a appendix #2 create
   // handler. Pass through the provisioning callable + org name
   // so the POST handler can seed Gitea. Read-only GET works
@@ -264,6 +276,9 @@ export async function registerAdminApi(
     app: guardedApp,
     db: args.db,
     source: args.schedulerSource ?? { listSchedules: () => [] },
+    ...(args.updateSchedule !== undefined
+      ? { updateSchedule: args.updateSchedule }
+      : {}),
   });
 
   // Phase-a appendix #10 PR-R3 — on-demand agent dispatch.
@@ -351,6 +366,10 @@ export type { GiteaClient, GiteaWhoamiResult, AdminContext } from "./auth.js";
 export type { ProvisionDomainRepoFn } from "./routes/domains.js";
 export type { AgentDispatchEnqueue } from "./routes/agents-dispatch.js";
 export type { ForgetJobEnqueueArgs } from "./routes/source-bindings.js";
+export type {
+  SchedulerSource,
+  SchedulerUpdate,
+} from "./routes/scheduler.js";
 export {
   DISPATCHABLE_AGENT_SLUGS,
   type DispatchableAgentSlug,

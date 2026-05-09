@@ -463,6 +463,13 @@ export async function start(
       ...(dispatcher !== undefined
         ? { dispatchAgentJob: dispatcher.enqueueOneShot.bind(dispatcher) }
         : {}),
+      // PR-R6 (phase-a appendix #10) — cadence-editor BullMQ swap.
+      // Bind to the same dispatcher instance so a UI cadence
+      // change flips the SAME repeatable index `start()` populated
+      // at boot.
+      ...(dispatcher !== undefined
+        ? { updateSchedule: dispatcher.updateSchedule.bind(dispatcher) }
+        : {}),
       ...(bodyLimit !== undefined ? { bodyLimit } : {}),
     });
   };

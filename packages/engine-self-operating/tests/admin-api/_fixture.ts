@@ -295,6 +295,32 @@ const TABLES_DDL = `
     ON page_citations (domain_slug, page_path);
   CREATE INDEX IF NOT EXISTS page_citations_source_binding_id_idx
     ON page_citations (source_binding_id);
+
+  -- Phase-a appendix #10 PR-R5: cost analytics dashboard reads
+  -- llm_usage to surface per-domain × agent × tier spend. The
+  -- schema mirrors packages/shared/src/db/schema/llm-usage.ts.
+  -- Ships in the base fixture so cost-summary tests work without
+  -- per-test table creation.
+  CREATE TABLE IF NOT EXISTS llm_usage (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    "timestamp" timestamp with time zone DEFAULT now() NOT NULL,
+    engine llm_engine NOT NULL,
+    tier llm_tier NOT NULL,
+    model text NOT NULL,
+    pipeline_or_agent text NOT NULL,
+    document_id text,
+    run_id uuid REFERENCES agent_runs(id) ON DELETE SET NULL,
+    domain_id uuid REFERENCES domains(id) ON DELETE SET NULL,
+    tokens_in integer NOT NULL,
+    tokens_out integer NOT NULL,
+    cost_usd numeric(10, 6) NOT NULL,
+    latency_ms integer NOT NULL,
+    prompt_version text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS llm_usage_timestamp_idx ON llm_usage ("timestamp");
+  CREATE INDEX IF NOT EXISTS llm_usage_pipeline_or_agent_timestamp_idx
+    ON llm_usage (pipeline_or_agent, "timestamp");
 `;
 
 export class MockGiteaClient implements GiteaClient {

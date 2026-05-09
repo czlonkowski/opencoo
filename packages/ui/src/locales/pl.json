@@ -14,7 +14,8 @@
     "review": "review",
     "reports": "reports",
     "logout": "log out",
-    "audit": "audit"
+    "audit": "audit",
+    "cost": "cost"
   },
   "auth": {
     "modalTitle": "opencoo",
@@ -438,6 +439,32 @@
       "transient": "Serwer nieosiągalny lub zwrócił błąd. Spróbuj ponownie."
     }
   },
+  "schedulerEditor": {
+    "edit": "Edytuj harmonogram",
+    "cancel": "Anuluj",
+    "save": "Zapisz",
+    "saving": "Zapisywanie…",
+    "applied": "Harmonogram zaktualizowany",
+    "presetLabel": "Częstotliwość",
+    "timeLabel": "Godzina",
+    "cronLabel": "Cron",
+    "nextFires": "Najbliższe 5 uruchomień",
+    "currentSchedule": "Obecny cron",
+    "presets": {
+      "weekday": "Każdego dnia roboczego",
+      "sunday": "Każdej niedzieli",
+      "firstOfMonth": "Pierwszego dnia miesiąca",
+      "biweeklyFirstSunday": "Co dwa tygodnie · pierwsza niedziela",
+      "custom": "Własny cron"
+    },
+    "errors": {
+      "cronInvalid": "Nie udało się przeparsować cron.",
+      "cronInvalidWithReason": "Nie udało się przeparsować cron: {{reason}}",
+      "saveFailed": "Nie udało się zapisać harmonogramu. Spróbuj ponownie.",
+      "schedulerUnavailable": "Harmonogram nieaktywny. Sprawdź logi silnika.",
+      "auth": "Sesja wygasła lub brak uprawnień — wklej PAT ponownie."
+    }
+  },
   "audit": {
     "title": "Audit log",
     "subtitle": "Append-only record of every state-changing admin action.",
@@ -476,6 +503,53 @@
       "prev": "Prev",
       "next": "Next",
       "page": "Page {{page}}"
+    }
+  },
+  "cost": {
+    "title": "Cost",
+    "subtitle": "Per-domain spend, projected month-end, tier split.",
+    "loadError": "Could not load cost summary. Try again.",
+    "loading": "Loading cost data…",
+    "empty": "No usage recorded yet.",
+    "header": {
+      "thisMonth": "this month",
+      "projectedEom": "projected month-end",
+      "vsCap": "vs cap",
+      "noCap": "no cap set",
+      "live": "live spending"
+    },
+    "burndown": {
+      "title": "Burn-down per domain",
+      "subtitle": "Month-to-date usage against the per-domain monthly cap.",
+      "noCap": "no cap",
+      "paused": "paused"
+    },
+    "tierSplit": {
+      "title": "Spend by tier",
+      "subtitle": "Three-tier split for the selected period.",
+      "thinker": "thinker",
+      "worker": "worker",
+      "light": "light"
+    },
+    "table": {
+      "title": "Top buckets",
+      "key": "key",
+      "totalUsd": "cost",
+      "tokensIn": "tokens in",
+      "tokensOut": "tokens out",
+      "runs": "runs",
+      "truncated": "showing top {{n}}"
+    },
+    "selectors": {
+      "period": "period",
+      "groupBy": "group by",
+      "day": "day",
+      "week": "week",
+      "month": "month",
+      "domain": "domain",
+      "model": "model",
+      "tier": "tier",
+      "agent": "agent"
     }
   }
 }
