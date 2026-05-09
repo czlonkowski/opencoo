@@ -207,6 +207,24 @@ export function openSseClient(url: string): SseClient {
     }, wait);
   }
 
+  /** Release transport resources without touching listeners or `state`.
+   *  Used by both `close()` and the 401 terminal branch so the two paths
+   *  have identical resource semantics — without this, a 401 left the
+   *  in-flight fetch / response body alive until React's useEffect
+   *  cleanup eventually called `close()`. Listeners are deliberately NOT
+   *  cleared here because the 401 branch dispatches `auth_failed` and
+   *  the consumer (Activity.tsx) needs that listener intact when the
+   *  event fires; `close()` clears listeners separately after calling
+   *  this helper. */
+  function tearDown(): void {
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    abort?.abort();
+    abort = null;
+  }
+
   async function connect(): Promise<void> {
     if (isClosed()) return;
     state = "connecting";
@@ -243,10 +261,25 @@ export function openSseClient(url: string): SseClient {
     // listen for, mark the client closed, and STOP. The terminal flag
     // is per-session — once the operator re-pastes a fresh PAT, the
     // consumer opens a brand-new client.
+    //
+    // Resource teardown matches close(): abort the fetch + cancel the
+    // response body so the underlying connection isn't held open while
+    // React waits for a useEffect cleanup that may not run for minutes
+    // (operator stays on the page after the PAT expires). Listeners are
+    // intentionally preserved — the synchronous `dispatchAuthFailed()`
+    // above already invoked them, but Activity.tsx may have additional
+    // unsubscribe logic that runs against the listener map on unmount.
     if (response.status === 401) {
       dispatchAuthFailed();
+      // Cancel the response body explicitly. For a 401 we never started
+      // reading it, so it's still pending; cancel() releases the stream
+      // without reading. Swallow rejections — the body may already be
+      // consumed/locked in some platforms; we only care that we tried.
+      void response.body?.cancel().catch(() => {
+        /* already cancelled or locked — harmless */
+      });
       state = "closed";
-      abort = null;
+      tearDown();
       return;
     }
 
@@ -298,12 +331,7 @@ export function openSseClient(url: string): SseClient {
     },
     close(): void {
       state = "closed";
-      if (reconnectTimer !== null) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      abort?.abort();
-      abort = null;
+      tearDown();
       listeners.clear();
     },
     get readyState(): "connecting" | "open" | "closed" {

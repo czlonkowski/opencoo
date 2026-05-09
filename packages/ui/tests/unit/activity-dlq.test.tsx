@@ -222,9 +222,10 @@ describe("Activity route — auth_failed terminal SSE event (PR-W3)", () => {
     ).toBeInTheDocument();
     // Indicator flips from "live" → "auth expired" with --alert color.
     expect(screen.getByText(/auth expired/i)).toBeInTheDocument();
-    // The alert border uses `--alert` (Alert Red) — the CLAUDE.md
-    // hard-no on emoji + token compliance is verified by inline style
-    // referencing the design-system var.
+    // Alert styling uses the `--alert` token (per design-system: alert
+    // color is reserved for destructive/blocking states like an expired
+    // sign-in). Verified by checking the inline style references the
+    // design-system var rather than a hardcoded color.
     expect(alert.getAttribute("style") ?? "").toMatch(/var\(--alert\)/);
   });
 
