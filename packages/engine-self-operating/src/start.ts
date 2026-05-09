@@ -456,6 +456,13 @@ export async function start(
       ...(credentialStore !== null ? { credentialStore } : {}),
       ...(ingestionQueue !== undefined ? { ingestionQueue } : {}),
       ...(dispatcher !== undefined ? { schedulerSource: dispatcher } : {}),
+      // PR-R3 (phase-a appendix #10) — on-demand dispatch enqueue.
+      // Bind to the dispatcher instance so the admin-API route can
+      // call `enqueueOneShot({ instanceId, dryRun })` against the
+      // SAME BullMQ queue the cron path uses.
+      ...(dispatcher !== undefined
+        ? { dispatchAgentJob: dispatcher.enqueueOneShot.bind(dispatcher) }
+        : {}),
       ...(bodyLimit !== undefined ? { bodyLimit } : {}),
     });
   };

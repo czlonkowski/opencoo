@@ -76,6 +76,11 @@ export interface ProductionServerFactoryArgs {
    *  may have failed to compose, but the operator should still be
    *  able to inspect what's wired). */
   readonly schedulerSource?: SchedulerSource;
+  /** Phase-a appendix #10 PR-R3 — on-demand agent dispatch
+   *  enqueue. Production passes the dispatcher's `enqueueOneShot`
+   *  bound method; when undefined the route registers but returns
+   *  503 (composition incomplete). */
+  readonly dispatchAgentJob?: import("../admin-api/routes/agents-dispatch.js").AgentDispatchEnqueue;
   /** PR-Q6 (phase-a appendix #9) fix-up — Fastify request body
    *  limit. The orchestrator sets this to `WEBHOOK_BODY_LIMIT_BYTES`
    *  (5 MB) when co-booting engine-ingestion in workers mode so a
@@ -133,6 +138,9 @@ export async function productionServerFactory(
       : {}),
     ...(args.schedulerSource !== undefined
       ? { schedulerSource: args.schedulerSource }
+      : {}),
+    ...(args.dispatchAgentJob !== undefined
+      ? { dispatchAgentJob: args.dispatchAgentJob }
       : {}),
     provisionOrg: args.compositionEnv.giteaProvisionOrg,
     provisionDomainRepo: async (a) => {

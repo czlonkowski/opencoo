@@ -35,6 +35,10 @@ import { attachDebugBannerHook } from "./debug-banner.js";
 import { createSseBus, type SseBus } from "./sse-bus.js";
 import { registerAdaptersRoute } from "./routes/adapters.js";
 import { registerAgentRunsRoutes } from "./routes/agent-runs.js";
+import {
+  registerAgentsDispatchRoute,
+  type AgentDispatchEnqueue,
+} from "./routes/agents-dispatch.js";
 import { registerAuditLogReadRoutes } from "./routes/audit-log-read.js";
 import { registerAutomationCandidatesRoutes } from "./routes/automation-candidates.js";
 import { registerDomainsLlmPolicyRoutes } from "./routes/domains-llm-policy.js";
@@ -112,6 +116,13 @@ export interface RegisterAdminApiArgs {
    *  an empty source (operator sees `{ schedules: [] }`) so the
    *  endpoint stays reachable even if the scheduler failed to boot. */
   readonly schedulerSource?: SchedulerSource;
+  /** Phase-a appendix #10 PR-R3 — on-demand agent dispatch enqueue.
+   *  Production passes the dispatcher's `enqueueOneShot` method;
+   *  when undefined the `POST /api/admin/agents/:slug/dispatch`
+   *  route registers but every call returns 503 (composition
+   *  incomplete — same boot-tolerance pattern as the rest of the
+   *  admin API). */
+  readonly dispatchAgentJob?: AgentDispatchEnqueue;
 }
 
 export async function registerAdminApi(
@@ -233,6 +244,19 @@ export async function registerAdminApi(
     source: args.schedulerSource ?? { listSchedules: () => [] },
   });
 
+  // Phase-a appendix #10 PR-R3 — on-demand agent dispatch.
+  // The route registers regardless of whether the dispatcher
+  // composed at boot; when the enqueue callable is absent the
+  // route returns 503 so the operator sees a clean error surface
+  // instead of a 404. Same pattern as schedulerSource above.
+  registerAgentsDispatchRoute({
+    app: guardedApp,
+    db: args.db,
+    ...(args.dispatchAgentJob !== undefined
+      ? { dispatchAgentJob: args.dispatchAgentJob }
+      : {}),
+  });
+
   // Debug banner: registered LAST so it sees every JSON
   // response regardless of which route built it.
   attachDebugBannerHook(args.app, { llmDebugLog: args.llmDebugLog });
@@ -303,6 +327,12 @@ function makeGuardedApp(
 
 export type { GiteaClient, GiteaWhoamiResult, AdminContext } from "./auth.js";
 export type { ProvisionDomainRepoFn } from "./routes/domains.js";
+export type { AgentDispatchEnqueue } from "./routes/agents-dispatch.js";
+export {
+  DISPATCHABLE_AGENT_SLUGS,
+  type DispatchableAgentSlug,
+  __resetAgentDispatchRateLimit,
+} from "./routes/agents-dispatch.js";
 export { AUDIT_LOG_ACTIONS, type AuditAction } from "./audit-log.js";
 export {
   computePayloadHash,

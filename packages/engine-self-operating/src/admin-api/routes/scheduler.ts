@@ -53,6 +53,11 @@ interface AgentRunStartedRow {
   readonly started_at: Date | string | null;
 }
 
+interface InstanceDomainRow {
+  readonly instance_id: string;
+  readonly domain_slug: string | null;
+}
+
 export function registerSchedulerRoute(
   args: RegisterSchedulerRouteArgs,
 ): void {
@@ -63,7 +68,16 @@ export function registerSchedulerRoute(
       return { schedules: [] };
     }
     const instanceIds = schedules.map((s) => s.instanceId);
-    const lastFireMap = await loadLastFireMap(args.db, instanceIds);
+    // PR-R3 — load per-instance domain slugs so the management UI
+    // can wire the "Run now" buttons without a separate fetch per
+    // instance. Resolved from the FIRST entry in
+    // `agent_instances.scope_domain_ids` (v0.1 single-domain
+    // pilots have exactly one entry; multi-domain scope expansion
+    // is a v0.2 concern — same precedent as `agent-runners.ts`).
+    const [lastFireMap, domainSlugMap] = await Promise.all([
+      loadLastFireMap(args.db, instanceIds),
+      loadDomainSlugMap(args.db, instanceIds),
+    ]);
     const fromTs = now();
     const enriched = schedules.map((s) => ({
       instanceId: s.instanceId,
@@ -72,9 +86,40 @@ export function registerSchedulerRoute(
       scheduleCron: s.scheduleCron,
       nextFireAt: toIso(nextFireAt(s.scheduleCron, fromTs)),
       lastFireAt: toIso(lastFireMap.get(s.instanceId) ?? null),
+      domainSlug: domainSlugMap.get(s.instanceId) ?? null,
     }));
     return { schedules: enriched };
   });
+}
+
+/** Load the domain slug for the FIRST entry in
+ *  `agent_instances.scope_domain_ids` per instance id. v0.1
+ *  single-domain pilots match the runner closures'
+ *  `resolveDomainSlug` lookup pattern in
+ *  `cli/src/provision/agent-runners.ts`. */
+async function loadDomainSlugMap(
+  db: Db,
+  instanceIds: readonly string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (instanceIds.length === 0) return out;
+  const idParams = sql.join(
+    instanceIds.map((id) => sql`${id}`),
+    sql`, `,
+  );
+  const result = (await db.execute(sql`
+    SELECT ai.id::text                            AS instance_id,
+           d.slug                                 AS domain_slug
+    FROM agent_instances ai
+    LEFT JOIN domains d ON d.id = (ai.scope_domain_ids)[1]
+    WHERE ai.id::text IN (${idParams})
+  `)) as unknown as { rows: InstanceDomainRow[] };
+  for (const row of result.rows) {
+    if (row.domain_slug !== null) {
+      out.set(row.instance_id, row.domain_slug);
+    }
+  }
+  return out;
 }
 
 /** Load the most recent `agent_runs.started_at` per instance id. */

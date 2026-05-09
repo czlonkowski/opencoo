@@ -17,9 +17,10 @@
  *   - Run list does NOT include `output` — only the detail view does.
  *   - StatusPill (PR-E) is used for run status indicators.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
+import { AgentsRunNowButton } from "../components/AgentsRunNowButton.js";
 import { StatusPill, type StatusTone } from "../components/StatusPill.js";
 import { fetchAdmin } from "../lib/api.js";
 import { openSseClient } from "../lib/sse.js";
@@ -54,6 +55,16 @@ interface PipelinesResponse {
 export interface ActivityProps {
   /** @internal Test seam — defaults to globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
+  /** @internal Test seam — SSE subscription factory for the
+   *  per-agent "Run now" buttons (PR-R3). Defaults to a wrapper
+   *  around `openSseClient("/api/admin/events")`. */
+  readonly subscribeToAgentRuns?: (
+    listener: (evt: {
+      runId: string;
+      definitionSlug: string;
+      status: string;
+    }) => void,
+  ) => () => void;
 }
 
 // ─── Sub-tab type ─────────────────────────────────────────────────────────────
@@ -326,9 +337,213 @@ function RunsView(props: { fetchImpl?: typeof fetch }): JSX.Element {
   );
 }
 
+// ─── Scheduled agents card list (PR-R3) ───────────────────────────────────────
+// One card per scheduled agent_instance from `/api/admin/scheduler`.
+// Each card carries a "Run now" CTA the operator uses to fire the
+// agent on demand without waiting for the cron tick.
+
+interface ScheduleEntry {
+  readonly instanceId: string;
+  readonly definitionSlug: string;
+  readonly name: string;
+  readonly scheduleCron: string;
+  readonly nextFireAt: string | null;
+  readonly lastFireAt: string | null;
+  readonly domainSlug: string | null;
+}
+
+interface ScheduleResponse {
+  readonly schedules: readonly ScheduleEntry[];
+}
+
+const RUN_NOW_DISPATCHABLE = new Set([
+  "heartbeat",
+  "lint",
+  "surfacer",
+  "builder",
+]);
+
+function ScheduledAgentsView(props: {
+  fetchImpl?: typeof fetch;
+  /** @internal Test seam — see HeartbeatView for the same pattern. */
+  subscribeToAgentRuns?: (
+    listener: (evt: {
+      runId: string;
+      definitionSlug: string;
+      status: string;
+    }) => void,
+  ) => () => void;
+}): JSX.Element {
+  const { t } = useTranslation();
+  const [schedules, setSchedules] = useState<readonly ScheduleEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await fetchAdmin<ScheduleResponse>(
+          "/api/admin/scheduler",
+          fetchOptsFor(props.fetchImpl),
+        );
+        setSchedules(r.schedules);
+      } catch {
+        setError(t("common.error"));
+      }
+    })();
+  }, []);
+
+  // Stable SSE subscription factory shared across the cards.
+  const subscribeToAgentRuns = useMemo(() => {
+    const inject = props.subscribeToAgentRuns;
+    if (inject !== undefined) return inject;
+    return (
+      listener: (evt: {
+        runId: string;
+        definitionSlug: string;
+        status: string;
+      }) => void,
+    ): (() => void) => {
+      const client = openSseClient("/api/admin/events");
+      const off = client.on<{
+        runId: string;
+        definitionSlug: string;
+        status: string;
+        startedAt: string;
+      }>("agent_run", (evt) => {
+        listener({
+          runId: evt.data.runId,
+          definitionSlug: evt.data.definitionSlug,
+          status: evt.data.status,
+        });
+      });
+      return (): void => {
+        off();
+        client.close();
+      };
+    };
+  }, [props.subscribeToAgentRuns]);
+
+  if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
+  if (schedules === null) {
+    return <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>;
+  }
+  if (schedules.length === 0) {
+    return (
+      <NoticeRow tone="muted">{t("agentsRunNow.activityCard.empty")}</NoticeRow>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {schedules.map((s) => {
+        const dispatchable =
+          s.domainSlug !== null && RUN_NOW_DISPATCHABLE.has(s.definitionSlug);
+        const slug = dispatchable
+          ? (s.definitionSlug as
+              | "heartbeat"
+              | "lint"
+              | "surfacer"
+              | "builder")
+          : null;
+        return (
+          <div
+            key={s.instanceId}
+            style={{
+              border: "1px solid var(--rule)",
+              borderRadius: 6,
+              padding: "16px 20px",
+              background: "var(--paper-2)",
+              display: "grid",
+              gridTemplateColumns: "1fr auto auto auto auto",
+              gap: 18,
+              alignItems: "center",
+            }}
+          >
+            <span
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: 13,
+                color: "var(--ink)",
+              }}
+            >
+              {s.definitionSlug}
+            </span>
+            <span
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                color: "var(--ink-2)",
+              }}
+            >
+              {s.name}
+            </span>
+            <span
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                color: "var(--ink-3)",
+              }}
+            >
+              {s.scheduleCron}
+            </span>
+            <span
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                color: "var(--ink-3)",
+              }}
+            >
+              {s.lastFireAt !== null
+                ? new Date(s.lastFireAt).toLocaleString()
+                : "—"}
+            </span>
+            {slug !== null && s.domainSlug !== null ? (
+              <AgentsRunNowButton
+                agentSlug={slug}
+                domainSlug={s.domainSlug}
+                instanceSlug={s.name}
+                idleLabel={t("agentsRunNow.labels.runNow")}
+                queuedLabelFormat={t("agentsRunNow.labels.queued")}
+                runningLabelFormat={t("agentsRunNow.labels.running")}
+                rateLimitedTooltipFormat={t(
+                  "agentsRunNow.tooltips.rateLimited",
+                )}
+                subscribeToAgentRuns={subscribeToAgentRuns}
+                {...(props.fetchImpl !== undefined
+                  ? { fetchImpl: props.fetchImpl }
+                  : {})}
+              />
+            ) : (
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  color: "var(--ink-3)",
+                }}
+              >
+                —
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Pipelines sub-view ───────────────────────────────────────────────────────
 
-function PipelinesView(props: { fetchImpl?: typeof fetch }): JSX.Element {
+function PipelinesView(props: {
+  fetchImpl?: typeof fetch;
+  /** @internal Test seam — see ScheduledAgentsView. */
+  subscribeToAgentRuns?: (
+    listener: (evt: {
+      runId: string;
+      definitionSlug: string;
+      status: string;
+    }) => void,
+  ) => () => void;
+}): JSX.Element {
   const { t } = useTranslation();
   const [pipelines, setPipelines] = useState<readonly Pipeline[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -347,46 +562,85 @@ function PipelinesView(props: { fetchImpl?: typeof fetch }): JSX.Element {
     })();
   }, []);
 
-  if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
-  if (pipelines === null) return <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>;
-  if (pipelines.length === 0) return <NoticeRow tone="muted">{t("activity.pipelines.empty")}</NoticeRow>;
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "16px 0" }}>
-      {pipelines.map((p) => (
-        <div
-          key={p.name}
+    <div style={{ display: "flex", flexDirection: "column", gap: 24, padding: "16px 0" }}>
+      {/* PR-R3 — scheduled-agent cards with per-card "Run now". */}
+      <section>
+        <h3
           style={{
-            border: "1px solid var(--rule)",
-            borderRadius: 6,
-            padding: "16px 20px",
-            background: "var(--paper-2)",
-            display: "grid",
-            gridTemplateColumns: "1fr auto auto auto",
-            gap: 24,
-            alignItems: "center",
+            fontFamily: "var(--font-sans)",
+            fontSize: 12,
+            fontWeight: 500,
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            color: "var(--ink-3)",
+            margin: "0 0 8px 0",
           }}
         >
-          <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 13,
-              color: "var(--ink)",
-            }}
-          >
-            {p.name}
-          </span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-2)" }}>
-            depth: {p.depth}
-          </span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: p.failedCount > 0 ? "var(--alert)" : "var(--ink-2)" }}>
-            failed: {p.failedCount}
-          </span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: p.dlqCount > 0 ? "var(--alert)" : "var(--ink-2)" }}>
-            DLQ: {p.dlqCount}
-          </span>
-        </div>
-      ))}
+          {t("agentsRunNow.activityCard.title")}
+        </h3>
+        <ScheduledAgentsView
+          {...(props.fetchImpl !== undefined ? { fetchImpl: props.fetchImpl } : {})}
+          {...(props.subscribeToAgentRuns !== undefined
+            ? { subscribeToAgentRuns: props.subscribeToAgentRuns }
+            : {})}
+        />
+      </section>
+
+      {/* Existing BullMQ queue cards. */}
+      <section>
+        <h3
+          style={{
+            fontFamily: "var(--font-sans)",
+            fontSize: 12,
+            fontWeight: 500,
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            color: "var(--ink-3)",
+            margin: "0 0 8px 0",
+          }}
+        >
+          {t("activity.tabs.pipelines")}
+        </h3>
+        {error !== null ? (
+          <NoticeRow tone="alert">{error}</NoticeRow>
+        ) : pipelines === null ? (
+          <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>
+        ) : pipelines.length === 0 ? (
+          <NoticeRow tone="muted">{t("activity.pipelines.empty")}</NoticeRow>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {pipelines.map((p) => (
+              <div
+                key={p.name}
+                style={{
+                  border: "1px solid var(--rule)",
+                  borderRadius: 6,
+                  padding: "16px 20px",
+                  background: "var(--paper-2)",
+                  display: "grid",
+                  gridTemplateColumns: "1fr auto auto auto",
+                  gap: 24,
+                  alignItems: "center",
+                }}
+              >
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--ink)" }}>
+                  {p.name}
+                </span>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-2)" }}>
+                  depth: {p.depth}
+                </span>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: p.failedCount > 0 ? "var(--alert)" : "var(--ink-2)" }}>
+                  failed: {p.failedCount}
+                </span>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: p.dlqCount > 0 ? "var(--alert)" : "var(--ink-2)" }}>
+                  DLQ: {p.dlqCount}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -455,9 +709,12 @@ export function Activity(props: ActivityProps = {}): JSX.Element {
             : <RunsView />
         )}
         {activeTab === "pipelines" && (
-          props.fetchImpl !== undefined
-            ? <PipelinesView fetchImpl={props.fetchImpl} />
-            : <PipelinesView />
+          <PipelinesView
+            {...(props.fetchImpl !== undefined ? { fetchImpl: props.fetchImpl } : {})}
+            {...(props.subscribeToAgentRuns !== undefined
+              ? { subscribeToAgentRuns: props.subscribeToAgentRuns }
+              : {})}
+          />
         )}
       </div>
     </div>
