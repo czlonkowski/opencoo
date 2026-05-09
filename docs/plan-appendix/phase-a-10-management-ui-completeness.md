@@ -23,7 +23,7 @@ The research pass for this appendix surveyed `packages/ui/src/routes/`, `package
 
 Wave-10 is the **operator-completeness wave**. Every PR targets a specific cliff where today the operator falls off the UI into psql/CLI. Nothing new in product surface is added — every feature already exists in admin-API or schema; we just expose it in the UI under design-system rules.
 
-## Ground-truth deltas vs assumptions (verified 2026-05-09 against `main @ ` after PR #81 merge)
+## Ground-truth deltas vs assumptions (verified 2026-05-09 against `main @ 8c0c115` — the PR #81 closeout merge)
 
 Each delta cites the file the gap was found in plus one fact that the implementer should not re-investigate.
 
@@ -159,7 +159,7 @@ Each delta cites the file the gap was found in plus one fact that the implemente
 **Size**: ~4 files · ~200 lines
 
 **Scope**:
-- New `POST /api/admin/source-bindings/:id/forget?dryRun=1` — returns `{ pagesRecompile: string[], pagesDelete: string[], citationsRemove: number, dailyDeleteCapState: { used: number, cap: number } }`. Lifts the dry-run logic from `packages/cli/src/commands/forget.ts` into the route handler (DRY against the CLI verb).
+- New `POST /api/admin/source-bindings/:id/forget?dryRun=1` — returns `{ pagesRecompiled: string[], pagesDeleted: string[], citationsRemoved: number, dailyDeleteCapState: { used: number, cap: number } }`. Field names match the audit payload below (single canonical shape — past-tense, plural for the affected-set arrays). Lifts the dry-run logic from `packages/cli/src/commands/forget.ts` into the route handler (DRY against the CLI verb).
 - `?dryRun=0` (or omitted) does the actual forget — BullMQ-enqueues the recompile + delete jobs, audited.
 - Sources row drill-down (Q10) "Delete" path now opens an `ImpactPreviewDialog` showing the impact + an explicit `<input type="checkbox">` ("I understand X pages will recompile and Y will delete") that must tick before the destructive button enables. Mirrors the design-system rule: destructive items get `--alert`, never `--advisory`.
 - Closes PRD §5 criterion 9 (currently amber).
