@@ -118,6 +118,24 @@ export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
       subtitle={t("domains.create.subtitle")}
       onClose={props.onClose}
       maxWidth={560}
+      actions={
+        <div style={FOOTER_STYLE}>
+          <Btn variant="ghost" onClick={props.onClose}>
+            {t("common.cancel")}
+          </Btn>
+          <Btn
+            variant="primary"
+            disabled={submitting}
+            onClick={(): void => {
+              void submit();
+            }}
+          >
+            {submitting
+              ? t("domains.create.submitting")
+              : t("domains.create.submit")}
+          </Btn>
+        </div>
+      }
     >
       <div style={FIELDS_STYLE}>
         <Field
@@ -169,22 +187,6 @@ export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
             {errors["form"]}
           </p>
         ) : null}
-      </div>
-      <div style={FOOTER_STYLE}>
-        <Btn variant="ghost" onClick={props.onClose}>
-          {t("common.cancel")}
-        </Btn>
-        <Btn
-          variant="primary"
-          disabled={submitting}
-          onClick={(): void => {
-            void submit();
-          }}
-        >
-          {submitting
-            ? t("domains.create.submitting")
-            : t("domains.create.submit")}
-        </Btn>
       </div>
     </Modal>
   );

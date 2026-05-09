@@ -312,6 +312,34 @@ export function ImpactPreviewDialog(
       title={t("forgetImpact.title")}
       onClose={props.onClose}
       maxWidth={620}
+      actions={
+        <div style={FOOTER_STYLE}>
+          <Btn
+            variant="ghost"
+            onClick={props.onClose}
+            disabled={confirming}
+          >
+            {t("forgetImpact.cancel")}
+          </Btn>
+          <button
+            type="button"
+            data-testid="forget-impact-confirm"
+            disabled={confirmDisabled}
+            onClick={(): void => {
+              void submitConfirm();
+            }}
+            style={
+              confirmDisabled
+                ? DESTRUCTIVE_BTN_DISABLED_STYLE
+                : DESTRUCTIVE_BTN_STYLE
+            }
+          >
+            {confirming
+              ? t("forgetImpact.confirming")
+              : t("forgetImpact.confirm")}
+          </button>
+        </div>
+      }
     >
       <div style={SECTION_STYLE}>
         <p style={BODY_STYLE}>{t("forgetImpact.lead")}</p>
@@ -395,33 +423,6 @@ export function ImpactPreviewDialog(
             {confirmError}
           </p>
         )}
-
-        <div style={FOOTER_STYLE}>
-          <Btn
-            variant="ghost"
-            onClick={props.onClose}
-            disabled={confirming}
-          >
-            {t("forgetImpact.cancel")}
-          </Btn>
-          <button
-            type="button"
-            data-testid="forget-impact-confirm"
-            disabled={confirmDisabled}
-            onClick={(): void => {
-              void submitConfirm();
-            }}
-            style={
-              confirmDisabled
-                ? DESTRUCTIVE_BTN_DISABLED_STYLE
-                : DESTRUCTIVE_BTN_STYLE
-            }
-          >
-            {confirming
-              ? t("forgetImpact.confirming")
-              : t("forgetImpact.confirm")}
-          </button>
-        </div>
       </div>
     </Modal>
   );

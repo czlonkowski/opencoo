@@ -832,21 +832,29 @@ export function SourceBindingDetail(
     }
   };
 
+  // Body + actions are rendered separately so the actions slot
+  // can be passed to <Modal actions={…}> for sticky-bottom behavior
+  // (PR-W5 / phase-a appendix #11). Returning a {body, actions}
+  // tuple keeps the call sites readable.
   const renderConfirm = (
     title: string,
     body: string,
     confirmLabel: string,
     onConfirm: () => void,
     destructive: boolean,
-  ): JSX.Element => (
-    <div style={SECTION_STYLE}>
-      <h3 style={{ ...VALUE_STYLE, fontWeight: 500 }}>{title}</h3>
-      <p style={CONFIRM_BODY_STYLE}>{body}</p>
-      {actionError !== null ? (
-        <p style={ERROR_TEXT_STYLE} role="alert">
-          {actionError}
-        </p>
-      ) : null}
+  ): { body: JSX.Element; actions: JSX.Element } => ({
+    body: (
+      <div style={SECTION_STYLE}>
+        <h3 style={{ ...VALUE_STYLE, fontWeight: 500 }}>{title}</h3>
+        <p style={CONFIRM_BODY_STYLE}>{body}</p>
+        {actionError !== null ? (
+          <p style={ERROR_TEXT_STYLE} role="alert">
+            {actionError}
+          </p>
+        ) : null}
+      </div>
+    ),
+    actions: (
       <div style={CONFIRM_FOOTER_STYLE}>
         <Btn variant="ghost" onClick={onIdle} disabled={submitting}>
           {t("sources.detail.actions.cancel")}
@@ -868,63 +876,69 @@ export function SourceBindingDetail(
           {confirmLabel}
         </button>
       </div>
-    </div>
-  );
+    ),
+  });
 
   if (stage === "disable") {
+    const confirm = renderConfirm(
+      t("sources.detail.actions.confirmDisableTitle"),
+      t("sources.detail.actions.confirmDisableBody"),
+      t("sources.detail.actions.confirmDisable"),
+      () => {
+        void submitPatch(false);
+      },
+      false,
+    );
     return (
       <Modal
         title={t("sources.detail.actions.confirmDisableTitle")}
         onClose={props.onClose}
         maxWidth={520}
+        actions={confirm.actions}
       >
-        {renderConfirm(
-          t("sources.detail.actions.confirmDisableTitle"),
-          t("sources.detail.actions.confirmDisableBody"),
-          t("sources.detail.actions.confirmDisable"),
-          () => {
-            void submitPatch(false);
-          },
-          false,
-        )}
+        {confirm.body}
       </Modal>
     );
   }
   if (stage === "enable") {
+    const confirm = renderConfirm(
+      t("sources.detail.actions.confirmEnableTitle"),
+      t("sources.detail.actions.confirmEnableBody"),
+      t("sources.detail.actions.confirmEnable"),
+      () => {
+        void submitPatch(true);
+      },
+      false,
+    );
     return (
       <Modal
         title={t("sources.detail.actions.confirmEnableTitle")}
         onClose={props.onClose}
         maxWidth={520}
+        actions={confirm.actions}
       >
-        {renderConfirm(
-          t("sources.detail.actions.confirmEnableTitle"),
-          t("sources.detail.actions.confirmEnableBody"),
-          t("sources.detail.actions.confirmEnable"),
-          () => {
-            void submitPatch(true);
-          },
-          false,
-        )}
+        {confirm.body}
       </Modal>
     );
   }
   if (stage === "delete") {
+    const confirm = renderConfirm(
+      t("sources.detail.actions.confirmDeleteTitle"),
+      t("sources.detail.actions.confirmDeleteBody"),
+      t("sources.detail.actions.confirmDelete"),
+      () => {
+        void submitDelete();
+      },
+      true,
+    );
     return (
       <Modal
         title={t("sources.detail.actions.confirmDeleteTitle")}
         onClose={props.onClose}
         maxWidth={560}
+        actions={confirm.actions}
       >
-        {renderConfirm(
-          t("sources.detail.actions.confirmDeleteTitle"),
-          t("sources.detail.actions.confirmDeleteBody"),
-          t("sources.detail.actions.confirmDelete"),
-          () => {
-            void submitDelete();
-          },
-          true,
-        )}
+        {confirm.body}
       </Modal>
     );
   }
@@ -949,6 +963,30 @@ export function SourceBindingDetail(
         subtitle={t("sourceBindingDetail.edit.subtitle")}
         onClose={props.onClose}
         maxWidth={620}
+        actions={
+          <div style={CONFIRM_FOOTER_STYLE}>
+            <Btn variant="ghost" onClick={onIdle} disabled={submitting}>
+              {t("sourceBindingDetail.edit.cancel")}
+            </Btn>
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={(): void => {
+                void submitEdit();
+              }}
+              style={{
+                ...DESTRUCTIVE_CONFIRM_BTN_STYLE,
+                background: submitting ? "var(--ink-3)" : "var(--ink)",
+                borderColor: submitting ? "var(--ink-3)" : "var(--ink)",
+                cursor: submitting ? "not-allowed" : "pointer",
+              }}
+            >
+              {submitting
+                ? t("sourceBindingDetail.edit.saving")
+                : t("sourceBindingDetail.edit.save")}
+            </button>
+          </div>
+        }
       >
         <div style={SECTION_STYLE}>
           {/* Operational settings section. */}
@@ -1026,29 +1064,6 @@ export function SourceBindingDetail(
               {actionError}
             </p>
           ) : null}
-
-          <div style={CONFIRM_FOOTER_STYLE}>
-            <Btn variant="ghost" onClick={onIdle} disabled={submitting}>
-              {t("sourceBindingDetail.edit.cancel")}
-            </Btn>
-            <button
-              type="button"
-              disabled={submitting}
-              onClick={(): void => {
-                void submitEdit();
-              }}
-              style={{
-                ...DESTRUCTIVE_CONFIRM_BTN_STYLE,
-                background: submitting ? "var(--ink-3)" : "var(--ink)",
-                borderColor: submitting ? "var(--ink-3)" : "var(--ink)",
-                cursor: submitting ? "not-allowed" : "pointer",
-              }}
-            >
-              {submitting
-                ? t("sourceBindingDetail.edit.saving")
-                : t("sourceBindingDetail.edit.save")}
-            </button>
-          </div>
         </div>
       </Modal>
     );
@@ -1063,6 +1078,44 @@ export function SourceBindingDetail(
       subtitle={t("sources.detail.subtitle")}
       onClose={props.onClose}
       maxWidth={620}
+      actions={
+        <div style={ACTION_ROW_STYLE}>
+          <Btn variant="ghost" onClick={props.onClose}>
+            {t("sources.detail.actions.close")}
+          </Btn>
+          <div style={DESTRUCTIVE_GROUP_STYLE}>
+            <Btn
+              variant="subtle"
+              onClick={(): void => {
+                void openEdit();
+              }}
+            >
+              {t("sourceBindingDetail.edit.open")}
+            </Btn>
+            <Btn
+              variant="subtle"
+              onClick={(): void =>
+                setStage(props.binding.enabled ? "disable" : "enable")
+              }
+            >
+              {props.binding.enabled
+                ? t("sources.detail.actions.disable")
+                : t("sources.detail.actions.enable")}
+            </Btn>
+            {/* PR-R7 — Forget source: opens the impact preview dialog.
+             *  Sits between Disable and Delete in the destructive
+             *  group; the impact dialog itself carries the `--alert`
+             *  destructive Confirm button (this trigger is a neutral
+             *  ghost that delegates to the dialog). */}
+            <Btn variant="ghost" onClick={(): void => setStage("forget")}>
+              {t("sources.detail.actions.forget")}
+            </Btn>
+            <Btn variant="ghost" onClick={(): void => setStage("delete")}>
+              {t("sources.detail.actions.delete")}
+            </Btn>
+          </div>
+        </div>
+      }
     >
       <div style={SECTION_STYLE}>
         {/* Webhook URL — the load-bearing piece of this modal. */}
@@ -1135,43 +1188,6 @@ export function SourceBindingDetail(
             {actionError}
           </p>
         ) : null}
-
-        <div style={ACTION_ROW_STYLE}>
-          <Btn variant="ghost" onClick={props.onClose}>
-            {t("sources.detail.actions.close")}
-          </Btn>
-          <div style={DESTRUCTIVE_GROUP_STYLE}>
-            <Btn
-              variant="subtle"
-              onClick={(): void => {
-                void openEdit();
-              }}
-            >
-              {t("sourceBindingDetail.edit.open")}
-            </Btn>
-            <Btn
-              variant="subtle"
-              onClick={(): void =>
-                setStage(props.binding.enabled ? "disable" : "enable")
-              }
-            >
-              {props.binding.enabled
-                ? t("sources.detail.actions.disable")
-                : t("sources.detail.actions.enable")}
-            </Btn>
-            {/* PR-R7 — Forget source: opens the impact preview dialog.
-             *  Sits between Disable and Delete in the destructive
-             *  group; the impact dialog itself carries the `--alert`
-             *  destructive Confirm button (this trigger is a neutral
-             *  ghost that delegates to the dialog). */}
-            <Btn variant="ghost" onClick={(): void => setStage("forget")}>
-              {t("sources.detail.actions.forget")}
-            </Btn>
-            <Btn variant="ghost" onClick={(): void => setStage("delete")}>
-              {t("sources.detail.actions.delete")}
-            </Btn>
-          </div>
-        </div>
       </div>
     </Modal>
   );
