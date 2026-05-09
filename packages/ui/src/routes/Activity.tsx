@@ -21,6 +21,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { AgentsRunNowButton } from "../components/AgentsRunNowButton.js";
+import { SchedulerEditor } from "../components/SchedulerEditor.js";
 import { StatusPill, type StatusTone } from "../components/StatusPill.js";
 import {
   createAgentRunsSubscription,
@@ -363,19 +364,26 @@ function ScheduledAgentsView(props: {
   const { t } = useTranslation();
   const [schedules, setSchedules] = useState<readonly ScheduleEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // PR-R6 — which agent slug currently has the cadence editor
+  // expanded. Only one editor open at a time keeps the column
+  // count visually predictable.
+  const [editingAgent, setEditingAgent] = useState<string | null>(null);
+
+  const refetch = async (): Promise<void> => {
+    try {
+      const r = await fetchAdmin<ScheduleResponse>(
+        "/api/admin/scheduler",
+        fetchOptsFor(props.fetchImpl),
+      );
+      setSchedules(r.schedules);
+      setError(null);
+    } catch {
+      setError(t("common.error"));
+    }
+  };
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const r = await fetchAdmin<ScheduleResponse>(
-          "/api/admin/scheduler",
-          fetchOptsFor(props.fetchImpl),
-        );
-        setSchedules(r.schedules);
-      } catch {
-        setError(t("common.error"));
-      }
-    })();
+    void refetch();
   }, []);
 
   // Stable SSE subscription shared across the cards. ONE
@@ -422,6 +430,7 @@ function ScheduledAgentsView(props: {
               | "surfacer"
               | "builder")
           : null;
+        const editing = editingAgent === s.definitionSlug;
         return (
           <div
             key={s.instanceId}
@@ -430,67 +439,37 @@ function ScheduledAgentsView(props: {
               borderRadius: 6,
               padding: "16px 20px",
               background: "var(--paper-2)",
-              display: "grid",
-              gridTemplateColumns: "1fr auto auto auto auto",
-              gap: 18,
-              alignItems: "center",
+              display: "flex",
+              flexDirection: "column",
+              gap: 0,
             }}
           >
-            <span
+            <div
               style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 13,
-                color: "var(--ink)",
+                display: "grid",
+                gridTemplateColumns: "1fr auto auto auto auto auto",
+                gap: 18,
+                alignItems: "center",
               }}
             >
-              {s.definitionSlug}
-            </span>
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 11,
-                color: "var(--ink-2)",
-              }}
-            >
-              {s.name}
-            </span>
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 11,
-                color: "var(--ink-3)",
-              }}
-            >
-              {s.scheduleCron}
-            </span>
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 11,
-                color: "var(--ink-3)",
-              }}
-            >
-              {s.lastFireAt !== null
-                ? new Date(s.lastFireAt).toLocaleString()
-                : "—"}
-            </span>
-            {slug !== null && s.domainSlug !== null ? (
-              <AgentsRunNowButton
-                agentSlug={slug}
-                domainSlug={s.domainSlug}
-                instanceSlug={s.name}
-                idleLabel={t("agentsRunNow.labels.runNow")}
-                queuedLabelFormat={t("agentsRunNow.labels.queued")}
-                runningLabelFormat={t("agentsRunNow.labels.running")}
-                rateLimitedTooltipFormat={t(
-                  "agentsRunNow.tooltips.rateLimited",
-                )}
-                subscribeToAgentRuns={subscribeToAgentRuns}
-                {...(props.fetchImpl !== undefined
-                  ? { fetchImpl: props.fetchImpl }
-                  : {})}
-              />
-            ) : (
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 13,
+                  color: "var(--ink)",
+                }}
+              >
+                {s.definitionSlug}
+              </span>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  color: "var(--ink-2)",
+                }}
+              >
+                {s.name}
+              </span>
               <span
                 style={{
                   fontFamily: "var(--font-mono)",
@@ -498,8 +477,95 @@ function ScheduledAgentsView(props: {
                   color: "var(--ink-3)",
                 }}
               >
-                —
+                {s.scheduleCron}
               </span>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  color: "var(--ink-3)",
+                }}
+              >
+                {s.lastFireAt !== null
+                  ? new Date(s.lastFireAt).toLocaleString()
+                  : "—"}
+              </span>
+              {/* PR-R6 — Edit schedule toggle. Default chrome
+                  (NO `--alert`); only the four schedulable agent
+                  slugs are editable, mirroring the Run-now allow
+                  list. */}
+              {slug !== null ? (
+                <button
+                  type="button"
+                  onClick={(): void =>
+                    setEditingAgent(editing ? null : s.definitionSlug)
+                  }
+                  data-testid={`scheduler-editor-toggle-${s.definitionSlug}`}
+                  style={{
+                    font: "inherit",
+                    fontSize: 12,
+                    fontFamily: "var(--font-sans)",
+                    padding: "6px 12px",
+                    border: "1px solid var(--rule)",
+                    borderRadius: 3,
+                    background: editing ? "var(--paper-2)" : "var(--paper)",
+                    color: "var(--ink-2)",
+                    cursor: "pointer",
+                  }}
+                >
+                  {t("schedulerEditor.edit")}
+                </button>
+              ) : (
+                <span
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 11,
+                    color: "var(--ink-3)",
+                  }}
+                >
+                  —
+                </span>
+              )}
+              {slug !== null && s.domainSlug !== null ? (
+                <AgentsRunNowButton
+                  agentSlug={slug}
+                  domainSlug={s.domainSlug}
+                  instanceSlug={s.name}
+                  idleLabel={t("agentsRunNow.labels.runNow")}
+                  queuedLabelFormat={t("agentsRunNow.labels.queued")}
+                  runningLabelFormat={t("agentsRunNow.labels.running")}
+                  rateLimitedTooltipFormat={t(
+                    "agentsRunNow.tooltips.rateLimited",
+                  )}
+                  subscribeToAgentRuns={subscribeToAgentRuns}
+                  {...(props.fetchImpl !== undefined
+                    ? { fetchImpl: props.fetchImpl }
+                    : {})}
+                />
+              ) : (
+                <span
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 11,
+                    color: "var(--ink-3)",
+                  }}
+                >
+                  —
+                </span>
+              )}
+            </div>
+            {editing && slug !== null && (
+              <SchedulerEditor
+                agentSlug={slug}
+                currentCron={s.scheduleCron}
+                onApplied={(): void => {
+                  void refetch();
+                }}
+                onCancel={(): void => setEditingAgent(null)}
+                {...(props.fetchImpl !== undefined
+                  ? { fetchImpl: props.fetchImpl }
+                  : {})}
+              />
             )}
           </div>
         );

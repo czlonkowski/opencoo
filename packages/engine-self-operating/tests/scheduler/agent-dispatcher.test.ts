@@ -562,3 +562,196 @@ describe("AgentDispatcher.enqueueOneShot — PR-R3 on-demand path", () => {
     }
   });
 });
+
+describe("AgentDispatcher.updateSchedule — PR-R6 cadence editor", () => {
+  it("calls remove + add per entry and updates listSchedules() in place", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      name: "morning",
+      scheduleCron: "0 8 * * 1-5",
+    });
+
+    const removed: RegisteredSchedule[] = [];
+    const registered: RegisteredSchedule[] = [];
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+      registerScheduleFn: async (s) => {
+        registered.push(s);
+      },
+      removeScheduleFn: async (s) => {
+        removed.push(s);
+      },
+    });
+
+    try {
+      // Boot — registers the initial schedule.
+      await dispatcher.start();
+      expect(registered).toHaveLength(1);
+      expect(dispatcher.listSchedules()[0]?.scheduleCron).toBe("0 8 * * 1-5");
+
+      // Cadence change.
+      await dispatcher.updateSchedule({
+        entries: [
+          {
+            instanceId,
+            definitionSlug: TEST_DEFINITION.slug,
+            name: "morning",
+            oldCron: "0 8 * * 1-5",
+            newCron: "0 9 * * 1-5",
+          },
+        ],
+      });
+
+      // remove called with the OLD cron, add called with the NEW.
+      expect(removed).toHaveLength(1);
+      expect(removed[0]?.scheduleCron).toBe("0 8 * * 1-5");
+      expect(registered).toHaveLength(2);
+      expect(registered[1]?.scheduleCron).toBe("0 9 * * 1-5");
+
+      // listSchedules() reflects the new cron.
+      expect(dispatcher.listSchedules()[0]?.scheduleCron).toBe("0 9 * * 1-5");
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+  });
+
+  it("rolls forward to the OLD cron when the add step throws", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      name: "morning",
+      scheduleCron: "0 8 * * 1-5",
+    });
+
+    const removed: RegisteredSchedule[] = [];
+    const registerCalls: RegisteredSchedule[] = [];
+    let bootRegistered = false;
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+      registerScheduleFn: async (s) => {
+        registerCalls.push(s);
+        // Allow the boot register, then fail the FIRST update-time
+        // register (the new cron), then succeed for the rollback.
+        if (!bootRegistered) {
+          bootRegistered = true;
+          return;
+        }
+        if (s.scheduleCron === "0 9 * * 1-5") {
+          throw new Error("simulated bullmq add failure");
+        }
+      },
+      removeScheduleFn: async (s) => {
+        removed.push(s);
+      },
+    });
+
+    try {
+      await dispatcher.start();
+      expect(registerCalls).toHaveLength(1);
+
+      await expect(
+        dispatcher.updateSchedule({
+          entries: [
+            {
+              instanceId,
+              definitionSlug: TEST_DEFINITION.slug,
+              name: "morning",
+              oldCron: "0 8 * * 1-5",
+              newCron: "0 9 * * 1-5",
+            },
+          ],
+        }),
+      ).rejects.toThrow(/simulated bullmq add failure/);
+
+      // Removed once (the OLD cron); register attempted twice
+      // post-boot — once with the new cron (failed), once with the
+      // OLD cron rollback (succeeded).
+      expect(removed).toHaveLength(1);
+      expect(removed[0]?.scheduleCron).toBe("0 8 * * 1-5");
+      expect(registerCalls).toHaveLength(3); // boot + new (failed) + rollback
+      expect(registerCalls[2]?.scheduleCron).toBe("0 8 * * 1-5");
+
+      // The in-memory list still shows the OLD cron — the throw
+      // bubbled out before the list-mutation step. That mirrors
+      // the route's transaction-rollback contract: SQL UPDATE +
+      // dispatcher state both unwind together.
+      expect(dispatcher.listSchedules()[0]?.scheduleCron).toBe("0 8 * * 1-5");
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+  });
+
+  it("skips the no-op case (oldCron === newCron) without touching BullMQ", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      name: "morning",
+      scheduleCron: "0 8 * * 1-5",
+    });
+
+    const removed: RegisteredSchedule[] = [];
+    const registerCalls: RegisteredSchedule[] = [];
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+      registerScheduleFn: async (s) => {
+        registerCalls.push(s);
+      },
+      removeScheduleFn: async (s) => {
+        removed.push(s);
+      },
+    });
+
+    try {
+      await dispatcher.start();
+      registerCalls.length = 0;
+
+      await dispatcher.updateSchedule({
+        entries: [
+          {
+            instanceId,
+            definitionSlug: TEST_DEFINITION.slug,
+            name: "morning",
+            oldCron: "0 8 * * 1-5",
+            newCron: "0 8 * * 1-5",
+          },
+        ],
+      });
+
+      expect(removed).toHaveLength(0);
+      expect(registerCalls).toHaveLength(0);
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+  });
+});

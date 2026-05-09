@@ -86,6 +86,18 @@ export const AUDIT_LOG_ACTIONS = [
   // (caller_username, instance_id, created_at). NEVER any operator-
   // supplied freeform text (THREAT-MODEL §3.13).
   "agent.dispatch_now",
+  // Phase-a appendix #10 (PR-R6) — scheduler / cadence editor.
+  // PUT /api/admin/scheduler/:agent flips the cron pattern for every
+  // instance scoped to the agent slug; the audit row captures
+  // agent_slug + old_cron + new_cron + instance_count +
+  // caller_username so an operator can replay the cadence-change
+  // history without joining against agent_instances. NEVER any
+  // operator-supplied freeform text — both cron strings are
+  // server-validated via cron-parser BEFORE any side effect.
+  // Audit row is written BEFORE the BullMQ swap (audit-before-side-
+  // effect, mirrors PR-R3); a partial swap leaves the audit trail
+  // intact so the operator can correlate after the fact.
+  "scheduler.update",
   // Logout — records the operator-initiated session-end so an
   // audit-log read can correlate an action burst with the
   // operator's session window.

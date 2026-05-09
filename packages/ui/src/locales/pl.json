@@ -418,6 +418,32 @@
       }
     }
   },
+  "schedulerEditor": {
+    "edit": "Edytuj harmonogram",
+    "cancel": "Anuluj",
+    "save": "Zapisz",
+    "saving": "Zapisywanie…",
+    "applied": "Harmonogram zaktualizowany",
+    "presetLabel": "Częstotliwość",
+    "timeLabel": "Godzina",
+    "cronLabel": "Cron",
+    "nextFires": "Najbliższe 5 uruchomień",
+    "currentSchedule": "Obecny cron",
+    "presets": {
+      "weekday": "Każdego dnia roboczego",
+      "sunday": "Każdej niedzieli",
+      "firstOfMonth": "Pierwszego dnia miesiąca",
+      "biweeklyFirstSunday": "Co dwa tygodnie · pierwsza niedziela",
+      "custom": "Własny cron"
+    },
+    "errors": {
+      "cronInvalid": "Nie udało się przeparsować cron.",
+      "cronInvalidWithReason": "Nie udało się przeparsować cron: {{reason}}",
+      "saveFailed": "Nie udało się zapisać harmonogramu. Spróbuj ponownie.",
+      "schedulerUnavailable": "Harmonogram nieaktywny. Sprawdź logi silnika.",
+      "auth": "Sesja wygasła lub brak uprawnień — wklej PAT ponownie."
+    }
+  },
   "audit": {
     "title": "Audit log",
     "subtitle": "Append-only record of every state-changing admin action.",

@@ -420,6 +420,32 @@
       }
     }
   },
+  "schedulerEditor": {
+    "edit": "Edit schedule",
+    "cancel": "Cancel",
+    "save": "Save",
+    "saving": "Saving…",
+    "applied": "Schedule updated",
+    "presetLabel": "Cadence",
+    "timeLabel": "Time",
+    "cronLabel": "Cron",
+    "nextFires": "Next 5 fires",
+    "currentSchedule": "Current cron",
+    "presets": {
+      "weekday": "Every weekday",
+      "sunday": "Every Sunday",
+      "firstOfMonth": "First of month",
+      "biweeklyFirstSunday": "Bi-weekly · first Sunday",
+      "custom": "Custom cron"
+    },
+    "errors": {
+      "cronInvalid": "Cron pattern not parseable.",
+      "cronInvalidWithReason": "Cron pattern not parseable: {{reason}}",
+      "saveFailed": "Could not save the schedule. Try again.",
+      "schedulerUnavailable": "Scheduler is offline. Check engine logs.",
+      "auth": "Sign-in expired or insufficient permissions — re-paste your PAT."
+    }
+  },
   "audit": {
     "title": "Audit log",
     "subtitle": "Append-only record of every state-changing admin action.",
