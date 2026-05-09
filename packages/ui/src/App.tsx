@@ -15,6 +15,7 @@ import {
 import { clearPat, getPat, setPat } from "./lib/pat-store.js";
 import { Activity } from "./routes/Activity.js";
 import { Audit } from "./routes/Audit.js";
+import { Cost } from "./routes/Cost.js";
 import { Domains } from "./routes/Domains.js";
 import { LlmPolicy } from "./routes/LlmPolicy.js";
 import { Prompts } from "./routes/Prompts.js";
@@ -101,6 +102,7 @@ export function App(): JSX.Element {
     review: <Review />,
     reports: <Reports />,
     audit: <Audit />,
+    cost: <Cost />,
   };
 
   const titles: Record<Tab, string> = {
@@ -112,6 +114,7 @@ export function App(): JSX.Element {
     review: t("review.title"),
     reports: t("reports.title"),
     audit: t("audit.title"),
+    cost: t("cost.title"),
   };
 
   return (
