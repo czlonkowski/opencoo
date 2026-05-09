@@ -42,6 +42,13 @@ export interface SourceBinding {
    *  can see HMAC failures without re-querying. Optional for backward-compat
    *  with older clients. */
   readonly sigFailCount24h?: number;
+  /** PR-R2 — operational config jsonb. The Sources row drill-down's
+   *  Edit panel pre-seeds the `bindingConfigSchema` form with this so
+   *  the operator gets a full-state edit surface. Plain object;
+   *  values may include operator-internal IDs but never secret bytes
+   *  (those live behind `credentials_id`, never in config). Optional
+   *  for backward-compat with older fixtures. */
+  readonly config?: Record<string, unknown>;
 }
 
 export interface PromptManifestEntry {

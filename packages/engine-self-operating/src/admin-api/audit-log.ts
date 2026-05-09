@@ -58,6 +58,14 @@ export const AUDIT_LOG_ACTIONS = [
   // + caller_username + (for update) the prev/new enabled flag.
   "source_binding.update",
   "source_binding.delete",
+  // Phase-a appendix #10 (PR-R2) — Sources binding edit:
+  // operational-config update + in-place credential rotation.
+  // Metadata captures binding_id + caller_username + KEY LISTS
+  // for `config_update` (never values), and binding_id +
+  // credentials_id + caller_username for `credentials_rotate`
+  // (NEVER plaintext or parsed credential fields).
+  "source_binding.config_update",
+  "source_binding.credentials_rotate",
   // Logout — records the operator-initiated session-end so an
   // audit-log read can correlate an action burst with the
   // operator's session window.

@@ -33,7 +33,7 @@
  */
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import type { CredentialStore } from "@opencoo/shared/credential-store";
@@ -50,7 +50,7 @@ import {
 } from "@opencoo/shared/source-adapter";
 
 import { writeAuditLog } from "../audit-log.js";
-import { requireAdminContext } from "../auth.js";
+import { requireAdminContext, type AdminContext } from "../auth.js";
 import { requireCsrf } from "../csrf.js";
 
 const reviewModeUpdateSchema = z
@@ -59,17 +59,32 @@ const reviewModeUpdateSchema = z
   })
   .strict();
 
-/** PR-Q10 — `PATCH /api/admin/source-bindings/:id` body. v0.1 only
- *  exposes the `enabled` toggle; review-mode flips go through the
- *  dedicated `/review-mode` endpoint and binding metadata edits are
- *  v0.2. The `.strict()` rejects any other key so a body like
- *  `{enabled: false, review_mode: 'auto'}` doesn't smuggle a second
- *  state change through the audit row. */
-const bindingPatchSchema = z
-  .object({
-    enabled: z.boolean(),
-  })
+/** PR-Q10 — `PATCH /api/admin/source-bindings/:id` body.
+ *
+ *  PR-R2 (phase-a appendix #10) widens the body to a discriminated
+ *  union — exactly ONE of three intents per request:
+ *    • `{enabled}`     — Q10 disable/enable toggle (unchanged)
+ *    • `{config}`      — operational settings update
+ *    • `{credentials}` — in-place credential rotation
+ *
+ *  Mixed bodies (e.g. `{enabled, config}`) are rejected with 422 so
+ *  the audit trail records exactly one verb per action. Each branch
+ *  is `.strict()` so no other top-level key smuggles a second state
+ *  change through. */
+const bindingEnabledPatchSchema = z
+  .object({ enabled: z.boolean() })
   .strict();
+const bindingConfigPatchSchema = z
+  .object({ config: z.record(z.string(), z.unknown()) })
+  .strict();
+const bindingCredentialsPatchSchema = z
+  .object({ credentials: z.record(z.string(), z.unknown()) })
+  .strict();
+const bindingPatchSchema = z.union([
+  bindingEnabledPatchSchema,
+  bindingConfigPatchSchema,
+  bindingCredentialsPatchSchema,
+]);
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
@@ -106,6 +121,13 @@ interface BindingRow {
    *  Sources row drill-down (PR-Q10) can show the operator how many HMAC
    *  failures landed without re-querying. */
   readonly sigFailCount24h: number;
+  /** PR-R2 — operational config jsonb (NOT credentials). Surfaced so
+   *  the Sources row drill-down's Edit panel can pre-seed the
+   *  `bindingConfigSchema` form with the binding's current settings,
+   *  giving the operator a full-state edit surface. Plain object;
+   *  values may include operator-internal IDs but never secret bytes
+   *  (credentials live in `credentials_id`, never config). */
+  readonly config: Record<string, unknown>;
 }
 
 /** Coerce pg's timestamp result (Date when node-postgres parsed it,
@@ -177,6 +199,7 @@ export function registerSourceBindingsRoutes(
              b.enabled,
              b.last_scanned_at,
              b.notes,
+             b.config,
              COALESCE(b.notes, b.adapter_slug || ' → ' || d.slug) AS name,
              (
                SELECT w.received_at
@@ -220,6 +243,7 @@ export function registerSourceBindingsRoutes(
         enabled: boolean;
         last_scanned_at: Date | string | null;
         notes: string | null;
+        config: Record<string, unknown> | null;
         name: string;
         last_event_at: Date | string | null;
         sig_fail_count_24h: number;
@@ -260,6 +284,7 @@ export function registerSourceBindingsRoutes(
         lastError,
         pendingEventsCount: r.pending_events_count,
         sigFailCount24h: r.sig_fail_count_24h,
+        config: r.config ?? {},
       };
     });
     return { rows };
@@ -577,10 +602,12 @@ export function registerSourceBindingsRoutes(
     },
   );
 
-  // PR-Q10 — toggle `enabled`. The Sources row drill-down modal
-  // calls this to disable / re-enable a binding without going through
-  // psql. CSRF-gated; writes 'source_binding.update' audit row with
-  // prev/new flags so the audit trail is unambiguous.
+  // PR-Q10 — toggle `enabled`. PR-R2 widens this surface with two
+  // additional intents: `{config}` and `{credentials}`. The body is
+  // a discriminated union — exactly one intent per request so the
+  // audit trail records one verb per action. The `enabled` path is
+  // unchanged in behavior; the two new paths each emit their own
+  // audit-action verb.
   args.app.patch(
     "/api/admin/source-bindings/:id",
     { preHandler: requireCsrf },
@@ -597,51 +624,41 @@ export function registerSourceBindingsRoutes(
           issues: parsed.error.issues,
         });
       }
-      const { enabled } = parsed.data;
 
-      // Existence + prev_enabled snapshot for the audit row.
-      const existing = (await args.db.execute(sql`
-        SELECT enabled
-        FROM sources_bindings
-        WHERE id = ${id}::uuid
-        LIMIT 1
-      `)) as unknown as { rows: Array<{ enabled: boolean }> };
-      const prev = existing.rows[0];
-      if (prev === undefined) {
-        return reply.code(404).send({ error: "not_found", id });
+      // `enabled` branch — Q10 behavior, unchanged.
+      if ("enabled" in parsed.data) {
+        return handleEnabledPatch({
+          db: args.db,
+          req,
+          reply,
+          id,
+          enabled: parsed.data.enabled,
+          ctx,
+        });
       }
 
-      // The UPDATE always runs (even when `enabled` already matches
-      // the requested value) — clicking Disable on an already-disabled
-      // binding still bumps `updated_at` and writes an audit row so
-      // the operator's intent is captured (the audit confirms the
-      // operator inspected the state, even on a no-op flip).
-      const updated = (await args.db.execute(sql`
-        UPDATE sources_bindings
-        SET enabled = ${enabled},
-            updated_at = NOW()
-        WHERE id = ${id}::uuid
-        RETURNING id::text AS id, enabled
-      `)) as unknown as { rows: Array<{ id: string; enabled: boolean }> };
-      const row = updated.rows[0];
-      if (row === undefined) {
-        return reply.code(500).send({ error: "update_returned_no_row" });
+      // `config` branch — operational settings update.
+      if ("config" in parsed.data) {
+        return handleConfigPatch({
+          db: args.db,
+          req,
+          reply,
+          id,
+          submittedConfig: parsed.data.config,
+          ctx,
+        });
       }
 
-      await writeAuditLog(args.db, {
-        action: "source_binding.update",
-        userId: ctx.userId,
-        metadata: {
-          binding_id: id,
-          prev_enabled: prev.enabled,
-          new_enabled: enabled,
-          caller_username: ctx.username,
-        },
-        sourceIp: req.ip,
-        userAgent: req.headers["user-agent"],
+      // `credentials` branch — in-place credential rotation.
+      return handleCredentialsPatch({
+        db: args.db,
+        req,
+        reply,
+        id,
+        submittedCredentials: parsed.data.credentials,
+        credentialStore: args.credentialStore,
+        ctx,
       });
-
-      return reply.code(200).send({ id: row.id, enabled: row.enabled });
     },
   );
 
@@ -760,6 +777,271 @@ export function registerSourceBindingsRoutes(
       return reply.code(200).send({ deleted: true });
     },
   );
+}
+
+// ─── PR-R2: PATCH discriminator handlers ───────────────────────────────────
+
+interface EnabledPatchArgs {
+  readonly db: Db;
+  readonly req: FastifyRequest;
+  readonly reply: FastifyReply;
+  readonly id: string;
+  readonly enabled: boolean;
+  readonly ctx: AdminContext;
+}
+
+/** Q10's `enabled`-only behavior, factored into a helper so the
+ *  PATCH route can dispatch by intent. The semantics are unchanged:
+ *  the UPDATE always runs (so a no-op flip still records the
+ *  operator's intent in the audit row). */
+async function handleEnabledPatch(
+  args: EnabledPatchArgs,
+): Promise<FastifyReply> {
+  const existing = (await args.db.execute(sql`
+    SELECT enabled
+    FROM sources_bindings
+    WHERE id = ${args.id}::uuid
+    LIMIT 1
+  `)) as unknown as { rows: Array<{ enabled: boolean }> };
+  const prev = existing.rows[0];
+  if (prev === undefined) {
+    return args.reply.code(404).send({ error: "not_found", id: args.id });
+  }
+
+  const updated = (await args.db.execute(sql`
+    UPDATE sources_bindings
+    SET enabled = ${args.enabled},
+        updated_at = NOW()
+    WHERE id = ${args.id}::uuid
+    RETURNING id::text AS id, enabled
+  `)) as unknown as { rows: Array<{ id: string; enabled: boolean }> };
+  const row = updated.rows[0];
+  if (row === undefined) {
+    return args.reply.code(500).send({ error: "update_returned_no_row" });
+  }
+
+  await writeAuditLog(args.db, {
+    action: "source_binding.update",
+    userId: args.ctx.userId,
+    metadata: {
+      binding_id: args.id,
+      prev_enabled: prev.enabled,
+      new_enabled: args.enabled,
+      caller_username: args.ctx.username,
+    },
+    sourceIp: args.req.ip,
+    userAgent: args.req.headers["user-agent"],
+  });
+
+  return args.reply.code(200).send({ id: row.id, enabled: row.enabled });
+}
+
+interface ConfigPatchArgs {
+  readonly db: Db;
+  readonly req: FastifyRequest;
+  readonly reply: FastifyReply;
+  readonly id: string;
+  readonly submittedConfig: Record<string, unknown>;
+  readonly ctx: AdminContext;
+}
+
+/** PR-R2 `config`-only path. Validates the submitted config against
+ *  the binding's adapter-declared `bindingConfigSchema`, then persists
+ *  it in jsonb. The audit row records the binding_id, the caller, and
+ *  KEY LISTS only — never values. Operational-config values may
+ *  include operator-internal IDs that, while not secret, are out of
+ *  scope for the audit-row contract (THREAT-MODEL §3.13: audit rows
+ *  capture intent + identity; payload bytes belong elsewhere). */
+async function handleConfigPatch(
+  args: ConfigPatchArgs,
+): Promise<FastifyReply> {
+  // Look up the binding's adapter slug + previous config (for the
+  // audit row's prev_config_keys list).
+  const existing = (await args.db.execute(sql`
+    SELECT adapter_slug, config
+    FROM sources_bindings
+    WHERE id = ${args.id}::uuid
+    LIMIT 1
+  `)) as unknown as {
+    rows: Array<{ adapter_slug: string; config: Record<string, unknown> }>;
+  };
+  const prev = existing.rows[0];
+  if (prev === undefined) {
+    return args.reply.code(404).send({ error: "not_found", id: args.id });
+  }
+
+  const bindingConfigSchema = getSourceAdapterBindingConfigSchema(
+    prev.adapter_slug,
+  );
+  if (bindingConfigSchema === undefined) {
+    return args.reply.code(422).send({
+      error: "binding_config_schema_unavailable",
+      adapter_slug: prev.adapter_slug,
+    });
+  }
+
+  const configValidation = validateBindingConfigAgainstSchema(
+    args.submittedConfig,
+    bindingConfigSchema,
+  );
+  if (!configValidation.ok) {
+    return args.reply.code(422).send({
+      error: "binding_config_schema_mismatch",
+      missing: configValidation.missing,
+    });
+  }
+
+  // jsonb codec receives well-formed text — same trick as POST.
+  const configJson = JSON.stringify(args.submittedConfig);
+  const updated = (await args.db.execute(sql`
+    UPDATE sources_bindings
+    SET config = ${configJson}::jsonb,
+        updated_at = NOW()
+    WHERE id = ${args.id}::uuid
+    RETURNING id::text AS id
+  `)) as unknown as { rows: Array<{ id: string }> };
+  const row = updated.rows[0];
+  if (row === undefined) {
+    return args.reply.code(500).send({ error: "update_returned_no_row" });
+  }
+
+  // Sorted key lists — audit metadata never carries values.
+  const prevConfigKeys = Object.keys(prev.config ?? {}).sort();
+  const newConfigKeys = Object.keys(args.submittedConfig).sort();
+
+  await writeAuditLog(args.db, {
+    action: "source_binding.config_update",
+    userId: args.ctx.userId,
+    metadata: {
+      binding_id: args.id,
+      prev_config_keys: prevConfigKeys,
+      new_config_keys: newConfigKeys,
+      caller_username: args.ctx.username,
+    },
+    sourceIp: args.req.ip,
+    userAgent: args.req.headers["user-agent"],
+  });
+
+  return args.reply.code(200).send({ id: row.id });
+}
+
+interface CredentialsPatchArgs {
+  readonly db: Db;
+  readonly req: FastifyRequest;
+  readonly reply: FastifyReply;
+  readonly id: string;
+  readonly submittedCredentials: Record<string, unknown>;
+  readonly credentialStore: CredentialStore | undefined;
+  readonly ctx: AdminContext;
+}
+
+/** PR-R2 `credentials`-only path. In-place rotation via
+ *  `CredentialStore.rotate(id, plaintext)` — the binding's
+ *  `credentials_id` is preserved; only the underlying credential
+ *  row's plaintext + IV + rotated_at change. The audit row records
+ *  the binding + the credentials_id + the caller; never plaintext or
+ *  parsed credential fields (THREAT-MODEL §3.13). */
+async function handleCredentialsPatch(
+  args: CredentialsPatchArgs,
+): Promise<FastifyReply> {
+  const existing = (await args.db.execute(sql`
+    SELECT adapter_slug, credentials_id::text AS credentials_id
+    FROM sources_bindings
+    WHERE id = ${args.id}::uuid
+    LIMIT 1
+  `)) as unknown as {
+    rows: Array<{ adapter_slug: string; credentials_id: string | null }>;
+  };
+  const prev = existing.rows[0];
+  if (prev === undefined) {
+    return args.reply.code(404).send({ error: "not_found", id: args.id });
+  }
+
+  const descriptor = getSourceAdapterDescriptor(prev.adapter_slug);
+  if (descriptor === undefined) {
+    return args.reply.code(422).send({
+      error: "unknown_adapter_slug",
+      adapter_slug: prev.adapter_slug,
+    });
+  }
+
+  const credValidation = validateCredentialsAgainstSchema(
+    args.submittedCredentials,
+    descriptor,
+  );
+  if (!credValidation.ok) {
+    // Path-only diagnostic — never echoes the rejected values.
+    return args.reply.code(422).send({
+      error: "credential_schema_mismatch",
+      missing: credValidation.missing,
+    });
+  }
+
+  if (prev.credentials_id === null) {
+    // Bindings created before the credentials_id contract landed
+    // (or hand-INSERTed test rows without a credentials row) cannot
+    // be rotated — there is no plaintext slot to replace. Surface
+    // a structured 422 so the operator knows to recreate the binding.
+    return args.reply.code(422).send({
+      error: "binding_has_no_credentials",
+    });
+  }
+
+  if (args.credentialStore === undefined) {
+    return args.reply.code(500).send({
+      error: "credential_store_unavailable",
+      reason: "Composition did not register a credentialStore",
+    });
+  }
+
+  const credentialsId = prev.credentials_id as CredentialId;
+  // Encode the validated plaintext per the same shape POST writes:
+  // polling = full object; webhook = just the `auth` half (the
+  // webhook_secret half lives on a separate credential row that
+  // R2 v0.1 does not rotate — that's deferred to a follow-up PR
+  // because it requires a second `webhook_secret_credentials_id`
+  // path that the wizard's body shape would have to flag).
+  const plaintextObj =
+    descriptor.mode === "polling"
+      ? args.submittedCredentials
+      : (args.submittedCredentials as { auth: Record<string, unknown> }).auth;
+
+  try {
+    await args.credentialStore.rotate(
+      credentialsId,
+      Buffer.from(JSON.stringify(plaintextObj), "utf8"),
+    );
+  } catch (err) {
+    args.req.log?.warn({
+      msg: "binding_rotate.credential_store_failed",
+      binding_id: args.id,
+      err: err instanceof Error ? err.name : "unknown",
+    });
+    return args.reply.code(500).send({ error: "credential_rotate_failed" });
+  }
+
+  await args.db.execute(sql`
+    UPDATE sources_bindings
+    SET updated_at = NOW()
+    WHERE id = ${args.id}::uuid
+  `);
+
+  await writeAuditLog(args.db, {
+    action: "source_binding.credentials_rotate",
+    userId: args.ctx.userId,
+    metadata: {
+      binding_id: args.id,
+      credentials_id: credentialsId,
+      caller_username: args.ctx.username,
+    },
+    sourceIp: args.req.ip,
+    userAgent: args.req.headers["user-agent"],
+  });
+
+  return args.reply.code(200).send({
+    id: args.id,
+    credentialsRotatedAt: new Date().toISOString(),
+  });
 }
 
 /** Sentinel thrown inside the DELETE transaction to roll it back when
