@@ -1,6 +1,6 @@
 # Phase-a appendix #10 — management-UI completeness (operator-only product)
 
-> **Status:** scoping doc · 2026-05-09 · seven PRs (R1–R7) across four waves · ~30 hours of agentic work · pointer in `IMPLEMENTATION-PLAN.md` §1.2.18 (added at wave-1 entry).
+> **Status:** ✅ closed · 2026-05-09 · 7 PRs (R1–R7) across 4 waves · ~30 hours of agentic work · pointer in `IMPLEMENTATION-PLAN.md` §1.2.18.
 > Read after `docs/plan-appendix/phase-a-9-live-test-gaps.md` (closed wave) and `IMPLEMENTATION-PLAN.md` §1.3 (exit gate).
 
 ---
@@ -267,3 +267,37 @@ Same suite as appendices #4–#9: `superpowers:subagent-driven-development`, `su
 ## Estimated scope
 
 ~2300 lines across 7 PRs / 4 waves / ~30 hours of subagent-driven implementation work. Same shape as appendix #9 (~2500 lines / 15 PRs / ~36 hours) but 7 PRs each carrying more weight. Expect similar drive cadence: a wave merges every 4–6 hours of wall-clock once dispatched; CI + Copilot triage adds ~1 hour per PR.
+
+---
+
+## Wave close — 2026-05-09
+
+All seven scoped PRs merged in chronological order:
+
+| PR | Merge | Title |
+|---|---|---|
+| R1 | `f3601a6` (#83) | Domain edit + soft-delete |
+| R2 | `2991d52` (#84) | Source-binding edit + credential rotation |
+| R4 | `f63df0e` (#85) | `/Audit` route — audit-log viewer with filters + expand |
+| R3 | `9b17719` (#86) | On-demand agent dispatch + Run-now buttons |
+| R5 | `be40636` (#88) | Cost analytics dashboard |
+| R6 | `da32817` (#87) | Scheduler / cadence editor |
+| R7 | `612b36e` (#89) | Source forget impact preview — closes PRD §5 criterion 9 |
+
+Wave-10 shipped every operator-completeness target from the scoping above: domain lifecycle, source-binding lifecycle (config + credential rotation), on-demand agent execution, audit history viewer, cost analytics dashboard, scheduler / cadence editor, and the source-forget impact preview that flips PRD §5 criterion 9 from amber to green. Five of seven PRs (R1, R2, R3, R6, R7) introduce new admin-API write surfaces — all CSRF-gated, admin-auth-gated, and audit-row-emitting on every successful mutation; R4 and R5 are read-only. Outstanding before tag: a single-session integrated Chrome QA walkthrough that exercises the whole new operator surface in one shot, and the `OPENROUTER_API_KEY` repo secret needed for the appendix-#9 nightly live-pilot lane to flip green in CI.
+
+### Process notes
+
+- **Agent-team workflow held cleanly across all 7 PRs.** Same 8-stage pipeline as appendices #4–#9: implementer in worktree → spec compliance review → code-simplifier (where applicable) → code-quality reviewer → triage → open PR → CI + Copilot triage → merge. Each PR also carried 1–3 fix-up commits addressing Copilot inline comments + reviewer nice-to-haves before merge.
+- **Copilot-loop pattern recurred from appendix #9.** After fix-up commits landed, Copilot re-flagged pre-fix lines as stale (multiple times in some PRs). Resolution: verified clean by inspection rather than chasing the loop. Same pattern, same call.
+- **Locale-merge-conflict pattern recurred for R3, R6, R7.** Each branch was opened from a pre-merge `main`; later wave PRs touched `packages/ui/src/locales/{en,pl}.json` at the same anchor lines as earlier-merged R-PRs. In every case the resolution was a clean merge-into-branch on the implementer worktree concatenating the disjoint top-level i18n namespaces (no key collisions; each PR scoped its strings under its own namespace prefix). Symptom > diagnosis > fix worked in under a minute per PR; not flagged as a class of work needing tooling but worth recording so the next wave's planning expects it.
+
+### Outstanding follow-ups (non-blocking the appendix close)
+
+- Integrated Chrome QA walkthrough (every PR shipped a screenshot pair; the wave-end smoke through all 7 surfaces in one session is still TODO).
+- `OPENROUTER_API_KEY` repo secret for the nightly live-pilot CI lane to flip green.
+
+### Dependencies on the broader plan
+
+- v0.1 exit-gate items: this appendix flips PRD §5 criterion 9 from amber to green via R7. Partner-cutover sign-off remains the single remaining gate per `IMPLEMENTATION-PLAN.md` §1.3.
+- THREAT-MODEL §5: R1 / R2 / R3 / R6 / R7 each expand the admin-API write surface; R4 / R5 are read-only. All write surfaces are CSRF + admin-auth + audit-emit. Flag the wave-10 closing commit (`612b36e`) for the next §5 walk; the maintainer's `docs/threat-model-signoff-0.1.0-a.md` pre-flight (appendix #8 PR-P1) covers the automatable checks.

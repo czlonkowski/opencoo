@@ -636,4 +636,41 @@ Fifteen main PRs (Q0–Q14) + one fix-up follow-up (Q10b) landed AFTER appendix 
 
 ---
 
-_Drafted from `IMPLEMENTATION-PLAN.md` §1.2.1–§1.2.17 + per-PR `gh pr view` body residuals. Maintainer to edit before the `0.1.0-a` tag cut._
+## Appendix #10 (R1 through R7) — Management-UI completeness: the operator-completeness wave
+
+Seven PRs (R1–R7) landed AFTER appendix #9 to make the management UI the only console an operator ever needs for steady-state operations. After appendix #9 the UI covered bootstrap and first-binding-create, but every later edit (rename a domain, rotate credentials, change a schedule, run an agent right now, look up audit history, see what this is costing) fell off the UI into psql or the CLI. None of these PRs add new product surface — every feature already existed in admin-API or schema; wave-10 exposes them in the UI under design-system rules. Closes PRD §5 criterion 9 (forget impact preview) from amber to green via R7.
+
+### Added (operator-facing)
+
+- **Domain edit + soft-delete** (R1, `f3601a6` / #83). New `PATCH /api/admin/domains/:id` accepts `{ display_name?, locale?, is_aggregator? }` (slug + class are immutable; rename is re-create). New `DELETE /api/admin/domains/:id` soft-deletes by setting `disabled_at = now()`; hard-delete (`?hard=1`) refuses with 409 `fk_restricted` listing every FK-bearing table that references the domain. `DomainDetail` modal opens on row click in `Domains.tsx`: editable fields + Disable + Delete (with FK count + Disable suggestion when refused). PATCH writes a real-diff audit row and short-circuits to a 304-equivalent on noOp. New migration: `domains.disabled_at TIMESTAMPTZ NULL` + index `(disabled_at, slug)`.
+- **Source-binding edit (config + credential rotation)** (R2, `2991d52` / #84). `PATCH /api/admin/source-bindings/:id` extended from `enabled`-only to a discriminated body (`enabled` | `config` | `credentials`). Config validates against the adapter's `bindingConfigSchema` (Q9's validator reused). Credential rotation goes through `CredentialStore.rotate` in-place; webhook adapters get partial-rotation (auth-only or `webhook_secret`-only) so handshake state survives. `SourceBindingDetail` (Q10) gains an Edit-mode toggle reusing Q9's wizard step + Q11's CredentialForm grouped labels. Audit COUNTS-only invariant holds across all PATCH branches.
+- **On-demand agent execution** (R3, `9b17719` / #86). New `POST /api/admin/agents/:slug/dispatch` (CSRF + admin-auth + token-bucket rate-limit 5/hr/agent/user; 429 with `Retry-After` on bucket-empty). Calls the same `agent-runners.ts` registry the scheduler uses — no parallel path. New `AgentsRunNowButton` with idle → "Queued · 12s" → SSE-driven status states; the heartbeat-pulse glyph is the only motion loop, no spinners. Buttons land on Activity > Pipelines, Reports > Heartbeat, Review > Lint findings. New shared SSE subscription factory (one client per page) so multiple Run-now buttons don't open multiple `EventSource`s. 60s safety timeout extended to 120s and clears on unmount.
+- **Audit-log viewer at `/Audit`** (R4, `f63df0e` / #85). New 8th sidebar tab consuming the existing `GET /api/admin/audit-log` route (no backend changes). Four filters: action multi-select, actor substring + UUID match, resource cross-key (type or id), ISO date range. Sticky pagination 50/page. Row click → expandable JSON payload (sanitised at write time; PAT/secret values pre-redacted by the audit writer) in JetBrains Mono. `AbortController` + cancelled-flag race close on filter changes; timestamps render as ISO-8601 UTC.
+- **Cost analytics dashboard at `/Cost`** (R5, `be40636` / #88). New 9th sidebar tab + `GET /api/admin/cost-summary?period=…&groupBy=…` (CTE over `llm_usage`; SQL `LIMIT 100 DESC`; one Drizzle expression, no new table). Top: this-month total, projected month-end (linear extrapolation), per-domain burn-down with 50% / 80% / 100% threshold colors (`--healthy` → `--advisory` → `--alert`). Below: stacked tier-split bar (Thinker / Worker / Light) using paper-shift composition (no gradients), table by `domain × agent` with cost + runs columns. Empty + loading skeleton states; the heartbeat-pulse glyph is the only motion.
+- **Scheduler / cadence editor** (R6, `da32817` / #87). New `PUT /api/admin/scheduler/:agent` (CSRF + cron-parser validation + `db.transaction` wrapping audit + UPDATE + BullMQ `removeRepeatableJob` / `addRepeatableJob` swap). Multi-instance atomicity: a partial failure rolls forward ALL previously-succeeded swaps to keep audit truth aligned with BullMQ state; audit metadata exposes per-instance `old_crons` drift. `SchedulerEditor` inline form on Activity > Pipelines: human-readable cadence picker (every weekday at HH:MM / every Sunday at HH:MM / first-of-month / custom cron) with a "next 5 fires" dry-preview using cron-parser locally. Restart-free.
+- **Source forget impact preview** (R7, `612b36e` / #89). New shared planner `packages/shared/src/forget/planner.ts` — pure read-only SQL classifier over `page_citations` returning `{ pagesRecompiled[], pagesDeleted[], citationsRemoved, domainSlug }` (sorted output, single CTE, no N+1). New `POST /api/admin/source-bindings/:id/forget?dryRun={0|1}` (CSRF + admin-auth). Dry-run is read-only (no enqueue, no audit row). Execute path: cap-preflight → cap-reserve → audit COUNTS-only → enqueue. 409 `daily_cap_exceeded` with current `dailyDeleteCapState`. New `ImpactPreviewDialog` UI: counts summary → deleted-paths list (`--wiki` Wiki Teal on path badges — one of the few approved `--wiki` uses) → checkbox-gated `--alert`-accented Confirm. **Closes PRD §5 criterion 9 (amber → green).** Closes architecture.md §6.4 page-citation impact-preview commitment.
+
+### Schema
+
+- New migration: `domains.disabled_at TIMESTAMPTZ NULL` + index `(disabled_at, slug)` (R1).
+- No other migrations. R5 reads `llm_usage` (PR 07 schema, unchanged); R6 swaps BullMQ repeatables (no DB change); R7's planner reads `page_citations` (existing).
+
+### Configuration
+
+- No new env vars. (R3's rate-limit is in-memory token-bucket; no new table, no config knob.)
+
+### Threat-model alignment (§5 PR checklist)
+
+- 5 of 7 PRs add new admin-API write surfaces: R1 (PATCH/DELETE domains), R2 (PATCH source-bindings discriminated body), R3 (POST agents/dispatch), R6 (PUT scheduler), R7 (POST source-bindings/forget). All are CSRF-gated + admin-auth-gated + emit an audit row on every successful mutation. R4 and R5 are read-only.
+- Audit-row hygiene: R7 enforces COUNTS-only (`pages_recompiled`, `pages_deleted`, `citations_removed`, `cap_used_before`, `cap_used_after`); never writes paths into the audit row. R2 redacts plaintext on credential-rotation. R1 logs real-diff before/after fields; no plaintext credentials touch the diff.
+- Daily delete-cap (existing wiki-write invariant) respected: R7 cap-preflight + cap-reserve happen inside the route handler; 409 path doesn't enqueue or audit.
+
+### Residual advisories (non-blocking, tracked for follow-up)
+
+- **Chrome QA wave-end walkthrough** outstanding — every R-PR ships its own before/after pair, but the integrated flow (rename a domain → rotate a binding's creds → run heartbeat now → view audit log → view cost dashboard → change Lint cadence to bi-weekly → forget a source with impact preview) needs a single-session smoke before tag.
+- **`OPENROUTER_API_KEY` repo secret for nightly-green** — the appendix-#9 nightly live-pilot workflow requires this secret to be set in repo settings for the lane to flip green; verification step before tag.
+- **Copilot-loop stale re-flags** — same pattern observed in appendix #9: after a fix-up commit lands, Copilot re-flags pre-fix lines as stale; verified clean by inspection rather than chasing the loop. Not a code residual; a process note.
+
+---
+
+_Drafted from `IMPLEMENTATION-PLAN.md` §1.2.1–§1.2.18 + per-PR `gh pr view` body residuals. Maintainer to edit before the `0.1.0-a` tag cut._
