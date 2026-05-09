@@ -591,4 +591,49 @@ The vendored `n8n-skills` baseline IS present in phase-a (`packages/adapters/aut
 
 ---
 
-_Drafted from `IMPLEMENTATION-PLAN.md` §1.2.1–§1.2.10 + per-PR `gh pr view` body residuals. Maintainer to edit before the `0.1.0-a` tag cut._
+## Appendix #9 (Q0 through Q14, plus Q10b follow-up) — Live-test gaps: close the operator loop
+
+Fifteen main PRs (Q0–Q14) + one fix-up follow-up (Q10b) landed AFTER appendix #8 to close every gap surfaced by the 2026-05-08 live Chrome session against the management UI. None of these add new product surface; all reduce the gap between "engine boots clean" and "operator drives a real binding through to a wiki write without psql." Two scope additions (Q13 schema-aware LLM-policy editor, Q14 live-pilot nightly e2e) were folded in per the planning Q&A. After appendix #9: an operator following `pilot-runbook.md §1–§4` can reach `agent_runs.status='success'` on a fresh `compose down -v` without a single shell out to psql.
+
+### Added (operator-facing)
+
+- **Schema-aware LLM-policy editor** (Q13). Three-tier (Thinker / Worker / Light) form with provider dropdown + model dropdown driven by a static `MODEL_CATALOG` (openai / anthropic / google / openrouter / ollama). Custom-input fallback for openrouter + ollama; advanced raw-JSON view collapsible. New `GET /api/admin/llm-models` route. UI strings under `t("llmPolicy.editor.*")` in en + pl.
+- **Source-binding wizard config step** (Q9). Each adapter's `bindingConfigSchema` now flows from `GET /api/admin/adapters` into a third wizard step that renders required + optional config fields (with schema defaults). The admin POST validates the new `config` field and persists it into `sources_bindings.config` jsonb.
+- **Source-binding row drill-down** (Q10). Click a row → modal with the webhook URL (JetBrains Mono + copy button), last error full text, sigFailCount24h. Disable / Delete actions wired to new admin PATCH/DELETE routes; FK violations on Delete surface as a 409 `fk_restricted` instead of a 500. Q10b follow-up adds TOCTOU close (RETURNING id inside tx + `ConcurrentDeleteError` sentinel) and i18n error mapping (`disableFailed` / `enableFailed` / `auth` / `transient`).
+- **CredentialForm grouped labels** (Q11). `auth.personal_access_token` renders as "Auth · Personal access token" (section heading + humanised leaf), not the dot-path. A11y: `<h3>` for section headings; interleave reset for non-dotted keys.
+- **Activity feed reaches LIVE** (Q1). EventSource → fetch-streaming with Bearer header + reconnect with `Last-Event-ID`. Replaces silent `CONNECTING…` state on every PAT-auth admin user.
+
+### Added (engine-facing)
+
+- **OpenRouter as a first-class provider** (Q4). `provider: 'openrouter'` end-to-end through `LlmRouter`; `OPENROUTER_API_KEY` in the env allow-list; runbook §1 documents.
+- **Per-adapter signature + inner-secret extraction** (Q7). New `extractSignature(headers)` and `extractWebhookSecret(plaintextJson)` on the SourceAdapter contract; receiver now signs with the inner secret value (Asana, Fireflies, generic webhook), not the JSON-wrapped credential blob. Symmetric `wrapWebhookSecret(rawSecret)` helper for handshake round-trip.
+- **Asana `makeAsanaClient` injection** (Q8). Default `snapshotMode: 'on-event'` now works in production composition (the default factory injects a per-binding asana client closure, mirroring the `drive` and `n8n` make\* patterns).
+- **`agents seed --domain <slug>`** (Q8). Memory + scope-domain populated with usable defaults; throws cleanly if zero / multiple domains exist.
+- **Single-port engine boot** (Q6). Engine-ingestion's webhook routes mount onto self-op's Fastify via a pre-listen hook; one process / one container / one port (the runbook + CLAUDE.md decision; bug pre-existed).
+- **Drizzle-wrapped agent runners** (Q2). `pg.Pool` wrapped once at registry build so `runHeartbeat` / `runLint` / `runSurfacer` get the Drizzle interface they expect.
+- **MCP HTTP `Accept: application/json, text/event-stream`** (Q3). Streamable HTTP spec compliance.
+- **gitea-wiki-mcp-server per-request transport** (Q12). Concurrent `/mcp` POSTs no longer trip "Already connected to a transport"; lint agent's ≥4 overlapping resource reads succeed.
+
+### Added (test + CI)
+
+- **Migration smoke test** (Q5). `tests/migrations/migrate-applies-clean.test.ts` runs `drizzle.migrate()` on a freshly-spun pglite and asserts idempotent journal completion. Caught migration 0010's missing `USING delivery_id::uuid` in the same PR.
+- **Live-pilot end-to-end nightly** (Q14). New `tests/live-pilot.real-pg.test.ts` (618 lines) + `tests/helpers/live-pilot/server.ts` (293 lines) drive every Q1-Q13 fix in one CI run; gated on `RUN_REAL_PILOT=1`. New `.github/workflows/nightly-live-pilot.yml` runs against `main` daily at 06:00 UTC + on `workflow_dispatch`. afterAll `stopCompose` gated on `ENABLED && HAS_DOCKER && !CI` so the workflow's failure-log capture step wins.
+- **Husky post-checkout fresh-worktree guard** (Q0). Zero-hash ORIG check skips the post-merge install + build during `git worktree add` — required prerequisite for the agent-team workflow that drove this entire appendix.
+
+### Schema
+
+- No new migrations. (Q5 fixes the authored bug in 0010 in-place; the migrate smoke test catches future-drift.)
+
+### Configuration
+
+- New env var on the allow-list: `OPENROUTER_API_KEY` (Q4). Optional; required only when a domain LLM policy points at `provider: 'openrouter'`.
+
+### Residual advisories (non-blocking, tracked for follow-up)
+
+- **Token-usage shape mismatch from OpenRouter** — UI Runs tab shows `0↑ 0↓` for kimi-k2.6 calls because `@ai-sdk/openai-compatible` returns `result.usage` in a different shape than the cost-tracker expects. Cosmetic for v0.1; defer to a cost-tracker bug-fix appendix.
+- **SSE 401 terminal state** — Q1's reconnect loop currently retries on 401 even though the PAT is durably bad. Tracked as task #47.
+- **Locale consistency on Sources columns** — Sources page picks up domain-locale via i18n; rest of UI is browser-locale. Defer to a v0.2 i18n-uniformity sweep.
+
+---
+
+_Drafted from `IMPLEMENTATION-PLAN.md` §1.2.1–§1.2.17 + per-PR `gh pr view` body residuals. Maintainer to edit before the `0.1.0-a` tag cut._
