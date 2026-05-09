@@ -185,6 +185,7 @@
         "disable": "Disable",
         "enable": "Enable",
         "delete": "Delete",
+        "forget": "Forget source",
         "close": "Close",
         "confirmDisableTitle": "Disable this binding?",
         "confirmDisableBody": "Inbound webhook events will still be accepted (HMAC verified, audit row written) but the scanner queue will not dispatch them, so no compile fires.",
@@ -417,6 +418,25 @@
         "lastFire": "last fired",
         "actions": "actions"
       }
+    }
+  },
+  "forgetImpact": {
+    "title": "Zapomnij źródło",
+    "lead": "Trwale usunie wkład tego źródła z wiki.",
+    "loading": "Liczenie wpływu…",
+    "summary": "Wpływ: {{recompile}} stron przekompiluje, {{deletes}} stron usunie się całkowicie, {{citations}} cytowań usuniętych.",
+    "capUsed": "Dzienny limit usunięć: {{used}}/{{cap}} wykorzystane dziś",
+    "capExceeded": "Nie można zapomnieć — przekroczyłoby dziś limit usunięć ({{cap}}/dzień). Poczekaj na reset.",
+    "acknowledge": "Rozumiem, że {{recompile}} stron zostanie przekompilowanych, a {{deletes}} usunięte na stałe",
+    "cancel": "Anuluj",
+    "confirm": "Zapomnij źródło",
+    "confirming": "Zapominanie…",
+    "errors": {
+      "loadFailed": "Nie udało się załadować wpływu. Spróbuj ponownie.",
+      "confirmFailed": "Nie udało się zapomnieć źródła. Spróbuj ponownie lub sprawdź audit log.",
+      "capExceeded": "Osiągnięto dzienny limit usunięć. Spróbuj po północy UTC.",
+      "auth": "Sesja wygasła lub brak uprawnień — wklej PAT ponownie.",
+      "transient": "Serwer nieosiągalny lub zwrócił błąd. Spróbuj ponownie."
     }
   },
   "schedulerEditor": {

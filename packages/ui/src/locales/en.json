@@ -184,6 +184,7 @@
         "disable": "Disable",
         "enable": "Enable",
         "delete": "Delete",
+        "forget": "Forget source",
         "close": "Close",
         "confirmDisableTitle": "Disable this binding?",
         "confirmDisableBody": "Inbound webhook events will still be accepted (HMAC verified, audit row written) but the scanner queue will not dispatch them, so no compile fires.",
@@ -419,6 +420,25 @@
         "lastFire": "last fired",
         "actions": "actions"
       }
+    }
+  },
+  "forgetImpact": {
+    "title": "Forget source",
+    "lead": "This will permanently remove this source's contributions from the wiki.",
+    "loading": "Computing impact…",
+    "summary": "Impact: {{recompile}} pages re-compile, {{deletes}} pages delete entirely, {{citations}} citations removed.",
+    "capUsed": "Daily delete cap: {{used}}/{{cap}} used today",
+    "capExceeded": "Cannot forget — would exceed today's delete cap ({{cap}}/day). Wait for the cap to reset.",
+    "acknowledge": "I understand {{recompile}} pages will recompile and {{deletes}} will delete permanently",
+    "cancel": "Cancel",
+    "confirm": "Forget source",
+    "confirming": "Forgetting…",
+    "errors": {
+      "loadFailed": "Could not load forget impact. Try again.",
+      "confirmFailed": "Could not forget source. Try again or check the audit log.",
+      "capExceeded": "Daily delete cap reached. Try again after midnight UTC.",
+      "auth": "Sign-in expired or insufficient permissions — re-paste your PAT.",
+      "transient": "Server is unreachable or returned an error. Try again."
     }
   },
   "schedulerEditor": {

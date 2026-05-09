@@ -38,6 +38,8 @@ import { z } from "zod";
 
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
+import type { DomainSlug } from "@opencoo/shared/db";
+import { planForget } from "@opencoo/shared/forget";
 import { safeErrorMessage } from "@opencoo/shared/scrub";
 import {
   defaultReviewModeFor,
@@ -48,6 +50,7 @@ import {
   type PollingCredentialSchema,
   type SourceAdapterCredentialDescriptor,
 } from "@opencoo/shared/source-adapter";
+import type { DeleteCap } from "@opencoo/shared/wiki-write";
 
 import { writeAuditLog } from "../audit-log.js";
 import { requireAdminContext, type AdminContext } from "../auth.js";
@@ -184,6 +187,27 @@ const createBindingSchema = z
   })
   .strict();
 
+/** PR-R7 (phase-a appendix #10) — payload threaded into the
+ *  composition-supplied forget enqueuer when the operator confirms
+ *  a forget. The route plans the impact + reserves the cap; the
+ *  enqueuer (production: BullMQ Queue.add into the wiki-write
+ *  recompile + delete pipelines) does the actual work. Tests inject
+ *  a spy to assert the route called it.
+ *
+ *  Path lists are the planner output (stable, sorted) so the worker
+ *  doesn't need to re-plan; it just iterates and enqueues per-page
+ *  jobs. The route itself NEVER invokes wikiAdapter directly — the
+ *  no-direct-gitea-write ESLint boundary keeps the engine boundary
+ *  clean. */
+export interface ForgetJobEnqueueArgs {
+  readonly bindingId: string;
+  readonly domainSlug: string;
+  readonly pagesRecompiled: readonly string[];
+  readonly pagesDeleted: readonly string[];
+  /** Operator that triggered the forget (audit cross-reference). */
+  readonly callerUsername: string;
+}
+
 export interface RegisterSourceBindingsRoutesArgs {
   readonly app: FastifyInstance;
   readonly db: Db;
@@ -195,6 +219,20 @@ export interface RegisterSourceBindingsRoutesArgs {
    *  Optional: when undefined the DLQ signal contributes nothing to
    *  status (treated as 0 — no alert from DLQ alone). */
   readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>> };
+  /** PR-R7 — read-only delete-cap probe + reserve. The route reads
+   *  `peek` to surface today's budget in the dry-run response and
+   *  calls `reserve` on `?dryRun=0` BEFORE the audit row + enqueue
+   *  fire. When undefined the forget endpoint returns 503
+   *  (composition-incomplete; same boot-tolerance pattern as the
+   *  rest of the admin API). */
+  readonly deleteCap?: DeleteCap;
+  /** PR-R7 — composition-supplied enqueuer that turns the planner
+   *  output into BullMQ recompile + delete jobs. When undefined the
+   *  forget endpoint returns 503 (composition-incomplete). The route
+   *  awaits the enqueue so transport failures surface as 5xx (audit
+   *  row was already written — operator can correlate via the
+   *  audit log on retry). */
+  readonly forgetJobEnqueuer?: (args: ForgetJobEnqueueArgs) => Promise<void>;
 }
 
 export function registerSourceBindingsRoutes(
@@ -789,6 +827,176 @@ export function registerSourceBindingsRoutes(
       });
 
       return reply.code(200).send({ deleted: true });
+    },
+  );
+
+  // PR-R7 (phase-a appendix #10) — `source forget` impact preview +
+  // gated execution. The Sources row drill-down's "Forget source"
+  // button calls this twice:
+  //
+  //   • `?dryRun=1`         — read-only impact (recompile / delete /
+  //                            citations / cap state). No side effects.
+  //   • `?dryRun=0` or omitted — execute the forget: reserve the cap
+  //                            budget, enqueue recompile + delete jobs,
+  //                            audit `source_binding.forget` with COUNTS
+  //                            (never path lists — paths can leak
+  //                            operator-internal naming).
+  //
+  // Cap-exceeded path: when the planned deletes + today's used would
+  // exceed the per-domain daily cap, return 409 `daily_cap_exceeded`
+  // BEFORE the audit row + enqueue fire. The operator waits for the
+  // cap to reset (next UTC midnight, by design — invariant 6).
+  args.app.post(
+    "/api/admin/source-bindings/:id/forget",
+    { preHandler: requireCsrf },
+    async (req, reply) => {
+      const ctx = requireAdminContext(req);
+      const id = (req.params as { id: string }).id;
+      if (!z.string().uuid().safeParse(id).success) {
+        return reply.code(400).send({ error: "invalid_id" });
+      }
+
+      // Parse the dryRun flag. Default to actual execute (`dryRun=0`)
+      // when the query string is absent — calling the endpoint is
+      // already a deliberate operator action gated by the UI's
+      // checkbox. The narrow accept-set (`'1'`/`'0'`/'true'/'false')
+      // keeps the parse strict so a typo doesn't silently flip the
+      // operator's intent.
+      const rawDryRun = (req.query as { dryRun?: string }).dryRun;
+      const dryRun =
+        rawDryRun === "1" ||
+        rawDryRun === "true" ||
+        rawDryRun === "yes";
+
+      // Plan the impact. Pure read-only — same query path used by
+      // both dry-run and execute so two consecutive dry-runs return
+      // identical output.
+      const plan = await planForget({ db: args.db, bindingId: id });
+      if ("notFound" in plan) {
+        return reply.code(404).send({ error: "not_found", id });
+      }
+
+      // Read today's cap state (peek, no commit). Surfaced in BOTH
+      // the dry-run response (so the operator sees today's budget)
+      // AND the cap-exceeded 409 (so the UI can show how close the
+      // operator is to the limit).
+      const deleteCap = args.deleteCap;
+      if (deleteCap === undefined) {
+        return reply.code(503).send({
+          error: "delete_cap_unavailable",
+          reason: "Composition did not register a deleteCap",
+        });
+      }
+      const now = new Date();
+      const domainSlug = plan.domainSlug as DomainSlug;
+      const capState = deleteCap.peek(domainSlug, now);
+      const plannedDeletes = plan.pagesDeleted.length;
+
+      if (dryRun) {
+        return reply.code(200).send({
+          pagesRecompiled: plan.pagesRecompiled,
+          pagesDeleted: plan.pagesDeleted,
+          citationsRemoved: plan.citationsRemoved,
+          dailyDeleteCapState: capState,
+        });
+      }
+
+      // Execute path. Reserve-before-enqueue: a cap-exceeded reserve
+      // throws (caught below → 409) before the enqueue fires, so a
+      // refused forget never leaves a partial state behind.
+      const enqueuer = args.forgetJobEnqueuer;
+      if (enqueuer === undefined) {
+        return reply.code(503).send({
+          error: "forget_enqueuer_unavailable",
+          reason: "Composition did not register a forgetJobEnqueuer",
+        });
+      }
+
+      // Cap-exceeded preflight: surface 409 when the planned deletes
+      // would exceed today's budget. We check here so the response
+      // body carries the cap state at the moment of refusal (helps
+      // the operator decide whether to wait or come back tomorrow).
+      // The reserve below would also throw, but its error message
+      // doesn't carry the {used,cap} pair the UI needs to render.
+      if (capState.used + plannedDeletes > capState.cap) {
+        return reply.code(409).send({
+          error: "daily_cap_exceeded",
+          dailyDeleteCapState: capState,
+        });
+      }
+
+      // Reserve the cap budget. Reserves only the deletes — the
+      // recompiles consume the LLM budget separately, not the wiki-
+      // write delete cap.
+      try {
+        if (plannedDeletes > 0) {
+          deleteCap.reserve(domainSlug, plannedDeletes, now);
+        }
+      } catch (err) {
+        // Defensive: a concurrent reserve between our peek and our
+        // reserve could push us over the cap. Surface the same 409
+        // shape so the UI handles it identically.
+        req.log?.warn({
+          msg: "binding_forget.cap_reserve_failed",
+          binding_id: id,
+          err: err instanceof Error ? err.name : "unknown",
+        });
+        return reply.code(409).send({
+          error: "daily_cap_exceeded",
+          dailyDeleteCapState: deleteCap.peek(domainSlug, now),
+        });
+      }
+
+      // Audit BEFORE enqueue (audit-before-side-effect invariant —
+      // a partial enqueue still leaves an audit trail). Metadata
+      // carries COUNTS only; path lists never reach the audit
+      // surface (THREAT-MODEL §3.13 — operator-internal naming
+      // can leak via wiki paths).
+      const capAfter = deleteCap.peek(domainSlug, now);
+      await writeAuditLog(args.db, {
+        action: "source_binding.forget",
+        userId: ctx.userId,
+        metadata: {
+          binding_id: id,
+          slug: plan.domainSlug,
+          pages_recompiled: plan.pagesRecompiled.length,
+          pages_deleted: plan.pagesDeleted.length,
+          citations_removed: plan.citationsRemoved,
+          cap_used_before: capState.used,
+          cap_used_after: capAfter.used,
+          caller_username: ctx.username,
+        },
+        sourceIp: req.ip,
+        userAgent: req.headers["user-agent"],
+      });
+
+      // Enqueue. Awaited so transport failures surface as 5xx; the
+      // audit row already exists so the operator can retry idempotently
+      // (re-running forget on the same binding-id with no remaining
+      // citations is a no-op — the planner returns empty lists).
+      try {
+        await enqueuer({
+          bindingId: id,
+          domainSlug: plan.domainSlug,
+          pagesRecompiled: plan.pagesRecompiled,
+          pagesDeleted: plan.pagesDeleted,
+          callerUsername: ctx.username,
+        });
+      } catch (err) {
+        req.log?.warn({
+          msg: "binding_forget.enqueue_failed",
+          binding_id: id,
+          err: err instanceof Error ? err.name : "unknown",
+        });
+        return reply.code(500).send({ error: "enqueue_failed" });
+      }
+
+      return reply.code(200).send({
+        pagesRecompiled: plan.pagesRecompiled,
+        pagesDeleted: plan.pagesDeleted,
+        citationsRemoved: plan.citationsRemoved,
+        dailyDeleteCapState: capAfter,
+      });
     },
   );
 }
