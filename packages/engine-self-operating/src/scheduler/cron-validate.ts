@@ -82,3 +82,32 @@ export function nextFireAt(pattern: string, from?: Date): Date | null {
     return null;
   }
 }
+
+/**
+ * Compute the next N firing instants for a cron pattern, returning
+ * each as a Date. Returns an empty array when the pattern is invalid
+ * (or when `cron-parser` runs out of fires before N is reached) so
+ * callers can surface the empty list as "no preview" without paying
+ * for their own try/catch. Same `tz: 'UTC'` invariant as
+ * `nextFireAt` — kept in lockstep so every cron-parser invocation in
+ * the engine resolves wall-clock minutes identically.
+ */
+export function nextNFires(
+  pattern: string,
+  count: number,
+  from?: Date,
+): Date[] {
+  try {
+    const opts = from !== undefined
+      ? { ...PARSER_TZ_OPTS, currentDate: from }
+      : PARSER_TZ_OPTS;
+    const expr = cronParser.parseExpression(pattern, opts);
+    const out: Date[] = [];
+    for (let i = 0; i < count; i += 1) {
+      out.push(expr.next().toDate());
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}

@@ -36,7 +36,10 @@ import type { Logger } from "@opencoo/shared/logger";
 import { registerAdminApi } from "../admin-api/index.js";
 import type { GiteaClient } from "../admin-api/auth.js";
 import { createSseBus, type SseBus } from "../admin-api/sse-bus.js";
-import type { SchedulerSource } from "../admin-api/routes/scheduler.js";
+import type {
+  SchedulerSource,
+  SchedulerUpdate,
+} from "../admin-api/routes/scheduler.js";
 import type { EngineConfig } from "../config.js";
 import { registerStaticUi } from "../static-ui.js";
 
@@ -81,6 +84,11 @@ export interface ProductionServerFactoryArgs {
    *  bound method; when undefined the route registers but returns
    *  503 (composition incomplete). */
   readonly dispatchAgentJob?: import("../admin-api/routes/agents-dispatch.js").AgentDispatchEnqueue;
+  /** Phase-a appendix #10 PR-R6 — cadence-editor update callable.
+   *  Production passes the dispatcher's `updateSchedule` bound
+   *  method; when undefined the `PUT /api/admin/scheduler/:agent`
+   *  route returns 503 (composition incomplete). */
+  readonly updateSchedule?: SchedulerUpdate;
   /** PR-Q6 (phase-a appendix #9) fix-up — Fastify request body
    *  limit. The orchestrator sets this to `WEBHOOK_BODY_LIMIT_BYTES`
    *  (5 MB) when co-booting engine-ingestion in workers mode so a
@@ -141,6 +149,9 @@ export async function productionServerFactory(
       : {}),
     ...(args.dispatchAgentJob !== undefined
       ? { dispatchAgentJob: args.dispatchAgentJob }
+      : {}),
+    ...(args.updateSchedule !== undefined
+      ? { updateSchedule: args.updateSchedule }
       : {}),
     provisionOrg: args.compositionEnv.giteaProvisionOrg,
     provisionDomainRepo: async (a) => {

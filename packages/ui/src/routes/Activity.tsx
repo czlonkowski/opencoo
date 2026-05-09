@@ -21,6 +21,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { AgentsRunNowButton } from "../components/AgentsRunNowButton.js";
+import { SchedulerEditor } from "../components/SchedulerEditor.js";
 import { StatusPill, type StatusTone } from "../components/StatusPill.js";
 import {
   createAgentRunsSubscription,
@@ -363,19 +364,29 @@ function ScheduledAgentsView(props: {
   const { t } = useTranslation();
   const [schedules, setSchedules] = useState<readonly ScheduleEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // PR-R6 — which agent INSTANCE currently has the cadence editor
+  // expanded. Keyed by `instanceId` (not `definitionSlug`) so two
+  // instances of the same agent on the same page each have their
+  // own toggle target — clicking one card's "Edit schedule" doesn't
+  // open both editors. Only one editor open at a time keeps the
+  // column count visually predictable.
+  const [editingInstance, setEditingInstance] = useState<string | null>(null);
+
+  const refetch = async (): Promise<void> => {
+    try {
+      const r = await fetchAdmin<ScheduleResponse>(
+        "/api/admin/scheduler",
+        fetchOptsFor(props.fetchImpl),
+      );
+      setSchedules(r.schedules);
+      setError(null);
+    } catch {
+      setError(t("common.error"));
+    }
+  };
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const r = await fetchAdmin<ScheduleResponse>(
-          "/api/admin/scheduler",
-          fetchOptsFor(props.fetchImpl),
-        );
-        setSchedules(r.schedules);
-      } catch {
-        setError(t("common.error"));
-      }
-    })();
+    void refetch();
   }, []);
 
   // Stable SSE subscription shared across the cards. ONE
@@ -413,15 +424,38 @@ function ScheduledAgentsView(props: {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {schedules.map((s) => {
-        const dispatchable =
-          s.domainSlug !== null && RUN_NOW_DISPATCHABLE.has(s.definitionSlug);
-        const slug = dispatchable
+        // PR-R6 round-2 — split the gating cleanly:
+        //   - `editableSlug` (Edit-schedule visibility): agent slug
+        //     alone. Editing the cron pattern is independent of
+        //     dispatchability — a global Surfacer instance with no
+        //     bound domain still has a cron the operator can change.
+        //   - `dispatchable` (Run-now visibility): slug + domainSlug.
+        //     The Run-now button needs the domain to fire the agent.
+        const editableSlug = RUN_NOW_DISPATCHABLE.has(s.definitionSlug)
           ? (s.definitionSlug as
               | "heartbeat"
               | "lint"
               | "surfacer"
               | "builder")
           : null;
+        const dispatchable =
+          s.domainSlug !== null && editableSlug !== null;
+        const slug = dispatchable ? editableSlug : null;
+        const editing = editingInstance === s.instanceId;
+        // Used twice below (Edit-schedule and Run-now cells) when
+        // the agent slug isn't dispatchable — extract once so the
+        // grid keeps an identically-styled placeholder cell.
+        const dash = (
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              color: "var(--ink-3)",
+            }}
+          >
+            —
+          </span>
+        );
         return (
           <div
             key={s.instanceId}
@@ -430,67 +464,37 @@ function ScheduledAgentsView(props: {
               borderRadius: 6,
               padding: "16px 20px",
               background: "var(--paper-2)",
-              display: "grid",
-              gridTemplateColumns: "1fr auto auto auto auto",
-              gap: 18,
-              alignItems: "center",
+              display: "flex",
+              flexDirection: "column",
+              gap: 0,
             }}
           >
-            <span
+            <div
               style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 13,
-                color: "var(--ink)",
+                display: "grid",
+                gridTemplateColumns: "1fr auto auto auto auto auto",
+                gap: 18,
+                alignItems: "center",
               }}
             >
-              {s.definitionSlug}
-            </span>
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 11,
-                color: "var(--ink-2)",
-              }}
-            >
-              {s.name}
-            </span>
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 11,
-                color: "var(--ink-3)",
-              }}
-            >
-              {s.scheduleCron}
-            </span>
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 11,
-                color: "var(--ink-3)",
-              }}
-            >
-              {s.lastFireAt !== null
-                ? new Date(s.lastFireAt).toLocaleString()
-                : "—"}
-            </span>
-            {slug !== null && s.domainSlug !== null ? (
-              <AgentsRunNowButton
-                agentSlug={slug}
-                domainSlug={s.domainSlug}
-                instanceSlug={s.name}
-                idleLabel={t("agentsRunNow.labels.runNow")}
-                queuedLabelFormat={t("agentsRunNow.labels.queued")}
-                runningLabelFormat={t("agentsRunNow.labels.running")}
-                rateLimitedTooltipFormat={t(
-                  "agentsRunNow.tooltips.rateLimited",
-                )}
-                subscribeToAgentRuns={subscribeToAgentRuns}
-                {...(props.fetchImpl !== undefined
-                  ? { fetchImpl: props.fetchImpl }
-                  : {})}
-              />
-            ) : (
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 13,
+                  color: "var(--ink)",
+                }}
+              >
+                {s.definitionSlug}
+              </span>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  color: "var(--ink-2)",
+                }}
+              >
+                {s.name}
+              </span>
               <span
                 style={{
                   fontFamily: "var(--font-mono)",
@@ -498,8 +502,81 @@ function ScheduledAgentsView(props: {
                   color: "var(--ink-3)",
                 }}
               >
-                —
+                {s.scheduleCron}
               </span>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  color: "var(--ink-3)",
+                }}
+              >
+                {s.lastFireAt !== null
+                  ? new Date(s.lastFireAt).toLocaleString()
+                  : "—"}
+              </span>
+              {/* PR-R6 — Edit schedule toggle. Default chrome
+                  (NO `--alert`); gated on the agent slug ALONE —
+                  editing the cron pattern is independent of
+                  dispatchability so a global Surfacer instance with
+                  no bound domain can still have its cadence
+                  flipped. */}
+              {editableSlug !== null ? (
+                <button
+                  type="button"
+                  onClick={(): void =>
+                    setEditingInstance(editing ? null : s.instanceId)
+                  }
+                  data-testid={`scheduler-editor-toggle-${s.definitionSlug}`}
+                  style={{
+                    font: "inherit",
+                    fontSize: 12,
+                    fontFamily: "var(--font-sans)",
+                    padding: "6px 12px",
+                    border: "1px solid var(--rule)",
+                    borderRadius: 3,
+                    background: editing ? "var(--paper-2)" : "var(--paper)",
+                    color: "var(--ink-2)",
+                    cursor: "pointer",
+                  }}
+                >
+                  {t("schedulerEditor.edit")}
+                </button>
+              ) : (
+                dash
+              )}
+              {slug !== null && s.domainSlug !== null ? (
+                <AgentsRunNowButton
+                  agentSlug={slug}
+                  domainSlug={s.domainSlug}
+                  instanceSlug={s.name}
+                  idleLabel={t("agentsRunNow.labels.runNow")}
+                  queuedLabelFormat={t("agentsRunNow.labels.queued")}
+                  runningLabelFormat={t("agentsRunNow.labels.running")}
+                  rateLimitedTooltipFormat={t(
+                    "agentsRunNow.tooltips.rateLimited",
+                  )}
+                  subscribeToAgentRuns={subscribeToAgentRuns}
+                  {...(props.fetchImpl !== undefined
+                    ? { fetchImpl: props.fetchImpl }
+                    : {})}
+                />
+              ) : (
+                dash
+              )}
+            </div>
+            {editing && editableSlug !== null && (
+              <SchedulerEditor
+                agentSlug={editableSlug}
+                currentCron={s.scheduleCron}
+                onApplied={(): void => {
+                  void refetch();
+                }}
+                onCancel={(): void => setEditingInstance(null)}
+                {...(props.fetchImpl !== undefined
+                  ? { fetchImpl: props.fetchImpl }
+                  : {})}
+              />
             )}
           </div>
         );

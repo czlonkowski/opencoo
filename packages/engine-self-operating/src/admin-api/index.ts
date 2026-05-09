@@ -59,6 +59,7 @@ import { registerRedactionEventsRoutes } from "./routes/redaction-events.js";
 import {
   registerSchedulerRoute,
   type SchedulerSource,
+  type SchedulerUpdate,
 } from "./routes/scheduler.js";
 import { registerSourceBindingsRoutes } from "./routes/source-bindings.js";
 
@@ -124,6 +125,12 @@ export interface RegisterAdminApiArgs {
    *  incomplete — same boot-tolerance pattern as the rest of the
    *  admin API). */
   readonly dispatchAgentJob?: AgentDispatchEnqueue;
+  /** Phase-a appendix #10 PR-R6 — scheduler / cadence editor.
+   *  Production passes the dispatcher's `updateSchedule` method;
+   *  when undefined the `PUT /api/admin/scheduler/:agent` route
+   *  registers but every call returns 503 (composition incomplete).
+   *  Same boot-tolerance pattern as `dispatchAgentJob`. */
+  readonly updateSchedule?: SchedulerUpdate;
 }
 
 export async function registerAdminApi(
@@ -247,6 +254,9 @@ export async function registerAdminApi(
     app: guardedApp,
     db: args.db,
     source: args.schedulerSource ?? { listSchedules: () => [] },
+    ...(args.updateSchedule !== undefined
+      ? { updateSchedule: args.updateSchedule }
+      : {}),
   });
 
   // Phase-a appendix #10 PR-R3 — on-demand agent dispatch.
@@ -333,6 +343,10 @@ function makeGuardedApp(
 export type { GiteaClient, GiteaWhoamiResult, AdminContext } from "./auth.js";
 export type { ProvisionDomainRepoFn } from "./routes/domains.js";
 export type { AgentDispatchEnqueue } from "./routes/agents-dispatch.js";
+export type {
+  SchedulerSource,
+  SchedulerUpdate,
+} from "./routes/scheduler.js";
 export {
   DISPATCHABLE_AGENT_SLUGS,
   type DispatchableAgentSlug,

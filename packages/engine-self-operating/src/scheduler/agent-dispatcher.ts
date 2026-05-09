@@ -143,6 +143,12 @@ export interface AgentDispatcherOptions {
   readonly registerScheduleFn?: (
     schedule: RegisteredSchedule,
   ) => Promise<void>;
+  /** @internal Test seam — overrides the BullMQ
+   *  `Queue.removeRepeatable(...)` call used by `updateSchedule`.
+   *  Tests inject a stub so assertions don't depend on the
+   *  ioredis-mock repeatable surface; production passes `undefined`
+   *  and the dispatcher uses the real Queue handle. */
+  readonly removeScheduleFn?: (entry: RegisteredSchedule) => Promise<void>;
 }
 
 /**
@@ -163,6 +169,9 @@ export class AgentDispatcher {
   private readonly registerScheduleFn:
     | ((schedule: RegisteredSchedule) => Promise<void>)
     | undefined;
+  private readonly removeScheduleFn:
+    | ((entry: RegisteredSchedule) => Promise<void>)
+    | undefined;
   private readonly registered: RegisteredSchedule[] = [];
   private stopping: Promise<void> | undefined;
 
@@ -174,6 +183,7 @@ export class AgentDispatcher {
     this.router = options.router;
     this.sseBus = options.sseBus;
     this.registerScheduleFn = options.registerScheduleFn;
+    this.removeScheduleFn = options.removeScheduleFn;
 
     this.queue = new Queue<DispatchJobData>(DISPATCH_QUEUE_NAME, {
       connection: options.connection,
@@ -340,6 +350,165 @@ export class AgentDispatcher {
     return { jobId };
   }
 
+  /**
+   * PR-R6 (phase-a appendix #10) — change the cron pattern for every
+   * already-registered repeatable whose `instanceId` matches one of
+   * the supplied entries. The admin-API route passes the full set
+   * of (instanceId, oldCron, newCron) triples for every instance
+   * scoped to the agent slug; this method walks them in order,
+   * removes the old repeatable, registers a fresh one with the new
+   * pattern, and (on success of ALL entries) updates the in-memory
+   * `registered` list so the subsequent `listSchedules()` call
+   * reflects the change.
+   *
+   * Atomicity model: BullMQ has no native transaction over a
+   * remove-then-add of a repeatable, so `updateSchedule` is best-
+   * effort across the cluster. The route wraps the DB UPDATE +
+   * audit-row INSERT + this call inside one db.transaction; a
+   * throw here unwinds BOTH so the operator's DB state and audit
+   * trail match what the dispatcher actually committed.
+   *
+   * Multi-instance roll-forward (PR-R6 round-2): when the loop
+   * processes 2+ entries and a LATER entry throws, the EARLIER
+   * entries that already swapped successfully would be left at
+   * the NEW cron in BullMQ while the DB transaction unwinds back
+   * to the OLD cron — splitting the cluster's view of the schedule
+   * until the next engine boot reconciles from DB. This method
+   * tracks the set of successfully-swapped entries; on a throw it
+   * rolls EVERY successful swap back to its OLD cron BEFORE
+   * re-throwing. Rollback failures are logged but don't suppress
+   * the original error — the route's tx still unwinds; the next
+   * engine boot's `start()` re-registers from DB and reconciles.
+   *
+   * The in-memory `registered` mutation runs AFTER all swaps
+   * succeeded so a partial failure can't leave the list in a
+   * mixed (some new, some old) state.
+   *
+   * On success, the `registered` array's matching entries are
+   * mutated in place to carry the NEW `scheduleCron`; entries not
+   * present in the input set are left untouched.
+   */
+  async updateSchedule(args: {
+    readonly entries: ReadonlyArray<{
+      readonly instanceId: string;
+      readonly definitionSlug: string;
+      readonly name: string;
+      readonly oldCron: string;
+      readonly newCron: string;
+    }>;
+  }): Promise<void> {
+    if (args.entries.length === 0) return;
+    // Pair every input entry with its old/new RegisteredSchedule
+    // shapes up-front so the swap loop only references what it
+    // needs and the rollback path doesn't have to re-derive the
+    // shapes from the caller's input shape.
+    interface Plan {
+      readonly oldRegistered: RegisteredSchedule;
+      readonly newRegistered: RegisteredSchedule;
+      readonly noop: boolean;
+    }
+    const plans: Plan[] = args.entries.map((entry) => {
+      const common = {
+        instanceId: entry.instanceId,
+        definitionSlug: entry.definitionSlug,
+        name: entry.name,
+      };
+      return {
+        oldRegistered: { ...common, scheduleCron: entry.oldCron },
+        newRegistered: { ...common, scheduleCron: entry.newCron },
+        noop: entry.oldCron === entry.newCron,
+      };
+    });
+
+    // Successfully swapped entries (BullMQ now carries NEW cron).
+    // On a later throw we walk this set in REVERSE and roll each
+    // back to OLD cron before re-throwing.
+    const swapped: Plan[] = [];
+
+    try {
+      for (const plan of plans) {
+        // Skip the no-op case so a redundant PUT (operator clicks
+        // Save without changing the picker) doesn't churn the
+        // BullMQ repeatable index unnecessarily.
+        if (plan.noop) continue;
+        await this.removeOne(plan.oldRegistered);
+        await this.registerOne(plan.newRegistered);
+        swapped.push(plan);
+      }
+    } catch (err) {
+      // Multi-instance rollback: every entry that ALREADY swapped
+      // to NEW cron earlier in the same call needs to come back
+      // to OLD cron. Walk in reverse order (mirror of the swap
+      // walk) so the cluster state moves through the same
+      // sequence the swap took, just in the opposite direction.
+      // A failure inside the rollback is logged and the loop
+      // continues — the operator's DB tx still unwinds, and the
+      // next engine boot reconciles from `agent_instances` rows.
+      for (const plan of swapped.slice().reverse()) {
+        try {
+          await this.removeOne(plan.newRegistered);
+          await this.registerOne(plan.oldRegistered);
+        } catch (rollbackErr) {
+          this.logger.error("scheduler.update_rollback_failed", {
+            instance_id: plan.oldRegistered.instanceId,
+            error:
+              rollbackErr instanceof Error
+                ? rollbackErr.message
+                : String(rollbackErr),
+          });
+        }
+      }
+      // The FAILING entry: registerOne may have thrown after
+      // removeOne succeeded, so the old pattern is no longer in
+      // BullMQ for this instance. Try to re-register the OLD
+      // pattern so we don't leave the instance with NO cron entry
+      // registered. Best-effort — a failure here is logged and we
+      // still re-throw the original error so the route's DB tx
+      // unwinds.
+      const failing = plans[swapped.length];
+      if (failing !== undefined && !failing.noop) {
+        try {
+          await this.registerOne(failing.oldRegistered);
+        } catch (rollbackErr) {
+          this.logger.error("scheduler.update_rollback_failed", {
+            instance_id: failing.oldRegistered.instanceId,
+            error:
+              rollbackErr instanceof Error
+                ? rollbackErr.message
+                : String(rollbackErr),
+          });
+        }
+      }
+      throw err;
+    }
+
+    // All swaps succeeded — mutate the in-memory registered list.
+    // Doing this AFTER the swap loop (rather than per-entry) means
+    // a partial failure can't leave `registered` in a mixed
+    // (some new, some old) state: the throw above bubbles out
+    // before this point and the in-memory list still reflects the
+    // pre-call (= post-rollback) cron pattern.
+    for (const plan of plans) {
+      if (plan.noop) continue;
+      // Index by instanceId rather than position so we stay safe
+      // if start() ever changes ordering.
+      const idx = this.registered.findIndex(
+        (s) => s.instanceId === plan.newRegistered.instanceId,
+      );
+      if (idx === -1) {
+        // Instance wasn't in the registered list (e.g. it was
+        // skipped at boot due to invalid cron). Push the new
+        // entry so listSchedules() picks it up; the route only
+        // calls updateSchedule for instances it just verified
+        // exist + are enabled, so this is the recovery path for
+        // a previously-invalid cron getting fixed via the UI.
+        this.registered.push(plan.newRegistered);
+      } else {
+        this.registered[idx] = plan.newRegistered;
+      }
+    }
+  }
+
   /** Internal: invoke the test-supplied registration stub if set,
    *  else call BullMQ's real `Queue.add(...)` with `repeat`. */
   private async registerOne(entry: RegisteredSchedule): Promise<void> {
@@ -369,6 +538,31 @@ export class AgentDispatcher {
         jobId: entry.instanceId,
         repeat: { pattern: entry.scheduleCron, tz: "UTC", immediately: false },
       },
+    );
+  }
+
+  /** Internal (PR-R6): tear down a previously-registered repeatable
+   *  before `updateSchedule` re-adds it with the new pattern. Uses
+   *  the test-supplied stub if set, else calls BullMQ's real
+   *  `removeRepeatable(...)`. The repeat options MUST match the
+   *  shape `registerOne` used at boot (`tz: 'UTC'`, `immediately:
+   *  false`) so the repeat-key BullMQ computes resolves to the same
+   *  entry — a mismatch here silently leaves the OLD repeatable in
+   *  Redis while the NEW one is added on top, double-firing the
+   *  agent. */
+  private async removeOne(entry: RegisteredSchedule): Promise<void> {
+    if (this.removeScheduleFn !== undefined) {
+      await this.removeScheduleFn(entry);
+      return;
+    }
+    await this.queue.removeRepeatable(
+      "dispatch",
+      {
+        pattern: entry.scheduleCron,
+        tz: "UTC",
+        immediately: false,
+      },
+      entry.instanceId,
     );
   }
 
