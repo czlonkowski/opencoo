@@ -673,4 +673,16 @@ Seven PRs (R1–R7) landed AFTER appendix #9 to make the management UI the only 
 
 ---
 
+## Appendix #11 (W1, W2, …) — Wave-end Chrome QA fix-ups
+
+The 2026-05-09 Chrome QA walkthrough exercised the appendix-#10 integrated flow end-to-end and surfaced wiring gaps that the per-PR before/after pairs had missed.
+
+### Fixed (W2, `<sha>` / #<n>) — cost-tracker pricing for every MODEL_CATALOG member
+
+R5 (#88)'s `/Cost` dashboard was structurally working but recording every OpenRouter (kimi) call as `$0.00` because `packages/shared/src/cost-tracker/pricing.ts` was missing entries for 13 of the 22 catalog models — including `moonshotai/kimi-k2.6`, the model the design-partner deployment pins for all three tiers. Every kimi call logged `cost-tracker.unknown_model` and fell to `FALLBACK_PRICING`, but the warning was not the user-visible regression — the dashboard under-reporting was. PR-W2 adds static pricing entries for the Anthropic 4-series catalog ids (`claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`, `claude-3-5-sonnet-20241022`), the missing Google entries (`gemini-2.0-flash-thinking`, `gemini-1.5-flash`), the missing OpenAI `o1`, and the six OpenRouter-prefixed models (`moonshotai/kimi-k2.6`, `anthropic/claude-sonnet-4`, `anthropic/claude-opus-4-7`, `openai/gpt-4o`, `google/gemini-2.0-flash`, `deepseek/deepseek-r1`). A new parameterized test in `tests/cost-tracker.test.ts` iterates `MODEL_CATALOG` and asserts `PRICING[model]` is defined for every non-ollama member — future catalog additions break the test until pricing is added in lockstep, mechanically preventing the same regression. No runtime-behaviour change to `costFor`, the warning emission, or the `llm_usage` write shape; historical zero-cost rows in `llm_usage` are not backfilled (W2 only fixes forward).
+
+OpenRouter's posted prices change occasionally; v0.2 will replace the static OpenRouter block with a daily fetch from `https://openrouter.ai/api/v1/models` (cached, override-safe). Until that lands, MODEL_CATALOG additions require a paired `pricing.ts` update — enforced by the catalog-coverage test, not just convention.
+
+---
+
 _Drafted from `IMPLEMENTATION-PLAN.md` §1.2.1–§1.2.18 + per-PR `gh pr view` body residuals. Maintainer to edit before the `0.1.0-a` tag cut._
