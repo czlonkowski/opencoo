@@ -316,16 +316,7 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
         title={t("domains.detail.actions.confirmDisableTitle")}
         onClose={props.onClose}
         maxWidth={520}
-      >
-        <div style={SECTION_STYLE}>
-          <p style={CONFIRM_BODY_STYLE}>
-            {t("domains.detail.actions.confirmDisableBody")}
-          </p>
-          {actionError !== null ? (
-            <p style={ERROR_TEXT_STYLE} role="alert">
-              {actionError}
-            </p>
-          ) : null}
+        actions={
           <div style={CONFIRM_FOOTER_STYLE}>
             <Btn variant="ghost" onClick={onIdle} disabled={submitting}>
               {t("domains.detail.actions.cancel")}
@@ -341,6 +332,17 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
               {t("domains.detail.actions.confirmDisable")}
             </button>
           </div>
+        }
+      >
+        <div style={SECTION_STYLE}>
+          <p style={CONFIRM_BODY_STYLE}>
+            {t("domains.detail.actions.confirmDisableBody")}
+          </p>
+          {actionError !== null ? (
+            <p style={ERROR_TEXT_STYLE} role="alert">
+              {actionError}
+            </p>
+          ) : null}
         </div>
       </Modal>
     );
@@ -353,6 +355,27 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
         title={t("domains.detail.actions.confirmDeleteTitle")}
         onClose={props.onClose}
         maxWidth={560}
+        actions={
+          <div style={CONFIRM_FOOTER_STYLE}>
+            <Btn variant="ghost" onClick={onIdle} disabled={submitting}>
+              {t("domains.detail.actions.cancel")}
+            </Btn>
+            <button
+              type="button"
+              disabled={!canConfirm}
+              onClick={(): void => {
+                void submitHardDelete();
+              }}
+              style={{
+                ...DESTRUCTIVE_CONFIRM_BTN_STYLE,
+                opacity: canConfirm ? 1 : 0.55,
+                cursor: canConfirm ? "pointer" : "not-allowed",
+              }}
+            >
+              {t("domains.detail.actions.confirmDelete")}
+            </button>
+          </div>
+        }
       >
         <div style={SECTION_STYLE}>
           <p style={CONFIRM_BODY_STYLE}>
@@ -377,25 +400,6 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
               {actionError}
             </p>
           ) : null}
-          <div style={CONFIRM_FOOTER_STYLE}>
-            <Btn variant="ghost" onClick={onIdle} disabled={submitting}>
-              {t("domains.detail.actions.cancel")}
-            </Btn>
-            <button
-              type="button"
-              disabled={!canConfirm}
-              onClick={(): void => {
-                void submitHardDelete();
-              }}
-              style={{
-                ...DESTRUCTIVE_CONFIRM_BTN_STYLE,
-                opacity: canConfirm ? 1 : 0.55,
-                cursor: canConfirm ? "pointer" : "not-allowed",
-              }}
-            >
-              {t("domains.detail.actions.confirmDelete")}
-            </button>
-          </div>
         </div>
       </Modal>
     );
@@ -407,6 +411,40 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
       subtitle={t("domains.detail.subtitle")}
       onClose={props.onClose}
       maxWidth={620}
+      actions={
+        <div style={ACTION_ROW_STYLE}>
+          <Btn variant="ghost" onClick={props.onClose} disabled={submitting}>
+            {t("domains.detail.actions.close")}
+          </Btn>
+          <div style={DESTRUCTIVE_GROUP_STYLE}>
+            <Btn
+              variant="subtle"
+              onClick={(): void => setStage("disable")}
+              disabled={submitting}
+            >
+              {t("domains.detail.actions.disable")}
+            </Btn>
+            <Btn
+              variant="ghost"
+              onClick={(): void => setStage("delete")}
+              disabled={submitting}
+            >
+              {t("domains.detail.actions.delete")}
+            </Btn>
+            <Btn
+              variant="primary"
+              onClick={(): void => {
+                void submitSave();
+              }}
+              disabled={submitting}
+            >
+              {submitting
+                ? t("domains.detail.actions.saving")
+                : t("domains.detail.actions.save")}
+            </Btn>
+          </div>
+        </div>
+      }
     >
       <div style={SECTION_STYLE}>
         {/* Read-only identity block. */}
@@ -490,39 +528,6 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
             {actionError}
           </p>
         ) : null}
-
-        <div style={ACTION_ROW_STYLE}>
-          <Btn variant="ghost" onClick={props.onClose} disabled={submitting}>
-            {t("domains.detail.actions.close")}
-          </Btn>
-          <div style={DESTRUCTIVE_GROUP_STYLE}>
-            <Btn
-              variant="subtle"
-              onClick={(): void => setStage("disable")}
-              disabled={submitting}
-            >
-              {t("domains.detail.actions.disable")}
-            </Btn>
-            <Btn
-              variant="ghost"
-              onClick={(): void => setStage("delete")}
-              disabled={submitting}
-            >
-              {t("domains.detail.actions.delete")}
-            </Btn>
-            <Btn
-              variant="primary"
-              onClick={(): void => {
-                void submitSave();
-              }}
-              disabled={submitting}
-            >
-              {submitting
-                ? t("domains.detail.actions.saving")
-                : t("domains.detail.actions.save")}
-            </Btn>
-          </div>
-        </div>
       </div>
     </Modal>
   );
