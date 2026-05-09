@@ -591,9 +591,9 @@ The vendored `n8n-skills` baseline IS present in phase-a (`packages/adapters/aut
 
 ---
 
-## Appendix #9 (Q0 through Q14 + Q10b) — Live-test gaps: close the operator loop
+## Appendix #9 (Q0 through Q14, plus Q10b follow-up) — Live-test gaps: close the operator loop
 
-Fourteen PRs across five waves landed AFTER appendix #8 to close every gap surfaced by the 2026-05-08 live Chrome session against the management UI. None of these add new product surface; all reduce the gap between "engine boots clean" and "operator drives a real binding through to a wiki write without psql." Two scope additions (Q13 schema-aware LLM-policy editor, Q14 live-pilot nightly e2e) were folded in per the planning Q&A. After appendix #9: an operator following `pilot-runbook.md §1–§4` can reach `agent_runs.status='success'` on a fresh `compose down -v` without a single shell out to psql.
+Fifteen main PRs (Q0–Q14) + one fix-up follow-up (Q10b) landed AFTER appendix #8 to close every gap surfaced by the 2026-05-08 live Chrome session against the management UI. None of these add new product surface; all reduce the gap between "engine boots clean" and "operator drives a real binding through to a wiki write without psql." Two scope additions (Q13 schema-aware LLM-policy editor, Q14 live-pilot nightly e2e) were folded in per the planning Q&A. After appendix #9: an operator following `pilot-runbook.md §1–§4` can reach `agent_runs.status='success'` on a fresh `compose down -v` without a single shell out to psql.
 
 ### Added (operator-facing)
 

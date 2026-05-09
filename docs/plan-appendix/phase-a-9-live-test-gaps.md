@@ -1,6 +1,6 @@
 # Phase-a appendix #9 — live-test gaps (close the ingestion + agents-team smoke loop)
 
-> **Status:** ✅ closed · 2026-05-09 · 14 PRs across 5 waves + 1 fix-up follow-up · ~36 hours of agentic work · pointer in `IMPLEMENTATION-PLAN.md` §1.2.17.
+> **Status:** ✅ closed · 2026-05-09 · 15 main PRs (Q0–Q14) + 1 fix-up follow-up (Q10b) across 5 waves · ~36 hours of agentic work · pointer in `IMPLEMENTATION-PLAN.md` §1.2.17.
 
 ---
 
@@ -17,7 +17,7 @@ None of the 14 PRs add new product surface; all close the gap between "engine bo
 | Q0 | Husky post-checkout fresh-worktree guard | `ae01dc5` (#66) | Zero-hash guard skips install + build on `git worktree add`. |
 | Q1 | SSE auth via fetch-streaming | `0c996bc` (#70) | EventSource → fetch-streaming with Bearer; Activity feed unblocks `CONNECTING`. |
 | Q2 | Agent runners drizzle wrap | `80ad861` (#67) | `pg.Pool` wrapped with `drizzle(...)` once at registry build. |
-| Q3 | MCP HTTP Accept header | `33fbcf0` ※ (one-line in `mcp-tool-client/http.ts`) | `application/json, text/event-stream` per Streamable HTTP spec. |
+| Q3 | MCP HTTP Accept header | `8be2508` (#65) | `application/json, text/event-stream` per Streamable HTTP spec; one-line in `mcp-tool-client/http.ts`. |
 | Q4 | OpenRouter provider wiring | `0bef282` (#68) | `PROVIDERS` enum + `createProvider` switch + `PROVIDER_ENV_OPTS`. |
 | Q5 | Migration 0010 USING clause + migrate-applies-clean test | `206b598` (#69) | `text → uuid` with `USING delivery_id::uuid` + new pglite-replay smoke test. |
 | Q6 | Shared Fastify mount (PORT collision) | `11428ed` (#72) | Engine-ingestion webhook routes mount onto self-op's Fastify via pre-listen hook + body-limit threading. |
