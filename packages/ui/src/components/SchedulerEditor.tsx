@@ -132,22 +132,19 @@ function presetToCron(preset: Preset, hour: string, minute: string): string {
 
 /** Local cron validation — used to disable the Save button + drive
  *  the inline error message. The same `cron-parser` library + the
- *  same `tz: 'UTC'` invariant the engine pins. */
-function validateCronLocal(
-  pattern: string,
-): { valid: true } | { valid: false; reason: string } {
+ *  same `tz: 'UTC'` invariant the engine pins. The friendly error
+ *  text comes from i18n (`schedulerEditor.errors.cronInvalid`); the
+ *  parser's raw reason isn't surfaced inline (the server's reply
+ *  carries a richer `reason` for the post-Save error path). */
+function isValidCron(pattern: string): boolean {
   if (typeof pattern !== "string" || pattern.trim().length === 0) {
-    return { valid: false, reason: "empty" };
+    return false;
   }
   try {
     cronParser.parseExpression(pattern, { tz: "UTC" });
-    return { valid: true };
-  } catch (err) {
-    const raw = err instanceof Error ? err.message : String(err);
-    return {
-      valid: false,
-      reason: raw.split("\n", 1)[0] ?? raw,
-    };
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -173,6 +170,37 @@ function computeNextFires(pattern: string, count: number): string[] {
 
 const NEXT_FIRES_PREVIEW_COUNT = 5;
 
+// Shared inline-style objects. Inlined CSS is the convention in
+// this codebase (no Tailwind / CSS modules); pulling the repeated
+// label + numeric-input shapes into named constants keeps the JSX
+// scannable without changing rendered output.
+const labelStyle = {
+  fontFamily: "var(--font-sans)",
+  fontSize: 12,
+  color: "var(--ink-2)",
+} as const;
+
+const fieldBoxStyle = {
+  border: "1px solid var(--rule)",
+  borderRadius: 3,
+  background: "var(--paper)",
+  color: "var(--ink)",
+} as const;
+
+const numericInputStyle = {
+  ...fieldBoxStyle,
+  fontFamily: "var(--font-mono)",
+  fontSize: 13,
+  width: 56,
+  padding: "4px 6px",
+} as const;
+
+const monoMutedStyle = {
+  fontFamily: "var(--font-mono)",
+  fontSize: 12,
+  color: "var(--ink-3)",
+} as const;
+
 export function SchedulerEditor(props: SchedulerEditorProps): JSX.Element {
   const { t } = useTranslation();
 
@@ -194,13 +222,14 @@ export function SchedulerEditor(props: SchedulerEditorProps): JSX.Element {
   }, [preset, hour, minute, customCron]);
 
   // ── Local cron validation (drives Save disabled + preview) ──
-  const validation = useMemo(() => validateCronLocal(cron), [cron]);
+  const cronValid = useMemo(() => isValidCron(cron), [cron]);
 
   // ── Next-5-fires preview ──
+  // `computeNextFires` already returns `[]` on invalid input, so no
+  // extra guard is needed here.
   const nextFires = useMemo(
-    () =>
-      validation.valid ? computeNextFires(cron, NEXT_FIRES_PREVIEW_COUNT) : [],
-    [cron, validation],
+    () => computeNextFires(cron, NEXT_FIRES_PREVIEW_COUNT),
+    [cron],
   );
 
   // ── Auto-clear the success-flash after 1.5s ──
@@ -211,7 +240,7 @@ export function SchedulerEditor(props: SchedulerEditorProps): JSX.Element {
   }, [savedFlash]);
 
   const handleSave = async (): Promise<void> => {
-    if (!validation.valid || saving) return;
+    if (!cronValid || saving) return;
     setSaving(true);
     setErrorMessage(null);
     try {
@@ -250,7 +279,7 @@ export function SchedulerEditor(props: SchedulerEditorProps): JSX.Element {
     }
   };
 
-  const saveDisabled = !validation.valid || saving;
+  const saveDisabled = !cronValid || saving;
 
   // ── Render ──
   return (
@@ -269,13 +298,7 @@ export function SchedulerEditor(props: SchedulerEditorProps): JSX.Element {
     >
       {/* Cadence preset row */}
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <label
-          style={{
-            fontFamily: "var(--font-sans)",
-            fontSize: 12,
-            color: "var(--ink-2)",
-          }}
-        >
+        <label style={labelStyle}>
           {t("schedulerEditor.presetLabel")}
         </label>
         <select
@@ -284,13 +307,10 @@ export function SchedulerEditor(props: SchedulerEditorProps): JSX.Element {
           onChange={(e): void => setPreset(e.currentTarget.value as Preset)}
           disabled={saving}
           style={{
+            ...fieldBoxStyle,
             fontFamily: "var(--font-sans)",
             fontSize: 13,
             padding: "4px 8px",
-            border: "1px solid var(--rule)",
-            borderRadius: 3,
-            background: "var(--paper)",
-            color: "var(--ink)",
           }}
         >
           <option value="weekday">{t("schedulerEditor.presets.weekday")}</option>
@@ -302,13 +322,7 @@ export function SchedulerEditor(props: SchedulerEditorProps): JSX.Element {
 
         {preset !== "custom" && (
           <>
-            <label
-              style={{
-                fontFamily: "var(--font-sans)",
-                fontSize: 12,
-                color: "var(--ink-2)",
-              }}
-            >
+            <label style={labelStyle}>
               {t("schedulerEditor.timeLabel")}
             </label>
             <input
@@ -321,16 +335,7 @@ export function SchedulerEditor(props: SchedulerEditorProps): JSX.Element {
                 setHour(e.currentTarget.value.padStart(2, "0"))
               }
               disabled={saving}
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 13,
-                width: 56,
-                padding: "4px 6px",
-                border: "1px solid var(--rule)",
-                borderRadius: 3,
-                background: "var(--paper)",
-                color: "var(--ink)",
-              }}
+              style={numericInputStyle}
             />
             <span
               aria-hidden
@@ -352,16 +357,7 @@ export function SchedulerEditor(props: SchedulerEditorProps): JSX.Element {
                 setMinute(e.currentTarget.value.padStart(2, "0"))
               }
               disabled={saving}
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 13,
-                width: 56,
-                padding: "4px 6px",
-                border: "1px solid var(--rule)",
-                borderRadius: 3,
-                background: "var(--paper)",
-                color: "var(--ink)",
-              }}
+              style={numericInputStyle}
             />
           </>
         )}
@@ -370,13 +366,7 @@ export function SchedulerEditor(props: SchedulerEditorProps): JSX.Element {
       {/* Custom cron input — visible only when preset = custom */}
       {preset === "custom" && (
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <label
-            style={{
-              fontFamily: "var(--font-sans)",
-              fontSize: 12,
-              color: "var(--ink-2)",
-            }}
-          >
+          <label style={labelStyle}>
             {t("schedulerEditor.cronLabel")}
           </label>
           <input
@@ -388,33 +378,23 @@ export function SchedulerEditor(props: SchedulerEditorProps): JSX.Element {
             spellCheck={false}
             data-testid="scheduler-editor-cron-input"
             style={{
+              ...fieldBoxStyle,
               flex: 1,
               fontFamily: "var(--font-mono)",
               fontSize: 13,
               padding: "4px 8px",
-              border: "1px solid var(--rule)",
-              borderRadius: 3,
-              background: "var(--paper)",
-              color: "var(--ink)",
             }}
           />
         </div>
       )}
 
       {/* Cron string echo — JetBrains Mono, ink-3 (informational) */}
-      <div
-        data-testid="scheduler-editor-cron-echo"
-        style={{
-          fontFamily: "var(--font-mono)",
-          fontSize: 12,
-          color: "var(--ink-3)",
-        }}
-      >
+      <div data-testid="scheduler-editor-cron-echo" style={monoMutedStyle}>
         {cron}
       </div>
 
       {/* Inline cron-parse error */}
-      {!validation.valid && customCron.trim().length > 0 && (
+      {!cronValid && customCron.trim().length > 0 && (
         <div
           data-testid="scheduler-editor-error"
           style={{
@@ -451,14 +431,7 @@ export function SchedulerEditor(props: SchedulerEditorProps): JSX.Element {
             {t("schedulerEditor.nextFires")}
           </div>
           {nextFires.map((iso, i) => (
-            <div
-              key={i}
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 12,
-                color: "var(--ink-3)",
-              }}
-            >
+            <div key={i} style={monoMutedStyle}>
               {iso}
             </div>
           ))}

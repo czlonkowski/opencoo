@@ -392,22 +392,24 @@ export class AgentDispatcher {
     // effort attempt to roll the FAILING entry's BullMQ state back
     // before re-throwing.
     for (const entry of args.entries) {
-      const oldRegistered: RegisteredSchedule = {
-        instanceId: entry.instanceId,
-        definitionSlug: entry.definitionSlug,
-        name: entry.name,
-        scheduleCron: entry.oldCron,
-      };
-      const newRegistered: RegisteredSchedule = {
-        instanceId: entry.instanceId,
-        definitionSlug: entry.definitionSlug,
-        name: entry.name,
-        scheduleCron: entry.newCron,
-      };
       // Skip the no-op case so a redundant PUT (operator clicks
       // Save without changing the picker) doesn't churn the
       // BullMQ repeatable index unnecessarily.
       if (entry.oldCron === entry.newCron) continue;
+
+      const common = {
+        instanceId: entry.instanceId,
+        definitionSlug: entry.definitionSlug,
+        name: entry.name,
+      };
+      const oldRegistered: RegisteredSchedule = {
+        ...common,
+        scheduleCron: entry.oldCron,
+      };
+      const newRegistered: RegisteredSchedule = {
+        ...common,
+        scheduleCron: entry.newCron,
+      };
 
       await this.removeOne(oldRegistered);
       try {

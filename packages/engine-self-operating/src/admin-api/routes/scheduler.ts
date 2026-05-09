@@ -36,7 +36,6 @@
  * does not gate auth itself; the PUT verb additionally registers
  * `requireCsrf` as a preHandler.
  */
-import cronParser from "cron-parser";
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { FastifyInstance } from "fastify";
@@ -48,7 +47,11 @@ import { writeAuditLog } from "../audit-log.js";
 import { requireAdminContext } from "../auth.js";
 import { requireCsrf } from "../csrf.js";
 
-import { nextFireAt, validateCron } from "../../scheduler/cron-validate.js";
+import {
+  nextFireAt,
+  nextNFires,
+  validateCron,
+} from "../../scheduler/cron-validate.js";
 import type { RegisteredSchedule } from "../../scheduler/agent-dispatcher.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
@@ -323,25 +326,18 @@ export function registerSchedulerRoute(
 
       // 7. Compute the next 5 fires for the response so the UI
       //    can render the confirmation preview without a second
-      //    round-trip to the server. Cron parser is invoked
-      //    locally — same `tz: 'UTC'` invariant the dispatcher
-      //    uses (matches what BullMQ scheduled).
-      const fromTs = now();
-      const fires: string[] = [];
-      try {
-        const expr = cronParser.parseExpression(newCron, {
-          tz: "UTC",
-          currentDate: fromTs,
-        });
-        for (let i = 0; i < NEXT_FIRES_PREVIEW_COUNT; i += 1) {
-          fires.push(expr.next().toDate().toISOString());
-        }
-      } catch {
-        // The pattern was already validated above; reaching this
-        // catch would imply a defect in cron-parser. Swallow so
-        // the success response still goes through (the cron is
-        // already persisted + scheduled).
-      }
+      //    round-trip to the server. `nextNFires` pins the same
+      //    `tz: 'UTC'` invariant the dispatcher uses (matches what
+      //    BullMQ scheduled) and returns `[]` if cron-parser fails
+      //    — the pattern was already validated above so this is
+      //    defensive (a defect there would still let the success
+      //    response through; the cron is already persisted +
+      //    scheduled).
+      const fires = nextNFires(
+        newCron,
+        NEXT_FIRES_PREVIEW_COUNT,
+        now(),
+      ).map((d) => d.toISOString());
 
       return reply.code(200).send({
         agent: agentSlug,

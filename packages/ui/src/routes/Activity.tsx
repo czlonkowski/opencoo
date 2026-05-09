@@ -431,6 +431,20 @@ function ScheduledAgentsView(props: {
               | "builder")
           : null;
         const editing = editingAgent === s.definitionSlug;
+        // Used twice below (Edit-schedule and Run-now cells) when
+        // the agent slug isn't dispatchable — extract once so the
+        // grid keeps an identically-styled placeholder cell.
+        const dash = (
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              color: "var(--ink-3)",
+            }}
+          >
+            —
+          </span>
+        );
         return (
           <div
             key={s.instanceId}
@@ -516,15 +530,7 @@ function ScheduledAgentsView(props: {
                   {t("schedulerEditor.edit")}
                 </button>
               ) : (
-                <span
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 11,
-                    color: "var(--ink-3)",
-                  }}
-                >
-                  —
-                </span>
+                dash
               )}
               {slug !== null && s.domainSlug !== null ? (
                 <AgentsRunNowButton
@@ -543,15 +549,7 @@ function ScheduledAgentsView(props: {
                     : {})}
                 />
               ) : (
-                <span
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 11,
-                    color: "var(--ink-3)",
-                  }}
-                >
-                  —
-                </span>
+                dash
               )}
             </div>
             {editing && slug !== null && (
