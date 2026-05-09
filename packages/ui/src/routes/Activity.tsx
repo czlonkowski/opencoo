@@ -213,28 +213,24 @@ function FeedView(props: { onAuthFailed?: () => void }): JSX.Element {
     };
   }, []);
 
-  const onAuthFailedProp = props.onAuthFailed;
-  const handleReauth = (): void => {
-    if (onAuthFailedProp !== undefined) {
-      onAuthFailedProp();
-      return;
-    }
-    defaultAuthFailedHandler();
-  };
+  const handleReauth = props.onAuthFailed ?? defaultAuthFailedHandler;
 
   // The status-line color picks up `--alert` when the session is
   // terminally unauthenticated — auth-expired IS a blocking state,
-  // not a transient "still connecting…".
-  const indicatorColor = authExpired
-    ? "var(--alert)"
-    : connected
-      ? "var(--healthy)"
-      : "var(--ink-3)";
-  const indicatorLabel = authExpired
-    ? t("activity.feed.authExpired")
-    : connected
-      ? t("activity.feed.live")
-      : t("activity.feed.connecting");
+  // not a transient "still connecting…". Avoid nested ternaries
+  // (CLAUDE.md: prefer explicit branches for >2 conditions).
+  let indicatorColor: string;
+  let indicatorLabel: string;
+  if (authExpired) {
+    indicatorColor = "var(--alert)";
+    indicatorLabel = t("activity.feed.authExpired");
+  } else if (connected) {
+    indicatorColor = "var(--healthy)";
+    indicatorLabel = t("activity.feed.live");
+  } else {
+    indicatorColor = "var(--ink-3)";
+    indicatorLabel = t("activity.feed.connecting");
+  }
 
   return (
     <div
@@ -862,9 +858,11 @@ export function Activity(props: ActivityProps = {}): JSX.Element {
           would shadow the prop's optional default. */}
       <div style={{ flex: 1, overflowY: "auto" }}>
         {activeTab === "feed" && (
-          props.onAuthFailed !== undefined
-            ? <FeedView onAuthFailed={props.onAuthFailed} />
-            : <FeedView />
+          <FeedView
+            {...(props.onAuthFailed !== undefined
+              ? { onAuthFailed: props.onAuthFailed }
+              : {})}
+          />
         )}
         {activeTab === "runs" && (
           props.fetchImpl !== undefined
