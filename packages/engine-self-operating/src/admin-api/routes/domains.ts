@@ -105,7 +105,7 @@ export interface RegisterDomainsRoutesArgs {
 }
 
 export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
-  args.app.get("/api/admin/domains", async (req) => {
+  args.app.get("/api/admin/domains", async (req, reply) => {
     // Default listing hides soft-deleted domains; ?include_disabled=1
     // returns every row including retired ones (for the UI's "Show
     // disabled" toggle). The composite index added by migration 0011
@@ -120,24 +120,12 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
     // down disable the Hard-delete button without a second round-
     // trip — the listing already knows whether bindings would block
     // a hard-delete.
-    const result = (await args.db.execute(sql`
-      SELECT d.id::text AS id,
-             d.slug,
-             d.name,
-             d.class::text AS class,
-             d.locale,
-             d.llm_policy,
-             d.is_aggregator,
-             d.disabled_at,
-             (
-               SELECT COUNT(*)::int
-               FROM sources_bindings sb
-               WHERE sb.domain_id = d.id
-             ) AS binding_count
-      FROM domains d
-      ${filterClause}
-      ORDER BY d.slug ASC
-    `)) as unknown as {
+    //
+    // The SELECT is wrapped in try/catch so a connectivity blip
+    // can't leak `err.message` through Fastify's default error
+    // handler (which echoes it verbatim into the JSON body). Mirrors
+    // the DELETE handler's shape on `internal_error`.
+    let result: {
       rows: Array<{
         id: string;
         slug: string;
@@ -150,6 +138,32 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
         binding_count: number;
       }>;
     };
+    try {
+      result = (await args.db.execute(sql`
+        SELECT d.id::text AS id,
+               d.slug,
+               d.name,
+               d.class::text AS class,
+               d.locale,
+               d.llm_policy,
+               d.is_aggregator,
+               d.disabled_at,
+               (
+                 SELECT COUNT(*)::int
+                 FROM sources_bindings sb
+                 WHERE sb.domain_id = d.id
+               ) AS binding_count
+        FROM domains d
+        ${filterClause}
+        ORDER BY d.slug ASC
+      `)) as unknown as typeof result;
+    } catch (err) {
+      req.log?.warn({
+        msg: "domain_list.internal_error",
+        err: err instanceof Error ? err.name : "unknown",
+      });
+      return reply.code(500).send({ error: "internal_error" });
+    }
     return {
       rows: result.rows.map((r) => ({
         id: r.id,
@@ -329,14 +343,31 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
       // disabled aggregator does not count: an operator can disable
       // the old aggregator and immediately promote a different
       // domain. Using LIMIT 1 keeps this O(1) on the partial index.
+      //
+      // Wrapped in try/catch alongside the UPDATE below: the 409
+      // path returns BEFORE the catch fires (no PG-level
+      // "aggregator already set" error code exists — the SELECT
+      // either errors on connectivity or returns rows), so the
+      // catch only handles genuine connectivity failures and
+      // emits the same `internal_error` shape DELETE uses.
       if (is_aggregator === true) {
-        const conflict = (await args.db.execute(sql`
-          SELECT 1 FROM domains
-          WHERE is_aggregator = true
-            AND id <> ${id}::uuid
-            AND disabled_at IS NULL
-          LIMIT 1
-        `)) as unknown as { rows: Array<unknown> };
+        let conflict: { rows: Array<unknown> };
+        try {
+          conflict = (await args.db.execute(sql`
+            SELECT 1 FROM domains
+            WHERE is_aggregator = true
+              AND id <> ${id}::uuid
+              AND disabled_at IS NULL
+            LIMIT 1
+          `)) as unknown as typeof conflict;
+        } catch (err) {
+          req.log?.warn({
+            msg: "domain_update.internal_error",
+            domain_id: id,
+            err: err instanceof Error ? err.name : "unknown",
+          });
+          return reply.code(500).send({ error: "internal_error" });
+        }
         if (conflict.rows.length > 0) {
           return reply.code(409).send({ error: "aggregator_already_set" });
         }
@@ -347,21 +378,11 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
       // full row shape so the response mirrors GET. The trailing
       // `updated_at = NOW()` is implicit (`$onUpdate` on the
       // schema) — repeating it here keeps the SQL side honest.
-      const updated = (await args.db.execute(sql`
-        UPDATE domains
-        SET name = COALESCE(${display_name ?? null}, name),
-            locale = COALESCE(${locale ?? null}, locale),
-            is_aggregator = COALESCE(${is_aggregator ?? null}, is_aggregator),
-            updated_at = NOW()
-        WHERE id = ${id}::uuid
-        RETURNING id::text AS id,
-                  slug,
-                  name,
-                  class::text AS class,
-                  locale,
-                  llm_policy,
-                  is_aggregator
-      `)) as unknown as {
+      //
+      // Wrapped in try/catch (mirrors DELETE) so a connectivity
+      // blip can't leak `err.message` through Fastify's default
+      // error handler.
+      let updated: {
         rows: Array<{
           id: string;
           slug: string;
@@ -372,6 +393,30 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
           is_aggregator: boolean;
         }>;
       };
+      try {
+        updated = (await args.db.execute(sql`
+          UPDATE domains
+          SET name = COALESCE(${display_name ?? null}, name),
+              locale = COALESCE(${locale ?? null}, locale),
+              is_aggregator = COALESCE(${is_aggregator ?? null}, is_aggregator),
+              updated_at = NOW()
+          WHERE id = ${id}::uuid
+          RETURNING id::text AS id,
+                    slug,
+                    name,
+                    class::text AS class,
+                    locale,
+                    llm_policy,
+                    is_aggregator
+        `)) as unknown as typeof updated;
+      } catch (err) {
+        req.log?.warn({
+          msg: "domain_update.internal_error",
+          domain_id: id,
+          err: err instanceof Error ? err.name : "unknown",
+        });
+        return reply.code(500).send({ error: "internal_error" });
+      }
       const row = updated.rows[0];
       if (row === undefined) {
         return reply.code(404).send({ error: "not_found", id });

@@ -199,6 +199,48 @@ describe("admin-api PATCH /api/admin/domains/:id (PR-R1)", () => {
     expect(dbRow.rows[0]?.is_aggregator).toBe(true);
   });
 
+  it("200 happy: is_aggregator: false demotes a previously-aggregator domain; audit lists is_aggregator", async () => {
+    // Demote path: a domain currently holding `is_aggregator = true`
+    // must accept a PATCH that flips the flag to false, write an
+    // audit row whose `changedFields` lists `is_aggregator`, and
+    // leave the DB row reflecting the demote. The aggregator-conflict
+    // pre-check only fires on `is_aggregator === true`, so the demote
+    // path skips the pre-check entirely and the partial UNIQUE INDEX
+    // (cleared by the UPDATE) frees the singleton slot.
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    const { id } = await seedDomain(f.raw, "company", { is_aggregator: true });
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+
+    const res = await f.app.inject({
+      method: "PATCH",
+      url: `/api/admin/domains/${id}`,
+      headers: {
+        authorization: `Bearer ${ADMIN_PAT}`,
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: { is_aggregator: false },
+    });
+    expect(res.statusCode).toBe(200);
+
+    // DB row reflects the demote.
+    const dbRow = await f.raw.query<{ is_aggregator: boolean }>(
+      `SELECT is_aggregator FROM domains WHERE id = $1::uuid`,
+      [id],
+    );
+    expect(dbRow.rows[0]?.is_aggregator).toBe(false);
+
+    // Audit row written; metadata.changedFields lists `is_aggregator`.
+    const audit = await f.raw.query<{ metadata: Record<string, unknown> }>(
+      `SELECT metadata FROM admin_audit_log WHERE action = 'domain.update'`,
+    );
+    expect(audit.rows.length).toBe(1);
+    expect(audit.rows[0]!.metadata["changedFields"]).toEqual(["is_aggregator"]);
+  });
+
   it("409 aggregator_already_set when another active domain has is_aggregator=true", async () => {
     const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
     cleanup = f.close;
