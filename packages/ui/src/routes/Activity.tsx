@@ -22,7 +22,11 @@ import { useTranslation } from "react-i18next";
 
 import { AgentsRunNowButton } from "../components/AgentsRunNowButton.js";
 import { StatusPill, type StatusTone } from "../components/StatusPill.js";
-import { fetchAdmin } from "../lib/api.js";
+import {
+  defaultSubscribeToAgentRuns,
+  type SubscribeToAgentRuns,
+} from "../lib/agent-runs-subscription.js";
+import { fetchAdmin, fetchOptsFor } from "../lib/api.js";
 import { openSseClient } from "../lib/sse.js";
 import type { AgentRun, Pipeline } from "../types.js";
 
@@ -56,15 +60,9 @@ export interface ActivityProps {
   /** @internal Test seam — defaults to globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
   /** @internal Test seam — SSE subscription factory for the
-   *  per-agent "Run now" buttons (PR-R3). Defaults to a wrapper
-   *  around `openSseClient("/api/admin/events")`. */
-  readonly subscribeToAgentRuns?: (
-    listener: (evt: {
-      runId: string;
-      definitionSlug: string;
-      status: string;
-    }) => void,
-  ) => () => void;
+   *  per-agent "Run now" buttons (PR-R3). Defaults to
+   *  `defaultSubscribeToAgentRuns()`. */
+  readonly subscribeToAgentRuns?: SubscribeToAgentRuns;
 }
 
 // ─── Sub-tab type ─────────────────────────────────────────────────────────────
@@ -81,14 +79,6 @@ function runStatusTone(status: string): StatusTone | null {
     case "timeout": return "alert";
     default: return null;
   }
-}
-
-/** Build fetchAdmin's options object only when an override is provided —
- *  passing `{ fetchImpl: undefined }` would shadow the default. */
-function fetchOptsFor(
-  fetchImpl: typeof fetch | undefined,
-): { fetchImpl?: typeof fetch } {
-  return fetchImpl !== undefined ? { fetchImpl } : {};
 }
 
 /** Single-line status / empty / error row used by the runs + pipelines views. */
@@ -366,13 +356,7 @@ const RUN_NOW_DISPATCHABLE = new Set([
 function ScheduledAgentsView(props: {
   fetchImpl?: typeof fetch;
   /** @internal Test seam — see HeartbeatView for the same pattern. */
-  subscribeToAgentRuns?: (
-    listener: (evt: {
-      runId: string;
-      definitionSlug: string;
-      status: string;
-    }) => void,
-  ) => () => void;
+  subscribeToAgentRuns?: SubscribeToAgentRuns;
 }): JSX.Element {
   const { t } = useTranslation();
   const [schedules, setSchedules] = useState<readonly ScheduleEntry[] | null>(null);
@@ -393,35 +377,10 @@ function ScheduledAgentsView(props: {
   }, []);
 
   // Stable SSE subscription factory shared across the cards.
-  const subscribeToAgentRuns = useMemo(() => {
-    const inject = props.subscribeToAgentRuns;
-    if (inject !== undefined) return inject;
-    return (
-      listener: (evt: {
-        runId: string;
-        definitionSlug: string;
-        status: string;
-      }) => void,
-    ): (() => void) => {
-      const client = openSseClient("/api/admin/events");
-      const off = client.on<{
-        runId: string;
-        definitionSlug: string;
-        status: string;
-        startedAt: string;
-      }>("agent_run", (evt) => {
-        listener({
-          runId: evt.data.runId,
-          definitionSlug: evt.data.definitionSlug,
-          status: evt.data.status,
-        });
-      });
-      return (): void => {
-        off();
-        client.close();
-      };
-    };
-  }, [props.subscribeToAgentRuns]);
+  const subscribeToAgentRuns = useMemo<SubscribeToAgentRuns>(
+    () => props.subscribeToAgentRuns ?? defaultSubscribeToAgentRuns(),
+    [props.subscribeToAgentRuns],
+  );
 
   if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
   if (schedules === null) {
@@ -536,13 +495,7 @@ function ScheduledAgentsView(props: {
 function PipelinesView(props: {
   fetchImpl?: typeof fetch;
   /** @internal Test seam — see ScheduledAgentsView. */
-  subscribeToAgentRuns?: (
-    listener: (evt: {
-      runId: string;
-      definitionSlug: string;
-      status: string;
-    }) => void,
-  ) => () => void;
+  subscribeToAgentRuns?: SubscribeToAgentRuns;
 }): JSX.Element {
   const { t } = useTranslation();
   const [pipelines, setPipelines] = useState<readonly Pipeline[] | null>(null);

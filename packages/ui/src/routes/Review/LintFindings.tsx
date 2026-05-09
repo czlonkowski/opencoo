@@ -20,8 +20,12 @@ import { useTranslation } from "react-i18next";
 import { AgentsRunNowButton } from "../../components/AgentsRunNowButton.js";
 import { Btn } from "../../components/Btn.js";
 import { NoticeRow } from "../../components/NoticeRow.js";
+import {
+  defaultSubscribeToAgentRuns,
+  type SubscribeToAgentRuns,
+} from "../../lib/agent-runs-subscription.js";
 import { fetchAdmin, fetchOptsFor } from "../../lib/api.js";
-import { openSseClient } from "../../lib/sse.js";
+import { extractDomainSlugFromPath } from "../../lib/wiki-path.js";
 import { ReviewTableHeader } from "./ReviewTableHeader.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -48,32 +52,10 @@ interface LintFindingsResponse {
 export interface LintFindingsProps {
   /** @internal Test seam — defaults to globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
-  /** @internal Test seam — defaults to `openSseClient` from `lib/sse`.
+  /** @internal Test seam — defaults to `defaultSubscribeToAgentRuns()`.
    *  Tests inject a stub so the "Run now" button's lifecycle
    *  observation is deterministic. */
-  readonly subscribeToAgentRuns?: (
-    listener: (evt: {
-      runId: string;
-      definitionSlug: string;
-      status: string;
-    }) => void,
-  ) => () => void;
-}
-
-/** PR-R3 — extract the domain slug from a lint finding's path.
- *  Lint findings carry paths like `wiki-exec/ops/planning.md`
- *  (the first segment is the domain repo / slug). When the
- *  finding has no path or the format doesn't match, return null
- *  so the caller can suppress the "Re-run lint" button rather
- *  than dispatching against the wrong domain. */
-function extractDomainSlugFromFinding(path: string): string | null {
-  const segments = path.split("/");
-  const first = segments[0];
-  if (first === undefined || first.length === 0) return null;
-  // Same kebab-case constraint the dispatch route enforces — guard
-  // against a finding whose path leads with a malformed segment.
-  if (!/^[a-z][a-z0-9-]{0,62}$/.test(first)) return null;
-  return first;
+  readonly subscribeToAgentRuns?: SubscribeToAgentRuns;
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -102,35 +84,10 @@ export function LintFindings(props: LintFindingsProps = {}): JSX.Element {
   // Build a stable SSE subscription factory for the "Re-run lint"
   // button. One client per LintFindings mount; the button passes
   // its listener to the factory and gets back an `off`.
-  const subscribeToAgentRuns = useMemo(() => {
-    const inject = props.subscribeToAgentRuns;
-    if (inject !== undefined) return inject;
-    return (
-      listener: (evt: {
-        runId: string;
-        definitionSlug: string;
-        status: string;
-      }) => void,
-    ): (() => void) => {
-      const client = openSseClient("/api/admin/events");
-      const off = client.on<{
-        runId: string;
-        definitionSlug: string;
-        status: string;
-        startedAt: string;
-      }>("agent_run", (evt) => {
-        listener({
-          runId: evt.data.runId,
-          definitionSlug: evt.data.definitionSlug,
-          status: evt.data.status,
-        });
-      });
-      return (): void => {
-        off();
-        client.close();
-      };
-    };
-  }, [props.subscribeToAgentRuns]);
+  const subscribeToAgentRuns = useMemo<SubscribeToAgentRuns>(
+    () => props.subscribeToAgentRuns ?? defaultSubscribeToAgentRuns(),
+    [props.subscribeToAgentRuns],
+  );
 
   if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
   if (runs === null) return <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>;
@@ -146,7 +103,7 @@ export function LintFindings(props: LintFindingsProps = {}): JSX.Element {
   // "Re-run lint" button is suppressed (no safe domain to target).
   const dispatchDomain =
     allFindings.length > 0
-      ? extractDomainSlugFromFinding(allFindings[0]!.path)
+      ? extractDomainSlugFromPath(allFindings[0]!.path)
       : null;
 
   if (allFindings.length === 0) {

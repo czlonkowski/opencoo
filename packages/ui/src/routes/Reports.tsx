@@ -15,12 +15,16 @@
  *     the byte ranges, never the source bytes. §3.3.
  *   - Read-only tab: append-only invariant §2 invariant 8.
  */
-import { useEffect, useMemo, useState, useCallback, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { AgentsRunNowButton } from "../components/AgentsRunNowButton.js";
-import { fetchAdmin } from "../lib/api.js";
-import { openSseClient } from "../lib/sse.js";
+import {
+  defaultSubscribeToAgentRuns,
+  type SubscribeToAgentRuns,
+} from "../lib/agent-runs-subscription.js";
+import { fetchAdmin, fetchOptsFor } from "../lib/api.js";
+import { extractDomainSlugFromPath } from "../lib/wiki-path.js";
 import type { HeartbeatReport, RedactionEvent } from "../types.js";
 
 // ─── Sub-tab type ─────────────────────────────────────────────────────────────
@@ -33,24 +37,12 @@ export interface ReportsProps {
   /** @internal Test seam — defaults to globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
   /** @internal Test seam — SSE subscription factory for the
-   *  per-card "Refresh now" button. Defaults to `openSseClient`. */
-  readonly subscribeToAgentRuns?: (
-    listener: (evt: {
-      runId: string;
-      definitionSlug: string;
-      status: string;
-    }) => void,
-  ) => () => void;
+   *  per-card "Refresh now" button. Defaults to
+   *  `defaultSubscribeToAgentRuns()`. */
+  readonly subscribeToAgentRuns?: SubscribeToAgentRuns;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Build fetchAdmin's options object only when an override is provided. */
-function fetchOptsFor(
-  fetchImpl: typeof fetch | undefined,
-): { fetchImpl?: typeof fetch } {
-  return fetchImpl !== undefined ? { fetchImpl } : {};
-}
 
 /** Single-line status / empty / error row. */
 function NoticeRow(props: {
@@ -77,21 +69,18 @@ interface HeartbeatResponse {
   readonly reports: readonly HeartbeatReport[];
 }
 
-/** PR-R3 — extract a domain slug from a heartbeat report.
- *  Heartbeat alerts carry citations with paths shaped like
- *  `wiki-exec/ops/planning.md`; the first segment IS the domain.
- *  Fall through to null when the report has no citations or the
- *  format doesn't match (the "Refresh now" button is suppressed
- *  rather than dispatching against a guessed domain). */
+/** PR-R3 — extract a domain slug from the first valid citation in
+ *  a heartbeat report. Returns null when the report has no
+ *  citations or none yield a kebab-case slug; the caller
+ *  suppresses the "Refresh now" button rather than dispatching
+ *  against a guessed domain. */
 function extractDomainSlugFromHeartbeat(
   report: HeartbeatReport,
 ): string | null {
   for (const alert of report.output.alerts) {
     for (const citation of alert.citations) {
-      const first = citation.split("/")[0];
-      if (first !== undefined && /^[a-z][a-z0-9-]{0,62}$/.test(first)) {
-        return first;
-      }
+      const slug = extractDomainSlugFromPath(citation);
+      if (slug !== null) return slug;
     }
   }
   return null;
@@ -100,13 +89,7 @@ function extractDomainSlugFromHeartbeat(
 function HeartbeatView(props: {
   fetchImpl?: typeof fetch;
   /** @internal Test seam — see LintFindings for the same pattern. */
-  subscribeToAgentRuns?: (
-    listener: (evt: {
-      runId: string;
-      definitionSlug: string;
-      status: string;
-    }) => void,
-  ) => () => void;
+  subscribeToAgentRuns?: SubscribeToAgentRuns;
 }): JSX.Element {
   const { t } = useTranslation();
   const [reports, setReports] = useState<readonly HeartbeatReport[] | null>(null);
@@ -126,38 +109,12 @@ function HeartbeatView(props: {
     })();
   }, []);
 
-  // Stable SSE subscription factory — see LintFindings for the
-  // mirroring pattern. One client per HeartbeatView mount; each
-  // button subscribes via the factory.
-  const subscribeToAgentRuns = useMemo(() => {
-    const inject = props.subscribeToAgentRuns;
-    if (inject !== undefined) return inject;
-    return (
-      listener: (evt: {
-        runId: string;
-        definitionSlug: string;
-        status: string;
-      }) => void,
-    ): (() => void) => {
-      const client = openSseClient("/api/admin/events");
-      const off = client.on<{
-        runId: string;
-        definitionSlug: string;
-        status: string;
-        startedAt: string;
-      }>("agent_run", (evt) => {
-        listener({
-          runId: evt.data.runId,
-          definitionSlug: evt.data.definitionSlug,
-          status: evt.data.status,
-        });
-      });
-      return (): void => {
-        off();
-        client.close();
-      };
-    };
-  }, [props.subscribeToAgentRuns]);
+  // Stable SSE subscription factory — one client per HeartbeatView
+  // mount; each "Refresh now" button subscribes via the factory.
+  const subscribeToAgentRuns = useMemo<SubscribeToAgentRuns>(
+    () => props.subscribeToAgentRuns ?? defaultSubscribeToAgentRuns(),
+    [props.subscribeToAgentRuns],
+  );
 
   if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
   if (reports === null) return <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>;
@@ -219,13 +176,7 @@ function HeartbeatCard(props: {
   report: HeartbeatReport;
   /** PR-R3 — SSE subscription factory shared across cards on
    *  the page. Required by the inline "Refresh now" button. */
-  subscribeToAgentRuns: (
-    listener: (evt: {
-      runId: string;
-      definitionSlug: string;
-      status: string;
-    }) => void,
-  ) => () => void;
+  subscribeToAgentRuns: SubscribeToAgentRuns;
   fetchImpl?: typeof fetch;
 }): JSX.Element {
   const { t } = useTranslation();

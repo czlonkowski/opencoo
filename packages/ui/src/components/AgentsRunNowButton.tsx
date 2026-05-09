@@ -33,8 +33,9 @@
  */
 import { useEffect, useRef, useState } from "react";
 
-import { fetchAdmin, ApiValidationError } from "../lib/api.js";
-import { GlyphRingWithDot, GlyphFilledDisc } from "./Glyph.js";
+import { ApiValidationError, fetchAdmin, fetchOptsFor } from "../lib/api.js";
+import type { SubscribeToAgentRuns } from "../lib/agent-runs-subscription.js";
+import { GlyphFilledDisc, GlyphRingWithDot } from "./Glyph.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -66,16 +67,10 @@ export interface AgentsRunNowButtonProps {
   readonly rateLimitedTooltipFormat: string;
   /** Subscribe to SSE `agent_run` lifecycle events. The button
    *  uses the listener to flip from `queued`/`running` → `done`.
-   *  The caller wires this to `openSseClient("/api/admin/events")`
-   *  so the same listener serves multiple buttons on the page.
-   *  Returns an `off` callable. */
-  readonly subscribeToAgentRuns: (
-    listener: (evt: {
-      runId: string;
-      definitionSlug: string;
-      status: string;
-    }) => void,
-  ) => () => void;
+   *  Callers typically share one factory per page (so multiple
+   *  buttons share one SSE client) — see
+   *  `lib/agent-runs-subscription.ts` for the default factory. */
+  readonly subscribeToAgentRuns: SubscribeToAgentRuns;
   /** @internal Test seam — defaults to globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
   /** @internal Test seam — overrides the per-second tick used to
@@ -87,13 +82,6 @@ export interface AgentsRunNowButtonProps {
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────
-
-/** Build fetchAdmin's options object only when an override is provided. */
-function fetchOptsFor(
-  fetchImpl: typeof fetch | undefined,
-): { fetchImpl?: typeof fetch } {
-  return fetchImpl !== undefined ? { fetchImpl } : {};
-}
 
 export function AgentsRunNowButton(
   props: AgentsRunNowButtonProps,
@@ -219,21 +207,26 @@ export function AgentsRunNowButton(
   let label: string;
   let showHeartbeat = false;
   let showDoneGlyph = false;
-  if (state === "idle") {
-    label = props.idleLabel;
-  } else if (state === "queued") {
-    label = formatTemplate(props.queuedLabelFormat, elapsedSec);
-    showHeartbeat = true;
-  } else if (state === "running") {
-    label = formatTemplate(
-      props.runningLabelFormat ?? props.queuedLabelFormat,
-      elapsedSec,
-    );
-    showHeartbeat = true;
-  } else {
-    // done
-    label = props.idleLabel;
-    showDoneGlyph = true;
+  switch (state) {
+    case "queued":
+      label = formatTemplate(props.queuedLabelFormat, elapsedSec);
+      showHeartbeat = true;
+      break;
+    case "running":
+      label = formatTemplate(
+        props.runningLabelFormat ?? props.queuedLabelFormat,
+        elapsedSec,
+      );
+      showHeartbeat = true;
+      break;
+    case "done":
+      label = props.idleLabel;
+      showDoneGlyph = true;
+      break;
+    default:
+      // idle
+      label = props.idleLabel;
+      break;
   }
 
   const tooltip =
