@@ -66,6 +66,17 @@ export const AUDIT_LOG_ACTIONS = [
   // (NEVER plaintext or parsed credential fields).
   "source_binding.config_update",
   "source_binding.credentials_rotate",
+  // Phase-a appendix #10 (PR-R1) — Domains tab drill-down
+  // actions. `update` covers PATCH (display_name / locale /
+  // is_aggregator); `disable` covers DELETE (soft-delete);
+  // `delete` covers DELETE `?hard=1` (hard-delete). Metadata
+  // captures id + slug + caller_username + (for update) the
+  // changed field NAMES (never values), and for delete the
+  // `binding_count` so the audit trail reflects whether bindings
+  // blocked the action.
+  "domain.update",
+  "domain.disable",
+  "domain.delete",
   // Logout — records the operator-initiated session-end so an
   // audit-log read can correlate an action burst with the
   // operator's session window.
