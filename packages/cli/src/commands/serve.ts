@@ -607,27 +607,45 @@ async function defaultIngestionStartFactory(opts: {
   return {
     async close(): Promise<void> {
       await baseClose();
-      // closeProducers releases the producer-side
-      // ingestion.scanner.classify Queue handle the composition
-      // opened. Best-effort.
-      await composed.workerContext.closeProducers().catch(() => undefined);
-      // PR-W1 (phase-a appendix #11) — drain the producer-side
-      // forget queues (`wiki.recompile` + `wiki.delete`) the
-      // composition opened. Best-effort.
-      await composed.closeForgetQueues().catch(() => undefined);
-      await Promise.all([
-        composed.pgPool.end().catch(() => undefined),
-        composed.redis
-          .quit()
-          .then(() => undefined)
-          .catch(() => undefined),
-      ]);
+      // Drain producer-side queues + pg.Pool + Redis the
+      // composition opened. The engine's own close() already
+      // ran workers.closeAll(); we only layer composition-owned
+      // handles on top.
+      await drainComposedResources(composed);
     },
   };
 }
 
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** @internal Drain every resource the ingestion preflight composition
+ *  owns, in shutdown order: producer-side queues first (so in-flight
+ *  enqueues complete), then pg.Pool + Redis in parallel. Best-effort
+ *  on every step — a single close failure must not prevent the
+ *  remaining handles from draining. Used by every cleanup site
+ *  in this file (engine close wrap, startFactory failure, ingestion
+ *  factory failure) so the orchestration of "what does the
+ *  composition own" lives in one place.
+ *
+ *  PR-W1 (phase-a appendix #11) added `closeForgetQueues` to the
+ *  composition; centralising avoids fan-out across cleanup sites
+ *  whenever the composition grows another producer-side handle. */
+async function drainComposedResources(
+  composed: IngestionComposedResult,
+): Promise<void> {
+  // closeProducers releases the ingestion.scanner.classify Queue
+  // handle; closeForgetQueues releases wiki.recompile + wiki.delete.
+  await composed.workerContext.closeProducers().catch(() => undefined);
+  await composed.closeForgetQueues().catch(() => undefined);
+  await Promise.all([
+    composed.pgPool.end().catch(() => undefined),
+    composed.redis
+      .quit()
+      .then(() => undefined)
+      .catch(() => undefined),
+  ]);
 }
 
 /** Boot the engines and block until SIGTERM/SIGINT.
@@ -754,18 +772,9 @@ export async function runServe(args: ServeArgs): Promise<void> {
     // Drain the preflight's pg.Pool / Redis / queue handles — the
     // engine never booted so nothing else owns them.
     if (preflight !== null) {
-      const composed = preflight.preflight.composed as IngestionComposedResult;
-      await composed.workerContext.closeProducers().catch(() => undefined);
-      // PR-W1 (phase-a appendix #11) — drain the producer-side
-      // forget queues alongside the scanner Queue.
-      await composed.closeForgetQueues().catch(() => undefined);
-      await Promise.all([
-        composed.pgPool.end().catch(() => undefined),
-        composed.redis
-          .quit()
-          .then(() => undefined)
-          .catch(() => undefined),
-      ]);
+      await drainComposedResources(
+        preflight.preflight.composed as IngestionComposedResult,
+      );
     }
     return exit(2);
   }
@@ -816,18 +825,9 @@ export async function runServe(args: ServeArgs): Promise<void> {
     // resources, the resources are now orphaned. Drain them best-
     // effort so the process can exit cleanly on later SIGTERM.
     if (preflight !== null) {
-      const composed = preflight.preflight.composed as IngestionComposedResult;
-      await composed.workerContext.closeProducers().catch(() => undefined);
-      // PR-W1 (phase-a appendix #11) — drain the producer-side
-      // forget queues alongside the scanner Queue.
-      await composed.closeForgetQueues().catch(() => undefined);
-      await Promise.all([
-        composed.pgPool.end().catch(() => undefined),
-        composed.redis
-          .quit()
-          .then(() => undefined)
-          .catch(() => undefined),
-      ]);
+      await drainComposedResources(
+        preflight.preflight.composed as IngestionComposedResult,
+      );
     }
     ingestionEngine = undefined;
   }

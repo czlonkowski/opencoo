@@ -299,39 +299,41 @@ export async function composeProductionFromEnv(
     args.forgetQueueFactory ??
     ((name, connection): ForgetJobQueue & { close?(): Promise<void> } =>
       new Queue<ForgetJobPayload>(name, { connection }));
-  const recompileQueue = forgetQueueFactory(
-    WIKI_RECOMPILE_QUEUE_SLUG,
-    redisConnection,
-  );
-  const deleteQueue = forgetQueueFactory(
-    WIKI_DELETE_QUEUE_SLUG,
-    redisConnection,
-  );
+  const makeForgetQueue = (
+    slug: string,
+  ): ForgetJobQueue & { close?(): Promise<void> } =>
+    forgetQueueFactory(slug, redisConnection);
+  const recompileQueue = makeForgetQueue(WIKI_RECOMPILE_QUEUE_SLUG);
+  const deleteQueue = makeForgetQueue(WIKI_DELETE_QUEUE_SLUG);
   const forgetJobEnqueuer = createForgetJobEnqueuer({
     recompileQueue,
     deleteQueue,
   });
+  // Idempotent drain — the orchestrator (serve.ts) calls this on
+  // SIGTERM AFTER the worker pool stops so any in-flight forget
+  // enqueue completes first. Best-effort per queue: a single close
+  // failure is logged but doesn't prevent the sibling from draining.
   let forgetQueuesClosing: Promise<void> | undefined;
+  const closeForgetQueue = async (
+    q: ForgetJobQueue & { close?(): Promise<void> },
+    label: string,
+  ): Promise<void> => {
+    if (typeof q.close !== "function") return;
+    try {
+      await q.close();
+    } catch (err) {
+      logger.warn("forget_queue.close_failed", {
+        queue: label,
+        // Round-2 fix #2 style — scrub + cap. THREAT-MODEL §3.6.
+        error: safeErrorMessage(err),
+      });
+    }
+  };
   const closeForgetQueues = async (): Promise<void> => {
     if (forgetQueuesClosing !== undefined) return forgetQueuesClosing;
-    const closeOne = async (
-      q: ForgetJobQueue & { close?(): Promise<void> },
-      label: string,
-    ): Promise<void> => {
-      if (typeof q.close !== "function") return;
-      try {
-        await q.close();
-      } catch (err) {
-        logger.warn("forget_queue.close_failed", {
-          queue: label,
-          // Round-2 fix #2 style — scrub + cap. THREAT-MODEL §3.6.
-          error: safeErrorMessage(err),
-        });
-      }
-    };
     forgetQueuesClosing = Promise.all([
-      closeOne(recompileQueue, WIKI_RECOMPILE_QUEUE_SLUG),
-      closeOne(deleteQueue, WIKI_DELETE_QUEUE_SLUG),
+      closeForgetQueue(recompileQueue, WIKI_RECOMPILE_QUEUE_SLUG),
+      closeForgetQueue(deleteQueue, WIKI_DELETE_QUEUE_SLUG),
     ]).then(() => undefined);
     return forgetQueuesClosing;
   };
