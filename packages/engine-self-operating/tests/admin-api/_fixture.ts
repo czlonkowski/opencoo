@@ -59,9 +59,16 @@ const TABLES_DDL = `
     retention_days integer,
     worldview_enabled boolean DEFAULT true NOT NULL,
     is_aggregator boolean DEFAULT false NOT NULL,
+    disabled_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
   );
+  -- Partial UNIQUE INDEX from migration 0005 — at most one
+  -- aggregator at a time. The PR-R1 soft-delete handler clears
+  -- is_aggregator on disable so the operator can promote a
+  -- successor without tripping this constraint; pin that
+  -- behavior by mirroring the production index here.
+  CREATE UNIQUE INDEX "domains_is_aggregator_singleton" ON domains (is_aggregator) WHERE is_aggregator = true;
 
   CREATE TABLE users (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
