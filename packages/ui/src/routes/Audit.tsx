@@ -24,7 +24,15 @@
  *   - Pagination defaults to a SAFE limit (50) — no `?limit=∞`
  *     footgun.
  */
-import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 
 import { fetchAdmin, fetchOptsFor } from "../lib/api.js";
@@ -35,6 +43,19 @@ const PAGE_LIMIT = 50;
  *  `Show full` toggle so the operator opts into the full payload. */
 const JSON_TRUNCATE_BYTES = 50_000;
 const JSON_TRUNCATE_KB_LABEL = 50;
+
+// ─── Shared style tokens ──────────────────────────────────────────────────────
+
+/** The repeated mono uppercase micro-label used for column headers,
+ *  filter "from/to" lead-ins, the metadata section header, and the
+ *  pagination page indicator. */
+const MICRO_LABEL_STYLE: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: 11,
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+  color: "var(--ink-3)",
+};
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -59,32 +80,36 @@ export interface AuditProps {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Tone bucket: green for happy-path create/update/apply/approve actions;
- *  red for destructive delete/disable/reject actions; default ink for the
- *  rest (read, ack, etc.). The full audit-log action allowlist lives in
- *  `engine-self-operating/src/admin-api/audit-log.ts`. */
+/** Metadata keys that name "the resource this row acted on", in
+ *  priority order. Used both for the table's resource cell summary
+ *  and the resource free-text filter. */
+const RESOURCE_KEYS = ["slug", "binding_id", "domain_id", "id"] as const;
+
+/** Action-suffix tone buckets. The full audit-log action allowlist
+ *  lives in `engine-self-operating/src/admin-api/audit-log.ts`;
+ *  anything not listed here falls through to the neutral default. */
+const ALERT_SUFFIXES: ReadonlySet<string> = new Set([
+  "delete",
+  "disable",
+  "reject",
+  "skip",
+]);
+const HEALTHY_SUFFIXES: ReadonlySet<string> = new Set([
+  "create",
+  "update",
+  "apply",
+  "approve",
+  "accept",
+  "acknowledge",
+  "rotate",
+  "credentials_rotate",
+  "config_update",
+]);
+
 function actionTone(action: string): "healthy" | "alert" | "neutral" {
-  if (
-    action.endsWith(".delete") ||
-    action.endsWith(".disable") ||
-    action.endsWith(".reject") ||
-    action.endsWith(".skip")
-  ) {
-    return "alert";
-  }
-  if (
-    action.endsWith(".create") ||
-    action.endsWith(".update") ||
-    action.endsWith(".apply") ||
-    action.endsWith(".approve") ||
-    action.endsWith(".accept") ||
-    action.endsWith(".acknowledge") ||
-    action.endsWith(".rotate") ||
-    action.endsWith(".credentials_rotate") ||
-    action.endsWith(".config_update")
-  ) {
-    return "healthy";
-  }
+  const suffix = action.slice(action.lastIndexOf(".") + 1);
+  if (ALERT_SUFFIXES.has(suffix)) return "alert";
+  if (HEALTHY_SUFFIXES.has(suffix)) return "healthy";
   return "neutral";
 }
 
@@ -99,20 +124,29 @@ function actionColor(action: string): string {
   }
 }
 
+/** Read a top-level metadata key as a non-empty string, or null. */
+function metadataString(
+  metadata: Record<string, unknown>,
+  key: string,
+): string | null {
+  const v = metadata[key];
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
 /** The most-relevant single-line summary of the row's metadata —
  *  pick the first key that exists in priority order. Returns
  *  `null` when no recognised key is present. */
 function resourceSummary(metadata: Record<string, unknown>): string | null {
-  for (const k of ["slug", "binding_id", "domain_id", "id"] as const) {
-    const v = metadata[k];
-    if (typeof v === "string" && v.length > 0) return v;
+  for (const k of RESOURCE_KEYS) {
+    const v = metadataString(metadata, k);
+    if (v !== null) return v;
   }
   return null;
 }
 
 function actorLabel(row: AuditLogRow): string {
-  const username = row.metadata["caller_username"];
-  if (typeof username === "string" && username.length > 0) return username;
+  const username = metadataString(row.metadata, "caller_username");
+  if (username !== null) return username;
   if (row.userId !== null) {
     // Last 12 chars are enough to disambiguate an operator's actions
     // without dumping the full UUID into a list cell.
@@ -145,42 +179,39 @@ const EMPTY_FILTERS: FilterState = {
   toDate: "",
 };
 
+function actorMatches(row: AuditLogRow, needle: string): boolean {
+  const username = metadataString(row.metadata, "caller_username") ?? "";
+  if (username.toLowerCase().includes(needle.toLowerCase())) return true;
+  return row.userId !== null && row.userId === needle;
+}
+
+function resourceMatches(row: AuditLogRow, needle: string): boolean {
+  const lower = needle.toLowerCase();
+  for (const k of RESOURCE_KEYS) {
+    const v = metadataString(row.metadata, k);
+    if (v !== null && v.toLowerCase().includes(lower)) return true;
+  }
+  return false;
+}
+
 function rowMatchesFilters(row: AuditLogRow, f: FilterState): boolean {
   if (f.actions.size > 0 && !f.actions.has(row.action)) return false;
+  if (f.actor.length > 0 && !actorMatches(row, f.actor)) return false;
+  if (f.resource.length > 0 && !resourceMatches(row, f.resource)) return false;
 
-  if (f.actor.length > 0) {
-    const username = row.metadata["caller_username"];
-    const usernameStr = typeof username === "string" ? username : "";
-    const hits =
-      usernameStr.toLowerCase().includes(f.actor.toLowerCase()) ||
-      (row.userId !== null && row.userId === f.actor);
-    if (!hits) return false;
-  }
-
-  if (f.resource.length > 0) {
-    const needle = f.resource.toLowerCase();
-    let hit = false;
-    for (const k of ["slug", "binding_id", "domain_id", "id"] as const) {
-      const v = row.metadata[k];
-      if (typeof v === "string" && v.toLowerCase().includes(needle)) {
-        hit = true;
-        break;
-      }
-    }
-    if (!hit) return false;
-  }
-
-  if (f.fromDate.length > 0) {
-    if (new Date(row.createdAt).getTime() < new Date(`${f.fromDate}T00:00:00Z`).getTime()) {
+  if (f.fromDate.length > 0 || f.toDate.length > 0) {
+    const ts = new Date(row.createdAt).getTime();
+    if (
+      f.fromDate.length > 0 &&
+      ts < new Date(`${f.fromDate}T00:00:00Z`).getTime()
+    ) {
       return false;
     }
-  }
-  if (f.toDate.length > 0) {
     // Inclusive of the end date — operators expect "May 1 → May 7"
     // to include events on May 7.
     if (
-      new Date(row.createdAt).getTime() >
-      new Date(`${f.toDate}T23:59:59.999Z`).getTime()
+      f.toDate.length > 0 &&
+      ts > new Date(`${f.toDate}T23:59:59.999Z`).getTime()
     ) {
       return false;
     }
@@ -384,17 +415,7 @@ function FilterBar(props: FilterBarProps): JSX.Element {
           minWidth: 220,
         }}
       />
-      <span
-        style={{
-          fontFamily: "var(--font-mono)",
-          fontSize: 11,
-          color: "var(--ink-3)",
-          letterSpacing: "0.06em",
-          textTransform: "uppercase",
-        }}
-      >
-        {t("audit.filters.from")}
-      </span>
+      <span style={MICRO_LABEL_STYLE}>{t("audit.filters.from")}</span>
       <input
         data-testid="audit-filter-from"
         type="date"
@@ -412,17 +433,7 @@ function FilterBar(props: FilterBarProps): JSX.Element {
           borderRadius: 4,
         }}
       />
-      <span
-        style={{
-          fontFamily: "var(--font-mono)",
-          fontSize: 11,
-          color: "var(--ink-3)",
-          letterSpacing: "0.06em",
-          textTransform: "uppercase",
-        }}
-      >
-        {t("audit.filters.to")}
-      </span>
+      <span style={MICRO_LABEL_STYLE}>{t("audit.filters.to")}</span>
       <input
         data-testid="audit-filter-to"
         type="date"
@@ -498,15 +509,7 @@ function RowDetail(props: RowDetailProps): JSX.Element {
           marginBottom: 8,
         }}
       >
-        <span
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: 11,
-            letterSpacing: "0.06em",
-            textTransform: "uppercase",
-            color: "var(--ink-3)",
-          }}
-        >
+        <span style={MICRO_LABEL_STYLE}>
           {t("audit.row.metadata")}
           {overflow && (
             <span style={{ marginLeft: 8, color: "var(--ink-3)" }}>
@@ -816,15 +819,7 @@ export function Audit(props: AuditProps = {}): JSX.Element {
           borderTop: "1px solid var(--rule)",
         }}
       >
-        <span
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: 11,
-            letterSpacing: "0.06em",
-            textTransform: "uppercase",
-            color: "var(--ink-3)",
-          }}
-        >
+        <span style={MICRO_LABEL_STYLE}>
           {t("audit.pagination.page", { page: pageNum })}
         </span>
         <span style={{ display: "inline-flex", gap: 8 }}>
