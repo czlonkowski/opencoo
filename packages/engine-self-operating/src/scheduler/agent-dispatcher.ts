@@ -279,14 +279,25 @@ export class AgentDispatcher {
    * agent on demand from the management UI without waiting for the
    * cron tick.
    *
+   * `enqueueOneShot` ALWAYS sets `triggeredBy: 'manual'` — this
+   * method is the on-demand dispatch path, so the manual provenance
+   * is hardwired here rather than parameterised. Scheduled fires
+   * use the cron-driven `Queue.add(...)` call inside `registerOne`
+   * (see `start()` / `registerOne`), which omits `triggeredBy` →
+   * the dispatch handler reads that absence as `scheduled` and sets
+   * `agent_runs.inputs.dispatchedBy = 'scheduler'`. A future caller
+   * MUST NOT use `enqueueOneShot` for a scheduled fire — it would
+   * mis-attribute the run as operator-initiated in the audit
+   * trail and the Activity feed.
+   *
    * The job lands on the SAME `selfop.dispatch` queue scheduled
    * dispatches use, so the same Worker handler (`dispatchOne`) +
    * agent harness terminalisation path apply. The handler treats
-   * `dryRun` and `triggeredBy: 'manual'` as opaque metadata to
-   * propagate into `agent_runs.inputs` — the resulting `runId`
-   * is generated INSIDE the harness on `startRun`, so this method
-   * returns the BullMQ `jobId` (used by the route as a request
-   * trace id; the actual run id is observed via the SSE feed).
+   * `dryRun` and `triggeredBy` as opaque metadata to propagate into
+   * `agent_runs.inputs` — the resulting `runId` is generated INSIDE
+   * the harness on `startRun`, so this method returns the BullMQ
+   * `jobId` (used by the route as a request trace id; the actual
+   * run id is observed via the SSE feed).
    *
    * No `repeat` option → BullMQ runs the job once and removes it.
    * No `jobId` deduplication → operator can fire repeatedly (the

@@ -16,13 +16,19 @@
  *                      below (Heartbeat / Lint / Surfacer / Builder).
  *   - `domainSlug`   — body; kebab-case; resolves to a
  *                      `domains.id` row.
- *   - `instanceSlug` — optional body; kebab-case; when present, the
- *                      handler matches against `agent_instances.name`
- *                      with the slug constraint also applied
- *                      (operators name instances `surfacer-default`,
- *                      `lint-weekly`, etc.). When omitted, the
- *                      handler defaults to the FIRST instance scoped
- *                      to the domain by `created_at`.
+ *   - `instanceSlug` — optional body; length-bound only (1–128
+ *                      chars). `agent_instances.name` is plain
+ *                      `text` in the DB with no kebab-case
+ *                      constraint, so a kebab-only validator
+ *                      would refuse legitimate names like
+ *                      "Heartbeat 06:00". The audit row records
+ *                      the RESOLVED `agent_instances.name` from
+ *                      the DB lookup, not the raw request — so
+ *                      the no-freeform-text invariant is
+ *                      preserved by the DB lookup being the
+ *                      authoritative source. When omitted, the
+ *                      handler defaults to the FIRST instance
+ *                      scoped to the domain by `created_at`.
  *   - `dryRun`       — optional body boolean; threaded into
  *                      `inputs.dryRun` for the agent body to honor.
  *
@@ -37,8 +43,12 @@
  * enqueue confirms — so a partial enqueue still leaves an audit
  * trail. The audit metadata records `agent_slug`, `domain_slug`,
  * `instance_slug` (resolved), `instance_id` (for direct lookup),
- * `dry_run`, `caller_username`, and the BullMQ `job_id`. NEVER
- * any free-form text from the operator (THREAT-MODEL §3.13).
+ * `dry_run`, and `caller_username`. `job_id` is NOT recorded
+ * because the audit row is written BEFORE the BullMQ enqueue
+ * (audit-before-enqueue invariant) — the jobId does not exist
+ * yet at write time. Operators correlate via the
+ * (caller_username, instance_id, created_at) tuple. NEVER any
+ * free-form text from the operator (THREAT-MODEL §3.13).
  *
  * Auth: `requireAdminContext` + `requireCsrf` on the route
  * preHandler. `requireAdminContext` is implicitly satisfied by
@@ -73,16 +83,36 @@ export const DISPATCHABLE_AGENT_SLUGS = [
 
 export type DispatchableAgentSlug = (typeof DISPATCHABLE_AGENT_SLUGS)[number];
 
-/** Kebab-case slug pattern for `domainSlug` + `instanceSlug` (and
- *  the URL `:slug` param). Lower alpha + digits + hyphens, must
- *  start with a letter, 1–63 chars. Mirrors the same constraint
- *  the domain-create flow uses (admin-api/routes/domains.ts). */
+/** Kebab-case slug pattern for `domainSlug` + the URL `:slug`
+ *  param. Lower alpha + digits + hyphens, must start with a
+ *  letter, 1–63 chars. Mirrors the same constraint the domain-
+ *  create flow uses (admin-api/routes/domains.ts).
+ *
+ *  NOTE: `instanceSlug` deliberately does NOT use this pattern.
+ *  `agent_instances.name` is plain `text` in the DB (no
+ *  kebab-case constraint at the schema level), so legitimate
+ *  non-kebab names like "Heartbeat 06:00" must be dispatchable.
+ *  The audit row records the RESOLVED `agent_instances.name`
+ *  from the DB lookup (not the raw request body), so the no-
+ *  freeform-text invariant is preserved by the DB lookup being
+ *  the authoritative source. */
 const SLUG_PATTERN = /^[a-z][a-z0-9-]{0,62}$/;
+
+/** Length bound for `instanceSlug`. The DB column is `text` with
+ *  no length cap, but the admin API rejects values longer than
+ *  this so an attacker-supplied body can't blow row sizes via
+ *  the instance-name lookup. Mirrors a generous-but-bounded UX
+ *  ceiling — operator-named instances are always shorter. */
+const INSTANCE_NAME_MAX_LEN = 128;
 
 const dispatchBodySchema = z
   .object({
     domainSlug: z.string().regex(SLUG_PATTERN),
-    instanceSlug: z.string().regex(SLUG_PATTERN).optional(),
+    instanceSlug: z
+      .string()
+      .min(1)
+      .max(INSTANCE_NAME_MAX_LEN)
+      .optional(),
     dryRun: z.boolean().optional(),
   })
   .strict();
@@ -298,23 +328,21 @@ export function registerAgentsDispatchRoute(
       // 7. Audit row BEFORE the enqueue — ordering per the
       //    THREAT-MODEL §3.13 + the PR brief: a partial enqueue
       //    (BullMQ throw mid-call) still leaves a forensic trail
-      //    for the operator. The audit row reflects the ATTEMPT;
-      //    the `job_id` is filled in only on successful enqueue
-      //    via a second audit-log entry would double-write, so
-      //    we instead record the BullMQ jobId AFTER as well only
-      //    when we got one. The first row is the load-bearing
-      //    one; the post-enqueue update is a small enrichment.
+      //    for the operator. The audit row reflects the ATTEMPT
+      //    and CANNOT include the BullMQ `job_id` — the jobId
+      //    does not exist yet at write time (it's only assigned
+      //    when `Queue.add(...)` resolves below). Operators
+      //    correlate via the (caller_username, instance_id,
+      //    created_at) tuple the GET /audit-log surface already
+      //    exposes.
       //
       //    Append-only invariant — `admin_audit_log` is only
       //    INSERTed (never UPDATEd) per the
-      //    `opencoo/no-update-append-only` ESLint rule, so the
-      //    "enrichment" is a SECOND row keyed by the same
-      //    correlation id. v0.1 keeps it simple: one row,
-      //    written before the enqueue, with the job_id field
-      //    set to `null` until the first SSE event is observed.
-      //    Operators correlate via the (caller_username,
-      //    instance_id, created_at) tuple the GET /audit-log
-      //    surface already exposes.
+      //    `opencoo/no-update-append-only` ESLint rule, so even
+      //    if we wanted to backfill `job_id` after the enqueue
+      //    succeeded we couldn't UPDATE this row. v0.1 keeps it
+      //    simple: one row, written before the enqueue; the
+      //    job_id is NOT in the metadata.
       await writeAuditLog(args.db, {
         action: "agent.dispatch_now",
         userId: ctx.userId,

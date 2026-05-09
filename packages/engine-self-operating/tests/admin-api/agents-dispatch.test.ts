@@ -598,6 +598,90 @@ describe("admin-api POST /api/admin/agents/:slug/dispatch", () => {
     expect(body.reason).toBeDefined();
   });
 
+  it("accepts non-kebab-case instance names (e.g. 'Heartbeat 06:00')", async () => {
+    // PR-R3 fix-up Issue E — `agent_instances.name` is plain
+    // `text` in the DB with no kebab-case constraint, so the
+    // dispatch route MUST accept legitimate non-kebab names
+    // (operators commonly name instances "Heartbeat 06:00",
+    // "Lint Weekly", etc.). The audit row records the RESOLVED
+    // name from the DB lookup, so the no-freeform-text invariant
+    // is preserved even though the body schema is more permissive.
+    const f = await makeDispatchFixture();
+    cleanup = f.close;
+    await setupAdmin(f);
+
+    const { id: domainId } = await seedDomain(f.raw, "wiki-non-kebab");
+    const { id: instanceId } = await seedAgentInstance(f.raw, {
+      definitionSlug: "heartbeat",
+      name: "Heartbeat 06:00",
+      scopeDomainId: domainId,
+    });
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+
+    const res = await f.app.inject({
+      method: "POST",
+      url: "/api/admin/agents/heartbeat/dispatch",
+      headers: {
+        authorization: `Bearer ${ADMIN_PAT}`,
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: {
+        domainSlug: "wiki-non-kebab",
+        instanceSlug: "Heartbeat 06:00",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as {
+      instanceSlug: string;
+      instanceId: string;
+    };
+    expect(body.instanceId).toBe(instanceId);
+    expect(body.instanceSlug).toBe("Heartbeat 06:00");
+
+    // Audit row records the RESOLVED name from the DB lookup.
+    const auditRows = await f.raw.query<{
+      metadata: Record<string, unknown>;
+    }>(
+      `SELECT metadata FROM admin_audit_log
+       WHERE action = 'agent.dispatch_now'`,
+    );
+    expect(auditRows.rows.length).toBe(1);
+    expect(auditRows.rows[0]!.metadata["instance_slug"]).toBe(
+      "Heartbeat 06:00",
+    );
+  });
+
+  it("rejects instance names longer than 128 chars", async () => {
+    // PR-R3 fix-up Issue E — the relaxed validator still bounds
+    // length so an attacker-supplied body can't blow row sizes.
+    const f = await makeDispatchFixture();
+    cleanup = f.close;
+    await setupAdmin(f);
+
+    await seedDomain(f.raw, "wiki-too-long");
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+
+    const res = await f.app.inject({
+      method: "POST",
+      url: "/api/admin/agents/lint/dispatch",
+      headers: {
+        authorization: `Bearer ${ADMIN_PAT}`,
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: {
+        domainSlug: "wiki-too-long",
+        instanceSlug: "a".repeat(129),
+      },
+    });
+    expect(res.statusCode).toBe(422);
+    const body = JSON.parse(res.body) as { error: string };
+    expect(body.error).toBe("validation_failed");
+  });
+
   it("audit metadata never carries operator-supplied freeform text", async () => {
     const f = await makeDispatchFixture();
     cleanup = f.close;

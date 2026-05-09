@@ -23,7 +23,7 @@ import { useTranslation } from "react-i18next";
 import { AgentsRunNowButton } from "../components/AgentsRunNowButton.js";
 import { StatusPill, type StatusTone } from "../components/StatusPill.js";
 import {
-  defaultSubscribeToAgentRuns,
+  createAgentRunsSubscription,
   type SubscribeToAgentRuns,
 } from "../lib/agent-runs-subscription.js";
 import { fetchAdmin, fetchOptsFor } from "../lib/api.js";
@@ -59,9 +59,11 @@ interface PipelinesResponse {
 export interface ActivityProps {
   /** @internal Test seam — defaults to globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
-  /** @internal Test seam — SSE subscription factory for the
-   *  per-agent "Run now" buttons (PR-R3). Defaults to
-   *  `defaultSubscribeToAgentRuns()`. */
+  /** @internal Test seam — per-listener subscribe callable for
+   *  the per-agent "Run now" buttons (PR-R3). When omitted, the
+   *  route builds ONE shared subscription via
+   *  `createAgentRunsSubscription` per pipelines-tab mount and
+   *  hands its `subscribe` down. Tests inject a stub directly. */
   readonly subscribeToAgentRuns?: SubscribeToAgentRuns;
 }
 
@@ -376,11 +378,27 @@ function ScheduledAgentsView(props: {
     })();
   }, []);
 
-  // Stable SSE subscription factory shared across the cards.
-  const subscribeToAgentRuns = useMemo<SubscribeToAgentRuns>(
-    () => props.subscribeToAgentRuns ?? defaultSubscribeToAgentRuns(),
-    [props.subscribeToAgentRuns],
+  // Stable SSE subscription shared across the cards. ONE
+  // underlying client per ScheduledAgentsView mount; each
+  // "Run now" button calls `subscription.subscribe(listener)` to
+  // add a handler without re-opening the SSE pipe. Tests inject
+  // a stub `subscribe` callable directly via the prop.
+  const injectedSubscribe = props.subscribeToAgentRuns;
+  const subscription = useMemo(
+    () =>
+      injectedSubscribe !== undefined
+        ? null
+        : createAgentRunsSubscription(),
+    [injectedSubscribe],
   );
+  useEffect(
+    () => (): void => {
+      subscription?.close();
+    },
+    [subscription],
+  );
+  const subscribeToAgentRuns: SubscribeToAgentRuns =
+    injectedSubscribe ?? subscription!.subscribe;
 
   if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
   if (schedules === null) {

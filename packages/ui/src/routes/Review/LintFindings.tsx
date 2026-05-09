@@ -21,7 +21,7 @@ import { AgentsRunNowButton } from "../../components/AgentsRunNowButton.js";
 import { Btn } from "../../components/Btn.js";
 import { NoticeRow } from "../../components/NoticeRow.js";
 import {
-  defaultSubscribeToAgentRuns,
+  createAgentRunsSubscription,
   type SubscribeToAgentRuns,
 } from "../../lib/agent-runs-subscription.js";
 import { fetchAdmin, fetchOptsFor } from "../../lib/api.js";
@@ -52,9 +52,12 @@ interface LintFindingsResponse {
 export interface LintFindingsProps {
   /** @internal Test seam — defaults to globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
-  /** @internal Test seam — defaults to `defaultSubscribeToAgentRuns()`.
-   *  Tests inject a stub so the "Run now" button's lifecycle
-   *  observation is deterministic. */
+  /** @internal Test seam — per-listener subscribe callable for
+   *  the "Re-run lint" button. When omitted, the route builds
+   *  ONE shared subscription via `createAgentRunsSubscription`
+   *  per mount and hands its `subscribe` down. Tests inject a
+   *  stub directly so the button's lifecycle observation is
+   *  deterministic. */
   readonly subscribeToAgentRuns?: SubscribeToAgentRuns;
 }
 
@@ -81,13 +84,28 @@ export function LintFindings(props: LintFindingsProps = {}): JSX.Element {
     })();
   }, []);
 
-  // Build a stable SSE subscription factory for the "Re-run lint"
-  // button. One client per LintFindings mount; the button passes
-  // its listener to the factory and gets back an `off`.
-  const subscribeToAgentRuns = useMemo<SubscribeToAgentRuns>(
-    () => props.subscribeToAgentRuns ?? defaultSubscribeToAgentRuns(),
-    [props.subscribeToAgentRuns],
+  // Build a stable SSE subscription for the "Re-run lint"
+  // button. ONE underlying client per LintFindings mount; the
+  // button calls `subscription.subscribe(listener)` to add a
+  // handler without re-opening the SSE pipe. Tests inject a stub
+  // `subscribe` callable directly via the prop and skip the
+  // subscription object.
+  const injectedSubscribe = props.subscribeToAgentRuns;
+  const subscription = useMemo(
+    () =>
+      injectedSubscribe !== undefined
+        ? null
+        : createAgentRunsSubscription(),
+    [injectedSubscribe],
   );
+  useEffect(
+    () => (): void => {
+      subscription?.close();
+    },
+    [subscription],
+  );
+  const subscribeToAgentRuns: SubscribeToAgentRuns =
+    injectedSubscribe ?? subscription!.subscribe;
 
   if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
   if (runs === null) return <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>;

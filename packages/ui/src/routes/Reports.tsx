@@ -20,7 +20,7 @@ import { useTranslation } from "react-i18next";
 
 import { AgentsRunNowButton } from "../components/AgentsRunNowButton.js";
 import {
-  defaultSubscribeToAgentRuns,
+  createAgentRunsSubscription,
   type SubscribeToAgentRuns,
 } from "../lib/agent-runs-subscription.js";
 import { fetchAdmin, fetchOptsFor } from "../lib/api.js";
@@ -36,9 +36,12 @@ type ReportsTab = "heartbeat" | "redaction";
 export interface ReportsProps {
   /** @internal Test seam — defaults to globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
-  /** @internal Test seam — SSE subscription factory for the
-   *  per-card "Refresh now" button. Defaults to
-   *  `defaultSubscribeToAgentRuns()`. */
+  /** @internal Test seam — per-listener subscribe callable for
+   *  the per-card "Refresh now" buttons. When omitted, the route
+   *  builds ONE shared subscription via
+   *  `createAgentRunsSubscription` per mount and hands its
+   *  `subscribe` down. Tests inject a stub directly so SSE wiring
+   *  is bypassed. */
   readonly subscribeToAgentRuns?: SubscribeToAgentRuns;
 }
 
@@ -109,12 +112,30 @@ function HeartbeatView(props: {
     })();
   }, []);
 
-  // Stable SSE subscription factory — one client per HeartbeatView
-  // mount; each "Refresh now" button subscribes via the factory.
-  const subscribeToAgentRuns = useMemo<SubscribeToAgentRuns>(
-    () => props.subscribeToAgentRuns ?? defaultSubscribeToAgentRuns(),
-    [props.subscribeToAgentRuns],
+  // Stable SSE subscription — ONE underlying client per
+  // HeartbeatView mount; each "Refresh now" button calls
+  // `subscription.subscribe(handler)` to add a listener without
+  // re-opening the SSE pipe. Tests inject a stub `subscribe`
+  // callable directly via the `subscribeToAgentRuns` prop and
+  // skip the subscription object entirely (no SSE client
+  // constructed in that case — `injectedSubscribe` is non-null
+  // exactly when `subscription` is null).
+  const injectedSubscribe = props.subscribeToAgentRuns;
+  const subscription = useMemo(
+    () =>
+      injectedSubscribe !== undefined
+        ? null
+        : createAgentRunsSubscription(),
+    [injectedSubscribe],
   );
+  useEffect(
+    () => (): void => {
+      subscription?.close();
+    },
+    [subscription],
+  );
+  const subscribeToAgentRuns: SubscribeToAgentRuns =
+    injectedSubscribe ?? subscription!.subscribe;
 
   if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
   if (reports === null) return <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>;

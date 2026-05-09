@@ -67,9 +67,18 @@ export interface AgentsRunNowButtonProps {
   readonly rateLimitedTooltipFormat: string;
   /** Subscribe to SSE `agent_run` lifecycle events. The button
    *  uses the listener to flip from `queued`/`running` → `done`.
-   *  Callers typically share one factory per page (so multiple
-   *  buttons share one SSE client) — see
-   *  `lib/agent-runs-subscription.ts` for the default factory. */
+   *
+   *  CRITICAL: callers MUST share ONE `AgentRunSubscription` object
+   *  across multiple buttons on the same page mount (typically via
+   *  `createAgentRunsSubscription` inside a parent `useMemo`) and
+   *  pass `subscription.subscribe` here. Constructing a fresh
+   *  subscription per button mount opens N concurrent SSE pipes
+   *  against the same admin endpoint — see
+   *  `lib/agent-runs-subscription.ts` for the wiring contract.
+   *
+   *  The returned `off` from `subscribe(handler)` only detaches
+   *  THIS handler; the underlying SSE client lives until the
+   *  parent's unmount effect calls `subscription.close()`. */
   readonly subscribeToAgentRuns: SubscribeToAgentRuns;
   /** @internal Test seam — defaults to globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
@@ -98,8 +107,36 @@ export function AgentsRunNowButton(
   // dispatch — sufficient for single-operator use.
   const dispatchedAtRef = useRef<number | null>(null);
 
+  // ── Timer refs (PR-R3 fix-up Issue C) ──
+  // Both setTimeout call sites store their handle in a ref so the
+  // unmount cleanup can clear them — otherwise a late callback fires
+  // setState() on an unmounted component, surfacing as a React
+  // warning AND (worse) reviving state on a re-mounted instance with
+  // the same identity. Each call site clears its existing ref before
+  // scheduling a fresh timer so back-to-back state transitions don't
+  // leak overlapping handles.
+  const doneFlashRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const safetyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
   const setIntervalImpl = props.setIntervalFn ?? setInterval;
   const clearIntervalImpl = props.clearIntervalFn ?? clearInterval;
+
+  // ── Unmount cleanup for the two setTimeout handles ──
+  useEffect(
+    () => (): void => {
+      if (doneFlashRef.current !== null) {
+        clearTimeout(doneFlashRef.current);
+        doneFlashRef.current = null;
+      }
+      if (safetyTimeoutRef.current !== null) {
+        clearTimeout(safetyTimeoutRef.current);
+        safetyTimeoutRef.current = null;
+      }
+    },
+    [],
+  );
 
   // ── countdown tick when the button is in queued/running state ──
   useEffect(() => {
@@ -136,8 +173,15 @@ export function AgentsRunNowButton(
         );
         // After a brief flash, revert to idle so the operator can
         // fire again. 1500ms matches the success-pill semantic
-        // in CopyButton (Reports.tsx).
-        setTimeout(() => {
+        // in CopyButton (Reports.tsx). The handle is stored in a
+        // ref so unmount cleanup can cancel it (Issue C); we also
+        // clear any prior handle so back-to-back terminal events
+        // don't leak overlapping timers.
+        if (doneFlashRef.current !== null) {
+          clearTimeout(doneFlashRef.current);
+        }
+        doneFlashRef.current = setTimeout(() => {
+          doneFlashRef.current = null;
           setState("idle");
           setStartedAt(null);
           setTrackedRunId(null);
@@ -176,11 +220,24 @@ export function AgentsRunNowButton(
       });
       // Successful dispatch — stay in `queued` until the SSE
       // listener flips us to `running` / `done`. A safety timeout
-      // reverts to `idle` after 60s in case the SSE pipe is
-      // detached (no agent picked up the run).
-      setTimeout(() => {
-        setState((prev) => (prev === "queued" ? "idle" : prev));
-      }, 60_000);
+      // reverts to `idle` from EITHER `queued` OR `running` so that
+      // an SSE drop AFTER the `running` event also self-heals
+      // (Issue B — previously the button stayed stuck in `running`
+      // forever once it left `queued`). 120s window — Heartbeat's
+      // Thinker tier can take 30–60s; 60s was too tight and tripped
+      // the safety net during legitimate long runs. The handle is
+      // ref-tracked so unmount cleanup can cancel it (Issue C); we
+      // clear any prior handle so back-to-back dispatches don't
+      // leak overlapping timers.
+      if (safetyTimeoutRef.current !== null) {
+        clearTimeout(safetyTimeoutRef.current);
+      }
+      safetyTimeoutRef.current = setTimeout(() => {
+        safetyTimeoutRef.current = null;
+        setState((prev) =>
+          prev === "queued" || prev === "running" ? "idle" : prev,
+        );
+      }, 120_000);
     } catch (err) {
       // 429 rate-limit → surface tooltip + revert to idle.
       if (
