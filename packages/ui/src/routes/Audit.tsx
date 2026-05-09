@@ -31,6 +31,7 @@ import {
   useMemo,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
@@ -159,6 +160,17 @@ function actorLabel(row: AuditLogRow): string {
  *  so the operator can copy it verbatim into a ticket. */
 function formatMetadata(metadata: Record<string, unknown>): string {
   return JSON.stringify(metadata, null, 2);
+}
+
+/** Render an ISO-8601 timestamp as `YYYY-MM-DD HH:mm:ss UTC`. The
+ *  audit log is consumed across operator timezones during cross-team
+ *  triage; locale-dependent strings (`toLocaleString()`) make it hard
+ *  to correlate rows from two operators' screens. UTC is the lingua
+ *  franca for ops timestamps. */
+function formatIsoUtc(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
 }
 
 // ─── Filter state ─────────────────────────────────────────────────────────────
@@ -313,7 +325,6 @@ function ActionMultiSelect(props: ActionMultiSelectProps): JSX.Element {
                 <label
                   key={opt}
                   data-testid={`audit-filter-action-option-${opt}`}
-                  onClick={(): void => props.onToggle(opt)}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -329,12 +340,16 @@ function ActionMultiSelect(props: ActionMultiSelectProps): JSX.Element {
                     borderRadius: 3,
                   }}
                 >
+                  {/* The checkbox is the actual interactive control —
+                   *  natively focusable + Space-toggleable. The wrapping
+                   *  <label> forwards clicks-on-text to the checkbox,
+                   *  which fires onChange exactly once (no double toggle).
+                   *  Removed `pointerEvents: none` + `tabIndex: -1` so
+                   *  keyboard users can Tab into the dropdown. */}
                   <input
                     type="checkbox"
                     checked={checked}
-                    readOnly
-                    tabIndex={-1}
-                    style={{ pointerEvents: "none" }}
+                    onChange={(): void => props.onToggle(opt)}
                   />
                   <span>{opt}</span>
                 </label>
@@ -476,9 +491,11 @@ interface RowDetailProps {
   readonly row: AuditLogRow;
 }
 
+type CopyState = "idle" | "success" | "error";
+
 function RowDetail(props: RowDetailProps): JSX.Element {
   const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<CopyState>("idle");
   const [showFull, setShowFull] = useState(false);
 
   const fullJson = useMemo(() => formatMetadata(props.row.metadata), [props.row.metadata]);
@@ -486,11 +503,35 @@ function RowDetail(props: RowDetailProps): JSX.Element {
   const visibleJson = overflow && !showFull ? fullJson.slice(0, JSON_TRUNCATE_BYTES) : fullJson;
 
   const handleCopy = useCallback((): void => {
-    void navigator.clipboard.writeText(fullJson).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    // `navigator.clipboard.writeText` rejects when the page is
+    // served over HTTP (non-secure context), when the user denies
+    // clipboard permission, or when the API is missing entirely
+    // (older browsers). Without this catch the rejection bubbled
+    // up unhandled and the operator got no feedback that the copy
+    // didn't take.
+    void (async (): Promise<void> => {
+      try {
+        await navigator.clipboard.writeText(fullJson);
+        setCopyState("success");
+      } catch {
+        setCopyState("error");
+      }
+      setTimeout(() => setCopyState("idle"), 2000);
+    })();
   }, [fullJson]);
+
+  const copyLabel =
+    copyState === "success"
+      ? t("audit.row.copied")
+      : copyState === "error"
+        ? t("audit.row.copyFailed")
+        : t("audit.row.copy");
+  const copyColor =
+    copyState === "success"
+      ? "var(--healthy)"
+      : copyState === "error"
+        ? "var(--alert)"
+        : "var(--ink-2)";
 
   return (
     <div
@@ -544,13 +585,13 @@ function RowDetail(props: RowDetailProps): JSX.Element {
               fontSize: 11,
               padding: "2px 8px",
               background: "var(--paper)",
-              color: copied ? "var(--healthy)" : "var(--ink-2)",
+              color: copyColor,
               border: "1px solid var(--rule)",
               borderRadius: 3,
               cursor: "pointer",
             }}
           >
-            {copied ? t("audit.row.copied") : t("audit.row.copy")}
+            {copyLabel}
           </button>
         </span>
       </div>
@@ -603,19 +644,31 @@ export function Audit(props: AuditProps = {}): JSX.Element {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   useEffect(() => {
+    // Race-safety: rapid offset changes (Next-Next-Next) or unmount
+    // mid-flight can let an earlier request resolve AFTER a later
+    // one, overwriting `rows`/`error` with stale data. The
+    // `cancelled` flag short-circuits the state writes for any
+    // request whose effect has already been torn down.
+    // (`fetchAdmin` doesn't currently take a `signal`, so a true
+    // network abort isn't available — the cancelled flag is enough
+    // to prevent the visible state-write race.)
+    let cancelled = false;
+    setRows(null);
+    setError(null);
     void (async () => {
-      setRows(null);
-      setError(null);
       try {
         const r = await fetchAdmin<AuditLogResponse>(
           `/api/admin/audit-log?limit=${PAGE_LIMIT}&offset=${offset}`,
           fetchOptsFor(props.fetchImpl),
         );
-        setRows(r.rows);
+        if (!cancelled) setRows(r.rows);
       } catch {
-        setError(t("audit.loadError"));
+        if (!cancelled) setError(t("audit.loadError"));
       }
     })();
+    return (): void => {
+      cancelled = true;
+    };
     // Re-fetch on offset change. `props.fetchImpl` is a test seam,
     // intentionally not part of the dep list (changing fetchImpl
     // mid-life would force an extra round-trip in test rigs).
@@ -739,11 +792,29 @@ export function Audit(props: AuditProps = {}): JSX.Element {
               {filtered.map((row) => {
                 const isOpen = expanded.has(row.id);
                 const summary = resourceSummary(row.metadata);
+                const detailRowId = `audit-row-${row.id}-detail`;
+                const onRowKey = (e: ReactKeyboardEvent): void => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    toggleExpand(row.id);
+                  }
+                };
                 return (
                   <Fragment key={row.id}>
+                    {/* Row a11y: the <tr> is the click target so it
+                     *  also needs role=button + tabIndex + keyboard
+                     *  handler + aria-expanded/-controls. Mirrors the
+                     *  per-cell pattern used in Sources.tsx (PR-R1
+                     *  fix-up), adapted to <tr> since we control the
+                     *  table layout here. */}
                     <tr
                       data-testid={`audit-row-${row.id}`}
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={isOpen}
+                      aria-controls={detailRowId}
                       onClick={(): void => toggleExpand(row.id)}
+                      onKeyDown={onRowKey}
                       style={{
                         borderBottom: isOpen
                           ? "none"
@@ -761,7 +832,7 @@ export function Audit(props: AuditProps = {}): JSX.Element {
                           whiteSpace: "nowrap",
                         }}
                       >
-                        {new Date(row.createdAt).toLocaleString()}
+                        {formatIsoUtc(row.createdAt)}
                       </td>
                       <td
                         style={{
@@ -796,7 +867,11 @@ export function Audit(props: AuditProps = {}): JSX.Element {
                       </td>
                     </tr>
                     {isOpen && (
-                      <tr style={{ borderBottom: "1px solid var(--rule)" }}>
+                      <tr
+                        id={detailRowId}
+                        role="region"
+                        style={{ borderBottom: "1px solid var(--rule)" }}
+                      >
                         <td colSpan={4} style={{ padding: 0 }}>
                           <RowDetail row={row} />
                         </td>

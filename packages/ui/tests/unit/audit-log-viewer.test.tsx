@@ -352,3 +352,239 @@ describe("Audit route — Clear filters button", () => {
     expect(screen.getByText("bob")).toBeInTheDocument();
   });
 });
+
+// ─── PR-R4 Copilot triage fix-ups ─────────────────────────────────────────────
+
+describe("Audit route — fetch race (PR-R4 fix-up Issue 1)", () => {
+  it("a late stale response does not overwrite the newer rendered page", async () => {
+    // Race scenario: user clicks Next (offset=50, slow fetch),
+    // then Prev (offset=0, fast fetch). If the late offset=50
+    // response resolves AFTER the user is back on page 1, it
+    // would clobber `rows` with page-2 data without the cancelled
+    // guard.
+    const page1 = Array.from({ length: 50 }, (_, i) =>
+      makeRow({ id: `p1-${i}`, action: "domain.update", metadata: { slug: `slug-p1-${i}` } }),
+    );
+    const page2 = Array.from({ length: 5 }, (_, i) =>
+      makeRow({ id: `p2-${i}`, action: "domain.update", metadata: { slug: `slug-p2-${i}` } }),
+    );
+
+    let page2Calls = 0;
+    type ResolveFn = (r: Response) => void;
+    let resolvePage2: ResolveFn | null = null;
+    const fetchImpl = vi.fn(async (input: RequestInfo) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const u = new URL(url, "http://localhost");
+      const offset = Number(u.searchParams.get("offset") ?? "0");
+      if (offset === 50) {
+        page2Calls += 1;
+        // First page-2 call: defer; second + : resolve immediately.
+        if (page2Calls === 1) {
+          return await new Promise<Response>((resolve) => {
+            resolvePage2 = resolve;
+          });
+        }
+      }
+      const rows = offset === 0 ? page1 : page2;
+      return new Response(JSON.stringify({ rows }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    render(<Audit fetchImpl={fetchImpl} />);
+
+    // Page 1 lands and Next becomes enabled.
+    await waitFor(() => screen.getByText("slug-p1-0"));
+
+    // Click Next — page-2 fetch is now in flight (deferred).
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    await waitFor(() => expect(resolvePage2).not.toBeNull());
+
+    // Click Prev — re-fetches page 1 (resolves immediately).
+    fireEvent.click(screen.getByRole("button", { name: /prev/i }));
+    await waitFor(() => screen.getByText("slug-p1-0"));
+    expect(screen.queryByText("slug-p2-0")).not.toBeInTheDocument();
+
+    // NOW release the late page-2 response.
+    const releasePage2 = resolvePage2 as ResolveFn | null;
+    if (releasePage2 === null) throw new Error("page-2 fetch never reached the deferred branch");
+    releasePage2(
+      new Response(JSON.stringify({ rows: page2 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    // Give microtasks a chance to flush the (would-be-stale) writes.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The user is still on page 1 — late page-2 response was discarded.
+    expect(screen.getByText("slug-p1-0")).toBeInTheDocument();
+    expect(screen.queryByText("slug-p2-0")).not.toBeInTheDocument();
+  });
+});
+
+describe("Audit route — clipboard rejection (PR-R4 fix-up Issue 2)", () => {
+  it("Copy button flips to 'Copy failed' (--alert) when writeText rejects, then reverts", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("nope"));
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const rows = [
+      makeRow({
+        id: "r1",
+        action: "domain.update",
+        metadata: { slug: "wiki-pilot" },
+      }),
+    ];
+    const fetchImpl = makeFetch({ 0: rows });
+    render(<Audit fetchImpl={fetchImpl} />);
+
+    await waitFor(() => screen.getByText("domain.update"));
+    fireEvent.click(screen.getByTestId("audit-row-r1"));
+    const detail = await screen.findByTestId("audit-row-r1-detail");
+    const copyBtn = within(detail).getByRole("button", { name: /copy json/i });
+    fireEvent.click(copyBtn);
+
+    // The rejected writeText flips the button to "Copy failed".
+    await waitFor(() => {
+      expect(within(detail).getByRole("button", { name: /copy failed/i })).toBeInTheDocument();
+    });
+    const failedBtn = within(detail).getByRole("button", { name: /copy failed/i });
+    // --alert color must come through. jsdom doesn't resolve CSS
+    // var() in computed style, so we assert the inline style
+    // declaration directly.
+    expect(failedBtn.style.color).toBe("var(--alert)");
+
+    // After the 2s revert window, the label is back to idle.
+    // (Generous timeout — the component schedules setTimeout(... , 2000).)
+    await waitFor(
+      () => {
+        expect(within(detail).getByRole("button", { name: /copy json/i })).toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
+  });
+});
+
+describe("Audit route — row keyboard a11y (PR-R4 fix-up Issue 3)", () => {
+  it("Enter on a focused row toggles aria-expanded; second Enter collapses", async () => {
+    const rows = [
+      makeRow({
+        id: "r1",
+        action: "domain.update",
+        metadata: { slug: "wiki-pilot" },
+      }),
+    ];
+    const fetchImpl = makeFetch({ 0: rows });
+    render(<Audit fetchImpl={fetchImpl} />);
+
+    await waitFor(() => screen.getByText("domain.update"));
+
+    const rowEl = screen.getByTestId("audit-row-r1");
+    expect(rowEl).toHaveAttribute("role", "button");
+    expect(rowEl).toHaveAttribute("tabIndex", "0");
+    expect(rowEl).toHaveAttribute("aria-expanded", "false");
+    expect(rowEl).toHaveAttribute("aria-controls", "audit-row-r1-detail");
+
+    // Enter expands.
+    rowEl.focus();
+    fireEvent.keyDown(rowEl, { key: "Enter" });
+    await waitFor(() => {
+      expect(screen.getByTestId("audit-row-r1")).toHaveAttribute("aria-expanded", "true");
+    });
+    const detail = screen.getByTestId("audit-row-r1-detail");
+    // The expanded row's id matches aria-controls and carries role=region.
+    const containerRow = detail.closest("tr");
+    expect(containerRow).toHaveAttribute("id", "audit-row-r1-detail");
+    expect(containerRow).toHaveAttribute("role", "region");
+
+    // Second Enter collapses.
+    fireEvent.keyDown(screen.getByTestId("audit-row-r1"), { key: "Enter" });
+    await waitFor(() => {
+      expect(screen.getByTestId("audit-row-r1")).toHaveAttribute("aria-expanded", "false");
+    });
+  });
+
+  it("Space on a focused row toggles expansion (mirrors Enter)", async () => {
+    const rows = [
+      makeRow({ id: "r1", action: "domain.update", metadata: { slug: "wiki-pilot" } }),
+    ];
+    const fetchImpl = makeFetch({ 0: rows });
+    render(<Audit fetchImpl={fetchImpl} />);
+
+    await waitFor(() => screen.getByText("domain.update"));
+    const rowEl = screen.getByTestId("audit-row-r1");
+    rowEl.focus();
+    fireEvent.keyDown(rowEl, { key: " " });
+    await waitFor(() => {
+      expect(screen.getByTestId("audit-row-r1")).toHaveAttribute("aria-expanded", "true");
+    });
+  });
+});
+
+describe("Audit route — ISO-UTC timestamp (PR-R4 fix-up Issue 4)", () => {
+  it("renders createdAt as YYYY-MM-DD HH:mm:ss UTC, not toLocaleString", async () => {
+    const rows = [
+      makeRow({
+        id: "r1",
+        action: "domain.update",
+        createdAt: "2026-05-09T08:30:45.123Z",
+        metadata: { slug: "wiki-pilot" },
+      }),
+    ];
+    const fetchImpl = makeFetch({ 0: rows });
+    render(<Audit fetchImpl={fetchImpl} />);
+
+    await waitFor(() => screen.getByText("domain.update"));
+    expect(screen.getByText("2026-05-09 08:30:45 UTC")).toBeInTheDocument();
+  });
+
+  it("falls back to the raw ISO string for an unparseable timestamp", async () => {
+    const rows = [
+      makeRow({
+        id: "r1",
+        action: "domain.update",
+        createdAt: "not-an-iso",
+        metadata: { slug: "wiki-pilot" },
+      }),
+    ];
+    const fetchImpl = makeFetch({ 0: rows });
+    render(<Audit fetchImpl={fetchImpl} />);
+
+    await waitFor(() => screen.getByText("domain.update"));
+    expect(screen.getByText("not-an-iso")).toBeInTheDocument();
+  });
+});
+
+describe("Audit route — action filter dropdown keyboard (PR-R4 fix-up Issue 5)", () => {
+  it("checkboxes inside the dropdown are natively focusable and Space-toggleable", async () => {
+    const rows = [
+      makeRow({ id: "r1", action: "domain.update", metadata: { slug: "wiki-pilot" } }),
+      makeRow({ id: "r2", action: "source_binding.create", metadata: { slug: "src-x" } }),
+    ];
+    const fetchImpl = makeFetch({ 0: rows });
+    render(<Audit fetchImpl={fetchImpl} />);
+
+    await waitFor(() => screen.getByText("domain.update"));
+
+    fireEvent.click(screen.getByTestId("audit-filter-action"));
+
+    const optLabel = await screen.findByTestId("audit-filter-action-option-domain.update");
+    const checkbox = within(optLabel).getByRole("checkbox") as HTMLInputElement;
+
+    // Natively focusable — neither tabIndex=-1 nor pointer-events:none.
+    expect(checkbox.tabIndex).toBe(0);
+    expect(checkbox.style.pointerEvents).not.toBe("none");
+
+    // Toggling via the checkbox's own change event narrows the rows.
+    fireEvent.click(checkbox);
+    const tableRows = screen.getAllByTestId(/^audit-row-r/);
+    expect(tableRows).toHaveLength(1);
+    expect(tableRows[0]?.textContent).toContain("domain.update");
+  });
+});

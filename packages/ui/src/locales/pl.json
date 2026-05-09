@@ -412,6 +412,7 @@
       "metadata": "metadata",
       "copy": "Copy JSON",
       "copied": "copied",
+      "copyFailed": "Copy failed",
       "showFull": "Show full payload",
       "showLess": "Truncate",
       "truncatedNote": "Payload truncated at {{kb}} KB."
