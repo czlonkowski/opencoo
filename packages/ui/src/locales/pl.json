@@ -206,6 +206,33 @@
       }
     }
   },
+  "sourceBindingDetail": {
+    "edit": {
+      "open": "Edit",
+      "title": "Edit binding",
+      "subtitle": "Operational settings and credential rotation. Both apply to the next scheduled tick or webhook event.",
+      "save": "Save",
+      "saving": "Saving",
+      "cancel": "Cancel",
+      "config": {
+        "title": "Operational settings",
+        "subtitle": "Adapter-specific config persisted on the binding row."
+      },
+      "credentials": {
+        "title": "Rotate credentials",
+        "subtitle": "Saving requires every field — rotation replaces the credential atomically.",
+        "banner": "Rotating credentials does not pause the binding — in-flight events finish on the old key, new events use the new key."
+      },
+      "errors": {
+        "configFailed": "Could not save operational settings. Check the field errors below.",
+        "credentialsFailed": "Could not rotate credentials. Check the field errors below.",
+        "credentialsEmpty": "Type at least one credential field before saving.",
+        "webhookSecretNotSupported": "This adapter has no webhook secret to rotate.",
+        "auth": "Sign-in expired or insufficient permissions — re-paste your PAT.",
+        "transient": "Server is unreachable or returned an error. Try again."
+      }
+    }
+  },
   "llmPolicy": {
     "title": "LLM policy",
     "subtitle": "Per-domain provider/model assignments. Diff-and-confirm before apply.",

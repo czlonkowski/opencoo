@@ -33,7 +33,7 @@
  */
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import type { CredentialStore } from "@opencoo/shared/credential-store";
@@ -50,7 +50,7 @@ import {
 } from "@opencoo/shared/source-adapter";
 
 import { writeAuditLog } from "../audit-log.js";
-import { requireAdminContext } from "../auth.js";
+import { requireAdminContext, type AdminContext } from "../auth.js";
 import { requireCsrf } from "../csrf.js";
 import { isPgForeignKeyViolation } from "../pg-error.js";
 
@@ -60,17 +60,45 @@ const reviewModeUpdateSchema = z
   })
   .strict();
 
-/** PR-Q10 — `PATCH /api/admin/source-bindings/:id` body. v0.1 only
- *  exposes the `enabled` toggle; review-mode flips go through the
- *  dedicated `/review-mode` endpoint and binding metadata edits are
- *  v0.2. The `.strict()` rejects any other key so a body like
- *  `{enabled: false, review_mode: 'auto'}` doesn't smuggle a second
- *  state change through the audit row. */
-const bindingPatchSchema = z
+/** PR-Q10 — `PATCH /api/admin/source-bindings/:id` body.
+ *
+ *  PR-R2 (phase-a appendix #10) widens the body to a discriminated
+ *  union — exactly ONE of three intents per request:
+ *    • `{enabled}`     — Q10 disable/enable toggle (unchanged)
+ *    • `{config}`      — operational settings update
+ *    • `{credentials}` — in-place credential rotation
+ *
+ *  Mixed bodies (e.g. `{enabled, config}`) are rejected with 422 so
+ *  the audit trail records exactly one verb per action. Each branch
+ *  is `.strict()` so no other top-level key smuggles a second state
+ *  change through. */
+const bindingEnabledPatchSchema = z
+  .object({ enabled: z.boolean() })
+  .strict();
+const bindingConfigPatchSchema = z
+  .object({ config: z.record(z.string(), z.unknown()) })
+  .strict();
+/** PR-R2 review fix-up — `credentials` body shape is now
+ *  `{auth?, webhook_secret?}`: either half is optional so the
+ *  operator can rotate just the auth credential without retyping
+ *  the webhook secret (and vice versa). The validator below
+ *  rejects an empty `{credentials: {}}` and rejects
+ *  `webhook_secret` for polling adapters. */
+const bindingCredentialsPatchSchema = z
   .object({
-    enabled: z.boolean(),
+    credentials: z
+      .object({
+        auth: z.record(z.string(), z.unknown()).optional(),
+        webhook_secret: z.record(z.string(), z.unknown()).optional(),
+      })
+      .strict(),
   })
   .strict();
+const bindingPatchSchema = z.union([
+  bindingEnabledPatchSchema,
+  bindingConfigPatchSchema,
+  bindingCredentialsPatchSchema,
+]);
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
@@ -107,6 +135,13 @@ interface BindingRow {
    *  Sources row drill-down (PR-Q10) can show the operator how many HMAC
    *  failures landed without re-querying. */
   readonly sigFailCount24h: number;
+  /** PR-R2 — operational config jsonb (NOT credentials). Surfaced so
+   *  the Sources row drill-down's Edit panel can pre-seed the
+   *  `bindingConfigSchema` form with the binding's current settings,
+   *  giving the operator a full-state edit surface. Plain object;
+   *  values may include operator-internal IDs but never secret bytes
+   *  (credentials live in `credentials_id`, never config). */
+  readonly config: Record<string, unknown>;
 }
 
 /** Coerce pg's timestamp result (Date when node-postgres parsed it,
@@ -178,6 +213,7 @@ export function registerSourceBindingsRoutes(
              b.enabled,
              b.last_scanned_at,
              b.notes,
+             b.config,
              COALESCE(b.notes, b.adapter_slug || ' → ' || d.slug) AS name,
              (
                SELECT w.received_at
@@ -221,6 +257,7 @@ export function registerSourceBindingsRoutes(
         enabled: boolean;
         last_scanned_at: Date | string | null;
         notes: string | null;
+        config: Record<string, unknown> | null;
         name: string;
         last_event_at: Date | string | null;
         sig_fail_count_24h: number;
@@ -261,6 +298,7 @@ export function registerSourceBindingsRoutes(
         lastError,
         pendingEventsCount: r.pending_events_count,
         sigFailCount24h: r.sig_fail_count_24h,
+        config: r.config ?? {},
       };
     });
     return { rows };
@@ -578,10 +616,12 @@ export function registerSourceBindingsRoutes(
     },
   );
 
-  // PR-Q10 — toggle `enabled`. The Sources row drill-down modal
-  // calls this to disable / re-enable a binding without going through
-  // psql. CSRF-gated; writes 'source_binding.update' audit row with
-  // prev/new flags so the audit trail is unambiguous.
+  // PR-Q10 — toggle `enabled`. PR-R2 widens this surface with two
+  // additional intents: `{config}` and `{credentials}`. The body is
+  // a discriminated union — exactly one intent per request so the
+  // audit trail records one verb per action. The `enabled` path is
+  // unchanged in behavior; the two new paths each emit their own
+  // audit-action verb.
   args.app.patch(
     "/api/admin/source-bindings/:id",
     { preHandler: requireCsrf },
@@ -598,51 +638,41 @@ export function registerSourceBindingsRoutes(
           issues: parsed.error.issues,
         });
       }
-      const { enabled } = parsed.data;
 
-      // Existence + prev_enabled snapshot for the audit row.
-      const existing = (await args.db.execute(sql`
-        SELECT enabled
-        FROM sources_bindings
-        WHERE id = ${id}::uuid
-        LIMIT 1
-      `)) as unknown as { rows: Array<{ enabled: boolean }> };
-      const prev = existing.rows[0];
-      if (prev === undefined) {
-        return reply.code(404).send({ error: "not_found", id });
+      // `enabled` branch — Q10 behavior, unchanged.
+      if ("enabled" in parsed.data) {
+        return handleEnabledPatch({
+          db: args.db,
+          req,
+          reply,
+          id,
+          enabled: parsed.data.enabled,
+          ctx,
+        });
       }
 
-      // The UPDATE always runs (even when `enabled` already matches
-      // the requested value) — clicking Disable on an already-disabled
-      // binding still bumps `updated_at` and writes an audit row so
-      // the operator's intent is captured (the audit confirms the
-      // operator inspected the state, even on a no-op flip).
-      const updated = (await args.db.execute(sql`
-        UPDATE sources_bindings
-        SET enabled = ${enabled},
-            updated_at = NOW()
-        WHERE id = ${id}::uuid
-        RETURNING id::text AS id, enabled
-      `)) as unknown as { rows: Array<{ id: string; enabled: boolean }> };
-      const row = updated.rows[0];
-      if (row === undefined) {
-        return reply.code(500).send({ error: "update_returned_no_row" });
+      // `config` branch — operational settings update.
+      if ("config" in parsed.data) {
+        return handleConfigPatch({
+          db: args.db,
+          req,
+          reply,
+          id,
+          submittedConfig: parsed.data.config,
+          ctx,
+        });
       }
 
-      await writeAuditLog(args.db, {
-        action: "source_binding.update",
-        userId: ctx.userId,
-        metadata: {
-          binding_id: id,
-          prev_enabled: prev.enabled,
-          new_enabled: enabled,
-          caller_username: ctx.username,
-        },
-        sourceIp: req.ip,
-        userAgent: req.headers["user-agent"],
-      });
-
-      return reply.code(200).send({ id: row.id, enabled: row.enabled });
+      // `credentials` branch — in-place credential rotation.
+      return handleCredentialsPatch({
+        db: args.db,
+        req,
+        reply,
+        id,
+        submittedCredentials: parsed.data.credentials,
+        credentialStore: args.credentialStore,
+        ctx,
+      } satisfies CredentialsPatchArgs);
     },
   );
 
@@ -763,6 +793,402 @@ export function registerSourceBindingsRoutes(
   );
 }
 
+// ─── PR-R2: PATCH discriminator handlers ───────────────────────────────────
+
+interface EnabledPatchArgs {
+  readonly db: Db;
+  readonly req: FastifyRequest;
+  readonly reply: FastifyReply;
+  readonly id: string;
+  readonly enabled: boolean;
+  readonly ctx: AdminContext;
+}
+
+/** Q10's `enabled`-only behavior, factored into a helper so the
+ *  PATCH route can dispatch by intent. The semantics are unchanged:
+ *  the UPDATE always runs (so a no-op flip still records the
+ *  operator's intent in the audit row). */
+async function handleEnabledPatch(
+  args: EnabledPatchArgs,
+): Promise<FastifyReply> {
+  const existing = (await args.db.execute(sql`
+    SELECT enabled
+    FROM sources_bindings
+    WHERE id = ${args.id}::uuid
+    LIMIT 1
+  `)) as unknown as { rows: Array<{ enabled: boolean }> };
+  const prev = existing.rows[0];
+  if (prev === undefined) {
+    return args.reply.code(404).send({ error: "not_found", id: args.id });
+  }
+
+  const updated = (await args.db.execute(sql`
+    UPDATE sources_bindings
+    SET enabled = ${args.enabled},
+        updated_at = NOW()
+    WHERE id = ${args.id}::uuid
+    RETURNING id::text AS id, enabled
+  `)) as unknown as { rows: Array<{ id: string; enabled: boolean }> };
+  const row = updated.rows[0];
+  if (row === undefined) {
+    return args.reply.code(500).send({ error: "update_returned_no_row" });
+  }
+
+  await writeAuditLog(args.db, {
+    action: "source_binding.update",
+    userId: args.ctx.userId,
+    metadata: {
+      binding_id: args.id,
+      prev_enabled: prev.enabled,
+      new_enabled: args.enabled,
+      caller_username: args.ctx.username,
+    },
+    sourceIp: args.req.ip,
+    userAgent: args.req.headers["user-agent"],
+  });
+
+  return args.reply.code(200).send({ id: row.id, enabled: row.enabled });
+}
+
+interface ConfigPatchArgs {
+  readonly db: Db;
+  readonly req: FastifyRequest;
+  readonly reply: FastifyReply;
+  readonly id: string;
+  readonly submittedConfig: Record<string, unknown>;
+  readonly ctx: AdminContext;
+}
+
+/** PR-R2 `config`-only path. Validates the submitted config against
+ *  the binding's adapter-declared `bindingConfigSchema`, then persists
+ *  it in jsonb. The audit row records the binding_id, the caller, and
+ *  KEY LISTS only — never values. Operational-config values may
+ *  include operator-internal IDs that, while not secret, are out of
+ *  scope for the audit-row contract (THREAT-MODEL §3.13: audit rows
+ *  capture intent + identity; payload bytes belong elsewhere). */
+async function handleConfigPatch(
+  args: ConfigPatchArgs,
+): Promise<FastifyReply> {
+  // Look up the binding's adapter slug + previous config (for the
+  // audit row's prev_config_keys list).
+  const existing = (await args.db.execute(sql`
+    SELECT adapter_slug, config
+    FROM sources_bindings
+    WHERE id = ${args.id}::uuid
+    LIMIT 1
+  `)) as unknown as {
+    // jsonb may be null when the column is missing a default — `prev.config ?? {}`
+    // below handles the runtime branch. Tightening the type to `... | null`
+    // documents reality.
+    rows: Array<{
+      adapter_slug: string;
+      config: Record<string, unknown> | null;
+    }>;
+  };
+  const prev = existing.rows[0];
+  if (prev === undefined) {
+    return args.reply.code(404).send({ error: "not_found", id: args.id });
+  }
+
+  const bindingConfigSchema = getSourceAdapterBindingConfigSchema(
+    prev.adapter_slug,
+  );
+  if (bindingConfigSchema === undefined) {
+    return args.reply.code(422).send({
+      error: "binding_config_schema_unavailable",
+      adapter_slug: prev.adapter_slug,
+    });
+  }
+
+  const configValidation = validateBindingConfigAgainstSchema(
+    args.submittedConfig,
+    bindingConfigSchema,
+  );
+  if (!configValidation.ok) {
+    return args.reply.code(422).send({
+      error: "binding_config_schema_mismatch",
+      missing: configValidation.missing,
+    });
+  }
+
+  // jsonb codec receives well-formed text — same trick as POST.
+  const configJson = JSON.stringify(args.submittedConfig);
+  const updated = (await args.db.execute(sql`
+    UPDATE sources_bindings
+    SET config = ${configJson}::jsonb,
+        updated_at = NOW()
+    WHERE id = ${args.id}::uuid
+    RETURNING id::text AS id
+  `)) as unknown as { rows: Array<{ id: string }> };
+  const row = updated.rows[0];
+  if (row === undefined) {
+    return args.reply.code(500).send({ error: "update_returned_no_row" });
+  }
+
+  // Sorted key lists — audit metadata never carries values.
+  const prevConfigKeys = Object.keys(prev.config ?? {}).sort();
+  const newConfigKeys = Object.keys(args.submittedConfig).sort();
+
+  await writeAuditLog(args.db, {
+    action: "source_binding.config_update",
+    userId: args.ctx.userId,
+    metadata: {
+      binding_id: args.id,
+      prev_config_keys: prevConfigKeys,
+      new_config_keys: newConfigKeys,
+      caller_username: args.ctx.username,
+    },
+    sourceIp: args.req.ip,
+    userAgent: args.req.headers["user-agent"],
+  });
+
+  return args.reply.code(200).send({ id: row.id });
+}
+
+interface CredentialsPatchArgs {
+  readonly db: Db;
+  readonly req: FastifyRequest;
+  readonly reply: FastifyReply;
+  readonly id: string;
+  readonly submittedCredentials: {
+    readonly auth?: unknown;
+    readonly webhook_secret?: unknown;
+  };
+  readonly credentialStore: CredentialStore | undefined;
+  readonly ctx: AdminContext;
+}
+
+/** PR-R2 `credentials`-only path. In-place rotation via
+ *  `CredentialStore.rotate(id, plaintext)` — the binding's
+ *  `credentials_id` (and `webhook_secret_credentials_id`) is preserved;
+ *  only the underlying credential row's plaintext + IV + rotated_at
+ *  change.
+ *
+ *  PR-R2 review fix-up — webhook adapters now rotate the
+ *  `webhook_secret_credentials_id` row when the body includes a
+ *  `webhook_secret` half. Either half is optional so the operator can
+ *  rotate just one. Polling adapters reject `webhook_secret` with 422
+ *  `webhook_secret_not_supported`; an empty `{credentials: {}}` is
+ *  rejected with 422 `credentials_empty`.
+ *
+ *  Audit metadata records `rotated_credentials: { auth, webhook_secret }`
+ *  mapping each rotated half to its `credentials.id` (or null when not
+ *  rotated). Plaintext NEVER appears in the metadata
+ *  (THREAT-MODEL §3.13). */
+async function handleCredentialsPatch(
+  args: CredentialsPatchArgs,
+): Promise<FastifyReply> {
+  const existing = (await args.db.execute(sql`
+    SELECT adapter_slug,
+           credentials_id::text AS credentials_id,
+           webhook_secret_credentials_id::text AS webhook_secret_credentials_id
+    FROM sources_bindings
+    WHERE id = ${args.id}::uuid
+    LIMIT 1
+  `)) as unknown as {
+    rows: Array<{
+      adapter_slug: string;
+      credentials_id: string | null;
+      webhook_secret_credentials_id: string | null;
+    }>;
+  };
+  const prev = existing.rows[0];
+  if (prev === undefined) {
+    return args.reply.code(404).send({ error: "not_found", id: args.id });
+  }
+
+  const descriptor = getSourceAdapterDescriptor(prev.adapter_slug);
+  if (descriptor === undefined) {
+    return args.reply.code(422).send({
+      error: "unknown_adapter_slug",
+      adapter_slug: prev.adapter_slug,
+    });
+  }
+
+  const credValidation = validateCredentialsForRotation(
+    args.submittedCredentials,
+    descriptor,
+  );
+  if (!credValidation.ok) {
+    // Path-only diagnostic — never echoes the rejected values.
+    if (credValidation.code === "credential_schema_mismatch") {
+      return args.reply.code(422).send({
+        error: "credential_schema_mismatch",
+        missing: credValidation.missing,
+      });
+    }
+    return args.reply.code(422).send({ error: credValidation.code });
+  }
+
+  if (prev.credentials_id === null) {
+    // Bindings created before the credentials_id contract landed
+    // (or hand-INSERTed test rows without a credentials row) cannot
+    // be rotated — there is no plaintext slot to replace. Surface
+    // a structured 422 so the operator knows to recreate the binding.
+    return args.reply.code(422).send({
+      error: "binding_has_no_credentials",
+    });
+  }
+
+  if (args.credentialStore === undefined) {
+    return args.reply.code(500).send({
+      error: "credential_store_unavailable",
+      reason: "Composition did not register a credentialStore",
+    });
+  }
+
+  // Webhook-secret rotation requires the binding to have a
+  // `webhook_secret_credentials_id` row. Today every webhook adapter
+  // populates this on create, but a hand-INSERTed test row without it
+  // would otherwise drop the rotation silently — surface a structured
+  // 422 so the operator knows to recreate the binding.
+  if (
+    credValidation.hasWebhookSecret &&
+    prev.webhook_secret_credentials_id === null
+  ) {
+    return args.reply.code(422).send({
+      error: "binding_has_no_webhook_secret",
+    });
+  }
+
+  const credentialsId = prev.credentials_id as CredentialId;
+  const webhookSecretId =
+    prev.webhook_secret_credentials_id === null
+      ? null
+      : (prev.webhook_secret_credentials_id as CredentialId);
+
+  // Track which credential ids were actually rotated. Audit metadata
+  // records `rotated_credentials: { auth, webhook_secret }` so the
+  // operator can later confirm which half was rotated. `null` =
+  // not rotated this request (load-bearing for the audit contract).
+  let rotatedAuthId: CredentialId | null = null;
+  let rotatedWebhookSecretId: CredentialId | null = null;
+
+  try {
+    if (credValidation.hasAuth) {
+      // Polling: `auth` half IS the flat credentials object the
+      // schema describes; the credential row stores the same shape
+      // POST writes (the full object).
+      // Webhook: `auth` half is the auth sub-object specifically.
+      const authPlaintext = narrowAuthCredentials(args.submittedCredentials);
+      await args.credentialStore.rotate(
+        credentialsId,
+        Buffer.from(JSON.stringify(authPlaintext), "utf8"),
+      );
+      rotatedAuthId = credentialsId;
+    }
+    if (credValidation.hasWebhookSecret && webhookSecretId !== null) {
+      const webhookSecretPlaintext = narrowWebhookSecretCredentials(
+        args.submittedCredentials,
+      );
+      await args.credentialStore.rotate(
+        webhookSecretId,
+        Buffer.from(JSON.stringify(webhookSecretPlaintext), "utf8"),
+      );
+      rotatedWebhookSecretId = webhookSecretId;
+    }
+  } catch (err) {
+    args.req.log?.warn({
+      msg: "binding_rotate.credential_store_failed",
+      binding_id: args.id,
+      err: err instanceof Error ? err.name : "unknown",
+    });
+    return args.reply.code(500).send({ error: "credential_rotate_failed" });
+  }
+
+  await args.db.execute(sql`
+    UPDATE sources_bindings
+    SET updated_at = NOW()
+    WHERE id = ${args.id}::uuid
+  `);
+
+  await writeAuditLog(args.db, {
+    action: "source_binding.credentials_rotate",
+    userId: args.ctx.userId,
+    metadata: {
+      binding_id: args.id,
+      rotated_credentials: {
+        auth: rotatedAuthId,
+        webhook_secret: rotatedWebhookSecretId,
+      },
+      caller_username: args.ctx.username,
+    },
+    sourceIp: args.req.ip,
+    userAgent: args.req.headers["user-agent"],
+  });
+
+  // `credentialsRotatedAt`: query the actual `credentials.rotated_at`
+  // for whichever halves rotated. If both rotated, surface the max so
+  // the timestamp reflects the latest write. Falls back to "now" on a
+  // read failure (defensive — the rotation already succeeded). */
+  const credentialsRotatedAt =
+    (await readMaxRotatedAt(args.db, [
+      rotatedAuthId,
+      rotatedWebhookSecretId,
+    ])) ?? new Date().toISOString();
+
+  return args.reply.code(200).send({
+    id: args.id,
+    credentialsRotatedAt,
+  });
+}
+
+/** Read `rotated_at` for one or more credential ids and return the
+ *  max as ISO. `null` ids are skipped. Returns `null` on no rows or a
+ *  read failure — caller falls back to the request timestamp. */
+async function readMaxRotatedAt(
+  db: Db,
+  ids: ReadonlyArray<CredentialId | null>,
+): Promise<string | null> {
+  const present = ids.filter((id): id is CredentialId => id !== null);
+  if (present.length === 0) return null;
+  try {
+    const result = (await db.execute(sql`
+      SELECT MAX(rotated_at) AS rotated_at
+      FROM credentials
+      WHERE id = ANY(ARRAY[${sql.join(
+        present.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )}])
+    `)) as unknown as {
+      rows: Array<{ rotated_at: Date | string | null }>;
+    };
+    const row = result.rows[0];
+    if (row === undefined) return null;
+    return toIso(row.rotated_at);
+  } catch {
+    return null;
+  }
+}
+
+/** Narrow `submittedCredentials.auth` to a concrete object shape.
+ *  The validator already passed by the time we reach here; this
+ *  predicate documents intent (replacing an opaque `as` cast) and
+ *  defends against a shape regression introduced upstream. */
+function narrowAuthCredentials(
+  submitted: { readonly auth?: unknown; readonly webhook_secret?: unknown },
+): Record<string, unknown> {
+  const value = submitted.auth;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("invariant: auth half passed validation but is not an object");
+  }
+  return value as Record<string, unknown>;
+}
+
+/** Narrow `submittedCredentials.webhook_secret` to a concrete object
+ *  shape. Same intent-documenting predicate as `narrowAuthCredentials`. */
+function narrowWebhookSecretCredentials(
+  submitted: { readonly auth?: unknown; readonly webhook_secret?: unknown },
+): Record<string, unknown> {
+  const value = submitted.webhook_secret;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      "invariant: webhook_secret half passed validation but is not an object",
+    );
+  }
+  return value as Record<string, unknown>;
+}
+
 /** Sentinel thrown inside the DELETE transaction to roll it back when
  *  RETURNING id finds zero rows — i.e. another DELETE raced between
  *  the pre-check SELECT and the tx body. Caller maps to 404 without
@@ -829,10 +1255,100 @@ async function probeDlqDepth(
   }
 }
 
+/** Result of a rotation-mode credentials validation. The discriminator
+ *  surfaces specific 422 failure modes so the caller emits a precise
+ *  error code (`webhook_secret_not_supported`, `credentials_empty`,
+ *  `credential_schema_mismatch`).
+ *
+ *  Path-only diagnostics — the validator never echoes submitted
+ *  values into the result so a 422 response can never leak secret
+ *  bytes (THREAT-MODEL §3.13). */
+type RotationCredValidation =
+  | { readonly ok: true; readonly hasAuth: boolean; readonly hasWebhookSecret: boolean }
+  | { readonly ok: false; readonly code: "webhook_secret_not_supported" }
+  | { readonly ok: false; readonly code: "credentials_empty" }
+  | { readonly ok: false; readonly code: "credential_schema_mismatch"; readonly missing: string[] };
+
+/** PR-R2 review fix-up — validate a partial-rotation `credentials`
+ *  body. EITHER half (auth, webhook_secret) is optional, but at
+ *  least one must be present. Polling adapters reject any
+ *  `webhook_secret` half. The submitted half(ves) are validated
+ *  against the corresponding sub-schema. */
+function validateCredentialsForRotation(
+  credentials: { readonly auth?: unknown; readonly webhook_secret?: unknown },
+  descriptor: SourceAdapterCredentialDescriptor,
+): RotationCredValidation {
+  const hasAuth = credentials.auth !== undefined;
+  const hasWebhookSecret = credentials.webhook_secret !== undefined;
+
+  // No-op rotation is meaningless — reject so the audit row never
+  // records an action that didn't change anything.
+  if (!hasAuth && !hasWebhookSecret) {
+    return { ok: false, code: "credentials_empty" };
+  }
+
+  // Polling adapters have no webhook_secret half — reject before
+  // we walk the schema so the operator gets the specific code.
+  if (descriptor.mode === "polling" && hasWebhookSecret) {
+    return { ok: false, code: "webhook_secret_not_supported" };
+  }
+
+  const missing: string[] = [];
+
+  if (descriptor.mode === "polling") {
+    // Polling: `auth` half is the flat credentials object the
+    // schema describes; we walk the polling schema directly.
+    const authValue = credentials.auth;
+    if (typeof authValue !== "object" || authValue === null) {
+      missing.push("auth");
+    } else {
+      walkPollingSchema(
+        descriptor.credentialSchema,
+        authValue as Record<string, unknown>,
+        "auth.",
+        missing,
+      );
+    }
+  } else {
+    if (hasAuth) {
+      const authValue = credentials.auth;
+      if (typeof authValue !== "object" || authValue === null) {
+        missing.push("auth");
+      } else {
+        walkPollingSchema(
+          descriptor.credentialSchema.properties.auth,
+          authValue as Record<string, unknown>,
+          "auth.",
+          missing,
+        );
+      }
+    }
+    if (hasWebhookSecret) {
+      const webhookSecretValue = credentials.webhook_secret;
+      if (typeof webhookSecretValue !== "object" || webhookSecretValue === null) {
+        missing.push("webhook_secret");
+      } else {
+        walkPollingSchema(
+          descriptor.credentialSchema.properties.webhook_secret,
+          webhookSecretValue as Record<string, unknown>,
+          "webhook_secret.",
+          missing,
+        );
+      }
+    }
+  }
+
+  if (missing.length > 0) {
+    return { ok: false, code: "credential_schema_mismatch", missing };
+  }
+  return { ok: true, hasAuth, hasWebhookSecret };
+}
+
 /** Validate credentials against the adapter's descriptor. Walks
  *  required fields without mentioning the field VALUES — only
  *  paths come back so a 422 response can never leak partial
- *  secret bytes. */
+ *  secret bytes. Used by the binding-create path, which still
+ *  requires BOTH halves on every webhook adapter. */
 function validateCredentialsAgainstSchema(
   credentials: Record<string, unknown>,
   descriptor: SourceAdapterCredentialDescriptor,
