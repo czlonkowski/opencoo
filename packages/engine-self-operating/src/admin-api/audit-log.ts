@@ -89,14 +89,24 @@ export const AUDIT_LOG_ACTIONS = [
   // Phase-a appendix #10 (PR-R6) — scheduler / cadence editor.
   // PUT /api/admin/scheduler/:agent flips the cron pattern for every
   // instance scoped to the agent slug; the audit row captures
-  // agent_slug + old_cron + new_cron + instance_count +
+  // agent_slug + old_crons + new_cron + instance_count +
   // caller_username so an operator can replay the cadence-change
-  // history without joining against agent_instances. NEVER any
-  // operator-supplied freeform text — both cron strings are
-  // server-validated via cron-parser BEFORE any side effect.
-  // Audit row is written BEFORE the BullMQ swap (audit-before-side-
-  // effect, mirrors PR-R3); a partial swap leaves the audit trail
-  // intact so the operator can correlate after the fact.
+  // history without joining against agent_instances. `old_crons`
+  // is an array (length === instance_count) of the cron string each
+  // instance carried prior to the change, indexed by the same row
+  // ordering the dispatcher's swap walked — a per-instance prior
+  // value matters when instances of the same agent had drifted
+  // cadences (e.g. two heartbeat instances with different schedules
+  // before the operator pulled them back into lockstep). NEVER any
+  // operator-supplied freeform text — both old + new cron strings
+  // are server-validated via cron-parser BEFORE any side effect.
+  // The audit row is written INSIDE the same db.transaction as the
+  // schedule_cron UPDATE and the dispatcher's BullMQ swap; a throw
+  // at the dispatcher step rolls EVERYTHING back, audit row
+  // included — the operator never sees a "changed schedule" record
+  // for an action that didn't actually change anything. The trail
+  // matches the actual on-disk state (mirrors PR-Q10b's
+  // source-binding delete pattern).
   "scheduler.update",
   // Logout — records the operator-initiated session-end so an
   // audit-log read can correlate an action burst with the

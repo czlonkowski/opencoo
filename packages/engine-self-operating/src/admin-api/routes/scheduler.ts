@@ -224,67 +224,95 @@ export function registerSchedulerRoute(
         });
       }
 
-      // 5. Look up every enabled instance scoped to the agent
-      //    slug WITH a current schedule_cron. The operator can
-      //    only edit cadences for instances that are already
-      //    scheduled; an instance with NULL schedule_cron has
-      //    never been registered and the create-instance flow is
-      //    a separate verb (out of scope for v0.1 — see
-      //    DECISIONS.md "instance creation UI").
-      const instancesResult = (await args.db.execute(sql`
-        SELECT id::text         AS id,
-               name             AS name,
-               schedule_cron    AS old_cron
-        FROM agent_instances
-        WHERE definition_slug = ${agentSlug}
-          AND enabled = true
-          AND schedule_cron IS NOT NULL
-        ORDER BY created_at ASC
-      `)) as unknown as {
-        rows: Array<{
-          id: string;
-          name: string;
-          old_cron: string;
-        }>;
-      };
-      const rows = instancesResult.rows;
-      if (rows.length === 0) {
-        return reply.code(404).send({
-          error: "agent_unknown",
-          agentSlug,
-        });
-      }
-
-      // Capture the FIRST instance's old cron for the audit
-      // metadata. v0.1 keeps every instance of the same agent on
-      // the same cadence (the UI editor flips them in lockstep)
-      // so the first row is representative; the audit row also
-      // carries `instance_count` for full forensic context.
-      const oldCron = rows[0]!.old_cron;
-
-      // 6. Run the DB UPDATE + dispatcher swap + audit row
-      //    inside ONE transaction. A throw at any step rolls
+      // 5. Run the SELECT + DB UPDATE + dispatcher swap + audit
+      //    row inside ONE transaction. A throw at any step rolls
       //    everything back; the dispatcher's `updateSchedule`
       //    additionally tries to roll its OWN BullMQ state
       //    forward on a partial-swap failure (see
       //    `agent-dispatcher.ts:updateSchedule`). The audit row
-      //    is written FIRST so it shares the transaction
-      //    rollback (audit-before-side-effect, but inside the
-      //    same atom — rollback erases the row entirely).
+      //    is written between the UPDATE and the BullMQ swap so
+      //    it shares the transaction rollback boundary —
+      //    rollback erases the row entirely; the operator's
+      //    trail matches the actual on-disk state.
+      //
+      //    The SELECT is INSIDE the transaction with `FOR UPDATE`
+      //    so a concurrent INSERT/DELETE between SELECT and
+      //    UPDATE cannot widen the row-set the dispatcher saw.
+      //    The UPDATE further narrows on the explicit id list
+      //    returned by the SELECT (rather than re-matching by
+      //    `definition_slug = ?`) — eliminating the race window
+      //    where a row inserted between SELECT and UPDATE would
+      //    have its DB cron column flipped without a matching
+      //    BullMQ schedule swap.
+      let rowsForResponse: Array<{
+        id: string;
+        name: string;
+        old_cron: string;
+      }> = [];
+      let agentUnknown = false;
       try {
         await args.db.transaction(async (tx) => {
+          // 5a. SELECT with FOR UPDATE — locks the matching rows
+          //     for the duration of the tx so a concurrent
+          //     INSERT/DELETE/UPDATE on the same set blocks
+          //     until commit. The operator can only edit
+          //     cadences for instances that are already
+          //     scheduled; an instance with NULL schedule_cron
+          //     has never been registered and the create-instance
+          //     flow is a separate verb (out of scope for v0.1 —
+          //     see DECISIONS.md "instance creation UI").
+          const instancesResult = (await tx.execute(sql`
+            SELECT id::text         AS id,
+                   name             AS name,
+                   schedule_cron    AS old_cron
+            FROM agent_instances
+            WHERE definition_slug = ${agentSlug}
+              AND enabled = true
+              AND schedule_cron IS NOT NULL
+            ORDER BY created_at ASC
+            FOR UPDATE
+          `)) as unknown as {
+            rows: Array<{
+              id: string;
+              name: string;
+              old_cron: string;
+            }>;
+          };
+          const rows = instancesResult.rows;
+          if (rows.length === 0) {
+            agentUnknown = true;
+            return;
+          }
+          rowsForResponse = rows;
+
+          // 5b. UPDATE narrowed to the explicit id list returned
+          //     by the SELECT — even if the WHERE-clause set
+          //     matched a wider row population, the UPDATE only
+          //     touches the rows the dispatcher will swap. Any
+          //     row inserted between SELECT and UPDATE (in the
+          //     unlikely event the FOR UPDATE serialisation
+          //     didn't catch it) is left out cleanly.
+          const idParams = sql.join(
+            rows.map((r) => sql`${r.id}::uuid`),
+            sql`, `,
+          );
           await tx.execute(sql`
             UPDATE agent_instances
             SET schedule_cron = ${newCron},
                 updated_at    = now()
-            WHERE definition_slug = ${agentSlug}
-              AND enabled = true
-              AND schedule_cron IS NOT NULL
+            WHERE id IN (${idParams})
           `);
-          // The audit-log writer takes a Drizzle handle — pass
-          // the transaction so the INSERT shares the unwind
-          // boundary. Cast through the same shape `writeAuditLog`
-          // uses elsewhere.
+
+          // 5c. Audit row INSIDE the tx so a dispatcher throw
+          //     unwinds the audit attempt too. `old_crons`
+          //     captures every prior cron string in row order
+          //     so per-instance drift is forensically visible
+          //     (two heartbeat instances on different schedules
+          //     before the operator pulled them into lockstep).
+          //     The audit-log writer takes a Drizzle handle — pass
+          //     the transaction so the INSERT shares the unwind
+          //     boundary. Cast through the same shape
+          //     `writeAuditLog` uses elsewhere.
           await writeAuditLog(
             tx as unknown as Db,
             {
@@ -292,7 +320,7 @@ export function registerSchedulerRoute(
               userId: ctx.userId,
               metadata: {
                 agent_slug: agentSlug,
-                old_cron: oldCron,
+                old_crons: rows.map((r) => r.old_cron),
                 new_cron: newCron,
                 instance_count: rows.length,
                 caller_username: ctx.username,
@@ -301,12 +329,14 @@ export function registerSchedulerRoute(
               userAgent: req.headers["user-agent"],
             },
           );
-          // BullMQ swap LAST — a throw here unwinds the SQL
-          // UPDATE + the audit INSERT, so the operator's trail
-          // matches the actual state. The dispatcher's
-          // `updateSchedule` is best-effort transactional from
-          // the operator's perspective (remove + add per entry,
-          // with a roll-forward on partial failure).
+
+          // 5d. BullMQ swap LAST — a throw here unwinds the SQL
+          //     UPDATE + the audit INSERT, so the operator's
+          //     trail matches the actual state. The dispatcher's
+          //     `updateSchedule` is best-effort transactional from
+          //     the operator's perspective (remove + add per
+          //     entry, with a roll-forward on partial failure
+          //     across multiple instances — see PR-R6 round-2).
           await args.updateSchedule!({
             entries: rows.map((r) => ({
               instanceId: r.id,
@@ -323,6 +353,13 @@ export function registerSchedulerRoute(
           reason: safeErrorMessage(err),
         });
       }
+      if (agentUnknown) {
+        return reply.code(404).send({
+          error: "agent_unknown",
+          agentSlug,
+        });
+      }
+      const rows = rowsForResponse;
 
       // 7. Compute the next 5 fires for the response so the UI
       //    can render the confirmation preview without a second

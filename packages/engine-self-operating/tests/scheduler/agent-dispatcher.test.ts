@@ -702,6 +702,158 @@ describe("AgentDispatcher.updateSchedule — PR-R6 cadence editor", () => {
     }
   });
 
+  it("rolls EVERY previously-succeeded swap back to OLD cron when a later entry fails (PR-R6 round-2 multi-instance atomicity)", async () => {
+    // Three entries, the SECOND throws at registerOne. The first
+    // entry already swapped to NEW cron in BullMQ; without the
+    // multi-instance rollback fix BullMQ would be left at
+    // {entry1: NEW, entry2: OLD, entry3: untouched} while the
+    // route's DB tx unwinds back to {OLD, OLD, OLD} on every row
+    // — splitting the cluster's view of the schedule until the
+    // next engine boot. This test pins the rollback contract: the
+    // dispatcher walks the previously-succeeded set in reverse
+    // and rolls each back to OLD cron before re-throwing.
+    const fixture = await freshAgentDb();
+    // Three distinct instances, all on the same agent slug.
+    const seeded = await Promise.all([
+      seedScheduledInstance(fixture, {
+        name: "morning-a",
+        scheduleCron: "0 8 * * 1-5",
+      }),
+      seedScheduledInstance(fixture, {
+        name: "morning-b",
+        scheduleCron: "0 8 * * 1-5",
+      }),
+      seedScheduledInstance(fixture, {
+        name: "morning-c",
+        scheduleCron: "0 8 * * 1-5",
+      }),
+    ]);
+    const instanceIds = seeded.map((s) => s.instanceId);
+
+    interface Call {
+      readonly verb: "remove" | "register";
+      readonly instanceId: string;
+      readonly cron: string;
+    }
+    const calls: Call[] = [];
+    let bootRegistered = 0;
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+      registerScheduleFn: async (s) => {
+        // Allow the three boot registrations through silently;
+        // afterwards, fail the SECOND instance's NEW-cron register
+        // call. Every other post-boot register call (including
+        // the rollback path) succeeds.
+        if (bootRegistered < 3) {
+          bootRegistered += 1;
+          calls.push({
+            verb: "register",
+            instanceId: s.instanceId,
+            cron: s.scheduleCron,
+          });
+          return;
+        }
+        calls.push({
+          verb: "register",
+          instanceId: s.instanceId,
+          cron: s.scheduleCron,
+        });
+        if (
+          s.instanceId === instanceIds[1] &&
+          s.scheduleCron === "0 9 * * 1-5"
+        ) {
+          throw new Error("simulated bullmq add failure on entry 2");
+        }
+      },
+      removeScheduleFn: async (s) => {
+        calls.push({
+          verb: "remove",
+          instanceId: s.instanceId,
+          cron: s.scheduleCron,
+        });
+      },
+    });
+
+    try {
+      await dispatcher.start();
+      // Drop boot-time calls so the assertion window is just the
+      // updateSchedule swap + rollback sequence.
+      calls.length = 0;
+
+      const entries = instanceIds.map((id) => ({
+        instanceId: id,
+        definitionSlug: TEST_DEFINITION.slug,
+        name: "morning",
+        oldCron: "0 8 * * 1-5",
+        newCron: "0 9 * * 1-5",
+      }));
+
+      await expect(dispatcher.updateSchedule({ entries })).rejects.toThrow(
+        /simulated bullmq add failure on entry 2/,
+      );
+
+      // Entry 1 swapped successfully (remove old, register new) →
+      // entry 2 attempted (remove old, register new threw) →
+      // catch block runs.
+      // Multi-instance rollback for the SUCCEEDED set (entry 1):
+      //   - remove entry-1 NEW cron, register entry-1 OLD cron.
+      // Failing-entry rollback (entry 2 — removeOne already
+      // succeeded so we re-register the OLD cron):
+      //   - register entry-2 OLD cron.
+      // Entry 3's `addRepeatable` (registerOne with NEW cron) is
+      // NEVER called — the throw bubbled out before reaching it.
+
+      // Entry 3 NEVER touched.
+      const entry3Calls = calls.filter(
+        (c) => c.instanceId === instanceIds[2],
+      );
+      expect(entry3Calls).toEqual([]);
+
+      // Entry 1: remove(OLD) → register(NEW) → [throw on entry 2]
+      //          → rollback: remove(NEW) → register(OLD).
+      const entry1Calls = calls.filter(
+        (c) => c.instanceId === instanceIds[0],
+      );
+      expect(entry1Calls).toEqual([
+        { verb: "remove", instanceId: instanceIds[0], cron: "0 8 * * 1-5" },
+        { verb: "register", instanceId: instanceIds[0], cron: "0 9 * * 1-5" },
+        { verb: "remove", instanceId: instanceIds[0], cron: "0 9 * * 1-5" },
+        { verb: "register", instanceId: instanceIds[0], cron: "0 8 * * 1-5" },
+      ]);
+
+      // Entry 2: remove(OLD) → register(NEW) [threw]
+      //          → rollback: register(OLD).
+      const entry2Calls = calls.filter(
+        (c) => c.instanceId === instanceIds[1],
+      );
+      expect(entry2Calls).toEqual([
+        { verb: "remove", instanceId: instanceIds[1], cron: "0 8 * * 1-5" },
+        { verb: "register", instanceId: instanceIds[1], cron: "0 9 * * 1-5" },
+        { verb: "register", instanceId: instanceIds[1], cron: "0 8 * * 1-5" },
+      ]);
+
+      // The in-memory list reflects the pre-call cron on every
+      // instance — the post-loop mutation step never ran because
+      // the throw bubbled out first.
+      for (const s of dispatcher.listSchedules()) {
+        expect(s.scheduleCron).toBe("0 8 * * 1-5");
+      }
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+  });
+
   it("skips the no-op case (oldCron === newCron) without touching BullMQ", async () => {
     const fixture = await freshAgentDb();
     const { instanceId } = await seedScheduledInstance(fixture, {

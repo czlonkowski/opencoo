@@ -364,10 +364,13 @@ function ScheduledAgentsView(props: {
   const { t } = useTranslation();
   const [schedules, setSchedules] = useState<readonly ScheduleEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // PR-R6 — which agent slug currently has the cadence editor
-  // expanded. Only one editor open at a time keeps the column
-  // count visually predictable.
-  const [editingAgent, setEditingAgent] = useState<string | null>(null);
+  // PR-R6 — which agent INSTANCE currently has the cadence editor
+  // expanded. Keyed by `instanceId` (not `definitionSlug`) so two
+  // instances of the same agent on the same page each have their
+  // own toggle target — clicking one card's "Edit schedule" doesn't
+  // open both editors. Only one editor open at a time keeps the
+  // column count visually predictable.
+  const [editingInstance, setEditingInstance] = useState<string | null>(null);
 
   const refetch = async (): Promise<void> => {
     try {
@@ -421,16 +424,24 @@ function ScheduledAgentsView(props: {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {schedules.map((s) => {
-        const dispatchable =
-          s.domainSlug !== null && RUN_NOW_DISPATCHABLE.has(s.definitionSlug);
-        const slug = dispatchable
+        // PR-R6 round-2 — split the gating cleanly:
+        //   - `editableSlug` (Edit-schedule visibility): agent slug
+        //     alone. Editing the cron pattern is independent of
+        //     dispatchability — a global Surfacer instance with no
+        //     bound domain still has a cron the operator can change.
+        //   - `dispatchable` (Run-now visibility): slug + domainSlug.
+        //     The Run-now button needs the domain to fire the agent.
+        const editableSlug = RUN_NOW_DISPATCHABLE.has(s.definitionSlug)
           ? (s.definitionSlug as
               | "heartbeat"
               | "lint"
               | "surfacer"
               | "builder")
           : null;
-        const editing = editingAgent === s.definitionSlug;
+        const dispatchable =
+          s.domainSlug !== null && editableSlug !== null;
+        const slug = dispatchable ? editableSlug : null;
+        const editing = editingInstance === s.instanceId;
         // Used twice below (Edit-schedule and Run-now cells) when
         // the agent slug isn't dispatchable — extract once so the
         // grid keeps an identically-styled placeholder cell.
@@ -505,14 +516,16 @@ function ScheduledAgentsView(props: {
                   : "—"}
               </span>
               {/* PR-R6 — Edit schedule toggle. Default chrome
-                  (NO `--alert`); only the four schedulable agent
-                  slugs are editable, mirroring the Run-now allow
-                  list. */}
-              {slug !== null ? (
+                  (NO `--alert`); gated on the agent slug ALONE —
+                  editing the cron pattern is independent of
+                  dispatchability so a global Surfacer instance with
+                  no bound domain can still have its cadence
+                  flipped. */}
+              {editableSlug !== null ? (
                 <button
                   type="button"
                   onClick={(): void =>
-                    setEditingAgent(editing ? null : s.definitionSlug)
+                    setEditingInstance(editing ? null : s.instanceId)
                   }
                   data-testid={`scheduler-editor-toggle-${s.definitionSlug}`}
                   style={{
@@ -552,14 +565,14 @@ function ScheduledAgentsView(props: {
                 dash
               )}
             </div>
-            {editing && slug !== null && (
+            {editing && editableSlug !== null && (
               <SchedulerEditor
-                agentSlug={slug}
+                agentSlug={editableSlug}
                 currentCron={s.scheduleCron}
                 onApplied={(): void => {
                   void refetch();
                 }}
-                onCancel={(): void => setEditingAgent(null)}
+                onCancel={(): void => setEditingInstance(null)}
                 {...(props.fetchImpl !== undefined
                   ? { fetchImpl: props.fetchImpl }
                   : {})}

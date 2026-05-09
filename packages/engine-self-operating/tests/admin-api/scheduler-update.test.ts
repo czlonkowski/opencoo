@@ -253,6 +253,12 @@ describe("admin-api PUT /api/admin/scheduler/:agent", () => {
     expect(f.updateCalls[0]!.entries[0]!.definitionSlug).toBe("lint");
 
     // Audit row written with the right metadata.
+    //
+    // PR-R6 round-2 — `old_crons` is now an ARRAY (length ===
+    // instance_count) of the cron string each instance carried
+    // prior to the swap. A single-instance flip surfaces a
+    // one-element array; multi-instance flips with drifted
+    // cadences surface every distinct prior value forensically.
     const auditRows = await f.raw.query<{
       action: string;
       metadata: Record<string, unknown>;
@@ -263,10 +269,66 @@ describe("admin-api PUT /api/admin/scheduler/:agent", () => {
     expect(auditRows.rows.length).toBe(1);
     const meta = auditRows.rows[0]!.metadata;
     expect(meta["agent_slug"]).toBe("lint");
-    expect(meta["old_cron"]).toBe("0 3 * * 0");
+    expect(meta["old_crons"]).toEqual(["0 3 * * 0"]);
     expect(meta["new_cron"]).toBe("0 3 1-7 * 0");
     expect(meta["instance_count"]).toBe(1);
     expect(meta["caller_username"]).toBe("alice");
+  });
+
+  it("audit `old_crons` array captures per-instance drift forensically (PR-R6 round-2)", async () => {
+    // Two heartbeat instances with DIFFERENT prior cadences (the
+    // operator is pulling them back into lockstep). The audit row
+    // must reflect both prior values in row order — a scalar
+    // `old_cron: rows[0].cron` would have lost the second
+    // instance's prior schedule from the trail.
+    const f = await makeSchedulerFixture();
+    cleanup = f.close;
+    await setupAdmin(f, "alice");
+
+    const { id: domainAId } = await seedDomain(f.raw, "wiki-drift-a");
+    const { id: domainBId } = await seedDomain(f.raw, "wiki-drift-b");
+    await seedAgentInstance(f.raw, {
+      definitionSlug: "heartbeat",
+      name: "heartbeat-a-drifted",
+      scopeDomainId: domainAId,
+      scheduleCron: "0 8 * * 1-5",
+    });
+    await seedAgentInstance(f.raw, {
+      definitionSlug: "heartbeat",
+      name: "heartbeat-b-drifted",
+      scopeDomainId: domainBId,
+      scheduleCron: "0 7 * * 1-5", // distinct prior cadence
+    });
+
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+
+    const res = await f.app.inject({
+      method: "PUT",
+      url: "/api/admin/scheduler/heartbeat",
+      headers: {
+        authorization: `Bearer ${ADMIN_PAT}`,
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: { cron: "0 9 * * 1-5" },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const auditRows = await f.raw.query<{
+      metadata: Record<string, unknown>;
+    }>(
+      `SELECT metadata FROM admin_audit_log
+       WHERE action = 'scheduler.update'`,
+    );
+    expect(auditRows.rows.length).toBe(1);
+    const meta = auditRows.rows[0]!.metadata;
+    expect(meta["instance_count"]).toBe(2);
+    // Both prior crons preserved in the audit trail in row order
+    // (created_at ASC). A scalar `old_cron` would have erased the
+    // second instance's prior schedule.
+    expect(meta["old_crons"]).toEqual(["0 8 * * 1-5", "0 7 * * 1-5"]);
+    expect(meta["new_cron"]).toBe("0 9 * * 1-5");
   });
 
   it("flips every instance scoped to the agent slug in lockstep", async () => {
