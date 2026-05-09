@@ -15,7 +15,7 @@ import { Btn } from "../components/Btn.js";
 import { Card } from "../components/Card.js";
 import { DomainDetail } from "../components/DomainDetail.js";
 import { NewDomainModal } from "../components/NewDomainModal.js";
-import { fetchAdmin } from "../lib/api.js";
+import { fetchAdmin, fetchOptsFor } from "../lib/api.js";
 import type { Domain } from "../types.js";
 
 interface DomainsResponse {
@@ -52,10 +52,7 @@ export function Domains(props: DomainsProps = {}): JSX.Element {
   const [showDisabled, setShowDisabled] = useState(false);
   const [selected, setSelected] = useState<Domain | null>(null);
 
-  const fetchOpts =
-    props.fetchImpl !== undefined
-      ? { fetchImpl: props.fetchImpl as typeof fetch }
-      : {};
+  const fetchOpts = fetchOptsFor(props.fetchImpl);
 
   useEffect((): void => {
     void (async (): Promise<void> => {
@@ -208,9 +205,7 @@ export function Domains(props: DomainsProps = {}): JSX.Element {
       </Card>
       {createOpen ? (
         <NewDomainModal
-          {...(props.fetchImpl !== undefined
-            ? { fetchImpl: props.fetchImpl as typeof fetch }
-            : {})}
+          {...fetchOpts}
           onCreated={(): void => {
             setCreateOpen(false);
             setRefreshNonce((n) => n + 1);
@@ -221,9 +216,7 @@ export function Domains(props: DomainsProps = {}): JSX.Element {
       {selected !== null ? (
         <DomainDetail
           domain={selected}
-          {...(props.fetchImpl !== undefined
-            ? { fetchImpl: props.fetchImpl as typeof fetch }
-            : {})}
+          {...fetchOpts}
           onClose={(): void => setSelected(null)}
           onChanged={(): void => setRefreshNonce((n) => n + 1)}
         />

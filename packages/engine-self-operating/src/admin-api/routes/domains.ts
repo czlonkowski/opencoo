@@ -39,7 +39,10 @@ import { writeAuditLog } from "../audit-log.js";
 import { requireAdminContext } from "../auth.js";
 import { requireCsrf } from "../csrf.js";
 import { extractOperatorPat } from "../pat.js";
-import { isPgForeignKeyViolation } from "../pg-error.js";
+import {
+  isPgForeignKeyViolation,
+  isPgUniqueViolation,
+} from "../pg-error.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
@@ -236,20 +239,13 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
           return { id, repoUrl: provisionResult.repoUrl };
         });
       } catch (err) {
-        // The pre-check at line ~135 narrows the slug-collision
-        // window but doesn't close it: two concurrent POSTs can
-        // both pass the SELECT and race on the UNIQUE-constrained
-        // INSERT. Postgres raises SQLSTATE 23505 (unique_violation);
-        // surface that as 409 slug_taken so the operator sees the
-        // same shape as the pre-check path, not 502 provisioning_failed.
-        const pgCode =
-          err !== null &&
-          typeof err === "object" &&
-          "code" in err &&
-          typeof (err as { code?: unknown }).code === "string"
-            ? (err as { code: string }).code
-            : null;
-        if (pgCode === "23505") {
+        // The pre-check above narrows the slug-collision window but
+        // doesn't close it: two concurrent POSTs can both pass the
+        // SELECT and race on the UNIQUE-constrained INSERT. Postgres
+        // raises SQLSTATE 23505 (unique_violation); surface that as
+        // 409 slug_taken so the operator sees the same shape as the
+        // pre-check path, not 502 provisioning_failed.
+        if (isPgUniqueViolation(err)) {
           return reply.code(409).send({ error: "slug_taken", slug });
         }
         // Genuine provisioning failure (Gitea unreachable, seed-file
