@@ -69,12 +69,15 @@ export const PRICING: Readonly<Record<string, PricingEntry>> = {
     outputPerToken: 0.0000003,
   },
   // OpenRouter (PR-W2). The provider-prefixed slugs are distinct
-  // billable rows from the direct-vendor entries above — OpenRouter
-  // adds a small markup, but for v0.1 we mirror the upstream rate
-  // (under-estimate; budget-cap stays fail-safe via FALLBACK_PRICING
-  // for any model NOT in this table). v0.2 fetches OpenRouter's
-  // /models endpoint daily and overwrites these (CHANGES-v0.1.md
-  // appendix #11 W2 note).
+  // billable rows from the direct-vendor entries above. Mirroring
+  // upstream direct-vendor rates ignores OpenRouter's small markup
+  // (typically 5-10%); the cost dashboard will under-report for
+  // OpenRouter routes by that margin until v0.2 fetches the actual
+  // rate from OpenRouter's /models endpoint daily and overwrites
+  // these (per the CHANGES-v0.1.md appendix #11 W2 note). Note that
+  // FALLBACK_PRICING does NOT compensate here — it only applies for
+  // models NOT present in this table; once an entry exists, costFor()
+  // uses it directly.
   // moonshotai/kimi-k2.6 is the design-partner-pinned model across
   // all three tiers; verify against https://openrouter.ai/moonshotai/kimi-k2.6
   // before each tag.
