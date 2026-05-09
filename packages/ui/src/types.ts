@@ -4,6 +4,7 @@
 // Phase-a appendix #4: 'activity' = 5th tab (PR-B), 'review' = 6th (PR-C),
 // 'reports' = 7th (PR-D).
 // Phase-a appendix #10 PR-R4: 'audit' = 8th tab (audit-log viewer).
+// Phase-a appendix #10 PR-R5: 'cost' = 9th tab (cost analytics).
 export type Tab =
   | "domains"
   | "sources"
@@ -12,7 +13,8 @@ export type Tab =
   | "activity"
   | "review"
   | "reports"
-  | "audit";
+  | "audit"
+  | "cost";
 
 export interface Domain {
   readonly id: string;

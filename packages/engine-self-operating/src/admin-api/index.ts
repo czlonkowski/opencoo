@@ -41,6 +41,7 @@ import {
 } from "./routes/agents-dispatch.js";
 import { registerAuditLogReadRoutes } from "./routes/audit-log-read.js";
 import { registerAutomationCandidatesRoutes } from "./routes/automation-candidates.js";
+import { registerCostSummaryRoute } from "./routes/cost-summary.js";
 import { registerDomainsLlmPolicyRoutes } from "./routes/domains-llm-policy.js";
 import {
   registerDomainsRoutes,
@@ -183,6 +184,10 @@ export async function registerAdminApi(
   registerAutomationCandidatesRoutes({ app: guardedApp, db: args.db });
   registerMarketplaceUpdatesRoutes({ app: guardedApp, db: args.db });
   registerAuditLogReadRoutes({ app: guardedApp, db: args.db });
+  // Phase-a appendix #10 PR-R5 — cost analytics dashboard. Read-only
+  // aggregation over `llm_usage`; no new write surface, no new
+  // persistence table.
+  registerCostSummaryRoute({ app: guardedApp, db: args.db });
   // PR 29 read-only domains list + phase-a appendix #2 create
   // handler. Pass through the provisioning callable + org name
   // so the POST handler can seed Gitea. Read-only GET works
