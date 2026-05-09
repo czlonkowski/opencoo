@@ -484,6 +484,18 @@ export function SourceBindingDetail(
     setFieldErrors({});
   };
 
+  /** Clear a single keyed entry from `fieldErrors` if present. Called
+   *  from the config + credentials onChange handlers so a 422-flagged
+   *  input drops its error as soon as the operator starts editing it. */
+  const clearFieldError = (key: string): void => {
+    if (fieldErrors[key] === undefined) return;
+    setFieldErrors((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
+
   // ─── PR-R2: edit-mode helpers ────────────────────────────────────────────
 
   /** Open the edit panel. The first call lazy-loads the adapter
@@ -512,22 +524,7 @@ export function SourceBindingDetail(
       // those values so the operator edits on top of reality —
       // unchanged fields will be re-sent on Save and the route's
       // jsonb-replace semantics preserve them.
-      const persisted = props.binding.config ?? {};
-      const seeded: Record<string, string> = {};
-      const schema = found.bindingConfigSchema;
-      if (schema !== undefined) {
-        for (const [key, field] of Object.entries(schema.properties)) {
-          if (field.hidden === true) continue;
-          const persistedValue = persisted[key];
-          if (persistedValue !== undefined) {
-            seeded[key] = coercePersistedToRaw(field, persistedValue);
-            continue;
-          }
-          const def = defaultAsRaw(field);
-          if (def !== undefined) seeded[key] = def;
-        }
-      }
-      setConfigValues(seeded);
+      setConfigValues(seedConfigFromBinding(found, props.binding.config));
     } catch (err) {
       if (!mountedRef.current) return;
       setAdapterFetchError(
@@ -540,21 +537,7 @@ export function SourceBindingDetail(
 
   const initialConfigSeed = useMemo<Record<string, string>>(() => {
     if (adapterDescriptor === null) return {};
-    const out: Record<string, string> = {};
-    const schema = adapterDescriptor.bindingConfigSchema;
-    if (schema === undefined) return out;
-    const persisted = props.binding.config ?? {};
-    for (const [key, field] of Object.entries(schema.properties)) {
-      if (field.hidden === true) continue;
-      const persistedValue = persisted[key];
-      if (persistedValue !== undefined) {
-        out[key] = coercePersistedToRaw(field, persistedValue);
-        continue;
-      }
-      const def = defaultAsRaw(field);
-      if (def !== undefined) out[key] = def;
-    }
-    return out;
+    return seedConfigFromBinding(adapterDescriptor, props.binding.config);
     // The binding's persisted config is the seed; identity stable.
   }, [adapterDescriptor, props.binding.config]);
 
@@ -879,13 +862,7 @@ export function SourceBindingDetail(
                       value={configValues[key] ?? ""}
                       onChange={(v): void => {
                         setConfigValues((cur) => ({ ...cur, [key]: v }));
-                        if (fieldErrors[key] !== undefined) {
-                          setFieldErrors((prev) => {
-                            const next = { ...prev };
-                            delete next[key];
-                            return next;
-                          });
-                        }
+                        clearFieldError(key);
                       }}
                       {...(fieldErrors[key] !== undefined
                         ? { error: fieldErrors[key] as string }
@@ -919,13 +896,7 @@ export function SourceBindingDetail(
                   errors: fieldErrors,
                   onChange: (key, v): void => {
                     setCredentialValues((cur) => ({ ...cur, [key]: v }));
-                    if (fieldErrors[key] !== undefined) {
-                      setFieldErrors((prev) => {
-                        const next = { ...prev };
-                        delete next[key];
-                        return next;
-                      });
-                    }
+                    clearFieldError(key);
                   },
                 })}
           </div>
@@ -1145,7 +1116,6 @@ function coercePersistedToRaw(
     return String(value);
   }
   if (field.type === "number") {
-    if (typeof value === "number") return String(value);
     return String(value);
   }
   if (field.type === "array") {
@@ -1173,6 +1143,32 @@ function defaultAsRaw(field: BindingConfigField): string | undefined {
   return field.default.join(", ");
 }
 
+/** Seed the config form from the binding's persisted jsonb (preferred)
+ *  with schema defaults as fallback. Hidden fields are skipped — they
+ *  are auto-backfilled by handshake / scan flows and the operator has
+ *  no input for them. Used by both `openEdit` (initial state) and the
+ *  `initialConfigSeed` memo (drift baseline). */
+function seedConfigFromBinding(
+  descriptor: AdapterDescriptor,
+  persisted: Record<string, unknown> | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  const schema = descriptor.bindingConfigSchema;
+  if (schema === undefined) return out;
+  const persistedConfig = persisted ?? {};
+  for (const [key, field] of Object.entries(schema.properties)) {
+    if (field.hidden === true) continue;
+    const persistedValue = persistedConfig[key];
+    if (persistedValue !== undefined) {
+      out[key] = coercePersistedToRaw(field, persistedValue);
+      continue;
+    }
+    const def = defaultAsRaw(field);
+    if (def !== undefined) out[key] = def;
+  }
+  return out;
+}
+
 /** Render the credential rotation form. Polling adapters → flat
  *  fields; webhook adapters → two grouped sections (auth +
  *  webhook_secret). All inputs render empty — we never read the
@@ -1189,72 +1185,43 @@ function renderCredentialFields(
   args: RenderCredentialFieldsArgs,
 ): JSX.Element {
   const { descriptor, values, errors, onChange } = args;
+
+  /** Render one `EditField` per property of a polling-shaped sub-schema.
+   *  `prefix` is "" for polling adapters (flat keys) and `"auth."` /
+   *  `"webhook_secret."` for the two webhook halves. */
+  const renderGroup = (
+    schema: PollingCredentialSchema,
+    prefix: "" | "auth." | "webhook_secret.",
+  ): JSX.Element[] =>
+    Object.entries(schema.properties).map(([key, prop]) => {
+      const fullKey = `${prefix}${key}`;
+      return (
+        <EditField
+          key={fullKey}
+          testId={`edit-cred-${fullKey}`}
+          label={fullKey}
+          {...(prop.description !== undefined
+            ? { description: prop.description }
+            : {})}
+          value={values[fullKey] ?? ""}
+          onChange={(v): void => onChange(fullKey, v)}
+          {...(errors[fullKey] !== undefined
+            ? { error: errors[fullKey] as string }
+            : {})}
+          secret={prop.secret === true}
+        />
+      );
+    });
+
   if (descriptor.mode === "polling") {
     const schema = descriptor.credentialSchema as PollingCredentialSchema;
-    return (
-      <>
-        {Object.entries(schema.properties).map(([key, prop]) => (
-          <EditField
-            key={key}
-            testId={`edit-cred-${key}`}
-            label={key}
-            {...(prop.description !== undefined
-              ? { description: prop.description }
-              : {})}
-            value={values[key] ?? ""}
-            onChange={(v): void => onChange(key, v)}
-            {...(errors[key] !== undefined
-              ? { error: errors[key] as string }
-              : {})}
-            secret={prop.secret === true}
-          />
-        ))}
-      </>
-    );
+    return <>{renderGroup(schema, "")}</>;
   }
   const webhook = descriptor.credentialSchema as WebhookCredentialSchema;
   return (
     <>
-      {Object.entries(webhook.properties.auth.properties).map(([key, prop]) => {
-        const fullKey = `auth.${key}`;
-        return (
-          <EditField
-            key={fullKey}
-            testId={`edit-cred-${fullKey}`}
-            label={fullKey}
-            {...(prop.description !== undefined
-              ? { description: prop.description }
-              : {})}
-            value={values[fullKey] ?? ""}
-            onChange={(v): void => onChange(fullKey, v)}
-            {...(errors[fullKey] !== undefined
-              ? { error: errors[fullKey] as string }
-              : {})}
-            secret={prop.secret === true}
-          />
-        );
-      })}
-      {Object.entries(webhook.properties.webhook_secret.properties).map(
-        ([key, prop]) => {
-          const fullKey = `webhook_secret.${key}`;
-          return (
-            <EditField
-              key={fullKey}
-              testId={`edit-cred-${fullKey}`}
-              label={fullKey}
-              {...(prop.description !== undefined
-                ? { description: prop.description }
-                : {})}
-              value={values[fullKey] ?? ""}
-              onChange={(v): void => onChange(fullKey, v)}
-              {...(errors[fullKey] !== undefined
-                ? { error: errors[fullKey] as string }
-                : {})}
-              secret={prop.secret === true}
-            />
-          );
-        },
-      )}
+      {renderGroup(webhook.properties.auth, "auth.")}
+      {renderGroup(webhook.properties.webhook_secret, "webhook_secret.")}
     </>
   );
 }
