@@ -465,6 +465,7 @@
     "title": "Cost",
     "subtitle": "Per-domain spend, projected month-end, tier split.",
     "loadError": "Could not load cost summary. Try again.",
+    "loading": "Loading cost data…",
     "empty": "No usage recorded yet.",
     "header": {
       "thisMonth": "this month",

@@ -34,7 +34,10 @@
  *     `totalUsd` but bucketed under `(unscoped)` for the domain
  *     groupBy so they don't hide.
  *   - byBucket is sorted DESC by totalUsd; capped at 100 buckets
- *     so a tenant with 100+ agents can't blow the JSON size.
+ *     so a tenant with 100+ agents can't blow the JSON size. The
+ *     ORDER BY + LIMIT are pushed into SQL (rather than slicing in
+ *     memory after a full fetch) so the database does the work and
+ *     the wire payload stays bounded.
  *
  * Budget state:
  *   - One row per active (`disabled_at IS NULL`) domain.
@@ -207,16 +210,17 @@ export function registerCostSummaryRoute(
       };
     });
 
-    const byBucket = bucketResult.rows
-      .map((r) => ({
-        key: r.key ?? UNSCOPED_BUCKET_KEY,
-        totalUsd: Number(r.total_usd),
-        tokensIn: Number(r.tokens_in),
-        tokensOut: Number(r.tokens_out),
-        runs: Number(r.runs),
-      }))
-      .sort((a, b) => b.totalUsd - a.totalUsd)
-      .slice(0, MAX_BUCKETS);
+    // ORDER BY total_usd DESC + LIMIT MAX_BUCKETS are applied in
+    // the SQL itself (see buildBucketQuery), so the rows we read
+    // back are already sorted and capped — no in-memory sort or
+    // slice needed.
+    const byBucket = bucketResult.rows.map((r) => ({
+      key: r.key ?? UNSCOPED_BUCKET_KEY,
+      totalUsd: Number(r.total_usd),
+      tokensIn: Number(r.tokens_in),
+      tokensOut: Number(r.tokens_out),
+      runs: Number(r.runs),
+    }));
 
     return reply.code(200).send({
       totalUsd,
@@ -267,6 +271,11 @@ function buildBucketQuery(
   to: Date,
 ): ReturnType<typeof sql> {
   const dim = BUCKET_DIMENSIONS[groupBy];
+  // ORDER BY total_usd DESC + LIMIT happen in SQL so the database
+  // returns at most MAX_BUCKETS rows (DESC by cost). MAX_BUCKETS is
+  // bound as a parameterised value rather than interpolated raw —
+  // it's a static int today, but the parameterised form is the
+  // safe pattern and keeps a single source of truth in JS.
   return sql`
     SELECT
       ${sql.raw(dim.keyExpr)}              AS key,
@@ -279,5 +288,7 @@ function buildBucketQuery(
     WHERE u."timestamp" >= ${from.toISOString()}::timestamptz
       AND u."timestamp" <= ${to.toISOString()}::timestamptz
     GROUP BY ${sql.raw(dim.groupExpr)}
+    ORDER BY COALESCE(SUM(u.cost_usd), 0) DESC
+    LIMIT ${MAX_BUCKETS}
   `;
 }

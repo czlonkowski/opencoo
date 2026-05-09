@@ -7,6 +7,8 @@
  *   - Stacked-segment bar by tier (thinker/worker/light split).
  *   - Top-buckets table for the chosen groupBy (domain | model |
  *     tier | agent), capped at the server's MAX_BUCKETS = 100.
+ *     Rows are sorted DESC by totalUsd server-side; column-header
+ *     click sorting is deferred to v0.2.
  *
  * The route fires TWO requests on load:
  *   1. The user-controlled groupBy (default `domain`) → drives the
@@ -576,10 +578,9 @@ interface BucketTableProps {
 
 function BucketTable(props: BucketTableProps): JSX.Element {
   const { t } = useTranslation();
-  // Server already returns DESC-by-cost; default sort key is the
-  // cost column, but the operator can flip it via the column
-  // header. v0.1 supports cost-only — runs and tokens are
-  // displayed but not sortable in this PR.
+  // Rows are sorted DESC by totalUsd server-side; that's the
+  // operator's expected default. Column-header click sorting is
+  // deferred to v0.2 — the columns render plain `<th>` here.
   const truncated = props.buckets.length >= MAX_BUCKETS;
   return (
     <Card title={t("cost.table.title")}>
@@ -704,6 +705,55 @@ export function Cost(props: CostProps = {}): JSX.Element {
     ],
     [t],
   );
+
+  // While the very first fetch is in flight (`summary === null`
+  // with no error), render a minimal text-only loading state
+  // instead of the full dashboard with empty cards. Text only —
+  // no spinner — because the heartbeat-pulse glyph on the live-
+  // spending indicator is the ONLY motion loop in the app
+  // (CLAUDE.md design-system, "no spinners").
+  if (summary === null && error === null) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          flex: 1,
+          padding: "0 24px 24px",
+          fontFamily: "var(--font-sans)",
+          gap: 16,
+          overflow: "auto",
+        }}
+      >
+        <div style={{ padding: "16px 0 8px" }}>
+          <span
+            style={{
+              fontFamily: "var(--font-sans)",
+              fontWeight: 500,
+              fontSize: "var(--fs-body)",
+              color: "var(--ink)",
+            }}
+          >
+            {t("cost.title")}
+          </span>
+        </div>
+        <Card>
+          <div
+            data-testid="cost-loading"
+            style={{
+              color: "var(--ink-3)",
+              padding: 32,
+              textAlign: "center",
+              fontFamily: "var(--font-sans)",
+              fontSize: 13,
+            }}
+          >
+            {t("cost.loading")}
+          </div>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div
