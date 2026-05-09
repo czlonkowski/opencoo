@@ -14,12 +14,18 @@
  * Security: all state-changing actions go through existing audited
  * endpoints. CSRF token is injected by fetchAdmin automatically.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { AgentsRunNowButton } from "../../components/AgentsRunNowButton.js";
 import { Btn } from "../../components/Btn.js";
 import { NoticeRow } from "../../components/NoticeRow.js";
+import {
+  createAgentRunsSubscription,
+  type SubscribeToAgentRuns,
+} from "../../lib/agent-runs-subscription.js";
 import { fetchAdmin, fetchOptsFor } from "../../lib/api.js";
+import { extractDomainSlugFromPath } from "../../lib/wiki-path.js";
 import { ReviewTableHeader } from "./ReviewTableHeader.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -46,6 +52,13 @@ interface LintFindingsResponse {
 export interface LintFindingsProps {
   /** @internal Test seam — defaults to globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
+  /** @internal Test seam — per-listener subscribe callable for
+   *  the "Re-run lint" button. When omitted, the route builds
+   *  ONE shared subscription via `createAgentRunsSubscription`
+   *  per mount and hands its `subscribe` down. Tests inject a
+   *  stub directly so the button's lifecycle observation is
+   *  deterministic. */
+  readonly subscribeToAgentRuns?: SubscribeToAgentRuns;
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -71,12 +84,45 @@ export function LintFindings(props: LintFindingsProps = {}): JSX.Element {
     })();
   }, []);
 
+  // Build a stable SSE subscription for the "Re-run lint"
+  // button. ONE underlying client per LintFindings mount; the
+  // button calls `subscription.subscribe(listener)` to add a
+  // handler without re-opening the SSE pipe. Tests inject a stub
+  // `subscribe` callable directly via the prop and skip the
+  // subscription object.
+  const injectedSubscribe = props.subscribeToAgentRuns;
+  const subscription = useMemo(
+    () =>
+      injectedSubscribe !== undefined
+        ? null
+        : createAgentRunsSubscription(),
+    [injectedSubscribe],
+  );
+  useEffect(
+    () => (): void => {
+      subscription?.close();
+    },
+    [subscription],
+  );
+  const subscribeToAgentRuns: SubscribeToAgentRuns =
+    injectedSubscribe ?? subscription!.subscribe;
+
   if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
   if (runs === null) return <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>;
 
   const allFindings = runs.flatMap((run) =>
     run.findings.map((f) => ({ ...f, runId: run.runId, endedAt: run.endedAt })),
   );
+
+  // Resolve the dispatch domain from the first finding's path.
+  // Lint findings live under a single domain per run; the path
+  // prefix IS the domain slug (e.g. `wiki-exec/ops/planning.md`).
+  // When no findings exist OR the path doesn't yield a slug, the
+  // "Re-run lint" button is suppressed (no safe domain to target).
+  const dispatchDomain =
+    allFindings.length > 0
+      ? extractDomainSlugFromPath(allFindings[0]!.path)
+      : null;
 
   if (allFindings.length === 0) {
     return <NoticeRow tone="muted">{t("review.lintFindings.empty")}</NoticeRow>;
@@ -104,6 +150,31 @@ export function LintFindings(props: LintFindingsProps = {}): JSX.Element {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+      {/* PR-R3 — "Re-run lint" CTA at the top of the findings list.
+          Dispatched against the domain extracted from the first
+          finding's path. Suppressed when no safe domain can be
+          inferred. */}
+      {dispatchDomain !== null && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            padding: "8px 0 12px",
+            borderBottom: "1px solid var(--rule)",
+          }}
+        >
+          <AgentsRunNowButton
+            agentSlug="lint"
+            domainSlug={dispatchDomain}
+            idleLabel={t("agentsRunNow.labels.rerunLint")}
+            queuedLabelFormat={t("agentsRunNow.labels.queued")}
+            runningLabelFormat={t("agentsRunNow.labels.running")}
+            rateLimitedTooltipFormat={t("agentsRunNow.tooltips.rateLimited")}
+            subscribeToAgentRuns={subscribeToAgentRuns}
+            {...(props.fetchImpl !== undefined ? { fetchImpl: props.fetchImpl } : {})}
+          />
+        </div>
+      )}
       <table
         style={{
           width: "100%",

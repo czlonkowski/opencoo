@@ -206,3 +206,27 @@ export function createProductionAgentRunners(
     },
   };
 }
+
+/**
+ * PR-R3 (phase-a appendix #10) — on-demand agent dispatch
+ * enqueue path. The admin-API's
+ * `POST /api/admin/agents/:slug/dispatch` route consumes this
+ * shape; production wires
+ * `AgentDispatcher.enqueueOneShot.bind(dispatcher)` (see
+ * `engine-self-operating/src/start.ts` and
+ * `composition/server-factory.ts`).
+ *
+ * The function lives in this module — alongside the runner
+ * registry — so the cron path AND the on-demand path are
+ * obviously paired in the codebase. The actual BullMQ enqueue
+ * lives on the dispatcher class itself; this is a structural
+ * type alias the route consumes without importing the
+ * dispatcher class directly (keeps the admin-API independent
+ * of the scheduler module's import surface).
+ */
+export interface DispatchAgentJob {
+  (args: {
+    readonly instanceId: string;
+    readonly dryRun?: boolean;
+  }): Promise<{ readonly jobId: string }>;
+}

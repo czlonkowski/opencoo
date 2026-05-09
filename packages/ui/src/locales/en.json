@@ -385,6 +385,41 @@
   "debug": {
     "bannerLabel": "LLM_DEBUG_LOG=1 · prompts and responses are mirroring to llm_usage_debug"
   },
+  "agentsRunNow": {
+    "labels": {
+      "runNow": "Run now",
+      "refreshNow": "Refresh now",
+      "rerunLint": "Re-run lint",
+      "queued": "Queued · {sec}s",
+      "running": "Running · {sec}s"
+    },
+    "tooltips": {
+      "rateLimited": "Rate limited — try again in {sec}s",
+      "dispatcherUnavailable": "Agent dispatcher offline. Check engine logs."
+    },
+    "errors": {
+      "dispatchFailed": "Could not start the agent. Try again or check the audit log.",
+      "auth": "Sign-in expired or insufficient permissions — re-paste your PAT."
+    },
+    "heartbeatRefresh": {
+      "subtitle": "Trigger a fresh heartbeat compile for this domain."
+    },
+    "lintRerun": {
+      "subtitle": "Re-run lint on the current findings' domain."
+    },
+    "activityCard": {
+      "title": "Scheduled agents",
+      "subtitle": "Per-instance recurring jobs. Use Run now to fire on demand.",
+      "empty": "No scheduled agents wired.",
+      "columns": {
+        "agent": "agent",
+        "instance": "instance",
+        "schedule": "schedule",
+        "lastFire": "last fired",
+        "actions": "actions"
+      }
+    }
+  },
   "audit": {
     "title": "Audit log",
     "subtitle": "Append-only record of every state-changing admin action.",

@@ -485,3 +485,80 @@ describe("AgentDispatcher — UTC timezone pin (round-3 fix #1)", () => {
     }
   });
 });
+
+describe("AgentDispatcher.enqueueOneShot — PR-R3 on-demand path", () => {
+  it("calls Queue.add with no repeat option and the manual triggeredBy flag", async () => {
+    const fixture = await freshAgentDb();
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+    });
+
+    const queue = dispatcher.queueForTest();
+    const addSpy = vi
+      .spyOn(queue, "add")
+      .mockResolvedValue({ id: "one-shot-job-1" } as never);
+
+    try {
+      const result = await dispatcher.enqueueOneShot({
+        instanceId: "11111111-2222-3333-4444-555555555555",
+        dryRun: true,
+      });
+      expect(result.jobId).toBe("one-shot-job-1");
+      expect(addSpy).toHaveBeenCalledTimes(1);
+      const callArgs = addSpy.mock.calls[0];
+      expect(callArgs).toBeDefined();
+      const [name, data, opts] = callArgs!;
+      expect(name).toBe("dispatch");
+      expect(data).toMatchObject({
+        instanceId: "11111111-2222-3333-4444-555555555555",
+        dryRun: true,
+        triggeredBy: "manual",
+      });
+      // No `repeat` opt — one-shot job, removed on complete.
+      const optsObj = opts as { repeat?: unknown };
+      expect(optsObj.repeat).toBeUndefined();
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+  });
+
+  it("rejects an empty instanceId without enqueueing", async () => {
+    const fixture = await freshAgentDb();
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+    });
+    const queue = dispatcher.queueForTest();
+    const addSpy = vi.spyOn(queue, "add");
+
+    try {
+      await expect(
+        dispatcher.enqueueOneShot({ instanceId: "" }),
+      ).rejects.toThrow(/instanceId/);
+      expect(addSpy).not.toHaveBeenCalled();
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+  });
+});

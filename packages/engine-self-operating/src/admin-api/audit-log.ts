@@ -77,6 +77,15 @@ export const AUDIT_LOG_ACTIONS = [
   "domain.update",
   "domain.disable",
   "domain.delete",
+  // Phase-a appendix #10 (PR-R3) — on-demand agent dispatch from
+  // the management UI. Metadata captures agent_slug + domain_slug +
+  // instance_slug + instance_id + dry_run + caller_username.
+  // `job_id` is NOT recorded because the audit row is written BEFORE
+  // the BullMQ enqueue (audit-before-enqueue invariant — the jobId
+  // doesn't exist yet at write time). Operators correlate via
+  // (caller_username, instance_id, created_at). NEVER any operator-
+  // supplied freeform text (THREAT-MODEL §3.13).
+  "agent.dispatch_now",
   // Logout — records the operator-initiated session-end so an
   // audit-log read can correlate an action burst with the
   // operator's session window.

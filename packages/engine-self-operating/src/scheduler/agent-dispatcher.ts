@@ -80,9 +80,21 @@ export interface AgentRunnerRegistry {
   get(definitionSlug: string): AgentRunner | undefined;
 }
 
-/** Payload of every `selfop.dispatch` job. */
+/** Payload of every `selfop.dispatch` job.
+ *
+ *  PR-R3 (phase-a appendix #10) — `dryRun` is set by the on-demand
+ *  dispatch path (`POST /api/admin/agents/:slug/dispatch`) so the
+ *  agent body can suppress side effects (e.g. wiki writes,
+ *  output-channel deliveries) when the operator wants a sanity
+ *  re-run without altering downstream state. Scheduled dispatches
+ *  always omit it (treated as `dryRun: false`). */
 export interface DispatchJobData {
   readonly instanceId: string;
+  readonly dryRun?: boolean;
+  /** PR-R3 — populated by the on-demand dispatch path. The audit
+   *  trail records who triggered the run; the harness propagates
+   *  the flag into `agent_runs.inputs` for downstream visibility. */
+  readonly triggeredBy?: "manual" | "scheduled";
 }
 
 /** Registered recurring job — stored in-memory by the dispatcher
@@ -261,6 +273,73 @@ export class AgentDispatcher {
     return [...this.registered];
   }
 
+  /**
+   * PR-R3 (phase-a appendix #10) — enqueue ONE-SHOT dispatch.
+   * Used by `POST /api/admin/agents/:slug/dispatch` to fire an
+   * agent on demand from the management UI without waiting for the
+   * cron tick.
+   *
+   * `enqueueOneShot` ALWAYS sets `triggeredBy: 'manual'` — this
+   * method is the on-demand dispatch path, so the manual provenance
+   * is hardwired here rather than parameterised. Scheduled fires
+   * use the cron-driven `Queue.add(...)` call inside `registerOne`
+   * (see `start()` / `registerOne`), which omits `triggeredBy` →
+   * the dispatch handler reads that absence as `scheduled` and sets
+   * `agent_runs.inputs.dispatchedBy = 'scheduler'`. A future caller
+   * MUST NOT use `enqueueOneShot` for a scheduled fire — it would
+   * mis-attribute the run as operator-initiated in the audit
+   * trail and the Activity feed.
+   *
+   * The job lands on the SAME `selfop.dispatch` queue scheduled
+   * dispatches use, so the same Worker handler (`dispatchOne`) +
+   * agent harness terminalisation path apply. The handler treats
+   * `dryRun` and `triggeredBy` as opaque metadata to propagate into
+   * `agent_runs.inputs` — the resulting `runId` is generated INSIDE
+   * the harness on `startRun`, so this method returns the BullMQ
+   * `jobId` (used by the route as a request trace id; the actual
+   * run id is observed via the SSE feed).
+   *
+   * No `repeat` option → BullMQ runs the job once and removes it.
+   * No `jobId` deduplication → operator can fire repeatedly (the
+   * route enforces a token-bucket rate-limit per (agent × user ×
+   * domain) so a runaway click doesn't fork-bomb the queue).
+   */
+  async enqueueOneShot(args: {
+    readonly instanceId: string;
+    readonly dryRun?: boolean;
+  }): Promise<{ readonly jobId: string }> {
+    if (typeof args.instanceId !== "string" || args.instanceId.length === 0) {
+      throw new Error(
+        "AgentDispatcher.enqueueOneShot: instanceId must be a non-empty string",
+      );
+    }
+    const job = await this.queue.add(
+      "dispatch",
+      {
+        instanceId: args.instanceId,
+        dryRun: args.dryRun ?? false,
+        triggeredBy: "manual",
+      },
+      {
+        // No jobId → BullMQ assigns a fresh sequential id; no
+        // dedupe so back-to-back operator clicks each fire (the
+        // route rate-limits separately).
+        removeOnComplete: true,
+        removeOnFail: false,
+      },
+    );
+    const jobId = job.id;
+    if (typeof jobId !== "string" || jobId.length === 0) {
+      // BullMQ assigns a string id by default; this branch guards
+      // against a future API change that would surface as a silent
+      // empty-string in the audit trail.
+      throw new Error(
+        "AgentDispatcher.enqueueOneShot: BullMQ Queue.add returned no job id",
+      );
+    }
+    return { jobId };
+  }
+
   /** Internal: invoke the test-supplied registration stub if set,
    *  else call BullMQ's real `Queue.add(...)` with `repeat`. */
   private async registerOne(entry: RegisteredSchedule): Promise<void> {
@@ -402,14 +481,25 @@ export class AgentDispatcher {
     // (the harness's typing requires the field; runtime-wise an
     // unused router is fine).
     const router = (this.router ?? ({} as unknown)) as LlmRouter;
+    // PR-R3 — distinguish on-demand from cron dispatches in
+    // `agent_runs.inputs` so the operator can later tell a "Run
+    // now" click apart from the cron tick. The `agent_trigger`
+    // enum has no `manual` variant in v0.1, so on-demand
+    // dispatches reuse `http` (the request entered via the
+    // admin-API) and the `inputs.dispatchedBy` field carries the
+    // operator/scheduler distinction.
+    const isManual = job.data.triggeredBy === "manual";
+    const inputs: Record<string, unknown> = isManual
+      ? { dispatchedBy: "operator", dryRun: job.data.dryRun ?? false }
+      : { dispatchedBy: "scheduler" };
     const result = await invokeAgent({
       definitions: this.definitions,
       db: this.db,
       router,
       logger: this.logger,
       instanceId,
-      trigger: "scheduled",
-      inputs: { dispatchedBy: "scheduler" },
+      trigger: isManual ? "http" : "scheduled",
+      inputs,
       run: runner,
       ...(this.sseBus !== undefined ? { sseBus: this.sseBus } : {}),
     });
