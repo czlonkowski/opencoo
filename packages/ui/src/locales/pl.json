@@ -45,6 +45,7 @@
     "showDisabled": "Show disabled",
     "disabledBadge": "disabled",
     "newDomain": "+ New domain",
+    "openDetail": "open detail for {{slug}}",
     "create": {
       "title": "New domain",
       "subtitle": "Provisions a Gitea repo and seeds index/log/schema.",

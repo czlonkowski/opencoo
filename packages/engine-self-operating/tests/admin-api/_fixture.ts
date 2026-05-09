@@ -232,6 +232,49 @@ const TABLES_DDL = `
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
   );
+
+  -- PR-R1 follow-up: catalog_candidate + miner_suppressions FK
+  -- domains via ON DELETE RESTRICT, so domain hard-delete must
+  -- pre-check them. The fixture mirrors the production FK shape
+  -- (only the columns load-bearing for the pre-check + tests).
+  -- miner_runs is FK'd by catalog_candidate so it ships too.
+  CREATE TABLE IF NOT EXISTS miner_runs (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    miner_binding_id uuid NOT NULL REFERENCES sources_bindings(id) ON DELETE RESTRICT,
+    class catalog_class NOT NULL,
+    window_start timestamp with time zone NOT NULL,
+    window_end timestamp with time zone NOT NULL,
+    candidate_count integer NOT NULL DEFAULT 0,
+    suppressed_count integer NOT NULL DEFAULT 0,
+    tokens_total integer NOT NULL DEFAULT 0,
+    cost_usd numeric(10, 6) NOT NULL DEFAULT '0',
+    latency_ms integer NOT NULL DEFAULT 0,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS catalog_candidate (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    miner_run_id uuid NOT NULL REFERENCES miner_runs(id) ON DELETE RESTRICT,
+    catalog_domain_id uuid NOT NULL REFERENCES domains(id) ON DELETE RESTRICT,
+    class catalog_class NOT NULL,
+    status catalog_candidate_status NOT NULL DEFAULT 'detected',
+    pattern_fingerprint text NOT NULL,
+    evidence_refs jsonb NOT NULL,
+    draft_payload jsonb NOT NULL,
+    reviewed_by uuid REFERENCES users(id) ON DELETE RESTRICT,
+    reviewed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS miner_suppressions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    catalog_domain_id uuid NOT NULL REFERENCES domains(id) ON DELETE RESTRICT,
+    pattern_fingerprint text NOT NULL,
+    reviewer_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    reason text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+  );
 `;
 
 export class MockGiteaClient implements GiteaClient {

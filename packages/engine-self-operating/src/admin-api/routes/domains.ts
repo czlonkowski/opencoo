@@ -20,15 +20,22 @@
  *   mutable (slug rename = re-create; class is structural).
  *   Aggregator uniqueness is pre-checked + audit row lists the
  *   changed field NAMES (never values, since `display_name` is
- *   operator-set free-form).
+ *   operator-set free-form). `changedFields` lists REAL diffs
+ *   computed against the current row, not body-key presence —
+ *   a PATCH that resends current values returns 200 + noOp:true
+ *   and writes no audit row.
  * `DELETE /api/admin/domains/:id?hard=1` — soft-delete by
  *   default (sets `disabled_at = now()`); hard-delete with
  *   `?hard=1`. Hard-delete is refused with 409 `fk_restricted`
- *   when `sources_bindings.domain_id` references the row, so
- *   the operator migrates bindings off first. Re-enabling a
- *   soft-deleted domain is NOT in v0.1 — soft-delete is a
- *   one-way valve in this release; the operator creates a
- *   fresh domain to recover.
+ *   when ANY ON DELETE RESTRICT FK references the row
+ *   (`sources_bindings`, `redaction_events`, `catalog_candidate`,
+ *   `miner_suppressions`); the response payload includes a
+ *   `blockers` map naming each table's count so the operator
+ *   knows where to migrate from. `binding_count` is preserved
+ *   alongside `blockers` for backward compat with existing
+ *   consumers. Re-enabling a soft-deleted domain is NOT in v0.1
+ *   — soft-delete is a one-way valve in this release; the
+ *   operator creates a fresh domain to recover.
  */
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
@@ -326,11 +333,11 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
         });
       }
       const { display_name, locale, is_aggregator } = parsed.data;
-      const changedFields: string[] = [];
-      if (display_name !== undefined) changedFields.push("display_name");
-      if (locale !== undefined) changedFields.push("locale");
-      if (is_aggregator !== undefined) changedFields.push("is_aggregator");
-      if (changedFields.length === 0) {
+      const bodyKeys: string[] = [];
+      if (display_name !== undefined) bodyKeys.push("display_name");
+      if (locale !== undefined) bodyKeys.push("locale");
+      if (is_aggregator !== undefined) bodyKeys.push("is_aggregator");
+      if (bodyKeys.length === 0) {
         // Empty body — nothing to do. Surface as 422 so the operator
         // notices, rather than writing a no-op audit row.
         return reply.code(422).send({
@@ -350,6 +357,12 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
       // either errors on connectivity or returns rows), so the
       // catch only handles genuine connectivity failures and
       // emits the same `internal_error` shape DELETE uses.
+      //
+      // The aggregator-conflict check runs BEFORE the no-op shortcut:
+      // a hand-crafted PATCH that resends `is_aggregator: true` while
+      // the row already holds the flag AND another active domain ALSO
+      // holds it (stale state) must surface 409, not silently pass as
+      // a no-op. Uniqueness validates intent regardless of diff.
       if (is_aggregator === true) {
         let conflict: { rows: Array<unknown> };
         try {
@@ -371,6 +384,79 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
         if (conflict.rows.length > 0) {
           return reply.code(409).send({ error: "aggregator_already_set" });
         }
+      }
+
+      // Compute REAL diffs against the current row. Without this, a
+      // PATCH that resends current values would write a misleading
+      // audit row claiming "display_name changed" — `changedFields`
+      // must list values that actually moved. If nothing moved, the
+      // route returns 200 + noOp:true and writes no audit row.
+      let currentRow: {
+        rows: Array<{
+          id: string;
+          slug: string;
+          name: string;
+          class: string;
+          locale: string;
+          llm_policy: Record<string, unknown>;
+          is_aggregator: boolean;
+        }>;
+      };
+      try {
+        currentRow = (await args.db.execute(sql`
+          SELECT id::text AS id,
+                 slug,
+                 name,
+                 class::text AS class,
+                 locale,
+                 llm_policy,
+                 is_aggregator
+          FROM domains
+          WHERE id = ${id}::uuid
+          LIMIT 1
+        `)) as unknown as typeof currentRow;
+      } catch (err) {
+        req.log?.warn({
+          msg: "domain_update.internal_error",
+          domain_id: id,
+          err: err instanceof Error ? err.name : "unknown",
+        });
+        return reply.code(500).send({ error: "internal_error" });
+      }
+      const current = currentRow.rows[0];
+      if (current === undefined) {
+        return reply.code(404).send({ error: "not_found", id });
+      }
+
+      const changedFields: string[] = [];
+      if (display_name !== undefined && display_name !== current.name) {
+        changedFields.push("display_name");
+      }
+      if (locale !== undefined && locale !== current.locale) {
+        changedFields.push("locale");
+      }
+      if (
+        is_aggregator !== undefined &&
+        is_aggregator !== current.is_aggregator
+      ) {
+        changedFields.push("is_aggregator");
+      }
+
+      if (changedFields.length === 0) {
+        // No-op: the operator (or a hand-crafted client) submitted a
+        // PATCH whose values match the current row. Return 200 with
+        // noOp:true so the client can distinguish "nothing changed"
+        // from "saved a real edit"; no UPDATE, no audit row.
+        return reply.code(200).send({
+          id: current.id,
+          slug: current.slug,
+          name: current.name,
+          class: current.class,
+          locale: current.locale,
+          llmPolicy: current.llm_policy,
+          isAggregator: current.is_aggregator,
+          noOp: true,
+        });
       }
 
       // UPDATE with COALESCE on each optional field — only the
@@ -454,11 +540,16 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
 
   // PR-R1 — domain delete. Default = soft (sets `disabled_at`);
   // `?hard=1` = hard. Hard-delete is refused with 409
-  // `fk_restricted` when any `sources_bindings.domain_id`
-  // references the row (the schema's ON DELETE RESTRICT raises
-  // SQLSTATE 23503; we narrow via `isPgForeignKeyViolation`).
-  // The 409 response includes the binding count so the UI can
-  // render "N bindings reference this domain — migrate first".
+  // `fk_restricted` when ANY of the four ON DELETE RESTRICT FK
+  // tables reference the row (sources_bindings, redaction_events,
+  // catalog_candidate, miner_suppressions). The pre-check
+  // aggregates per-table counts in a single round-trip; the post-
+  // DELETE catch-23503 path stays as defense-in-depth for the
+  // race window. The 409 response includes a `blockers` map so
+  // the UI can render "N redaction events reference this domain —
+  // migrate first" pointing the operator at the right tab.
+  // `binding_count` stays in the payload for backward compat with
+  // existing UI / test consumers that still gate on it.
   //
   // Re-enabling a soft-deleted domain via PATCH is NOT in v0.1
   // scope (soft-delete is a one-way valve in this release). The
@@ -536,16 +627,54 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
         return reply.code(204).send();
       }
 
-      // Hard-delete path. Count bindings BEFORE the DELETE attempt
-      // so we have the count for both the audit row (always) and
-      // the 409 response payload (when FK blocks). Querying first
-      // also keeps the success path clean of catch-block logic.
-      const countResult = (await args.db.execute(sql`
-        SELECT COUNT(*)::int AS n
-        FROM sources_bindings
-        WHERE domain_id = ${id}::uuid
-      `)) as unknown as { rows: Array<{ n: number }> };
-      const bindingCount = countResult.rows[0]?.n ?? 0;
+      // Hard-delete path. Aggregate counts across EVERY FK-bearing
+      // table that references domains.id with ON DELETE RESTRICT
+      // BEFORE attempting DELETE. This:
+      //   1. closes the "binding_count = 0 still 409" surprise the
+      //      single-table check produced when a redaction_events /
+      //      catalog_candidate / miner_suppressions row blocks the
+      //      delete (see PR-R1 follow-up Copilot triage),
+      //   2. names the actual blocker(s) in the response payload so
+      //      the operator knows where to migrate from,
+      //   3. keeps the success path clean of catch-block logic.
+      // The post-DELETE catch-23503 path stays as defense-in-depth
+      // for the (rare) race between this pre-check and the DELETE.
+      const blockers = await countDomainBlockers(args.db, id);
+      const bindingCount = blockers.sources_bindings;
+      const totalBlockers =
+        blockers.sources_bindings +
+        blockers.redaction_events +
+        blockers.catalog_candidate +
+        blockers.miner_suppressions;
+      if (totalBlockers > 0) {
+        await writeAuditLog(args.db, {
+          action: "domain.delete",
+          userId: ctx.userId,
+          metadata: {
+            id,
+            slug,
+            hard: true,
+            binding_count: bindingCount,
+            blockers,
+            caller_username: ctx.username,
+            outcome: "fk_restricted",
+          },
+          sourceIp: req.ip,
+          userAgent: req.headers["user-agent"],
+        });
+        req.log?.warn({
+          msg: "domain_delete.fk_restricted",
+          domain_id: id,
+          blockers,
+        });
+        return reply.code(409).send({
+          error: "fk_restricted",
+          binding_count: bindingCount,
+          blockers,
+          message:
+            "domain is referenced by other tables; cannot hard-delete",
+        });
+      }
 
       try {
         const deleted = (await args.db.execute(sql`
@@ -559,8 +688,11 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
         }
       } catch (err) {
         if (isPgForeignKeyViolation(err)) {
-          // Audit the attempt with binding_count so the trail
-          // reflects what blocked the delete.
+          // Race window: a referencing row (in any of the four
+          // FK tables) was inserted between our pre-check and the
+          // DELETE. Re-aggregate so the response + audit row
+          // reflect the post-race state.
+          const raceBlockers = await countDomainBlockers(args.db, id);
           await writeAuditLog(args.db, {
             action: "domain.delete",
             userId: ctx.userId,
@@ -568,7 +700,8 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
               id,
               slug,
               hard: true,
-              binding_count: bindingCount,
+              binding_count: raceBlockers.sources_bindings,
+              blockers: raceBlockers,
               caller_username: ctx.username,
               outcome: "fk_restricted",
             },
@@ -578,13 +711,14 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
           req.log?.warn({
             msg: "domain_delete.fk_restricted",
             domain_id: id,
-            binding_count: bindingCount,
+            blockers: raceBlockers,
           });
           return reply.code(409).send({
             error: "fk_restricted",
-            binding_count: bindingCount,
+            binding_count: raceBlockers.sources_bindings,
+            blockers: raceBlockers,
             message:
-              "domain has source bindings; migrate or delete those first",
+              "domain is referenced by other tables; cannot hard-delete",
           });
         }
         // Genuine internal failure — connectivity, syntax, etc.
@@ -606,6 +740,7 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
           slug,
           hard: true,
           binding_count: bindingCount,
+          blockers,
           caller_username: ctx.username,
         },
         sourceIp: req.ip,
@@ -614,6 +749,44 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
       return reply.code(204).send();
     },
   );
+}
+
+/** Per-FK-table reference counts for `domains.id`. The four tables
+ *  hold ON DELETE RESTRICT FKs, so any non-zero count blocks a hard-
+ *  delete. Aggregated in a single round-trip via correlated sub-
+ *  selects to keep the pre-check cheap. */
+interface DomainBlockers {
+  readonly sources_bindings: number;
+  readonly redaction_events: number;
+  readonly catalog_candidate: number;
+  readonly miner_suppressions: number;
+}
+
+async function countDomainBlockers(
+  db: Db,
+  id: string,
+): Promise<DomainBlockers> {
+  const result = (await db.execute(sql`
+    SELECT
+      (SELECT COUNT(*)::int FROM sources_bindings WHERE domain_id = ${id}::uuid) AS sources_bindings,
+      (SELECT COUNT(*)::int FROM redaction_events WHERE domain_id = ${id}::uuid) AS redaction_events,
+      (SELECT COUNT(*)::int FROM catalog_candidate WHERE catalog_domain_id = ${id}::uuid) AS catalog_candidate,
+      (SELECT COUNT(*)::int FROM miner_suppressions WHERE catalog_domain_id = ${id}::uuid) AS miner_suppressions
+  `)) as unknown as {
+    rows: Array<{
+      sources_bindings: number;
+      redaction_events: number;
+      catalog_candidate: number;
+      miner_suppressions: number;
+    }>;
+  };
+  const row = result.rows[0];
+  return {
+    sources_bindings: row?.sources_bindings ?? 0,
+    redaction_events: row?.redaction_events ?? 0,
+    catalog_candidate: row?.catalog_candidate ?? 0,
+    miner_suppressions: row?.miner_suppressions ?? 0,
+  };
 }
 
 /** Coerce a Postgres timestamptz value (Date when node-postgres

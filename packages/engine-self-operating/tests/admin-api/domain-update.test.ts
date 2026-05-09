@@ -268,6 +268,86 @@ describe("admin-api PATCH /api/admin/domains/:id (PR-R1)", () => {
     );
   });
 
+  it("200 noOp when body values match current row — no UPDATE, no audit row", async () => {
+    // PR-R1 follow-up: `changedFields` must list REAL diffs (computed
+    // against the current row), not body-key presence. A PATCH that
+    // resends the same value(s) the row already has is a no-op:
+    // 200 + noOp:true, and no audit row written.
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    const { id } = await seedDomain(f.raw, "exec", {
+      name: "Same Name",
+      locale: "en",
+    });
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+
+    const res = await f.app.inject({
+      method: "PATCH",
+      url: `/api/admin/domains/${id}`,
+      headers: {
+        authorization: `Bearer ${ADMIN_PAT}`,
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      // All fields match the seeded row — nothing actually changes.
+      payload: { display_name: "Same Name", locale: "en" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as {
+      id: string;
+      slug: string;
+      noOp?: boolean;
+    };
+    expect(body.id).toBe(id);
+    expect(body.slug).toBe("exec");
+    expect(body.noOp).toBe(true);
+
+    // No audit row was written for the no-op.
+    const audit = await f.raw.query(
+      `SELECT id FROM admin_audit_log WHERE action = 'domain.update'`,
+    );
+    expect(audit.rows.length).toBe(0);
+  });
+
+  it("409 aggregator_already_set fires before the no-op check (uniqueness must validate intent)", async () => {
+    // The aggregator-uniqueness pre-check must run BEFORE the no-op
+    // shortcut: if the operator submits is_aggregator: true on a
+    // domain that already holds the flag, the pre-check sees the
+    // OTHER active aggregator and 409s. (Without this ordering, a
+    // hand-crafted PATCH that resends is_aggregator: true while the
+    // domain is already aggregator AND a different active domain is
+    // also aggregator would silently succeed as a no-op, masking
+    // the constraint violation.)
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    // Existing aggregator (active).
+    await seedDomain(f.raw, "company", { is_aggregator: true });
+    // Target — also marked aggregator (simulates a stale state where
+    // the partial UNIQUE INDEX would normally have prevented this,
+    // but the test forces it via direct INSERT).
+    const { id } = await seedDomain(f.raw, "exec", { is_aggregator: false });
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+
+    const res = await f.app.inject({
+      method: "PATCH",
+      url: `/api/admin/domains/${id}`,
+      headers: {
+        authorization: `Bearer ${ADMIN_PAT}`,
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: { is_aggregator: true },
+    });
+    expect(res.statusCode).toBe(409);
+    expect((JSON.parse(res.body) as { error: string }).error).toBe(
+      "aggregator_already_set",
+    );
+  });
+
   it("404 when domain id does not exist", async () => {
     const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
     cleanup = f.close;

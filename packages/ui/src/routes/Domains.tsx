@@ -8,6 +8,7 @@
  * "Show disabled" toggle (?include_disabled=1), and the disabled
  * badge on retired rows.
  */
+import type { KeyboardEvent } from "react";
 import { useEffect, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -28,11 +29,6 @@ export interface DomainsProps {
    *  driven by the same mock the modal uses. */
   readonly fetchImpl?: typeof fetch;
 }
-
-const ROW_BUTTON_STYLE: CSSProperties = {
-  display: "contents",
-  cursor: "pointer",
-};
 
 const TOGGLE_ROW_STYLE: CSSProperties = {
   display: "flex",
@@ -139,36 +135,51 @@ export function Domains(props: DomainsProps = {}): JSX.Element {
             {rows.map((d) => {
               const disabled =
                 d.disabledAt !== null && d.disabledAt !== undefined;
+              // PR-R1 Copilot triage: Sources.tsx-shaped row
+              // affordance. The previous `<button style={display:
+              // contents}>` killed the focus outline because the
+              // button generated no box. Each cell now gets
+              // `role="button" tabIndex={0} onKeyDown` so the
+              // browser draws the standard focus ring per cell and
+              // every column is a click/Enter/Space target. The
+              // i18n'd aria-label spells out the action for screen
+              // readers (en/pl interpolate the slug). Disabled
+              // badge is informational — `--ink-3` (muted), NOT
+              // `--alert`.
+              const onRowClick = (): void => setSelected(d);
+              const onRowKey = (e: KeyboardEvent): void => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setSelected(d);
+                }
+              };
+              const cellStyle: CSSProperties = {
+                cursor: "pointer",
+                padding: "4px 0",
+              };
+              const cellProps = {
+                role: "button",
+                tabIndex: 0,
+                onClick: onRowClick,
+                onKeyDown: onRowKey,
+                "aria-label": t("domains.openDetail", { slug: d.slug }),
+              } as const;
               return (
-                // Treat row contents as a clickable affordance that
-                // opens the detail modal. `display: contents` keeps
-                // the row laid out by the parent grid; the wrapping
-                // `button` provides keyboard access (Enter/Space)
-                // without breaking the layout. Disabled badge is
-                // informational — `--ink-3` (muted), NOT `--alert`.
-                <button
+                <div
                   key={d.id}
-                  type="button"
-                  style={{
-                    ...ROW_BUTTON_STYLE,
-                    background: "transparent",
-                    border: "none",
-                    padding: 0,
-                    textAlign: "left",
-                    color: "inherit",
-                    font: "inherit",
-                  }}
-                  onClick={(): void => setSelected(d)}
-                  aria-label={`${d.slug} — open detail`}
+                  style={{ display: "contents" }}
+                  data-domain-id={d.id}
                 >
                   <div
                     style={{
+                      ...cellStyle,
                       fontFamily: "var(--font-mono)",
                       fontSize: "var(--fs-mono)",
                       display: "flex",
                       gap: "var(--space-2)",
                       alignItems: "baseline",
                     }}
+                    {...cellProps}
                   >
                     {d.slug}
                     {disabled ? (
@@ -185,19 +196,31 @@ export function Domains(props: DomainsProps = {}): JSX.Element {
                       </span>
                     ) : null}
                   </div>
-                  <div>{d.name}</div>
-                  <div style={{ color: "var(--ink-3)" }}>{d.class}</div>
-                  <div style={{ color: "var(--ink-3)" }}>{d.locale}</div>
+                  <div style={cellStyle} {...cellProps}>{d.name}</div>
+                  <div
+                    style={{ ...cellStyle, color: "var(--ink-3)" }}
+                    {...cellProps}
+                  >
+                    {d.class}
+                  </div>
+                  <div
+                    style={{ ...cellStyle, color: "var(--ink-3)" }}
+                    {...cellProps}
+                  >
+                    {d.locale}
+                  </div>
                   <div
                     style={{
+                      ...cellStyle,
                       color: d.isAggregator
                         ? "var(--healthy)"
                         : "var(--ink-3)",
                     }}
+                    {...cellProps}
                   >
                     {d.isAggregator ? t("common.yes") : t("common.no")}
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
