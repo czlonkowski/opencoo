@@ -29,6 +29,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -497,6 +498,10 @@ function RowDetail(props: RowDetailProps): JSX.Element {
   const { t } = useTranslation();
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const [showFull, setShowFull] = useState(false);
+  // Holds the 2s revert timer so it can be cleared on rapid re-clicks
+  // (no state-reset race) AND on unmount (no setState-on-unmounted
+  // warning if the operator collapses the row before it fires).
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fullJson = useMemo(() => formatMetadata(props.row.metadata), [props.row.metadata]);
   const overflow = fullJson.length > JSON_TRUNCATE_BYTES;
@@ -509,6 +514,10 @@ function RowDetail(props: RowDetailProps): JSX.Element {
     // (older browsers). Without this catch the rejection bubbled
     // up unhandled and the operator got no feedback that the copy
     // didn't take.
+    if (copyTimeoutRef.current !== null) {
+      clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = null;
+    }
     void (async (): Promise<void> => {
       try {
         await navigator.clipboard.writeText(fullJson);
@@ -516,9 +525,21 @@ function RowDetail(props: RowDetailProps): JSX.Element {
       } catch {
         setCopyState("error");
       }
-      setTimeout(() => setCopyState("idle"), 2000);
+      copyTimeoutRef.current = setTimeout((): void => {
+        setCopyState("idle");
+        copyTimeoutRef.current = null;
+      }, 2000);
     })();
   }, [fullJson]);
+
+  useEffect((): (() => void) => {
+    return (): void => {
+      if (copyTimeoutRef.current !== null) {
+        clearTimeout(copyTimeoutRef.current);
+        copyTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   const copyLabel =
     copyState === "success"
