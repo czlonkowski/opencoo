@@ -15,6 +15,11 @@
  *     `lastEventId` cursor; lines starting with `:` are comments);
  *   - reconnects with exponential backoff (500 ms → 10 s) so a flaky
  *     network or a brief engine restart self-heals without an op;
+ *   - on a 401 response, emits a synthetic `auth_failed` event and
+ *     STOPS reconnecting (PR-W3, phase-a appendix #11) — a durably
+ *     stale PAT must not thrash the server with handshake attempts.
+ *     The terminal flag is per-session; consumers re-open the client
+ *     after the operator pastes a fresh PAT.
  *   - exposes the same `on(eventType, listener)` / `close()` /
  *     `readyState` surface the previous EventSource-based helper did,
  *     so `Activity.tsx` and existing test stubs are unchanged.
@@ -175,6 +180,22 @@ export function openSseClient(url: string): SseClient {
     for (const listener of set) listener(event);
   }
 
+  /** Synthetic terminal event — bypasses the wire-format parser
+   *  because no SSE frame is involved (the response body never
+   *  streamed). Consumers register `client.on("auth_failed", ...)`
+   *  exactly like any other channel; the payload is a stable shape
+   *  so future fields (e.g. `reason`) can extend without churn. */
+  function dispatchAuthFailed(): void {
+    const set = listeners.get("auth_failed");
+    if (set === undefined || set.size === 0) return;
+    const event: SseEvent<{ reason: "unauthorized" }> = {
+      type: "auth_failed",
+      data: { reason: "unauthorized" },
+      lastEventId,
+    };
+    for (const listener of set) listener(event);
+  }
+
   function scheduleReconnect(): void {
     if (isClosed()) return;
     state = "connecting";
@@ -211,6 +232,21 @@ export function openSseClient(url: string): SseClient {
       // Network error or abort — fall through to reconnect (the reconnect
       // path itself early-returns if state === "closed").
       if (!isClosed()) scheduleReconnect();
+      return;
+    }
+
+    // 401 is TERMINAL (PR-W3): the operator's PAT is durably stale
+    // (revoked, expired, never valid). Reconnecting just thrashes the
+    // server with another doomed handshake AND leaves the Activity feed
+    // pinned at "connecting…" with no operator-visible signal. Emit a
+    // synthetic `auth_failed` event the UI consumer (Activity.tsx) can
+    // listen for, mark the client closed, and STOP. The terminal flag
+    // is per-session — once the operator re-pastes a fresh PAT, the
+    // consumer opens a brand-new client.
+    if (response.status === 401) {
+      dispatchAuthFailed();
+      state = "closed";
+      abort = null;
       return;
     }
 
