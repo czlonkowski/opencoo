@@ -269,6 +269,54 @@ describe("buildForgetDeleteHandler", () => {
     expect(capState.used).toBe(0);
   });
 
+  it("admin-caller bypass works even when cap is exhausted (route already reserved at enqueue)", async () => {
+    // Models the W1 enqueue contract end-to-end: the admin-API
+    // forget route reserved the daily delete-cap budget BEFORE
+    // enqueueing the job, then the worker runs with caller.kind =
+    // 'admin' so it does NOT double-reserve. Construct the fixture
+    // with `dailyLimit: 0` — any non-admin caller would throw
+    // `WikiWriteCapExceededError` immediately, but the worker's
+    // admin caller flows past the cap check (wiki-write.ts:96
+    // `caller.kind !== 'admin'` branch is skipped) and the delete
+    // commits.
+    const f = await makeFixture(0);
+    const PAGE = "strategy/cap-exhausted.md";
+    f.adapter.inject(
+      "test-domain" as DomainSlug,
+      PAGE,
+      "# Cap-exhausted\n",
+    );
+    await insertCitation(f.db.raw, {
+      domainSlug: "test-domain",
+      pagePath: PAGE,
+      sourceBindingId: f.db.bindingId,
+      sourceRef: "drive:doc-cap-exhausted",
+    });
+
+    const handler = buildForgetDeleteHandler(f.deps);
+    await handler(
+      fakeJob({
+        bindingId: f.db.bindingId,
+        domainSlug: "test-domain",
+        pagePath: PAGE,
+        callerUsername: "alice",
+      }),
+    );
+
+    // 1) Wiki page is gone — admin bypass took effect.
+    const after = await f.adapter.readPage("test-domain" as DomainSlug, PAGE);
+    expect(after).toBeNull();
+
+    // 2) Cap state still shows used: 0 — admin caller does not
+    //    consume budget (matches the route-reserves-once contract).
+    const capState = f.cap.peek(
+      "test-domain" as DomainSlug,
+      new Date("2026-04-25T12:00:00Z"),
+    );
+    expect(capState.used).toBe(0);
+    expect(capState.cap).toBe(0);
+  });
+
   it("only deletes the named page — leaves other pages in the same domain intact", async () => {
     const f = await makeFixture();
     const TARGET = "strategy/target.md";

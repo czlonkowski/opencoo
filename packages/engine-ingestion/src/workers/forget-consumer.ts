@@ -64,12 +64,24 @@
  * # Failure semantics
  *
  * Throwing from the handler is the BullMQ-canonical way to signal a
- * retryable failure. The producer-side queue defaults govern attempts
- * + backoff; a transport blip retries; a permanent failure (binding
- * row missing entirely) DLQs after the attempts cap. We throw bare
- * Error here — the route's audit row is the operator-facing record;
- * BullMQ's job log + the per-job logger entry are the engine-facing
- * record.
+ * retryable failure. The producer-side queue defaults
+ * (`production-composition.ts` wires `attempts: 5` + exponential
+ * backoff starting at 30s) govern retry shape: a transport blip
+ * retries, a cap-exceeded throw retries until the daily window
+ * resets, and a permanent failure (malformed payload, binding row
+ * missing entirely, schema drift) lands in BullMQ's failed set
+ * after the attempts cap (the failed set is bounded by
+ * `removeOnFail: { count: 1000 }` and acts as the DLQ for operator
+ * inspection). We throw bare Error here — the route's audit row is
+ * the operator-facing record; BullMQ's job log + the per-job logger
+ * entry are the engine-facing record.
+ *
+ * Forget is safely re-runnable end-to-end: the delete handler's
+ * existence probe absorbs a prior partial commit (page already
+ * gone → warn + still prune orphan citations), the recompile stub
+ * is log-only, and the citations DELETE is idempotent. A retry
+ * after a partial success is therefore a no-op + warn, not a
+ * double-delete or double-write.
  */
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
@@ -79,6 +91,7 @@ import {
   type Job,
   type WorkerOptions,
 } from "bullmq";
+import { z } from "zod";
 
 import {
   WIKI_DELETE_JOB_NAME,
@@ -98,6 +111,31 @@ import {
 import type { DomainSlug } from "@opencoo/shared/db";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
+
+/** Slug shape mirrors the admin-api routes' validators (domains.ts
+ *  `SLUG_REGEX` + agents-dispatch.ts `SLUG_PATTERN`): lowercase alpha
+ *  start, then alphanumerics or hyphens, max 63 chars. Centralised
+ *  here as a defensive parse at the consumer boundary so a malformed
+ *  payload (operator-scripted off-spec `queue.add`, schema drift)
+ *  fails fast with a typed error instead of being passed-through to
+ *  the wiki adapter as an `as DomainSlug` cast. */
+const DOMAIN_SLUG_REGEX = /^[a-z][a-z0-9-]{0,62}$/;
+const FORGET_PAYLOAD_SCHEMA = z.object({
+  bindingId: z.string().min(1),
+  domainSlug: z.string().regex(DOMAIN_SLUG_REGEX),
+  pagePath: z.string().min(1),
+  callerUsername: z.string().min(1),
+});
+
+/** Parse + brand the payload's `domainSlug` at handler entry. Throws
+ *  on a malformed payload so BullMQ marks the job failed; the
+ *  producer-side `attempts` cap (5, with exponential backoff) means
+ *  malformed-payload jobs land in the failed set after a small retry
+ *  burst — that's fine because they're operator-induced and rare. */
+function validatedDomainSlug(payload: ForgetJobPayload): DomainSlug {
+  const parsed = FORGET_PAYLOAD_SCHEMA.parse(payload);
+  return parsed.domainSlug as DomainSlug;
+}
 
 /** A surviving citation row the recompile hook receives. Carries
  *  enough to identify the source without leaking the underlying
@@ -172,6 +210,14 @@ export function buildForgetRecompileHandler(
 ): (job: Job<ForgetJobPayload>) => Promise<void> {
   return async (job) => {
     const payload = job.data;
+    // Validate payload at handler entry — Zod throws on malformed
+    // shape and the throw flows into BullMQ's retry path. The
+    // recompile path doesn't itself need the branded slug (db reads
+    // accept `string`), but parsing here keeps the contract uniform
+    // with the delete handler and surfaces operator-scripted off-spec
+    // `queue.add` payloads early instead of letting them silently
+    // mismatch downstream.
+    validatedDomainSlug(payload);
     const ctx = jobLogContext(payload);
     const citations = await readCitations(
       deps.db,
@@ -242,6 +288,13 @@ export function buildForgetDeleteHandler(
 ): (job: Job<ForgetJobPayload>) => Promise<void> {
   return async (job) => {
     const payload = job.data;
+    // Validate + brand the slug at handler entry — replaces the
+    // unchecked `as DomainSlug` cast that previously sat at the two
+    // adapter call-sites. A malformed payload throws here (Zod parse
+    // error) and the throw flows into BullMQ's retry path; the
+    // producer-side attempts cap then lands the failed job in the
+    // failed set for operator inspection.
+    const domainSlug = validatedDomainSlug(payload);
     const ctx = jobLogContext(payload);
 
     // Defensive existence probe — if the page is already gone (a
@@ -251,7 +304,7 @@ export function buildForgetDeleteHandler(
     // and exit cleanly. Retrying a delete against a missing page
     // would surface as a confusing wiki transport error.
     const existing = await deps.wikiDeps.adapter.readPage(
-      payload.domainSlug as DomainSlug,
+      domainSlug,
       payload.pagePath,
     );
 
@@ -412,7 +465,7 @@ function withJobNameGuard<T>(
   return async (job) => {
     if (job.name !== expectedName) {
       throw new Error(
-        `forget-consumer: ${queueSlug} expected job name ${expectedName}, got ${JSON.stringify(job.name)}`,
+        `forget-consumer: ${queueSlug} expected job name ${expectedName}, got ${job.name}`,
       );
     }
     return handler(job);
