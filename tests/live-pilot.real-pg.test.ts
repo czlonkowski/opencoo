@@ -310,7 +310,10 @@ describe.runIf(ENABLED)(
           `${s.baseUrl}/api/admin/source-bindings`,
           {
             method: "POST",
-            headers: adminHeaders(e.giteaAdminPat, handshake),
+            headers: {
+              ...adminHeaders(e.giteaAdminPat, handshake),
+              "content-type": "application/json",
+            },
             body: JSON.stringify(bindingPayload),
           },
         );
@@ -340,7 +343,10 @@ describe.runIf(ENABLED)(
           `${s.baseUrl}/api/admin/domains/${domainId}/llm-policy/preview`,
           {
             method: "POST",
-            headers: adminHeaders(e.giteaAdminPat, handshake),
+            headers: {
+              ...adminHeaders(e.giteaAdminPat, handshake),
+              "content-type": "application/json",
+            },
             body: JSON.stringify({ proposed: proposedPolicy }),
           },
         );
@@ -353,7 +359,10 @@ describe.runIf(ENABLED)(
           `${s.baseUrl}/api/admin/domains/${domainId}/llm-policy/apply`,
           {
             method: "POST",
-            headers: adminHeaders(e.giteaAdminPat, handshake),
+            headers: {
+              ...adminHeaders(e.giteaAdminPat, handshake),
+              "content-type": "application/json",
+            },
             body: JSON.stringify({
               proposed: proposedPolicy,
               token: previewBody.token,
@@ -581,7 +590,10 @@ describe.runIf(ENABLED)(
           `${s.baseUrl}/api/admin/source-bindings/${bindingId}`,
           {
             method: "PATCH",
-            headers: adminHeaders(e.giteaAdminPat, handshake),
+            headers: {
+              ...adminHeaders(e.giteaAdminPat, handshake),
+              "content-type": "application/json",
+            },
             body: JSON.stringify({ enabled: false }),
           },
         );
