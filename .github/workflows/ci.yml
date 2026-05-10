@@ -143,6 +143,20 @@ jobs:
         # job below.
         run: pnpm --filter @opencoo/shared build
 
+      - name: Build all packages
+        # Required for cross-package tests. The CLI test suite (and
+        # several engine-self-operating tests) imports peer workspace
+        # packages via subpath exports that resolve to `dist/`. The
+        # pre-X3 monolithic CI got the dist via `pnpm typecheck` +
+        # `pnpm test` running through turbo's task graph; sharding
+        # invokes vitest directly via `pnpm test -- --shard=...` and
+        # bypasses turbo's `^build` dependency, so we materialise
+        # every package's dist explicitly here.
+        # Surfaced 2026-05-10 by PR #104 first-run shard failures
+        # ("Failed to resolve entry for package
+        # `@opencoo/engine-self-operating`").
+        run: pnpm build
+
       - name: Test (shard ${{ matrix.shard }}/4)
         # Vitest 1.0+ supports native `--shard=N/M` partitioning
         # of the discovered test file set. The repo is on vitest
