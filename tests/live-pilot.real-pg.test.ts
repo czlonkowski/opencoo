@@ -501,8 +501,22 @@ describe.runIf(ENABLED)(
           ],
         };
         const mock = new MockLlmClient();
+        // The "Q4 wire-up" step above applied `proposedPolicy`
+        // (openrouter/moonshotai/kimi-k2.6) on this domain. The
+        // heartbeat router reads that per-domain `llm_policy`
+        // when resolving the call's model, so the mock has to
+        // match the kimi slug — not the FALLBACK_POLICY default
+        // (`gpt-4o-mini`). A prior gpt-4o-mini registration here
+        // never matched, the mock threw `LlmProviderError`, the
+        // agent harness flipped `agent_runs.status` to 'failed',
+        // and `expect(heartbeatResult.status).toBe('success')`
+        // failed end-of-chain. Surfaced 2026-05-10 once the
+        // OPENROUTER_API_KEY repo secret unblocked the lane.
         mock.register({
-          match: { model: "gpt-4o-mini", promptIncludes: "Heartbeat" },
+          match: {
+            model: "moonshotai/kimi-k2.6",
+            promptIncludes: "Heartbeat",
+          },
           response: {
             text: JSON.stringify(heartbeatPayload),
             tokensIn: 200,
