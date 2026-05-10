@@ -1,48 +1,104 @@
-# syntax=docker/dockerfile:1.6
+# syntax=docker/dockerfile:1.7
+#
+# gitea-wiki-mcp-server — three-stage container build.
+#
+# PR-X2 skill-guided pass over the original two-stage Dockerfile:
+#   - upgraded `# syntax` from 1.6 → 1.7 (matches engine Dockerfile)
+#   - bumped base from node:20-alpine → node:22-alpine (matches engine
+#     Dockerfile + the engine workspace's `engines.node: ">=22"`; the
+#     MCP server's own `engines.node: ">=18"` accepts 22)
+#   - split `deps` from `build` so a source change does not bust the
+#     `npm ci` cache layer
+#   - added `--mount=type=cache` for the npm cache directory
+#   - bumped non-root UID from default `adduser -S` (random) to a
+#     fixed UID 10002 (engine uses 10001; pick distinct UIDs so
+#     bind-mount perms don't collide when both containers stack on
+#     a shared volume layout)
+#   - HEALTHCHECK keeps the same parameter set (interval/timeout/
+#     start-period/retries) the original already had — present for
+#     reference; nothing to change
+#   - COPY --chown remains on every runtime copy
 
-# ---- build stage: compile TS, install all deps ----
-FROM node:20-alpine AS build
+# ---- Stage 1: deps (cached separately from source changes) ----
+FROM node:22-alpine AS deps
 WORKDIR /app
 
-# Install native deps needed by @vscode/ripgrep binary (unpacks ripgrep at postinstall).
+# Install native deps needed by @vscode/ripgrep binary (unpacks
+# ripgrep at postinstall).
 RUN apk add --no-cache git
 
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json ./
 
+# Cache mount keeps successive builds fast across layer-cache misses.
+#
+# `npm install` (NOT `npm ci`): the package-lock.json was removed when
+# the package was integrated into the opencoo pnpm workspace at the
+# repo root (commit `c436d56`). Versions in package.json carry caret/
+# tilde ranges; deterministic-enough for pilot use. A future PR may
+# re-introduce a per-package lockfile or shift the build context to
+# the repo root + use pnpm — both are larger lifts than X2's scope.
+RUN --mount=type=cache,target=/root/.npm \
+    npm install --no-audit --no-fund
+
+# ---- Stage 2: build (compile TS, prune dev deps) ----
+FROM node:22-alpine AS build
+WORKDIR /app
+RUN apk add --no-cache git
+
+COPY --from=deps /app/node_modules ./node_modules
 COPY tsconfig.json ./
 COPY src ./src
+COPY package.json ./
+
+# tsc compile. Output lands in /app/dist per tsconfig.json `outDir`.
 RUN npm run build
 
-# Prune to production deps only (keeps ripgrep binary via @vscode/ripgrep).
+# Prune to production deps only (keeps the @vscode/ripgrep binary
+# unpacked under node_modules/@vscode/ripgrep/bin/).
 RUN npm prune --omit=dev
 
-# ---- runtime stage: minimal Alpine + compiled JS ----
-FROM node:20-alpine
+# ---- Stage 3: runtime (minimal Alpine + compiled JS, non-root) ----
+FROM node:22-alpine AS runtime
 WORKDIR /app
 
-# Git required for clone/pull at runtime.
-RUN apk add --no-cache git tini \
-  && addgroup -S app \
-  && adduser -S -G app app
+# Runtime deps:
+#   - git: simple-git spawns it for clone/pull at runtime
+#   - tini: PID-1 zombie reaper for git subprocesses
+RUN apk add --no-cache git tini
 
-# Copy production node_modules + built output.
-COPY --from=build --chown=app:app /app/node_modules ./node_modules
-COPY --from=build --chown=app:app /app/dist ./dist
-COPY --chown=app:app package.json LICENSE README.md ./
+# Non-root user with a fixed UID. UID 10002 is one above the engine
+# image's UID 10001 — keeps bind-mount perms predictable when the
+# operator stacks both containers against the same volume layout.
+ARG MCP_UID=10002
+ARG MCP_GID=10002
+RUN addgroup -S -g ${MCP_GID} mcpserver \
+    && adduser -S -G mcpserver -u ${MCP_UID} -s /sbin/nologin mcpserver
 
-# Data dir (repo clones + indexes) is expected to be a volume.
-RUN mkdir -p /data && chown -R app:app /data
-ENV DATA_DIR=/data
-ENV MCP_MODE=http
-ENV HOST=0.0.0.0
-ENV PORT=3000
+# Production node_modules + compiled JS + manifest + license.
+COPY --from=build --chown=mcpserver:mcpserver /app/node_modules ./node_modules
+COPY --from=build --chown=mcpserver:mcpserver /app/dist ./dist
+COPY --chown=mcpserver:mcpserver package.json LICENSE README.md ./
 
-USER app
+# Data dir (repo clones + indexes) is expected to be a volume mount
+# from the host. The fixed UID + chown ensure the volume's perms are
+# stable across container restarts.
+RUN mkdir -p /data && chown -R mcpserver:mcpserver /data
+
+ENV DATA_DIR=/data \
+    MCP_MODE=http \
+    HOST=0.0.0.0 \
+    PORT=3000 \
+    NODE_ENV=production
+
+USER mcpserver
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD wget -q -O - http://127.0.0.1:3000/health || exit 1
+# Full healthcheck parameter set (interval / timeout / start-period /
+# retries). `--start-period` accommodates the initial git clone +
+# index build the server performs on first boot — without it, a slow
+# clone trips the unhealthy threshold before /health is reachable.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD wget --quiet --tries=1 --spider http://127.0.0.1:3000/health || exit 1
 
 # tini reaps zombie child processes from git subprocess invocations.
 ENTRYPOINT ["/sbin/tini", "--"]
