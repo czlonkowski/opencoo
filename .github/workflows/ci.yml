@@ -5,20 +5,42 @@ on:
     branches: [main]
   pull_request:
 
+# Concurrency at the workflow level so superseded PR runs cancel
+# as a unit (every job in a run shares the same group). The four
+# parallel jobs below all belong to one run; cancelling the run
+# cancels every job in it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# PR-X3 (phase-a follow-up) split the prior monolithic `toolchain`
+# job into four parallel jobs and sharded the test job 4-ways.
+# Wall time on a green PR drops from ~27 min (the W1-bumped
+# baseline) to ~6–8 min on the longest path. Trade-off: 4–5×
+# actions-minutes for the same work, which on a public repo with
+# unlimited free Linux minutes is pure upside.
+#
+# Job topology after X3:
+#   - lint              (own runner)
+#   - typecheck         (own runner)
+#   - test (matrix 1/4..4/4, fail-fast: false)
+#   - drift-and-fixtures (schema-drift + fixtures-must-fail-rules)
+#   - prompt-injection-corpus (UNCHANGED from pre-X3)
+#
+# Branch-protection note for the operator: after this PR merges,
+# update the required-checks list on `main` to reflect the new job
+# names — `lint`, `typecheck`, `test (1)`, `test (2)`, `test (3)`,
+# `test (4)`, `drift-and-fixtures`, `prompt-injection-corpus
+# (deterministic tier)`. The old `toolchain` check name disappears
+# and must be removed from the protection rule or new PRs will
+# block on a check that never runs. See `docs/pilot-runbook.md`
+# §12 + `THREAT-MODEL.md` §5 for the documented list.
+
 jobs:
-  toolchain:
-    name: toolchain (lint / typecheck / test / fixtures)
+  lint:
+    name: lint
     runs-on: ubuntu-latest
-    # Bumped 25 → 35 in PR-W1 (phase-a appendix #11): the new
-    # production-composition tests boot real PGlite + spy queues,
-    # adding ~5–8 min to the previous baseline. Wave-10 closeout
-    # baseline runs were 20–22 min; new W1 baseline is ~28 min.
-    # 35 min keeps a 5-min margin without masking a runaway test.
-    timeout-minutes: 35
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,16 +58,123 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build @opencoo/eslint-plugin
+        # The eslint plugin must be built before `pnpm lint` runs
+        # because the root config consumes it via `workspace:*` and
+        # ESLint imports its compiled `dist/` entry.
         run: pnpm --filter @opencoo/eslint-plugin build
 
       - name: Lint root
         run: pnpm lint
 
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build @opencoo/eslint-plugin
+        # `turbo run typecheck` doesn't depend on the eslint plugin
+        # at the task graph level, but we keep the step here so the
+        # lint job and the typecheck job have the same setup shape
+        # — easier to reason about, and the plugin build is ~10s.
+        run: pnpm --filter @opencoo/eslint-plugin build
+
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Test
-        run: pnpm test
+  test:
+    name: test (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    # Per-shard timeout. On a green PR each shard finishes in
+    # ~70–90s on a warm cache, ~3–5 min cold. 20 min keeps a wide
+    # margin without masking a runaway test.
+    timeout-minutes: 20
+    strategy:
+      # CRITICAL: do NOT cancel sibling shards on first failure.
+      # We want every shard to report so the failure signal is
+      # localised — "shard 3 failed" tells us where to look, while
+      # a fail-fast cancel masks whether the issue is shard-local
+      # or systemic.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build @opencoo/eslint-plugin
+        # Same shape as the other jobs.
+        run: pnpm --filter @opencoo/eslint-plugin build
+
+      - name: Build @opencoo/shared
+        # Many tests across the workspace import `@opencoo/shared`
+        # via subpath exports (`@opencoo/shared/db/schema`,
+        # `@opencoo/shared/llm-router`, `@opencoo/shared/logger`,
+        # `@opencoo/shared/wiki-write`, etc.) which resolve to
+        # `dist/`. Vitest does not run tsc transparently, so we
+        # build shared explicitly before the suite runs. This
+        # mirrors the explanation in the prompt-injection-corpus
+        # job below.
+        run: pnpm --filter @opencoo/shared build
+
+      - name: Test (shard ${{ matrix.shard }}/4)
+        # Vitest 1.0+ supports native `--shard=N/M` partitioning
+        # of the discovered test file set. The repo is on vitest
+        # 3.2.4 (per the live-pilot config). Sharding partitions
+        # files; it does not exclude any. Sum of per-shard test
+        # counts equals the unsharded total.
+        run: pnpm test -- --shard=${{ matrix.shard }}/4
+
+  drift-and-fixtures:
+    name: drift-and-fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build @opencoo/eslint-plugin
+        # `pnpm lint:fixtures` invokes ESLint with the opencoo
+        # plugin loaded; the plugin must be built first.
+        run: pnpm --filter @opencoo/eslint-plugin build
 
       - name: "Schema drift check"
         shell: bash
@@ -87,6 +216,9 @@ jobs:
     # and THREAT-MODEL.md §4.2. Runs in deterministic-stub mode by
     # default — no LLM provider is contacted. The optional real-LLM
     # tier lives in `injection-real-llm.yml` (manual workflow_dispatch).
+    #
+    # UNCHANGED by PR-X3 — already runs in parallel with the rest
+    # of the workflow as a separate job.
     name: prompt-injection-corpus (deterministic tier)
     runs-on: ubuntu-latest
     timeout-minutes: 10

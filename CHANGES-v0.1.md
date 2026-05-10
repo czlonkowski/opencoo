@@ -766,7 +766,7 @@ The pre-X1 boot path constructed a `pg.Pool`, loaded admin-API env, composed the
 
 ## Phase-a follow-up — X2 (GHCR docker image distribution)
 
-A second post-`0.1.0-a` PR pulls the `0.1.0` release-gate item ("Docker images pushed to GHCR + Docker Hub with GPG-signed release tags" — `IMPLEMENTATION-PLAN.md` §3.3) forward to phase-a so the design partner's first cutover pulls a tagged image rather than building from a `git clone`. The `pilot-runbook.md` §2 partner-bootstrap path before X2 was `pnpm install && pnpm build && pnpm opencoo` from a checked-out tree — fine for contributor workflows, wrong for the partner's first production touch. Shipping source first then switching mid-soak doubles the failure surface during the period the partner needs to trust the platform most. PR-X2 closes that gap with two GHCR-published images (engine + gitea-wiki-mcp-server), a buildx-ready release workflow, a hardened partner compose template, and the matching runbook rewrite. Image signing (cosign / GPG) and SBOM publication remain deferred to PR-X3, tracked below as a `0.1.0`-final gate item; multi-arch arm64 stays a v0.2 goal. Single-arch (`linux/amd64`) only for now.
+A second post-`0.1.0-a` PR pulls the `0.1.0` release-gate item ("Docker images pushed to GHCR + Docker Hub with GPG-signed release tags" — `IMPLEMENTATION-PLAN.md` §3.3) forward to phase-a so the design partner's first cutover pulls a tagged image rather than building from a `git clone`. The `pilot-runbook.md` §2 partner-bootstrap path before X2 was `pnpm install && pnpm build && pnpm opencoo` from a checked-out tree — fine for contributor workflows, wrong for the partner's first production touch. Shipping source first then switching mid-soak doubles the failure surface during the period the partner needs to trust the platform most. PR-X2 closes that gap with two GHCR-published images (engine + gitea-wiki-mcp-server), a buildx-ready release workflow, a hardened partner compose template, and the matching runbook rewrite. Image signing (cosign / GPG) and SBOM publication remain deferred to PR-X4 (renumbered from a previously-planned PR-X3 slot when X3 was reassigned to CI parallelization), tracked below as a `0.1.0`-final gate item; multi-arch arm64 stays a v0.2 goal. Single-arch (`linux/amd64`) only for now.
 
 ### Added (X2) — engine + gitea-wiki-mcp-server images on ghcr.io/czlonkowski
 
@@ -780,7 +780,7 @@ A second post-`0.1.0-a` PR pulls the `0.1.0` release-gate item ("Docker images p
 ### Configuration
 
 - **No new env vars.** Image-distribution config is operator-controlled via `OPENCOO_TAG` + `OPENCOO_PORT` in the partner compose template's interpolation; neither is read by the engine itself. The engine's env-var allow-list (`tools/eslint-plugin-opencoo/src/rules/no-feature-env-vars.ts`) is unchanged. CLAUDE.md "UI-first configuration" rule honored.
-- **No new credentials.** The release workflow uses GitHub's built-in `GITHUB_TOKEN` for the GHCR push; no maintainer PAT to provision. Image signing in PR-X3 will require a cosign keypair + repo secret; that gate is documented below.
+- **No new credentials.** The release workflow uses GitHub's built-in `GITHUB_TOKEN` for the GHCR push; no maintainer PAT to provision. Image signing in PR-X4 will require a cosign keypair + repo secret; that gate is documented below.
 
 ### Schema
 
@@ -809,9 +809,56 @@ A second post-`0.1.0-a` PR pulls the `0.1.0` release-gate item ("Docker images p
 
 ### Deferred (tracked for `0.1.0` final release)
 
-- **PR-X3 — image signing + SBOM.** Adds cosign keyless signing (using GitHub OIDC) to the release-image workflow + an `imagetools inspect` step that verifies the signature before the smoke passes; publishes an SPDX SBOM as a sibling artifact. Required by `IMPLEMENTATION-PLAN.md` §3.3 ("GPG-signed release tags") and tracked there as a `0.1.0`-final gate item. No new images, no compose changes — the signing layer goes on top of X2's distribution layer.
+- **PR-X4 — image signing + SBOM (renumbered from a previously-planned PR-X3 slot when X3 was reassigned to CI parallelization).** Adds cosign keyless signing (using GitHub OIDC) to the release-image workflow + an `imagetools inspect` step that verifies the signature before the smoke passes; publishes an SPDX SBOM as a sibling artifact. Required by `IMPLEMENTATION-PLAN.md` §3.3 ("GPG-signed release tags") and tracked there as a `0.1.0`-final gate item. No new images, no compose changes — the signing layer goes on top of X2's distribution layer.
 - **Multi-arch `linux/arm64`** — deferred to v0.2. The `setup-buildx-action` is wired today so the change is a one-line `platforms: linux/amd64,linux/arm64` addition; the gate is the v0.2 partner who actually deploys on Apple Silicon / Graviton.
 
 ---
 
-_Drafted from `IMPLEMENTATION-PLAN.md` §1.2.1–§1.2.20 + per-PR `gh pr view` body residuals. Maintainer to edit before the `0.1.0-a` tag cut._
+## Phase-a follow-up — X3 (CI parallelization + test sharding)
+
+A third post-`0.1.0-a` PR closes the CI wall-time tax that the W1 timeout bump (25 → 35 min) made visible without actually fixing — the prior monolithic `toolchain` job in `.github/workflows/ci.yml` ran install → eslint-plugin build → lint → typecheck → test → schema drift → fixtures-lint **serially** on a single runner, and the last four green runs on `main` clocked 1635–1650s (~27 min) — only ~5 min of margin against the W1-bumped 35-min timeout, with the test step contributing ~75% of wall time. PR-X3 splits `toolchain` into four parallel jobs (`lint`, `typecheck`, `test`, `drift-and-fixtures`) and shards the `test` job 4-ways via vitest's native `--shard=N/M` matrix. Wall time on a green PR drops from ~27 min to ~6–8 min on the longest path. The `prompt-injection-corpus (deterministic tier)` job stays unchanged — it already ran in parallel with `toolchain` on a separate runner. Trade-off: 4–5× actions-minutes consumed for the same work; we're a personal-account public repo with unlimited free Linux minutes on github.com (the `github.com` tier vs. GHES) so the trade is pure upside on the project's current footing.
+
+### Changed (X3) — `.github/workflows/ci.yml`
+
+- **`toolchain` becomes four parallel jobs.** `lint` (10 min timeout), `typecheck` (15 min), `test` (20 min per shard), `drift-and-fixtures` (10 min). Each runs on its own `ubuntu-latest` runner with the same install pattern (`actions/checkout@v4` → `pnpm/action-setup@v4` → `actions/setup-node@v4` with `cache: pnpm` → `pnpm install --frozen-lockfile` → `pnpm --filter @opencoo/eslint-plugin build`). The eslint-plugin build is preserved on every job (not just `lint`) so each job has the same setup shape — easier to reason about, and the build is ~10s. The `test` job additionally runs `pnpm --filter @opencoo/shared build` before the suite — a large fraction of tests across the workspace import `@opencoo/shared/*` via subpath exports (`@opencoo/shared/db/schema`, `@opencoo/shared/llm-router`, `@opencoo/shared/logger`, `@opencoo/shared/wiki-write`, etc.) which resolve to `dist/`; vitest does not run tsc transparently, mirroring the explanation already documented in the existing `prompt-injection-corpus` job for the same reason.
+- **`test` matrix with `fail-fast: false`.** `strategy.matrix.shard: [1, 2, 3, 4]` runs four shards in parallel; each runs `pnpm test -- --shard=${{ matrix.shard }}/4`. `fail-fast: false` is critical: without it, one shard's failure cancels the others on first failure, masking per-shard signal. We want every shard to report so a regression's blast radius is immediately localised — "shard 3 failed" tells us where to look, while a fail-fast cancel masks whether the issue is shard-local or systemic. The matrix job name is `test (${{ matrix.shard }})` so the four checks appear as `test (1)`, `test (2)`, `test (3)`, `test (4)` in the PR check list.
+- **`drift-and-fixtures` job carries the schema-drift + fixtures-lint steps verbatim** from the prior `toolchain` job (lines 50–83 of the pre-X3 ci.yml). The schema-drift step runs `pnpm --filter @opencoo/shared db:check && db:generate` and fails if `git diff` shows a non-empty diff under `packages/shared/drizzle/` (the trip-wire for "edited a schema file without regenerating the migration"). The fixtures step runs `pnpm lint:fixtures`, asserts non-zero exit (the fixtures MUST fail to prove the boundary rules are wired), and asserts that all five expected rule ids (`opencoo/no-cross-engine-import`, `opencoo/no-direct-gitea-write`, `opencoo/no-direct-llm-sdk`, `opencoo/no-feature-env-vars`, `opencoo/no-update-append-only`) appeared in the output. Both steps are bytewise-identical to the pre-X3 versions; the move is a job-boundary refactor, not a behavior change.
+- **`prompt-injection-corpus (deterministic tier)` job unchanged.** Already ran in parallel with `toolchain` on a separate runner pre-X3 — no edit needed.
+- **Workflow-level `concurrency` block unchanged.** `group: ${{ github.workflow }}-${{ github.ref }}` + `cancel-in-progress: true` still cancels superseded PR runs as a unit (every job in a run shares the same group, so the run is cancelled atomically when the PR head moves).
+
+### Configuration
+
+- **No new env vars.** PR-X3 is a pure CI-workflow change; no engine code paths touched.
+- **No new credentials.** No new GitHub Actions secrets needed; the parallel jobs run under the same `secrets.GITHUB_TOKEN` permission model the prior monolithic `toolchain` did.
+
+### Schema
+
+- No new migrations. PR-X3 is CI-workflow-only.
+
+### Documentation
+
+- **`docs/pilot-runbook.md` §12** gains a fifth bullet (PR-X3 follow-up): the `main`-branch protection rule on github.com lists `toolchain (lint / typecheck / test / fixtures)` as a required check; that name disappears with this PR and must be replaced with the new check names: `lint`, `typecheck`, `test (1)`, `test (2)`, `test (3)`, `test (4)`, `drift-and-fixtures`, plus the unchanged `prompt-injection-corpus (deterministic tier)`. Until updated, the old check appears "expected — Waiting for status to be reported" on every PR and blocks merge. This is a one-time UI action by the maintainer; no operator-side change.
+- **`IMPLEMENTATION-PLAN.md` §1.1** appends X3 to the phase-a follow-up roster; new §1.2.21 mirrors the §1.2.19 (X1) / §1.2.20 (X2) shape.
+- **No `architecture.md` impact.** CI parallelization is a build-system concern, not a product surface. The architecture doc is unaffected.
+- **No `THREAT-MODEL.md` impact.** The set of CI checks that gate merges is unchanged; only their job topology + names changed. The `prompt-injection-corpus (deterministic tier)` ship-blocker (§4.2) still runs on every PR; the `no-direct-gitea-write` / `no-direct-llm-sdk` / `no-cross-engine-import` / `no-feature-env-vars` / `no-update-append-only` boundary-rule trip-wires (`drift-and-fixtures` job) still fire on every PR.
+
+### Tests
+
+- **No new TypeScript tests.** PR-X3 ships infrastructure (CI workflow YAML); the validation surface is the build-and-run smoke documented in the PR description. The existing `pnpm test` / `pnpm typecheck` / `pnpm lint` suites must stay green — none of the X3 files are TypeScript so this is a no-op verification.
+- **Sharding partitions; it does not exclude.** Local verification: each of `pnpm test -- --shard=1/4` through `--shard=4/4` passes independently. Sum of per-shard test counts (740 + 625 + 623 + 531 = 2519) equals the unsharded `pnpm test` total (2506 passed + 13 skipped = 2519). The partition is exhaustive — no test file is dropped from the matrix.
+
+### Threat-model alignment (§5 PR checklist)
+
+- **Zero new admin-API write surfaces.** PR-X3 is CI-workflow-only; the engine's HTTP routing is unchanged.
+- **Same CI sandbox.** All four jobs run on `ubuntu-latest` under the same `czlonkowski/opencoo` repo permission model as `release.yml` and the previous monolithic `toolchain`. No new secrets, no elevated permissions; the default `GITHUB_TOKEN` scope is unchanged.
+- **No new attack surface.** Splitting one serial job into four parallel jobs doesn't add an external trust boundary — every job runs the same `actions/*` actions the monolithic job did. The `pnpm/action-setup@v4` + `actions/setup-node@v4` + `actions/checkout@v4` set is identical.
+- **Append-only invariant preserved.** PR-X3 doesn't touch any schema, migration, or log path. THREAT-MODEL §2 invariant 8 (append-only) is unaffected.
+
+### Deferred (tracked for `0.1.0` final release)
+
+- **Turborepo remote cache wiring.** `pnpm typecheck` and `pnpm lint` could skip per-package tasks when their inputs haven't changed since the last green run, but wiring requires either pointing turbo at a GHA-cached `--cache-dir` or using a remote cache action. Skipped from X3 because the per-job `pnpm install` (cached via `setup-node`'s `cache: pnpm`) + the explicit eslint-plugin build is already fast enough to hit the ~6–8 min wall target. Re-evaluate if any single job's cold-cache path exceeds 8 min after a few PR cycles of empirical data.
+- **PR-X4 — image signing + SBOM** (renumbered from the previously-planned PR-X3 slot when X3 was reassigned to CI parallelization). See the X2 "Deferred" block above for the full description; the substance is unchanged.
+
+---
+
+_Drafted from `IMPLEMENTATION-PLAN.md` §1.2.1–§1.2.21 + per-PR `gh pr view` body residuals. Maintainer to edit before the `0.1.0-a` tag cut._
