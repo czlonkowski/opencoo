@@ -425,11 +425,29 @@ export async function start(
   // via `pg_advisory_xact_lock`, so a second engine starting
   // immediately after the first becomes a fast no-op.
   if (!shouldSkipAutoMigrate(env, options.skipMigrate, pgPool)) {
-    await applyMigrationsWithLock({
-      pool: pgPool as pg.Pool,
-      migrationsFolder: resolveSharedMigrationsDir(),
-      logger,
-    });
+    try {
+      await applyMigrationsWithLock({
+        pool: pgPool as pg.Pool,
+        migrationsFolder: resolveSharedMigrationsDir(),
+        logger,
+      });
+    } catch (err) {
+      // Critical (PR-X1 review C1): the engine-scaffold's
+      // resource-safety teardown only fires on errors INSIDE its
+      // try block — `startEngine` is never called on this path,
+      // so the pool we allocated above leaks unless we drain it
+      // here. On a supervisor restart loop (which is now the
+      // relied-on behavior — "engine refuses to bind until
+      // migrations succeed"), repeated migration failures would
+      // otherwise leak file descriptors. Same `.catch(() =>
+      // undefined)` swallow pattern the engine-scaffold uses for
+      // teardown drains: lose a teardown error to surface the
+      // migrate error instead.
+      if (pgPool !== null) {
+        await pgPool.end().catch(() => undefined);
+      }
+      throw err;
+    }
   }
 
   const compositionEnv = tryLoadAdminApiEnv(env, logger);

@@ -55,6 +55,7 @@ import { migrate as drizzleMigrate } from "drizzle-orm/node-postgres/migrator";
 import type pg from "pg";
 
 import type { Logger } from "../logger.js";
+import { safeErrorMessage } from "../scrub/index.js";
 
 /** The natural-language label the lock key derives from. Exposed
  *  for tests + reviewer auditing only — runtime callers pass the
@@ -201,10 +202,15 @@ async function _applyMigrationsWithLockUsing(
   } catch (err) {
     logger.error("migrate.failed", {
       folder: migrationsFolder,
-      // The error message can carry SQLSTATE codes + Postgres
-      // notice text. Don't dump the full Error object — message
-      // only, to keep log lines from leaking arbitrary state.
-      error: err instanceof Error ? err.message : String(err),
+      // pg / SASL errors can carry connection-string fragments,
+      // auth tokens, or SCRAM message material in their `.message`.
+      // Route through `safeErrorMessage` (scrub-then-cap, capped at
+      // 200 chars) per THREAT-MODEL §3.6 invariant 11 — same scrub
+      // gate the engine-scaffold + start.ts use for their own
+      // teardown / dispatcher logs (start.ts round-3 fix #4). The
+      // throw below preserves the original `err` for upstream
+      // handlers; only the log payload is scrubbed.
+      error: safeErrorMessage(err),
     });
     throw err;
   } finally {

@@ -43,6 +43,13 @@ vi.mock("@opencoo/shared/db", async () => {
   };
 });
 
+// Track every constructed StubPool so a test can assert end() was
+// called on the engine-allocated pool when start() throws on the
+// migrate path (PR-X1 review C1: the supervisor-restart-loop FD
+// leak guard wraps applyMigrationsWithLock in try/catch and drains
+// the pool before re-throwing).
+const stubPoolEndCalls: ReturnType<typeof vi.fn>[] = [];
+
 vi.mock("pg", async () => {
   const actual = await vi.importActual<typeof import("pg")>("pg");
   return {
@@ -50,8 +57,10 @@ vi.mock("pg", async () => {
     default: {
       ...actual.default,
       Pool: class StubPool {
-        end(): Promise<void> {
-          return Promise.resolve();
+        end: ReturnType<typeof vi.fn>;
+        constructor() {
+          this.end = vi.fn(async () => undefined);
+          stubPoolEndCalls.push(this.end);
         }
         query(): Promise<{ rows: unknown[]; rowCount: number }> {
           return Promise.resolve({ rows: [], rowCount: 0 });
@@ -123,6 +132,7 @@ describe("start() — auto-migrate boot wiring (PR-X1)", () => {
   beforeEach(() => {
     mockedApply.mockClear();
     mockedApply.mockImplementation(async () => undefined);
+    stubPoolEndCalls.length = 0;
   });
 
   afterEach(() => {
@@ -270,11 +280,19 @@ describe("start() — auto-migrate boot wiring (PR-X1)", () => {
 
     expect(mockedApply).toHaveBeenCalledTimes(1);
     // Critical invariant: a migration failure leaves the
-    // engine UN-listened. The base scaffold is supposed to
-    // teardown the pool/Redis on a thrown start, so the
-    // partial-boot resource is already drained by the time
-    // start() rejects.
+    // engine UN-listened. We explicitly drain the pool in
+    // start.ts's catch block to prevent FD leak on supervisor
+    // restart loops — the engine-scaffold's resource-safety
+    // teardown only fires on errors INSIDE its try block, and
+    // a pre-listen migrate failure never reaches that scope
+    // (PR-X1 review C1).
     expect(okServer.listen).not.toHaveBeenCalled();
+    // The engine-allocated pool (the StubPool above) must have
+    // been end()'d exactly once on the failure path. With no
+    // dbFactory override, start() constructs exactly one
+    // StubPool, and the catch block drains it.
+    expect(stubPoolEndCalls).toHaveLength(1);
+    expect(stubPoolEndCalls[0]).toHaveBeenCalledTimes(1);
   });
 
   it("stub-pool-only test (dbFactory injected): no migrate attempted (pgPool === null)", async () => {
