@@ -103,6 +103,13 @@ ENV DATA_DIR=/data \
 USER mcpserver
 EXPOSE 3000
 
+# No `gitea-wiki-mcp-server` shim on PATH (cf. engine image's
+# /usr/local/bin/opencoo wrapper). This server is a long-running HTTP
+# daemon with no admin CLI subcommands — `src/index.ts` boots the
+# server unconditionally and ignores process.argv. If a future PR adds
+# operator subcommands (status / reindex / etc.), mirror the engine's
+# wrapper pattern here.
+
 # Full healthcheck parameter set (interval / timeout / start-period /
 # retries). `--start-period` accommodates the initial git clone +
 # index build the server performs on first boot — without it, a slow

@@ -82,6 +82,16 @@ services:
     networks:
       - frontend
       - backend
+    # Resource limits — note Compose vs. Swarm semantics:
+    # `mem_limit:` / `cpus:` / `mem_reservation:` below are the
+    # Compose-native keys honored by `docker compose up`.
+    # The `deploy.resources.*` keys further down are honored ONLY by
+    # Swarm or `docker compose --compatibility up` — kept for operators
+    # who run that path. `reservations.cpus` has no Compose equivalent
+    # and applies under --compatibility / Swarm only.
+    mem_limit: 1024m
+    mem_reservation: 256m
+    cpus: 1.0
     deploy:
       resources:
         limits:
@@ -123,6 +133,9 @@ services:
       # fail closed — see backend.internal: true note below.
       - frontend
       - backend
+    # See note on opencoo service above for Compose-vs-Swarm semantics.
+    mem_limit: 256m
+    cpus: 0.5
     deploy:
       resources:
         limits:
@@ -146,6 +159,9 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 5
+    # See note on opencoo service above for Compose-vs-Swarm semantics.
+    mem_limit: 512m
+    cpus: 1.0
     deploy:
       resources:
         limits:
@@ -166,6 +182,9 @@ services:
       timeout: 5s
       start_period: 5s
       retries: 5
+    # See note on opencoo service above for Compose-vs-Swarm semantics.
+    mem_limit: 256m
+    cpus: 0.5
     deploy:
       resources:
         limits:

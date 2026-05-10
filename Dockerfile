@@ -154,6 +154,19 @@ ENV NODE_ENV=production \
     PORT=8080 \
     UI_DIST_PATH=/app/packages/engine-self-operating/dist/ui
 
+# Install an `opencoo` shim on PATH so `docker run <image> opencoo
+# <verb>` (and `docker compose run --rm opencoo opencoo <verb>` from
+# the runbook + compose template) work as documented. The bare CMD
+# below still boots the engine; the shim is purely for invoking
+# subcommands (doctor / migrate / source test / etc.). Owned by root,
+# world-readable + executable so the non-root `opencoo` user can run
+# it. Installed BEFORE `USER opencoo` so the chmod takes.
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'exec node /app/dist/bin.js "$@"' \
+    > /usr/local/bin/opencoo \
+    && chmod 0755 /usr/local/bin/opencoo
+
 USER opencoo
 
 EXPOSE 8080
