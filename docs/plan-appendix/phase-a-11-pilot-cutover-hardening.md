@@ -59,7 +59,7 @@ All seven PRs merged in chronological order; W6 + W7 landed after the original W
 
 - ~~**Forget consumer worker** (task #65)~~ **Closed by W6** (`19c277a` / #97) — the consumer workers drain both queues, the delete handler issues a real `wikiWrite` against Gitea + prunes orphan citation rows, and the recompile handler drops the forgotten binding's citations + invokes the v0.1 audit-only stub.
 - **`OPENROUTER_API_KEY` repo secret** (task #58) — the appendix-#9 nightly live-pilot workflow requires this secret to be set in repo settings for the lane to flip green. Out-of-band user action; verification step before tag.
-- ~~**Chrome QA wave-end re-walkthrough**~~ **Completed 2026-05-10** against post-W6 build (`19c277a`); surfaced one further regression closed by W7 (`3f7c093` / #98). Post-W7 re-verification confirms R7 dialog renders real impact + cap state, R5 cost dashboard reports real (non-zero) spend, and the integrated wave-10 flow (R1–R7) still passes end-to-end. Activity-feed SSE 401 (W3) and modal sticky-bottom (W5) verified incidentally during the same walkthrough.
+- ~~**Chrome QA wave-end re-walkthrough**~~ **Completed 2026-05-10** — the walkthrough started against post-W6 build (`19c277a`) and surfaced one further regression closed by W7 (`3f7c093` / #98); the engine was rebuilt + restarted on the post-W7 build and the re-verification step confirmed R7 dialog renders real impact + cap state, R5 cost dashboard reports real (non-zero) spend, and the integrated wave-10 flow (R1–R7) still passes end-to-end. Activity-feed SSE 401 (W3) and modal sticky-bottom (W5) verified incidentally during the same walkthrough.
 
 ## Broader plan dependencies
 
