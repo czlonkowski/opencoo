@@ -229,6 +229,14 @@ export function startIngestionWorkers(
     db: ctx.db,
     logger: ctx.logger,
     recompilePage: args.recompilePageHook ?? defaultRecompilePageStub(ctx.logger),
+    // PR-W6 follow-up #2 — the recompile worker may fall through to
+    // an inline delete when a concurrent forget races between plan +
+    // consume and leaves the page with zero remaining citations
+    // (no companion `delete_page` job exists for THIS forget). It
+    // uses the same wikiDeps + author the delete handler uses so
+    // the wikiWrite shape is identical.
+    wikiDeps: ctx.wikiDeps,
+    author: ctx.author,
   };
   const deleteDeps: ForgetDeleteDeps = {
     db: ctx.db,

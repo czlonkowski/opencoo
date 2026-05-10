@@ -1,18 +1,25 @@
 /**
  * Forget consumer — recompile worker (PR-W6, phase-a appendix #11
- * follow-up #65).
+ * follow-up #65 + Issue 1 fix-up).
  *
  * Pinned behaviors:
  *   1. Job processed → forgotten binding's page_citations rows are
  *      DELETED + the injected `recompilePage` hook is called with
  *      the remaining citations as input.
- *   2. Page with ONLY citations from the forgotten binding → hook
- *      NOT called (the companion delete_page job handles the page).
- *      No db DELETE either — the delete worker owns the cascade
- *      prune for the page-removal path.
+ *   2. Page with ONLY citations from the forgotten binding (race:
+ *      a concurrent forget drained the OTHER bindings' citations
+ *      between plan + consume; the companion `delete_page` job for
+ *      THIS forget operation was NOT queued because the planner's
+ *      snapshot saw OTHER bindings) → drop the forgotten binding's
+ *      citation rows AND fall through to inline wiki delete via
+ *      the same wikiWrite path the delete handler uses. Avoids
+ *      leaving an orphan wiki page behind.
  *   3. Page with no recorded citations at all → no-op + warn (race
  *      between forget-plan and consume).
  *   4. Hook throws → handler re-throws so BullMQ retries.
+ *   5. Fall-through delete path: if the wiki page is itself already
+ *      gone (the OTHER forget operation's delete fired first), warn
+ *      + no-op.
  */
 import type { Job } from "bullmq";
 import { sql } from "drizzle-orm";
@@ -20,6 +27,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ConsoleLogger } from "@opencoo/shared/logger";
 import type { ForgetJobPayload } from "@opencoo/shared/forget";
+import {
+  InMemoryDeleteCap,
+  InMemoryWikiWriteQueue,
+  type WikiWriteDeps,
+} from "@opencoo/shared/wiki-write";
+import { InMemoryWikiAdapter } from "@opencoo/shared/wiki-write/testing";
+import type { DomainSlug } from "@opencoo/shared/db";
 
 import {
   buildForgetRecompileHandler,
@@ -34,6 +48,31 @@ function silentLogger(): ConsoleLogger {
   return new ConsoleLogger({
     stream: { write: (): boolean => true },
   });
+}
+
+const AUTHOR = {
+  name: "opencoo-test",
+  email: "test@opencoo.local",
+} as const;
+
+interface WikiHarness {
+  readonly adapter: InMemoryWikiAdapter;
+  readonly cap: InMemoryDeleteCap;
+  readonly wikiDeps: WikiWriteDeps;
+}
+
+function makeWikiHarness(): WikiHarness {
+  const adapter = new InMemoryWikiAdapter();
+  const cap = new InMemoryDeleteCap();
+  const wikiDeps: WikiWriteDeps = {
+    adapter,
+    queue: new InMemoryWikiWriteQueue(),
+    deleteCap: cap,
+    logger: silentLogger(),
+    clock: (): Date => new Date("2026-04-25T12:00:00Z"),
+    instanceId: "test-instance",
+  };
+  return { adapter, cap, wikiDeps };
 }
 
 function fakeJob(data: ForgetJobPayload): Job<ForgetJobPayload> {
@@ -148,10 +187,13 @@ describe("buildForgetRecompileHandler", () => {
     });
 
     const { hook, calls } = makeSpyHook();
+    const harness = makeWikiHarness();
     const deps: ForgetRecompileDeps = {
       db: fixture.db as unknown as ForgetRecompileDeps["db"],
       logger: silentLogger(),
       recompilePage: hook,
+      wikiDeps: harness.wikiDeps,
+      author: AUTHOR,
     };
     const handler = buildForgetRecompileHandler(deps);
 
@@ -208,12 +250,20 @@ describe("buildForgetRecompileHandler", () => {
     }
   });
 
-  it("does NOT recompile when every citation is from the forgotten binding", async () => {
-    // Race-resilience: the route's planner should classify this page
-    // as `pagesDeleted` (not `pagesRecompiled`) so the worker really
-    // shouldn't see it. But a concurrent edit between plan + consume
-    // could land the wrong job here. Defensive: log + no-op rather
-    // than recompile-with-no-input.
+  it("Issue 1 race: drops forgotten citations + falls through to wiki delete when no remaining citations", async () => {
+    // Race scenario: the planner classified this page as `recompile`
+    // because it saw OTHER bindings citing it. A concurrent forget
+    // operation drained those OTHER bindings' citations between plan
+    // + consume — when the recompile worker runs, every surviving
+    // citation is from the forgotten binding. The companion
+    // `delete_page` job for THIS forget operation was NOT queued
+    // (planner snapshot didn't see this page as a delete candidate),
+    // and the OTHER forget's delete jobs queued against ITS snapshot
+    // didn't include this page either. Without the fall-through, the
+    // wiki page would be permanently orphaned. Fix: drop the
+    // forgotten binding's citations + issue an inline wiki delete
+    // via the same wikiWrite admin-caller path the delete handler
+    // uses.
     const fixture = await freshPipelineDb();
     const PAGE = "strategy/orphan.md";
     await insertCitation(fixture.raw, {
@@ -229,11 +279,23 @@ describe("buildForgetRecompileHandler", () => {
       sourceRef: "drive:doc-also-only",
     });
 
+    const harness = makeWikiHarness();
+    // Page exists in the wiki (the OTHER forget's delete hasn't
+    // fired for this path yet — the orphan came about via citation
+    // drainage, not page deletion).
+    harness.adapter.inject(
+      "test-domain" as DomainSlug,
+      PAGE,
+      "# Orphan\n\nForgotten content.\n",
+    );
+
     const { hook, calls } = makeSpyHook();
     const handler = buildForgetRecompileHandler({
       db: fixture.db as unknown as ForgetRecompileDeps["db"],
       logger: silentLogger(),
       recompilePage: hook,
+      wikiDeps: harness.wikiDeps,
+      author: AUTHOR,
     });
 
     await handler(
@@ -245,16 +307,91 @@ describe("buildForgetRecompileHandler", () => {
       }),
     );
 
-    // Hook NOT called.
+    // 1) Recompile hook NOT called (no remaining citations to feed it).
     expect(calls).toHaveLength(0);
-    // Citation rows still in place — the delete worker (separate job)
-    // owns the cascade prune for this page.
+    // 2) Forgotten binding's citation rows DELETED (cascade hygiene).
     const after = await fixture.raw.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM page_citations
        WHERE domain_slug = $1 AND page_path = $2`,
       ["test-domain", PAGE],
     );
-    expect(Number.parseInt(after.rows[0]!.count, 10)).toBe(2);
+    expect(Number.parseInt(after.rows[0]!.count, 10)).toBe(0);
+    // 3) Wiki page DELETED via the inline fall-through (not left
+    //    orphaned in the wiki).
+    const remaining = await harness.adapter.readPage(
+      "test-domain" as DomainSlug,
+      PAGE,
+    );
+    expect(remaining).toBeNull();
+    // 4) Cap budget untouched — admin-caller bypass (same contract
+    //    as the delete handler).
+    const capState = harness.cap.peek(
+      "test-domain" as DomainSlug,
+      new Date("2026-04-25T12:00:00Z"),
+    );
+    expect(capState.used).toBe(0);
+  });
+
+  it("Issue 1 race: warn + no-op when fall-through wiki delete finds page already gone", async () => {
+    // Race scenario variant: the OTHER forget operation's delete
+    // fired BEFORE this recompile worker ran (so the wiki page is
+    // already gone) AND drained the OTHER bindings' citations. The
+    // recompile worker must still drop the forgotten binding's
+    // citation rows but skip the wiki delete (page is missing).
+    const fixture = await freshPipelineDb();
+    const PAGE = "strategy/already-deleted.md";
+    await insertCitation(fixture.raw, {
+      domainSlug: "test-domain",
+      pagePath: PAGE,
+      sourceBindingId: fixture.bindingId,
+      sourceRef: "drive:doc-only",
+    });
+
+    const harness = makeWikiHarness();
+    // No `inject` — wiki page is already gone.
+
+    const logs: string[] = [];
+    const captureLogger = new ConsoleLogger({
+      stream: {
+        write: (chunk: string): boolean => {
+          logs.push(chunk);
+          return true;
+        },
+      },
+    });
+
+    const { hook, calls } = makeSpyHook();
+    const handler = buildForgetRecompileHandler({
+      db: fixture.db as unknown as ForgetRecompileDeps["db"],
+      logger: captureLogger,
+      recompilePage: hook,
+      wikiDeps: harness.wikiDeps,
+      author: AUTHOR,
+    });
+
+    await handler(
+      fakeJob({
+        bindingId: fixture.bindingId,
+        domainSlug: "test-domain",
+        pagePath: PAGE,
+        callerUsername: "alice",
+      }),
+    );
+
+    expect(calls).toHaveLength(0);
+    // Citation rows still pruned.
+    const after = await fixture.raw.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM page_citations
+       WHERE domain_slug = $1 AND page_path = $2`,
+      ["test-domain", PAGE],
+    );
+    expect(Number.parseInt(after.rows[0]!.count, 10)).toBe(0);
+    // Skipped-delete log emitted.
+    const joined = logs.join("");
+    expect(joined).toContain(
+      "forget_consumer.recompile.fallback_delete_skipped",
+    );
+    expect(joined).toContain("page_already_gone");
   });
 
   it("no-ops with a warn log when the page has no recorded citations", async () => {
@@ -271,11 +408,14 @@ describe("buildForgetRecompileHandler", () => {
         },
       },
     });
+    const harness = makeWikiHarness();
     const { hook, calls } = makeSpyHook();
     const handler = buildForgetRecompileHandler({
       db: fixture.db as unknown as ForgetRecompileDeps["db"],
       logger: captureLogger,
       recompilePage: hook,
+      wikiDeps: harness.wikiDeps,
+      author: AUTHOR,
     });
 
     await handler(
@@ -317,10 +457,13 @@ describe("buildForgetRecompileHandler", () => {
     const failingHook: RecompilePageHook = vi.fn(async () => {
       throw new Error("upstream LLM 503");
     });
+    const harness = makeWikiHarness();
     const handler = buildForgetRecompileHandler({
       db: fixture.db as unknown as ForgetRecompileDeps["db"],
       logger: silentLogger(),
       recompilePage: failingHook,
+      wikiDeps: harness.wikiDeps,
+      author: AUTHOR,
     });
 
     await expect(
@@ -368,10 +511,13 @@ describe("buildForgetRecompileHandler", () => {
     });
 
     const { hook } = makeSpyHook();
+    const harness = makeWikiHarness();
     const handler = buildForgetRecompileHandler({
       db: fixture.db as unknown as ForgetRecompileDeps["db"],
       logger: silentLogger(),
       recompilePage: hook,
+      wikiDeps: harness.wikiDeps,
+      author: AUTHOR,
     });
 
     // Process job for page A only.

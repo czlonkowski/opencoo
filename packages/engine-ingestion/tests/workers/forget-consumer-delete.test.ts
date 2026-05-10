@@ -1,10 +1,10 @@
 /**
  * Forget consumer — delete worker (PR-W6, phase-a appendix #11
- * follow-up #65).
+ * follow-up #65 + Issue 2 fix-up).
  *
  * Pinned behaviors:
  *   1. Job processed → wikiAdapter delete commit lands once + the
- *      page_citations rows for the page are pruned.
+ *      forgotten binding's page_citations row(s) are pruned.
  *   2. The page is deleted via wikiWrite with `caller.kind = 'admin'`
  *      so we do NOT double-reserve the daily cap (the route already
  *      reserved before enqueueing — wiki-write.ts:96 admin-bypass
@@ -13,7 +13,14 @@
  *      re-throws so BullMQ retries on the next tick.
  *   4. Defensive: a page that's already gone (concurrent forget,
  *      manual delete) → no wiki write attempt + warn log + still
- *      prune any orphan citation rows.
+ *      prune any orphan citation rows for the forgotten binding.
+ *   5. Issue 2 race: another binding added a citation between plan
+ *      + consume (e.g. fresh ingestion landed a new binding's row
+ *      after the planner snapshot). The worker prunes ONLY the
+ *      forgotten binding's row, detects a surviving citation, logs
+ *      `delete.race_detected`, and SKIPS the wiki delete. The other
+ *      binding now owns the page; deleting it would destroy that
+ *      binding's contributions.
  */
 import type { Job } from "bullmq";
 import { describe, expect, it } from "vitest";
@@ -79,6 +86,19 @@ async function insertCitation(
       "compiler@v1",
     ],
   );
+}
+
+async function insertExtraBinding(
+  raw: import("@electric-sql/pglite").PGlite,
+  domainId: string,
+  adapterSlug: string,
+): Promise<string> {
+  const result = await raw.query<{ id: string }>(
+    `INSERT INTO sources_bindings (domain_id, adapter_slug, allowed_paths)
+     VALUES ($1, $2, $3) RETURNING id`,
+    [domainId, adapterSlug, ["strategy/**"]],
+  );
+  return result.rows[0]!.id;
 }
 
 interface Fixture {
@@ -372,5 +392,97 @@ describe("buildForgetDeleteHandler", () => {
       ["test-domain", SIBLING],
     );
     expect(Number.parseInt(siblingRows.rows[0]!.count, 10)).toBe(1);
+  });
+
+  it("Issue 2 race: skips wiki delete when another binding cited the page between plan + consume", async () => {
+    // Race scenario: the planner snapshot saw only the forgotten
+    // binding citing this page → queued a `delete_page` job. Between
+    // plan-time and consume-time a fresh ingestion (or a concurrent
+    // edit) added a NEW binding's citation row. Without the fix the
+    // worker would blindly DELETE every page_citations row for this
+    // page AND delete the wiki page, destroying the new binding's
+    // contributions and leaving its source pointing at a 404.
+    //
+    // Fix: scope the prune to ONLY the forgotten binding's row(s);
+    // probe for any survivor; if any survive, log race-detected and
+    // SKIP the wiki delete. The other binding now owns the page;
+    // the engine's next compile / forget tick from that binding
+    // will refresh or remove it.
+    const f = await makeFixture();
+    const otherBinding = await insertExtraBinding(
+      f.db.raw,
+      f.db.domainId,
+      "asana",
+    );
+    const PAGE = "strategy/contested.md";
+    f.adapter.inject(
+      "test-domain" as DomainSlug,
+      PAGE,
+      "# Contested\n\nForgotten + new content.\n",
+    );
+    // Forgotten binding's row (planner snapshot saw this).
+    await insertCitation(f.db.raw, {
+      domainSlug: "test-domain",
+      pagePath: PAGE,
+      sourceBindingId: f.db.bindingId,
+      sourceRef: "drive:doc-forgotten",
+    });
+    // Other binding's row added BETWEEN plan-time and consume-time
+    // (test stand-in for the race window).
+    await insertCitation(f.db.raw, {
+      domainSlug: "test-domain",
+      pagePath: PAGE,
+      sourceBindingId: otherBinding,
+      sourceRef: "asana:project-fresh",
+    });
+
+    const handler = buildForgetDeleteHandler(f.deps);
+    await handler(
+      fakeJob({
+        bindingId: f.db.bindingId,
+        domainSlug: "test-domain",
+        pagePath: PAGE,
+        callerUsername: "alice",
+      }),
+    );
+
+    // 1) Wiki page is STILL THERE — race-detected; skip delete.
+    const stillThere = await f.adapter.readPage(
+      "test-domain" as DomainSlug,
+      PAGE,
+    );
+    expect(stillThere).not.toBeNull();
+    expect(stillThere!.content).toContain("Contested");
+
+    // 2) Forgotten binding's citation row is GONE (scoped prune
+    //    succeeded — that's the binding-specific erasure contract).
+    const remainingForgotten = await f.db.raw.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM page_citations
+       WHERE domain_slug = $1
+         AND page_path = $2
+         AND source_binding_id = $3::uuid`,
+      ["test-domain", PAGE, f.db.bindingId],
+    );
+    expect(Number.parseInt(remainingForgotten.rows[0]!.count, 10)).toBe(0);
+
+    // 3) The OTHER binding's citation row SURVIVES — that's the
+    //    contribution we must preserve.
+    const survivingOther = await f.db.raw.query<{
+      source_ref: string;
+    }>(
+      `SELECT source_ref FROM page_citations
+       WHERE domain_slug = $1
+         AND page_path = $2
+         AND source_binding_id = $3::uuid`,
+      ["test-domain", PAGE, otherBinding],
+    );
+    expect(survivingOther.rows).toHaveLength(1);
+    expect(survivingOther.rows[0]!.source_ref).toBe("asana:project-fresh");
+
+    // 4) Race-detected log emitted.
+    const joined = f.logs.join("");
+    expect(joined).toContain("forget_consumer.delete.race_detected");
+    expect(joined).toContain(PAGE);
+    expect(joined).toContain("surviving_citation_count");
   });
 });

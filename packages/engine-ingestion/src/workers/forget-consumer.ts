@@ -10,12 +10,19 @@
  *       1. Read existing `page_citations` for `(domainSlug, pagePath)`.
  *       2. Partition: forgotten (`source_binding_id === bindingId`) vs
  *          remaining.
- *       3. If no remaining citations → no-op + warn. The companion
- *          `delete_page` job (the route enqueues both classes
- *          separately when the planner partitions correctly) handles
- *          the page removal. This branch only fires defensively when
- *          the route's planner and the worker disagree (race between
- *          plan + consume), which the brief's edge case calls out.
+ *       3. If no remaining citations → race detected. The route's
+ *          planner saw OTHER bindings citing this page and queued a
+ *          recompile, but a concurrent forget operation drained those
+ *          OTHER bindings' citations between plan + consume. The page
+ *          is now an orphan with no remaining citations — and the
+ *          companion `delete_page` job for THIS forget operation was
+ *          NOT queued (the planner snapshot didn't see this page as
+ *          a delete candidate). To avoid leaving an orphan wiki page
+ *          behind, we DROP the forgotten binding's citation row(s),
+ *          then FALL THROUGH to an inline wiki delete via the same
+ *          `wikiWrite` path the delete handler uses. If the wiki
+ *          page is itself already gone (the other forget operation's
+ *          delete fired first), we log + no-op.
  *       4. Otherwise: DELETE the forgotten citations (cascade
  *          hygiene — the page_citations table allows DELETE for the
  *          erasure path per the schema's APPEND-ONLY-modulo-DELETE
@@ -33,22 +40,31 @@
  *   - `wiki.delete` (job name `delete_page`) — the page has no
  *     remaining attribution and must be removed entirely. Worker
  *     semantics:
- *       1. Delete the `page_citations` rows for `(domainSlug, pagePath)`
- *          BEFORE the wiki delete (cascade hygiene; the planner
- *          itself doesn't prune these — the route's audit row
- *          carried the COUNTS, the rows themselves outlive the
- *          enqueue and need to be cleared by us).
- *       2. Issue a `wikiWrite` with `mode: 'delete'` op. Caller is
- *          `{ kind: 'admin', userId: callerUsername }` — the route
- *          ALREADY reserved against the shared DeleteCap before
- *          enqueueing (source-bindings.ts:933), so `engine` caller
- *          would double-reserve. The W1 enqueue.ts comment block
- *          documents this contract:
+ *       1. Scope-prune `page_citations` to ONLY the forgotten
+ *          binding's row(s) for `(domainSlug, pagePath)`. The
+ *          planner's snapshot said only this binding cited the page,
+ *          but a concurrent edit could have added a NEW binding's
+ *          citation between plan + consume — blindly deleting all
+ *          rows would destroy the new binding's contributions.
+ *       2. Probe for any remaining `page_citations` rows for the
+ *          same page after the scoped prune. If any remain →
+ *          another binding now owns the page (race with a concurrent
+ *          ingestion or compile); log `delete.race_detected` and
+ *          SKIP the wiki delete. The other binding's planner will
+ *          handle the page on its own forget; recompile-on-next-tick
+ *          will refresh the page body.
+ *       3. Otherwise → no surviving citations: issue a `wikiWrite`
+ *          with `mode: 'delete'` op. Caller is `{ kind: 'admin',
+ *          userId: callerUsername }` — the route ALREADY reserved
+ *          against the shared DeleteCap before enqueueing
+ *          (source-bindings.ts:933), so `engine` caller would
+ *          double-reserve. The W1 enqueue.ts comment block documents
+ *          this contract:
  *            "the route already reserved against the cap via
  *             deleteCap.reserve(...) BEFORE enqueuing, so the worker
  *             should mark its calls as admin-caller to avoid
  *             double-reserving".
- *       3. Defensive: if the wiki adapter reports the page is
+ *       4. Defensive: if the wiki adapter reports the page is
  *          already gone (readPage returns null), no-op + warn —
  *          another forget could have raced ahead.
  *
@@ -176,6 +192,18 @@ export interface ForgetRecompileDeps {
   /** v0.1 production wires a stub that logs intent + returns; v0.2
    *  swaps in a real Thinker recompile. Tests inject a spy. */
   readonly recompilePage: RecompilePageHook;
+  /** Production wikiDeps from the WorkerContext — needed for the
+   *  fall-through inline delete when the recompile worker discovers
+   *  every remaining binding's citation has been forgotten by a
+   *  concurrent forget operation between plan + consume (the page
+   *  is now an orphan and there's no companion `delete_page` job
+   *  for THIS forget operation that would clean it up). Same shape
+   *  as the delete handler's `wikiDeps`. */
+  readonly wikiDeps: WikiWriteDeps;
+  /** Service-account author stamped on the fall-through delete
+   *  commit. Same `WikiAuthor` the orchestrator already wires for
+   *  the delete handler — not a separate identity. */
+  readonly author: WikiAuthor;
 }
 
 export interface ForgetDeleteDeps {
@@ -237,15 +265,28 @@ export function buildForgetRecompileHandler(
       (c) => c.source_binding_id !== payload.bindingId,
     );
     if (remaining.length === 0) {
-      // Every citation on this page is from the forgotten binding.
-      // The companion `delete_page` job already handles the page;
-      // this recompile is redundant. Log + no-op (do NOT recompile,
-      // do NOT delete — the delete worker owns the page-removal
-      // commit AND the cascade citation prune).
-      deps.logger.info("forget_consumer.recompile.no_remaining_citations", {
+      // Race: the route's planner saw OTHER bindings citing this
+      // page (otherwise it would have queued a `delete_page` job
+      // instead of `recompile_page`), but a concurrent forget
+      // operation drained those OTHER bindings' citations between
+      // plan + consume. The page is now an orphan with no remaining
+      // citations — and the OTHER forget operation queued its
+      // delete jobs against ITS planner snapshot, which did NOT
+      // include this page. If we no-op here we leave a permanently
+      // orphaned wiki page behind. Drop the forgotten binding's
+      // citation row(s), then fall through to an inline delete via
+      // the same wikiWrite path the delete handler uses.
+      deps.logger.warn("forget_consumer.recompile.no_remaining_citations", {
         ...ctx,
         forgotten_count: citations.length,
       });
+      await deletePageCitations(
+        deps.db,
+        payload.domainSlug,
+        payload.pagePath,
+        { bindingId: payload.bindingId },
+      );
+      await fallThroughDeleteOrphanPage(deps, payload, ctx);
       return;
     }
 
@@ -308,13 +349,44 @@ export function buildForgetDeleteHandler(
       payload.pagePath,
     );
 
-    // Always prune citation rows first — they're the cascade record
-    // for this page regardless of whether the wiki page itself
-    // already vanished.
-    await deletePageCitations(deps.db, payload.domainSlug, payload.pagePath);
+    // Scoped prune: drop ONLY the forgotten binding's citation
+    // row(s). Previously this DELETEd every citation row for the
+    // page unconditionally, which destroyed any concurrent binding's
+    // contributions if the citation set had changed between plan +
+    // consume (e.g. a fresh ingestion added a new binding's citation
+    // after the planner snapshot). The race-detection check below
+    // then decides whether the wiki page itself is safe to delete.
+    await deletePageCitations(deps.db, payload.domainSlug, payload.pagePath, {
+      bindingId: payload.bindingId,
+    });
 
     if (existing === null) {
       deps.logger.warn("forget_consumer.delete.page_already_gone", ctx);
+      return;
+    }
+
+    // Race check: if any citation row survives the scoped prune,
+    // another binding now cites this page (its row was added between
+    // plan + consume). Skip the wiki delete — the other binding owns
+    // the page; deleting it now would destroy that binding's
+    // contributions and leave the new owner pointing at a 404. The
+    // other binding's own forget (if/when it runs) will plan a
+    // recompile or delete from its own snapshot; the engine's next
+    // ingestion tick from the surviving binding will refresh the
+    // page body. The cap was reserved at enqueue time and is not
+    // refunded — that's an acceptable budget over-charge for the
+    // race window (sub-second; the cap is a daily safety budget,
+    // not exact accounting).
+    const survivors = await readCitations(
+      deps.db,
+      payload.domainSlug,
+      payload.pagePath,
+    );
+    if (survivors.length > 0) {
+      deps.logger.warn("forget_consumer.delete.race_detected", {
+        ...ctx,
+        surviving_citation_count: survivors.length,
+      });
       return;
     }
 
@@ -397,6 +469,58 @@ async function deletePageCitations(
     WHERE domain_slug = ${domainSlug}
       AND page_path = ${pagePath}
   `);
+}
+
+/** Inline wiki delete for the recompile worker's race-detected
+ *  branch (Issue 1 fix-up): the planner queued a recompile because
+ *  it saw OTHER bindings citing the page, but a concurrent forget
+ *  drained those bindings between plan + consume. The page is now
+ *  an orphan and no companion `delete_page` job exists for THIS
+ *  forget operation to clean it up. Issues the same admin-caller
+ *  wikiWrite the delete handler issues so the cap behaviour is
+ *  identical (no double-reserve; route already reserved at enqueue
+ *  for THIS forget operation's planned-delete count, but the page
+ *  wasn't in that count — the cap may be slightly under-charged
+ *  for this single orphan, which is acceptable for a race-window
+ *  cleanup). Defensive: if the page is already gone (the OTHER
+ *  forget operation's delete fired first), warn + no-op. */
+async function fallThroughDeleteOrphanPage(
+  deps: ForgetRecompileDeps,
+  payload: ForgetJobPayload,
+  ctx: ReturnType<typeof jobLogContext>,
+): Promise<void> {
+  const domainSlug = payload.domainSlug as DomainSlug;
+  const existing = await deps.wikiDeps.adapter.readPage(
+    domainSlug,
+    payload.pagePath,
+  );
+  if (existing === null) {
+    // The other forget operation's delete fired first (or a manual
+    // delete / earlier retry of this branch landed). Nothing to do.
+    deps.logger.warn("forget_consumer.recompile.fallback_delete_skipped", {
+      ...ctx,
+      reason: "page_already_gone",
+    });
+    return;
+  }
+  const writeInput: WikiWriteInput = {
+    domainSlug: payload.domainSlug,
+    tag: "[review-applied]",
+    description: `forget: delete ${payload.pagePath}`,
+    author: deps.author,
+    caller: { kind: "admin", userId: payload.callerUsername },
+    operations: [{ mode: "delete", path: payload.pagePath }],
+  };
+  try {
+    await wikiWrite(deps.wikiDeps, writeInput);
+  } catch (err) {
+    deps.logger.error("forget_consumer.recompile.fallback_delete_failed", {
+      ...ctx,
+      error: safeErrorMessage(err),
+    });
+    throw err;
+  }
+  deps.logger.warn("forget_consumer.recompile.fallback_delete_completed", ctx);
 }
 
 /** Standard `(binding_id, domain_slug, page_path)` log triple stamped
