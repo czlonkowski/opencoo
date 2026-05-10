@@ -39,6 +39,29 @@ describe("fetchAdmin", () => {
     const headers = (init as { headers: Record<string, string> }).headers;
     expect(headers["authorization"]).toBe("Bearer test-pat");
     expect(headers["x-csrf-token"]).toBe("csrf-token");
+    expect(headers["content-type"]).toBe("application/json");
+    expect((init as RequestInit).body).toBe(JSON.stringify({ y: 1 }));
+  });
+
+  it("does NOT set content-type or body when caller omits body (PR-W7)", async () => {
+    // Regression for FST_ERR_CTP_EMPTY_JSON_BODY: Fastify rejects an
+    // empty body with HTTP 400 when content-type:application/json is
+    // present. The R7 forget dialog (dryRun=1 + dryRun=0) and the
+    // logout endpoint both POST without a body.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    await fetchAdmin("/api/admin/x", { method: "POST", fetchImpl });
+    const [, init] = fetchImpl.mock.calls[0]!;
+    const headers = (init as { headers: Record<string, string> }).headers;
+    expect(headers["content-type"]).toBeUndefined();
+    expect((init as RequestInit).body).toBeUndefined();
+    // Auth + CSRF still attached — only content-type is gated on body.
+    expect(headers["authorization"]).toBe("Bearer test-pat");
+    expect(headers["x-csrf-token"]).toBe("csrf-token");
   });
 
   it("auto-retries ONCE on 403 csrf_invalid after refetching /_csrf", async () => {
