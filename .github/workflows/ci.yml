@@ -34,7 +34,7 @@ concurrency:
 # (deterministic tier)`. The old `toolchain` check name disappears
 # and must be removed from the protection rule or new PRs will
 # block on a check that never runs. See `docs/pilot-runbook.md`
-# §12 + `THREAT-MODEL.md` §5 for the documented list.
+# §12 for the documented list.
 
 jobs:
   lint:

@@ -861,4 +861,4 @@ A third post-`0.1.0-a` PR closes the CI wall-time tax that the W1 timeout bump (
 
 ---
 
-_Drafted from `IMPLEMENTATION-PLAN.md` §1.2.1–§1.2.21 + per-PR `gh pr view` body residuals. Maintainer to edit before the `0.1.0-a` tag cut._
+_Drafted from `IMPLEMENTATION-PLAN.md` §1.2.1–§1.2.21 + per-PR `gh pr view` body residuals. Maintainer to edit before the `0.1.0` final tag cut (the `0.1.0-a` rollup has already shipped — see the §1.1 status snapshot)._
