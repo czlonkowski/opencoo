@@ -188,10 +188,14 @@ async function _applyMigrationsWithLockUsing(
       await runMigrator(client, migrationsFolder);
       await client.query("COMMIT");
     } catch (innerErr) {
-      // ROLLBACK releases the advisory lock. Already-committed
-      // per-migration savepoints from drizzle survive (intentional —
-      // we don't want to undo applied migrations on a partial
-      // failure; the journal records what stuck).
+      // ROLLBACK releases the advisory lock and surfaces the
+      // migrator's failure to the caller. Drizzle's PG migrator
+      // commits each migration in its own inner transaction
+      // (BEGIN/COMMIT, not SAVEPOINT), so the
+      // `__drizzle_migrations` journal is the source of truth
+      // for which migrations actually stuck — anything in
+      // flight inside the still-open outer tx when the throw
+      // happened is undone with this ROLLBACK.
       await client.query("ROLLBACK").catch(() => undefined);
       throw innerErr;
     }
