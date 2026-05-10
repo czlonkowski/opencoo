@@ -274,8 +274,14 @@ export async function csrf(
   return { csrfToken: body.csrfToken, csrfCookie, sessionCookie };
 }
 
-/** Build the full header set for an authenticated, CSRF-gated
- *  state-changing POST. */
+/** Build the auth + CSRF header set for an admin-API mutation.
+ *  Does NOT set `content-type` — body-bearing callers add it
+ *  inline alongside their `body:` field, body-less callers
+ *  (e.g. DELETE without a payload) leave it unset. Setting
+ *  `content-type: application/json` on a body-less request
+ *  trips Fastify's JSON parser with `FST_ERR_CTP_EMPTY_JSON_BODY`
+ *  (HTTP 400) — the same failure mode PR-W7 closed in the SPA's
+ *  `fetchAdmin` wrapper. */
 export function adminHeaders(
   pat: string,
   handshake: CsrfHandshake,
@@ -291,6 +297,5 @@ export function adminHeaders(
     Authorization: `Bearer ${pat}`,
     "x-csrf-token": handshake.csrfToken,
     cookie: cookieParts.join("; "),
-    "content-type": "application/json",
   };
 }
