@@ -31,14 +31,21 @@ COPY package.json ./
 
 # Cache mount keeps successive builds fast across layer-cache misses.
 #
-# `npm install` (NOT `npm ci`): the package-lock.json was removed when
-# the package was integrated into the opencoo pnpm workspace at the
-# repo root (commit `c436d56`). Versions in package.json carry caret/
-# tilde ranges; deterministic-enough for pilot use. A future PR may
-# re-introduce a per-package lockfile or shift the build context to
-# the repo root + use pnpm — both are larger lifts than X2's scope.
+# Lockfile strategy: the package-lock.json was removed when the package
+# was integrated into the opencoo pnpm workspace at the repo root
+# (commit `c436d56`). Pure `npm install` would be non-deterministic
+# across builds — a 6-month-old tagged image rebuilt today could pick
+# up yanked or upgraded transitive deps, breaking supply-chain trust
+# for partner deployments. So we materialise a lockfile here from the
+# current package.json's caret/tilde ranges, then `npm ci` against it.
+# This makes the install stage internally consistent within a single
+# build (npm ci enforces the just-generated lockfile). Cross-build
+# reproducibility for a given tag is still imperfect — that's a v0.2
+# follow-up (either commit a per-package lockfile or shift the build
+# context to repo root + use pnpm-from-root). PR-X2 reviewer (#1) flag.
 RUN --mount=type=cache,target=/root/.npm \
-    npm install --no-audit --no-fund
+    npm install --package-lock-only --no-audit --no-fund \
+    && npm ci --no-audit --no-fund
 
 # ---- Stage 2: build (compile TS, prune dev deps) ----
 FROM node:22-alpine AS build
@@ -64,7 +71,10 @@ WORKDIR /app
 # Runtime deps:
 #   - git: simple-git spawns it for clone/pull at runtime
 #   - tini: PID-1 zombie reaper for git subprocesses
-RUN apk add --no-cache git tini
+#   - wget: explicit dep for HEALTHCHECK probe; node:22-alpine ships
+#     busybox wget but installing the standalone util keeps the probe
+#     working if the base image ever drops busybox utilities.
+RUN apk add --no-cache git tini wget
 
 # Non-root user with a fixed UID. UID 10002 is one above the engine
 # image's UID 10001 — keeps bind-mount perms predictable when the
