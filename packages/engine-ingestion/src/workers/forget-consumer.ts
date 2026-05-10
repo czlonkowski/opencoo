@@ -172,6 +172,7 @@ export function buildForgetRecompileHandler(
 ): (job: Job<ForgetJobPayload>) => Promise<void> {
   return async (job) => {
     const payload = job.data;
+    const ctx = jobLogContext(payload);
     const citations = await readCitations(
       deps.db,
       payload.domainSlug,
@@ -182,11 +183,7 @@ export function buildForgetRecompileHandler(
       // Race: the route's planner saw citations but they're gone now
       // (operator concurrency, prior forget, or a manual db prune).
       // No-op + warn — retrying won't bring them back.
-      deps.logger.warn("forget_consumer.recompile.page_missing", {
-        binding_id: payload.bindingId,
-        domain_slug: payload.domainSlug,
-        page_path: payload.pagePath,
-      });
+      deps.logger.warn("forget_consumer.recompile.page_missing", ctx);
       return;
     }
 
@@ -200,9 +197,7 @@ export function buildForgetRecompileHandler(
       // do NOT delete — the delete worker owns the page-removal
       // commit AND the cascade citation prune).
       deps.logger.info("forget_consumer.recompile.no_remaining_citations", {
-        binding_id: payload.bindingId,
-        domain_slug: payload.domainSlug,
-        page_path: payload.pagePath,
+        ...ctx,
         forgotten_count: citations.length,
       });
       return;
@@ -213,12 +208,9 @@ export function buildForgetRecompileHandler(
     // this binding's source). DELETE is permitted on `page_citations`
     // for the erasure path per the schema's "APPEND-ONLY ... Source
     // forgetting happens via DELETE" comment.
-    await deps.db.execute(sql`
-      DELETE FROM page_citations
-      WHERE domain_slug = ${payload.domainSlug}
-        AND page_path = ${payload.pagePath}
-        AND source_binding_id = ${payload.bindingId}::uuid
-    `);
+    await deletePageCitations(deps.db, payload.domainSlug, payload.pagePath, {
+      bindingId: payload.bindingId,
+    });
 
     // Invoke the recompile hook. v0.1 wires a stub that logs only;
     // v0.2 will replace it with a real Thinker recompile.
@@ -235,9 +227,7 @@ export function buildForgetRecompileHandler(
     });
 
     deps.logger.info("forget_consumer.recompile.completed", {
-      binding_id: payload.bindingId,
-      domain_slug: payload.domainSlug,
-      page_path: payload.pagePath,
+      ...ctx,
       remaining_count: remaining.length,
     });
   };
@@ -252,6 +242,7 @@ export function buildForgetDeleteHandler(
 ): (job: Job<ForgetJobPayload>) => Promise<void> {
   return async (job) => {
     const payload = job.data;
+    const ctx = jobLogContext(payload);
 
     // Defensive existence probe — if the page is already gone (a
     // concurrent forget, a manual delete, a prior retry of THIS
@@ -267,18 +258,10 @@ export function buildForgetDeleteHandler(
     // Always prune citation rows first — they're the cascade record
     // for this page regardless of whether the wiki page itself
     // already vanished.
-    await deps.db.execute(sql`
-      DELETE FROM page_citations
-      WHERE domain_slug = ${payload.domainSlug}
-        AND page_path = ${payload.pagePath}
-    `);
+    await deletePageCitations(deps.db, payload.domainSlug, payload.pagePath);
 
     if (existing === null) {
-      deps.logger.warn("forget_consumer.delete.page_already_gone", {
-        binding_id: payload.bindingId,
-        domain_slug: payload.domainSlug,
-        page_path: payload.pagePath,
-      });
+      deps.logger.warn("forget_consumer.delete.page_already_gone", ctx);
       return;
     }
 
@@ -303,9 +286,7 @@ export function buildForgetDeleteHandler(
       await wikiWrite(deps.wikiDeps, writeInput);
     } catch (err) {
       deps.logger.error("forget_consumer.delete.wiki_write_failed", {
-        binding_id: payload.bindingId,
-        domain_slug: payload.domainSlug,
-        page_path: payload.pagePath,
+        ...ctx,
         // Round-2 fix #2 style — scrub + cap. THREAT-MODEL §3.6.
         error: safeErrorMessage(err),
       });
@@ -315,11 +296,7 @@ export function buildForgetDeleteHandler(
       throw err;
     }
 
-    deps.logger.info("forget_consumer.delete.completed", {
-      binding_id: payload.bindingId,
-      domain_slug: payload.domainSlug,
-      page_path: payload.pagePath,
-    });
+    deps.logger.info("forget_consumer.delete.completed", ctx);
   };
 }
 
@@ -337,6 +314,51 @@ async function readCitations(
       AND page_path = ${pagePath}
   `)) as unknown as { rows: CitationRow[] };
   return result.rows;
+}
+
+/** DELETE `page_citations` rows for `(domainSlug, pagePath)`. When
+ *  `filter.bindingId` is supplied the delete narrows to that binding
+ *  (recompile path: drop only the forgotten binding's rows); without
+ *  a filter every citation for the page is removed (delete path:
+ *  cascade prune for a page that is being removed entirely). DELETE
+ *  is permitted on `page_citations` for the erasure path per the
+ *  schema's "APPEND-ONLY ... Source forgetting happens via DELETE"
+ *  comment. */
+async function deletePageCitations(
+  db: Db,
+  domainSlug: string,
+  pagePath: string,
+  filter?: { readonly bindingId: string },
+): Promise<void> {
+  if (filter !== undefined) {
+    await db.execute(sql`
+      DELETE FROM page_citations
+      WHERE domain_slug = ${domainSlug}
+        AND page_path = ${pagePath}
+        AND source_binding_id = ${filter.bindingId}::uuid
+    `);
+    return;
+  }
+  await db.execute(sql`
+    DELETE FROM page_citations
+    WHERE domain_slug = ${domainSlug}
+      AND page_path = ${pagePath}
+  `);
+}
+
+/** Standard `(binding_id, domain_slug, page_path)` log triple stamped
+ *  on every per-job log line. Spread (`...ctx`) when the call site
+ *  needs to add additional fields. */
+function jobLogContext(payload: ForgetJobPayload): {
+  readonly binding_id: string;
+  readonly domain_slug: string;
+  readonly page_path: string;
+} {
+  return {
+    binding_id: payload.bindingId,
+    domain_slug: payload.domainSlug,
+    page_path: payload.pagePath,
+  };
 }
 
 /** Default v0.1 production stub for the recompile hook.
@@ -377,6 +399,26 @@ export interface ForgetConsumerWorkers {
   readonly delete: Worker<ForgetJobPayload, void>;
 }
 
+/** Wrap a handler so the worker fails loud if BullMQ delivers a job
+ *  whose `name` does not match the queue's pinned producer-side
+ *  constant. Defensive: the producer in `enqueue.ts` always pins the
+ *  expected name, but a malformed job (operator scripted an off-spec
+ *  `queue.add`) should throw rather than silently no-op. */
+function withJobNameGuard<T>(
+  queueSlug: string,
+  expectedName: string,
+  handler: (job: Job<T>) => Promise<void>,
+): (job: Job<T>) => Promise<void> {
+  return async (job) => {
+    if (job.name !== expectedName) {
+      throw new Error(
+        `forget-consumer: ${queueSlug} expected job name ${expectedName}, got ${JSON.stringify(job.name)}`,
+      );
+    }
+    return handler(job);
+  };
+}
+
 /** Construct + return the two BullMQ Worker instances for the
  *  forget queues. The queue slugs (`wiki.recompile`, `wiki.delete`)
  *  are multi-dot so we bypass `buildEngineWorker` (which rejects
@@ -390,39 +432,27 @@ export interface ForgetConsumerWorkers {
 export function startForgetConsumerWorkers(
   args: StartForgetConsumerWorkersArgs,
 ): ForgetConsumerWorkers {
-  const recompileHandler = buildForgetRecompileHandler(args.recompileDeps);
-  const deleteHandler = buildForgetDeleteHandler(args.deleteDeps);
-  const concurrency = args.concurrency ?? DEFAULT_FORGET_CONSUMER_CONCURRENCY;
   const baseOpts: WorkerOptions = {
     connection: args.connection,
-    concurrency,
+    concurrency: args.concurrency ?? DEFAULT_FORGET_CONSUMER_CONCURRENCY,
     ...(args.autorun !== undefined ? { autorun: args.autorun } : {}),
   };
   const recompile = new Worker<ForgetJobPayload, void>(
     WIKI_RECOMPILE_QUEUE_SLUG,
-    async (job) => {
-      if (job.name !== WIKI_RECOMPILE_JOB_NAME) {
-        // Defensive: the producer pins `recompile_page` per
-        // enqueue.ts, but a malformed job (operator scripted an
-        // off-spec add) should fail loud not silently no-op.
-        throw new Error(
-          `forget-consumer: ${WIKI_RECOMPILE_QUEUE_SLUG} expected job name ${WIKI_RECOMPILE_JOB_NAME}, got ${JSON.stringify(job.name)}`,
-        );
-      }
-      return recompileHandler(job);
-    },
+    withJobNameGuard(
+      WIKI_RECOMPILE_QUEUE_SLUG,
+      WIKI_RECOMPILE_JOB_NAME,
+      buildForgetRecompileHandler(args.recompileDeps),
+    ),
     baseOpts,
   );
   const del = new Worker<ForgetJobPayload, void>(
     WIKI_DELETE_QUEUE_SLUG,
-    async (job) => {
-      if (job.name !== WIKI_DELETE_JOB_NAME) {
-        throw new Error(
-          `forget-consumer: ${WIKI_DELETE_QUEUE_SLUG} expected job name ${WIKI_DELETE_JOB_NAME}, got ${JSON.stringify(job.name)}`,
-        );
-      }
-      return deleteHandler(job);
-    },
+    withJobNameGuard(
+      WIKI_DELETE_QUEUE_SLUG,
+      WIKI_DELETE_JOB_NAME,
+      buildForgetDeleteHandler(args.deleteDeps),
+    ),
     baseOpts,
   );
   return { recompile, delete: del };
