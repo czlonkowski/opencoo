@@ -7,6 +7,7 @@
  *   - POST /mcp                                       — MCP JSON-RPC, bearer-gated
  *   - GET  /mcp                                       — 405, documents the POST-only shape
  *   - POST /refresh/:slug                             — Gitea-webhook-triggered git pull + reindex
+ *   - POST /refresh-all                               — opencoo-triggered REPOS replace + clone
  *
  * Bearer gate accepts both the static MCP_BEARER_TOKEN (internal: n8n / Claude
  * Code) and Gitea OAuth2 access tokens (public: ChatGPT Team / Claude.ai).
@@ -31,7 +32,7 @@ import rateLimit from "express-rate-limit";
 import type { AddressInfo } from "node:net";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { isOAuthEnabled, type Config } from "../config.js";
+import { isOAuthEnabled, validateRepos, type Config, type RepoEntry } from "../config.js";
 import { SERVER_INFO } from "../constants.js";
 import { createGiteaOAuthValidator } from "../services/gitea-oauth.js";
 import type { RepoRegistry } from "../services/repo-registry.js";
@@ -275,6 +276,119 @@ export async function startHttpServer(
     }
   });
 
+  // POST /refresh-all — opencoo-triggered REPOS replace. Closes G10
+  // (phase-a appendix #12 PR-Z8): partner deployments no longer hand-
+  // maintain a JSON `REPOS` env var; opencoo POSTs this endpoint after
+  // each domain-create so the MCP server's in-memory registry stays in
+  // sync with the engine's `domains` table.
+  //
+  // Bearer-gated with the same `MCP_BEARER_TOKEN` the `/mcp` endpoint
+  // accepts (the static path — OAuth tokens are not accepted here:
+  // this is an engine-to-engine call, not a user-facing one).
+  //
+  // Body shape:
+  //   { "repos": [ { slug, owner, name?, default?, aggregator?, access_tag? }, ... ] }
+  // `name` defaults to `slug` if omitted (the common case — gitea
+  // repo named after the slug). At least one entry must have
+  // `default: true`; if zero entries have it, the FIRST entry is
+  // promoted to default (operator convenience for the one-domain
+  // partner case where flipping the flag is annoying boilerplate).
+  //
+  // Side effect: rebuilds the in-memory `RepoRegistry`. The git-sync
+  // scheduler picks up new repos on its next interval; tests inject
+  // a stub gitSync so this stays deterministic.
+  app.post(
+    "/refresh-all",
+    bearerAuth(bearerOpts),
+    async (req: Request, res: Response) => {
+      // Static-token only — OAuth principals (ChatGPT/Claude.ai) have
+      // no business reshaping the registry. `bearerAuth` admits both
+      // kinds; we narrow here.
+      if (req.authPrincipal?.kind !== "static") {
+        res.status(403).json({ error: "static_token_required" });
+        return;
+      }
+
+      const body = req.body as { repos?: unknown } | undefined;
+      const reposRaw = body?.repos;
+      if (!Array.isArray(reposRaw)) {
+        res.status(400).json({ error: "invalid_body", message: "expected { repos: [...] }" });
+        return;
+      }
+
+      // Normalize each entry: default `name` to `slug`, default
+      // `default`/`aggregator` to false. The post-normalization shape
+      // is what `validateRepos` consumes. Branch is intentionally not
+      // a registry field — the MCP server tracks remote HEAD via
+      // simple-git, not a pinned ref — so any `branch` key in the
+      // body is silently ignored (documented here so a future
+      // reviewer doesn't try to wire it).
+      const normalized: unknown[] = [];
+      for (const entry of reposRaw) {
+        if (entry === null || typeof entry !== "object") {
+          res.status(400).json({ error: "invalid_body", message: "each entry must be an object" });
+          return;
+        }
+        const e = entry as Record<string, unknown>;
+        normalized.push({
+          slug: e["slug"],
+          owner: e["owner"],
+          name: typeof e["name"] === "string" ? e["name"] : e["slug"],
+          default: e["default"] === true,
+          ...(typeof e["access_tag"] === "string" ? { access_tag: e["access_tag"] } : {}),
+          aggregator: e["aggregator"] === true,
+        });
+      }
+
+      // Auto-promote first entry to default when caller didn't pick
+      // one. The replace() refinement requires exactly one default;
+      // partners with a single domain shouldn't have to set the flag.
+      const defaults = normalized.filter(
+        (e) => (e as { default?: boolean }).default === true,
+      );
+      if (defaults.length === 0 && normalized.length > 0) {
+        (normalized[0] as { default: boolean }).default = true;
+      }
+
+      let validated: RepoEntry[];
+      try {
+        validated = validateRepos(normalized);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: "validation_failed", message: msg });
+        return;
+      }
+
+      try {
+        registry.replace(validated);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: "validation_failed", message: msg });
+        return;
+      }
+
+      // Best-effort initial-clone for any new repos. Failures here
+      // log but don't fail the request — the periodic git-sync
+      // scheduler retries, and stale content is better than a
+      // 500 that leaves the registry in the new state but the
+      // caller thinking it failed.
+      gitSync
+        .ensureAllCloned()
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`[http] /refresh-all post-clone error (continuing): ${msg}`);
+        });
+
+      console.error(
+        `[http] /refresh-all ok, repos=${validated.map((r) => r.slug).join(",")}`,
+      );
+      res.json({
+        ok: true,
+        repos: validated.map((r) => r.slug),
+      });
+    },
+  );
+
   // 404 fallback.
   app.use((_req, res) => {
     res.status(404).json({ error: "not_found" });
@@ -315,7 +429,7 @@ export async function startHttpServer(
         });
         const oauthNote = isOAuthEnabled(config) ? " +oauth" : "";
         console.error(
-          `[http] listening on http://${addr.address}:${addr.port} (paths: /mcp, /refresh/:slug, /health${oauthNote})`,
+          `[http] listening on http://${addr.address}:${addr.port} (paths: /mcp, /refresh/:slug, /refresh-all, /health${oauthNote})`,
         );
         resolve(s);
       });

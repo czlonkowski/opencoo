@@ -46,6 +46,7 @@ import { registerCostSummaryRoute } from "./routes/cost-summary.js";
 import { registerDomainsLlmPolicyRoutes } from "./routes/domains-llm-policy.js";
 import {
   registerDomainsRoutes,
+  type PingWikiMcpRefreshFn,
   type ProvisionDomainRepoFn,
 } from "./routes/domains.js";
 import { registerEventsRoute } from "./routes/events.js";
@@ -94,6 +95,13 @@ export interface RegisterAdminApiArgs {
   /** Gitea organisation under which provisioned repos are
    *  created. Sourced from `GITEA_PROVISION_ORG`. */
   readonly provisionOrg?: string;
+  /** Phase-a appendix #12 PR-Z8 (G10) — fire-and-forget
+   *  `/refresh-all` ping the domain-create handler dispatches so
+   *  gitea-wiki-mcp-server learns about new repos. The composition
+   *  root wires this when both `GITEA_WIKI_MCP_URL` and
+   *  `MCP_BEARER_TOKEN` are set; otherwise the ping is skipped
+   *  (domain creation still succeeds; operator can curl manually). */
+  readonly pingWikiMcpRefresh?: PingWikiMcpRefreshFn;
   /** Phase-a appendix #2 — credential store for the binding
    *  create flow. Encrypts auth + webhook_secret halves before
    *  the binding row INSERT. When undefined, POST
@@ -262,6 +270,9 @@ export async function registerAdminApi(
     ...(args.provisionOrg !== undefined
       ? { provisionOrg: args.provisionOrg }
       : {}),
+    ...(args.pingWikiMcpRefresh !== undefined
+      ? { pingWikiMcpRefresh: args.pingWikiMcpRefresh }
+      : {}),
   });
   registerPromptsRoutes({ app: guardedApp });
   registerDomainsLlmPolicyRoutes({
@@ -394,7 +405,10 @@ function makeGuardedApp(
 }
 
 export type { GiteaClient, GiteaWhoamiResult, AdminContext } from "./auth.js";
-export type { ProvisionDomainRepoFn } from "./routes/domains.js";
+export type {
+  PingWikiMcpRefreshFn,
+  ProvisionDomainRepoFn,
+} from "./routes/domains.js";
 export type { AgentDispatchEnqueue } from "./routes/agents-dispatch.js";
 export type { ForgetJobEnqueueArgs } from "./routes/source-bindings.js";
 export type {

@@ -23,8 +23,8 @@ export interface ResolvedRepo {
 }
 
 export class RepoRegistry {
-  private readonly bySlug: Map<string, RepoEntry>;
-  private readonly defaultSlug: string;
+  private bySlug: Map<string, RepoEntry>;
+  private defaultSlug: string;
   private readonly dataDir: string;
 
   constructor(config: Config) {
@@ -34,6 +34,42 @@ export class RepoRegistry {
     if (!def) throw new Error("BUG: no default repo (config validation missed)");
     this.defaultSlug = def.slug;
     this.dataDir = config.dataDir;
+  }
+
+  /**
+   * Replace the in-memory repo set wholesale. Used by the
+   * `POST /refresh-all` endpoint so opencoo can keep this server's
+   * REPOS list in sync with the engine's `domains` table without an
+   * operator-maintained JSON array in `.env` (G10, phase-a appendix
+   * #12 PR-Z8).
+   *
+   * Caller MUST have already validated entry shapes via
+   * `validateRepos` (the endpoint does this). The same default-of-one
+   * + unique-slug invariants the constructor depends on are
+   * re-enforced here so a partial application can't drift the
+   * registry into an unrecoverable state.
+   */
+  replace(repos: ReadonlyArray<RepoEntry>): void {
+    if (repos.length === 0) {
+      throw new Error("RepoRegistry.replace: repos array must be non-empty");
+    }
+    const defaults = repos.filter((r) => r.default);
+    if (defaults.length !== 1) {
+      throw new Error(
+        `RepoRegistry.replace: exactly one repo must have default:true (found ${defaults.length})`,
+      );
+    }
+    const seen = new Set<string>();
+    for (const r of repos) {
+      if (seen.has(r.slug)) {
+        throw new Error(
+          `RepoRegistry.replace: duplicate slug "${r.slug}"`,
+        );
+      }
+      seen.add(r.slug);
+    }
+    this.bySlug = new Map(repos.map((r) => [r.slug, r]));
+    this.defaultSlug = defaults[0]!.slug;
   }
 
   /**

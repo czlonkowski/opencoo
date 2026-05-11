@@ -99,6 +99,27 @@ export interface ProvisionDomainRepoFn {
   }): Promise<{ readonly repoUrl: string }>;
 }
 
+/** Phase-a appendix #12 PR-Z8 (G10) — `/refresh-all` ping callable.
+ *  Invoked AFTER the domain row is committed and the Gitea repo is
+ *  provisioned, with the COMPLETE set of active (not-disabled)
+ *  domains the engine knows about. Implementation lives in
+ *  `composition/wiki-mcp-refresh.ts`. The callable swallows every
+ *  failure mode (network, 401, 5xx) so a misconfigured or
+ *  half-deployed MCP server cannot block legitimate domain
+ *  creation — the route returns 201 regardless.
+ *
+ *  Signature carries a `repos` snapshot the route builds from the
+ *  `domains` table; the helper does not re-query the DB. */
+export interface PingWikiMcpRefreshFn {
+  (repos: ReadonlyArray<{
+    readonly slug: string;
+    readonly owner: string;
+    readonly name?: string;
+    readonly default?: boolean;
+    readonly aggregator?: boolean;
+  }>): Promise<void>;
+}
+
 export interface RegisterDomainsRoutesArgs {
   readonly app: FastifyInstance;
   readonly db: Db;
@@ -109,6 +130,12 @@ export interface RegisterDomainsRoutesArgs {
   /** Gitea organisation that owns provisioned repos.
    *  Sourced from `GITEA_PROVISION_ORG` (default 'opencoo'). */
   readonly provisionOrg?: string;
+  /** Phase-a appendix #12 PR-Z8 (G10) — `/refresh-all` ping callable.
+   *  Optional: when undefined, the domain-create handler skips the
+   *  refresh and writes a debug log. Production composition wires
+   *  the real helper when `GITEA_WIKI_MCP_URL` + `MCP_BEARER_TOKEN`
+   *  are both set. */
+  readonly pingWikiMcpRefresh?: PingWikiMcpRefreshFn;
 }
 
 export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
@@ -298,6 +325,55 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
         sourceIp: req.ip,
         userAgent: req.headers["user-agent"],
       });
+
+      // Phase-a appendix #12 PR-Z8 (G10) — fire-and-forget
+      // /refresh-all ping to gitea-wiki-mcp-server so its in-memory
+      // REPOS list picks up the newly-provisioned repo without any
+      // operator hand-edit of `REPOS` env JSON. Read the full
+      // active-domains set from the DB (the MCP server's
+      // /refresh-all replaces wholesale, not appends, so partial
+      // payloads would drop existing repos). Awaiting the SELECT
+      // is cheap (single-table read on the slug + class + flags);
+      // the actual HTTP dispatch is forget-on-throw inside
+      // pingWikiMcpRefresh.
+      const refresh = args.pingWikiMcpRefresh;
+      if (refresh !== undefined) {
+        const orgForBody = provisionOrg;
+        try {
+          const activeRows = (await args.db.execute(sql`
+            SELECT slug, is_aggregator
+            FROM domains
+            WHERE disabled_at IS NULL
+            ORDER BY slug ASC
+          `)) as unknown as {
+            rows: Array<{ slug: string; is_aggregator: boolean }>;
+          };
+          const repos = activeRows.rows.map((r) => ({
+            slug: r.slug,
+            owner: orgForBody,
+            name: r.slug,
+            // The MCP server picks `default: true` from this set
+            // OR auto-promotes the first when none is flagged.
+            // opencoo never elevates a knowledge domain to the
+            // MCP server's "default" slot; the auto-promote path
+            // covers the one-domain case. Aggregator status is
+            // load-bearing for `worldview://company` resolution.
+            aggregator: r.is_aggregator === true,
+          }));
+          // Fire-and-forget — pin the rejection-safe promise so
+          // unhandled-rejection guards stay quiet, but do NOT
+          // await it (slow MCP server must not stretch the 201).
+          void refresh(repos).catch(() => undefined);
+        } catch (err) {
+          // SELECT failure shouldn't happen on a fresh commit, but
+          // if it does we eat it — domain creation already
+          // succeeded; the ping is informational.
+          req.log?.warn({
+            msg: "domain_create.refresh_select_failed",
+            err: err instanceof Error ? err.name : "unknown",
+          });
+        }
+      }
 
       return reply.code(201).send({
         id: result.id,

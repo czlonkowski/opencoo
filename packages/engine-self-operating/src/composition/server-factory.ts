@@ -51,6 +51,7 @@ import { registerStaticUi } from "../static-ui.js";
 
 import type { AdminApiCompositionEnv } from "./env.js";
 import { provisionDomainRepo } from "./gitea-provisioning.js";
+import { pingRefreshAll } from "./wiki-mcp-refresh.js";
 
 export interface ProductionServerFactoryArgs {
   readonly probes: ProbeMap;
@@ -197,6 +198,31 @@ export async function productionServerFactory(
         defaultLocale: a.defaultLocale,
       });
     },
+    // Phase-a appendix #12 PR-Z8 (G10) — wire /refresh-all only
+    // when BOTH URL + bearer are configured. Partial config falls
+    // through to undefined, which the route reads as "skip ping".
+    ...(args.compositionEnv.giteaWikiMcpUrl !== undefined &&
+    args.compositionEnv.mcpBearerToken !== undefined
+      ? {
+          pingWikiMcpRefresh: async (
+            repos: ReadonlyArray<{
+              readonly slug: string;
+              readonly owner: string;
+              readonly name?: string;
+              readonly default?: boolean;
+              readonly aggregator?: boolean;
+            }>,
+          ): Promise<void> =>
+            pingRefreshAll(
+              {
+                baseUrl: args.compositionEnv.giteaWikiMcpUrl!,
+                bearerToken: args.compositionEnv.mcpBearerToken!,
+              },
+              repos,
+              args.logger,
+            ),
+        }
+      : {}),
   });
 
   // 2. Static-UI LAST — its setNotFoundHandler catches unknown
