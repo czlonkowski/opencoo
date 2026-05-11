@@ -1,10 +1,31 @@
 /**
  * NewDomainModal — `+ New domain` flow on the Domains tab
- * (phase-a appendix #2).
+ * (phase-a appendix #2; PR-Z9 / G12 hardening).
  *
  * Closes PRD §5 #1 ("default domain without manual DB edits").
  * Submits to POST /api/admin/domains; on success calls the
  * parent's onCreated so the list refetches.
+ *
+ * Input pattern (PR-Z9, closes G12):
+ *   The SLUG and DISPLAY-NAME inputs are UNCONTROLLED — React
+ *   does not own `value`. The DOM is the source of truth and we
+ *   read both via `useRef<HTMLInputElement>` on submit. This
+ *   survives external native-value-setter bypasses (1Password,
+ *   Bitwarden, programmatic JS-set) that previously corrupted
+ *   the controlled-input state and swapped SLUG / DISPLAY-NAME
+ *   values on the next React render. Validation state still
+ *   lives in React (so the inline error rows + `aria-invalid`
+ *   can re-render); it is recomputed on submit, not on each
+ *   keystroke.
+ *
+ * Slug auto-fill:
+ *   When the user has not yet typed in the slug field, edits to
+ *   DISPLAY-NAME slugify into the slug input via a direct DOM
+ *   write — NOT a React state round-trip. This keeps the
+ *   auto-fill compatible with the uncontrolled pattern. A
+ *   `slugTouchedRef` flag flips on the first `input` event that
+ *   originated from the user editing the slug field directly,
+ *   after which the auto-fill stops mirroring DISPLAY-NAME.
  *
  * Validation:
  *   - slug regex must match the server's domains_slug_format
@@ -16,7 +37,7 @@
  *   - inline 'slug_taken' error on the slug field, NEVER an
  *     alert dialog or toast (CLAUDE.md design system).
  */
-import { useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Btn } from "./Btn.js";
@@ -56,17 +77,131 @@ const FIELDS_STYLE: CSSProperties = {
   gap: "var(--space-4)",
 };
 
+/**
+ * Slugify a display-name into the server's slug shape:
+ *   - lowercase, ASCII-foldable diacritics stripped
+ *   - non-[a-z0-9] collapsed to single hyphens
+ *   - leading non-letter prefix trimmed (slug regex requires
+ *     `^[a-z]`)
+ *   - trailing hyphens trimmed
+ *   - clamped to 63 chars (slug regex is `{1,62}` after the
+ *     leading letter)
+ *
+ * Returns an empty string when the input has no usable letters
+ * OR when the slugified result is shorter than the server's
+ * minimum length (the SLUG_REGEX is `^[a-z][a-z0-9-]{1,62}$`,
+ * so a 1-char result like "a" — produced by display name "A"
+ * or "A!" — would auto-fill an invalid slug, get silently
+ * written into the DOM, and only fail on POST. Empty is better
+ * than wrong: the operator sees a blank slug and either types
+ * one OR keeps typing into display-name until the auto-fill
+ * produces a 2+ char slug. Also means the operator's typed-in
+ * slug isn't accidentally overwritten by a length-changing
+ * display-name edit. The validation step still rejects an empty
+ * slug on submit.
+ *
+ * @internal Exported for unit-test access; not part of the
+ *           component's public API.
+ */
+export function slugifyDisplayName(input: string): string {
+  const lowered = input.toLowerCase().normalize("NFKD");
+  // Strip combining marks (the diacritic portion of NFKD).
+  const stripped = lowered.replace(/[̀-ͯ]/g, "");
+  // Replace any run of non-[a-z0-9] with a single hyphen.
+  const hyphenated = stripped.replace(/[^a-z0-9]+/g, "-");
+  // Trim a leading prefix until the first letter (slug regex
+  // requires `^[a-z]`) and any trailing hyphens.
+  const trimmed = hyphenated.replace(/^[^a-z]+/, "").replace(/-+$/, "");
+  // Slug regex caps at 63 chars total (1 letter + 1..62).
+  const clamped = trimmed.slice(0, 63);
+  // Reject sub-minimum-length results — server SLUG_REGEX
+  // requires at least 2 chars (1 leading letter + 1+ trailing).
+  if (clamped.length < 2) return "";
+  return clamped;
+}
+
+/**
+ * Set an input's `.value` via the native HTMLInputElement
+ * property setter so React's synthetic descriptor (which
+ * tracks the last set value and skips re-fires) doesn't
+ * swallow a downstream `input` event. Same technique used by
+ * password-manager autofill scripts.
+ */
+function setInputValueNative(el: HTMLInputElement, value: string): void {
+  const desc = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value",
+  );
+  const setter = desc?.set;
+  if (setter !== undefined) {
+    setter.call(el, value);
+  } else {
+    el.value = value;
+  }
+}
+
 export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
   const { t } = useTranslation();
-  const [slug, setSlug] = useState("");
-  const [displayName, setDisplayName] = useState("");
+  const slugRef = useRef<HTMLInputElement>(null);
+  const displayNameRef = useRef<HTMLInputElement>(null);
+  // True once the user types directly into the slug field. After
+  // that, edits to DISPLAY-NAME stop overwriting the slug input.
+  // Stored on a ref (not React state) so the input-event handlers
+  // are stable closures — no stale-closure bug.
+  const slugTouchedRef = useRef<boolean>(false);
   const [domainClass, setDomainClass] =
     useState<(typeof DOMAIN_CLASSES)[number]>("knowledge");
   const [locale, setLocale] = useState<(typeof LOCALES)[number]>("en");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
 
-  const validate = (): boolean => {
+  // Subscribe to native `input` events directly on the DOM nodes
+  // — bypasses React's synthetic event system entirely, which
+  // means external value-setter bypasses (password managers,
+  // QA scripts) reach our handler the same way real keystrokes
+  // do. The subscription is wired once on mount.
+  useEffect(() => {
+    const slugEl = slugRef.current;
+    const displayEl = displayNameRef.current;
+    if (slugEl === null || displayEl === null) return;
+
+    const onSlugInput = (): void => {
+      // Mark slug as user-touched the first time we observe an
+      // input event whose value differs from the synthetic
+      // mirror we wrote during display-name slugify. We can't
+      // distinguish "user typed" from "we wrote" by event type
+      // alone (both bubble), so we treat any input event whose
+      // value is NOT the current slugify of display-name as a
+      // user edit. This keeps the regression behavior simple:
+      // once the slug diverges from the display-name shadow,
+      // we stop mirroring.
+      const expected = slugifyDisplayName(displayEl.value);
+      if (slugEl.value !== expected) {
+        slugTouchedRef.current = true;
+      }
+    };
+
+    const onDisplayInput = (): void => {
+      if (slugTouchedRef.current) return;
+      const next = slugifyDisplayName(displayEl.value);
+      // Skip the write when the value is already correct — avoids
+      // re-positioning the caret if the slug input happens to be
+      // focused (the user can tab to it and start editing before
+      // the regex test fires).
+      if (slugEl.value !== next) {
+        setInputValueNative(slugEl, next);
+      }
+    };
+
+    slugEl.addEventListener("input", onSlugInput);
+    displayEl.addEventListener("input", onDisplayInput);
+    return (): void => {
+      slugEl.removeEventListener("input", onSlugInput);
+      displayEl.removeEventListener("input", onDisplayInput);
+    };
+  }, []);
+
+  const validate = (slug: string, displayName: string): Record<string, string> => {
     const next: Record<string, string> = {};
     if (!SLUG_REGEX.test(slug)) {
       next["slug"] = t("domains.create.errors.slugFormat");
@@ -74,12 +209,22 @@ export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
     if (displayName.trim().length === 0) {
       next["display_name"] = t("domains.create.errors.displayNameRequired");
     }
-    setErrors(next);
-    return Object.keys(next).length === 0;
+    return next;
   };
 
   const submit = async (): Promise<void> => {
-    if (!validate()) return;
+    // Read the live DOM values — NOT React state. The whole point
+    // of PR-Z9: external scripts can mutate `.value` between
+    // renders, so the input-element is the source of truth.
+    const slug = slugRef.current?.value ?? "";
+    const displayName = displayNameRef.current?.value ?? "";
+
+    const validationErrors = validate(slug, displayName);
+    if (Object.keys(validationErrors).length > 0) {
+      setErrors(validationErrors);
+      return;
+    }
+    setErrors({});
     setSubmitting(true);
     try {
       const result = await fetchAdmin<CreatedDomain>("/api/admin/domains", {
@@ -141,8 +286,8 @@ export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
         <Field
           name="slug"
           label={t("domains.create.fields.slug")}
-          value={slug}
-          onChange={(e): void => setSlug(e.target.value)}
+          inputRef={slugRef}
+          defaultValue=""
           mono
           required
           helper={t("domains.create.help.slug")}
@@ -151,8 +296,8 @@ export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
         <Field
           name="display_name"
           label={t("domains.create.fields.displayName")}
-          value={displayName}
-          onChange={(e): void => setDisplayName(e.target.value)}
+          inputRef={displayNameRef}
+          defaultValue=""
           required
           {...(errors["display_name"] !== undefined
             ? { error: errors["display_name"] }
