@@ -1,5 +1,5 @@
 /**
- * NewDomainModal tests — phase-a appendix #2.
+ * NewDomainModal tests — phase-a appendix #2 + PR-Z9 / G12.
  *
  * The modal opens from `+ New domain` on the Domains tab. It
  * collects (slug, class, display_name, default_locale) and
@@ -16,12 +16,38 @@
  *     server's response (so the parent can refetch)
  *   - On 409 slug_taken the inline error surfaces on the slug
  *     field and the modal stays open
+ *   - Uncontrolled inputs survive an external native-setter
+ *     bypass (PR-Z9 / closes G12) — the technique 1Password +
+ *     Bitwarden use to autofill fields without dispatching
+ *     React-tracked keystrokes
+ *   - Slug auto-fills from display-name via direct DOM write
+ *     until the user explicitly edits the slug field, then
+ *     stops mirroring (so user edits aren't clobbered)
  */
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { NewDomainModal } from "../../src/components/NewDomainModal.js";
+
+/**
+ * Mimic password-manager autofill — set the input value via the
+ * native HTMLInputElement.prototype setter (bypassing React's
+ * synthetic value-tracker) and dispatch a bubbling input event.
+ * This is the exact technique 1Password / Bitwarden use, and the
+ * technique that triggered the G12 regression report.
+ */
+function externalSetValue(el: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value",
+  )?.set;
+  if (setter === undefined) {
+    throw new Error("HTMLInputElement value setter unavailable");
+  }
+  setter.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
 
 describe("NewDomainModal", () => {
   it("renders as a modal dialog (role + aria-modal)", () => {
@@ -58,6 +84,13 @@ describe("NewDomainModal", () => {
     // Inline error on the slug field surfaces the regex-mismatch
     // message — distinct from any other slug-related text.
     expect(screen.getByText(/^Slug must match/i)).toBeInTheDocument();
+    // aria-invalid is set on the offending input so screen readers
+    // announce the error state (preserved under the uncontrolled
+    // pattern — see PR-Z9 commentary in NewDomainModal.tsx).
+    expect(document.querySelector("input[name='slug']")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
   });
 
   it("submits the right body shape on valid input", async () => {
@@ -123,5 +156,112 @@ describe("NewDomainModal", () => {
     });
     expect(onCreated).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------
+  // PR-Z9 / G12 regression suite — uncontrolled-input pattern
+  // survives external native-value-setter bypasses (1Password,
+  // Bitwarden, automation scripts). Pre-Z9 these tests failed
+  // because controlled-input state swapped SLUG/DISPLAY-NAME on
+  // the next React render.
+  // ---------------------------------------------------------------
+
+  it("preserves externally-set field values on submit (PR-Z9 / G12 regression)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "00000000-0000-0000-0000-0000000000ff",
+          slug: "external-slug",
+          repoUrl: "https://gitea.test/opencoo/external-slug",
+        }),
+        { status: 201, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const onCreated = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <NewDomainModal
+        onCreated={onCreated}
+        onClose={() => undefined}
+        fetchImpl={fetchImpl as unknown as typeof fetch}
+      />,
+    );
+
+    const slugInput = document.querySelector(
+      "input[name='slug']",
+    ) as HTMLInputElement;
+    const nameInput = document.querySelector(
+      "input[name='display_name']",
+    ) as HTMLInputElement;
+
+    // Simulate the password-manager autofill technique — exactly
+    // the path that broke the controlled-input version.
+    externalSetValue(slugInput, "external-slug");
+    externalSetValue(nameInput, "External Name");
+
+    await user.click(screen.getByRole("button", { name: /create/i }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const init = fetchImpl.mock.calls[0]![1] as RequestInit;
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    // Critically: NOT swapped, NOT cleared.
+    expect(body).toMatchObject({
+      slug: "external-slug",
+      display_name: "External Name",
+    });
+  });
+
+  it("auto-fills slug from display-name when the user has not typed in slug yet", async () => {
+    const user = userEvent.setup();
+    render(
+      <NewDomainModal
+        onCreated={() => undefined}
+        onClose={() => undefined}
+      />,
+    );
+
+    const slugInput = document.querySelector(
+      "input[name='slug']",
+    ) as HTMLInputElement;
+    const nameInput = document.querySelector(
+      "input[name='display_name']",
+    ) as HTMLInputElement;
+
+    await user.type(nameInput, "Wiki Main");
+
+    // Slug input was untouched, so the slugified mirror should
+    // be reflected in the DOM value. The auto-fill writes via
+    // the native setter (no React state round-trip).
+    expect(slugInput.value).toBe("wiki-main");
+  });
+
+  it("does not overwrite a user-typed slug when display-name changes after", async () => {
+    const user = userEvent.setup();
+    render(
+      <NewDomainModal
+        onCreated={() => undefined}
+        onClose={() => undefined}
+      />,
+    );
+
+    const slugInput = document.querySelector(
+      "input[name='slug']",
+    ) as HTMLInputElement;
+    const nameInput = document.querySelector(
+      "input[name='display_name']",
+    ) as HTMLInputElement;
+
+    // User explicitly typed the slug first — that act flips the
+    // touched flag so subsequent display-name edits stop
+    // mirroring.
+    await user.type(slugInput, "my-custom-slug");
+    expect(slugInput.value).toBe("my-custom-slug");
+
+    await user.type(nameInput, "Some Other Name");
+
+    // Slug is still the user-typed value — NOT slugified
+    // "some-other-name".
+    expect(slugInput.value).toBe("my-custom-slug");
   });
 });

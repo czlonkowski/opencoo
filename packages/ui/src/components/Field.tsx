@@ -1,14 +1,27 @@
 /**
  * Form field — label + input wrapper. References design-system
  * vars exclusively (font scale, radii, border colors).
+ *
+ * Supports two input modes:
+ *   - Controlled (default): pass `value` + `onChange`. React
+ *     owns the input value across renders.
+ *   - Uncontrolled: pass `inputRef` (+ optional `defaultValue`)
+ *     instead of `value`/`onChange`. The DOM owns the value;
+ *     the caller reads it on submit via `inputRef.current.value`.
+ *     This is the mode used by forms that need to survive
+ *     external value-setters (password-manager autofill,
+ *     1Password / Bitwarden, etc) — controlled inputs fight
+ *     reconciliation when an external script JS-sets the value
+ *     via the native value setter, and React swaps the field
+ *     state on the next render (PR-Z9 / G12).
  */
-import type { ChangeEventHandler, ReactNode } from "react";
+import type { ChangeEventHandler, Ref, ReactNode } from "react";
 
 export interface FieldProps {
   readonly label: ReactNode;
   readonly name: string;
-  readonly value: string;
-  readonly onChange: ChangeEventHandler<HTMLInputElement>;
+  readonly value?: string;
+  readonly onChange?: ChangeEventHandler<HTMLInputElement>;
   readonly placeholder?: string;
   readonly type?: "text" | "password" | "email";
   readonly required?: boolean;
@@ -18,10 +31,21 @@ export interface FieldProps {
    *  paths (CLAUDE.md "JetBrains Mono = paths, IDs, micro-labels"). */
   readonly mono?: boolean;
   readonly secret?: boolean;
+  /** Uncontrolled-mode escape hatch. When provided, the input is
+   *  rendered without a React-owned `value`, and the caller reads
+   *  the live DOM value via this ref. Pair with `defaultValue`
+   *  for an initial value. See file header for rationale. */
+  readonly inputRef?: Ref<HTMLInputElement>;
+  readonly defaultValue?: string;
 }
 
 export function Field(props: FieldProps): JSX.Element {
   const inputId = `field-${props.name}`;
+  // Controlled-mode props are only spread onto the input when
+  // BOTH `value` and `onChange` are present — otherwise React
+  // warns about a controlled input becoming uncontrolled (or
+  // vice-versa).
+  const controlled = props.value !== undefined && props.onChange !== undefined;
   return (
     <label
       htmlFor={inputId}
@@ -55,11 +79,16 @@ export function Field(props: FieldProps): JSX.Element {
         id={inputId}
         name={props.name}
         type={props.secret === true ? "password" : (props.type ?? "text")}
-        value={props.value}
-        onChange={props.onChange}
+        {...(controlled
+          ? { value: props.value, onChange: props.onChange }
+          : props.defaultValue !== undefined
+            ? { defaultValue: props.defaultValue }
+            : {})}
+        {...(props.inputRef !== undefined ? { ref: props.inputRef } : {})}
         placeholder={props.placeholder}
         required={props.required}
         autoComplete={props.secret === true ? "new-password" : "off"}
+        aria-invalid={props.error !== undefined ? true : undefined}
         data-secret={props.secret === true ? "true" : undefined}
         style={{
           fontFamily: props.mono === true ? "var(--font-mono)" : "var(--font-sans)",
