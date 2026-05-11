@@ -126,8 +126,13 @@ async function startDispatcher(args: {
    *  past `afterEach`. */
   readonly refreshIntervalMs?: number;
   /** PR-Z6 — optional override for the `removeRepeatable` test seam.
-   *  The default no-op records nothing; the deregister test passes
-   *  its own array-pusher to assert the seam fired. */
+   *  When omitted, the dispatcher uses `queue.removeRepeatable`
+   *  directly — note that ioredis-mock doesn't fully support
+   *  repeatables, so tests that touch the remove path (the
+   *  deregister test, updateSchedule tests, etc.) MUST explicitly
+   *  pass a stub here. Tests that never call `removeOne` (e.g.
+   *  pure-`start()` registration tests) can safely leave this
+   *  undefined. */
   readonly removeScheduleFn?: (entry: RegisteredSchedule) => Promise<void>;
 }): Promise<DispatcherHarness> {
   const redis = new IORedisMock();
@@ -1143,6 +1148,8 @@ describe("AgentDispatcher — PR-Z4 post-run delivery hook", () => {
       redis.disconnect();
     }
     expect(slackMock.deliveries).toHaveLength(1);
+  });
+});
 
 describe("AgentDispatcher.refresh — PR-Z6 post-boot re-enumeration (closes G7)", () => {
   it("registers a post-boot seeded agent_instance on refresh tick", async () => {
@@ -1320,6 +1327,249 @@ describe("AgentDispatcher.refresh — PR-Z6 post-boot re-enumeration (closes G7)
     } finally {
       clearSpy.mockRestore();
       harness.redis.disconnect();
+    }
+  });
+});
+
+describe("AgentDispatcher start/stop race (PR-Z6 round-2 Copilot triage)", () => {
+  // Copilot triage: `start()` could arm `setInterval` AFTER `stop()`
+  // already ran its `clearInterval` branch — `stop()` cleared an
+  // undefined timer slot, then `start()` (still awaiting its
+  // `fetchDesiredSchedules`) resumed and called `setInterval`,
+  // leaving a stray timer running past shutdown. Fix: `stop()` sets
+  // `this.stopping` BEFORE clearing the timer; `start()` checks
+  // `this.stopping` BEFORE calling `setInterval`.
+  it("does not arm refreshTimer if stop() begins while start() is awaiting", async () => {
+    const fixture = await freshAgentDb();
+    await seedScheduledInstance(fixture, {
+      name: "race-target",
+      scheduleCron: "0 8 * * *",
+    });
+
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+      // Real, non-zero interval — would arm a setInterval if not
+      // for the stop-during-start race guard.
+      refreshIntervalMs: 50,
+      registerScheduleFn: async () => {
+        // Stall start()'s registration loop long enough for stop()
+        // to race in BEFORE setInterval is reached.
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      },
+    });
+
+    // Spy on setInterval to assert NO timer is armed during the race.
+    // Using a spy rather than reading `refreshTimer` directly avoids
+    // poking at a private field.
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    try {
+      // Kick off start(); don't await it yet. Then call stop()
+      // SYNCHRONOUSLY — start() is mid-await on registerScheduleFn.
+      const startPromise = dispatcher.start();
+      const stopPromise = dispatcher.stop();
+      await Promise.all([startPromise, stopPromise]);
+
+      // The race guard fired: start() observed `this.stopping`
+      // before arming the timer. setInterval was never called from
+      // start()'s code path. (BullMQ may install timers internally,
+      // but those don't filter our predicate below.)
+      const armedFromStart = setIntervalSpy.mock.calls.some((call) => {
+        const ms = call[1];
+        return typeof ms === "number" && ms === 50;
+      });
+      expect(armedFromStart).toBe(false);
+    } finally {
+      setIntervalSpy.mockRestore();
+      redis.disconnect();
+    }
+  });
+
+  it("stop() sets the shutdown flag before clearing the timer so a racing start() observes it", async () => {
+    // Direct pin on the ordering: arm the timer via a fast start(),
+    // then call stop() and assert that `this.stopping` (the
+    // shutdown signal) is set on the dispatcher BEFORE
+    // `clearInterval` runs — i.e. setting the flag is observable
+    // synchronously while the close work is still in-flight.
+    const fixture = await freshAgentDb();
+    const harness = await startDispatcher({
+      fixture,
+      refreshIntervalMs: 50,
+    });
+    activeHarness = null;
+    await harness.dispatcher.start();
+
+    // Pre-stop sanity: the dispatcher armed its timer (the existing
+    // PR-Z6 timer-leak test pins this; we re-pin via a private-
+    // field peek to keep the assertion local).
+    interface DispatcherInternals {
+      readonly refreshTimer?: ReturnType<typeof setInterval>;
+      readonly stopping?: unknown;
+    }
+    const internals = harness.dispatcher as unknown as DispatcherInternals;
+    expect(internals.refreshTimer).not.toBeUndefined();
+    expect(internals.stopping).toBeUndefined();
+
+    // Fire stop() without awaiting — the flag must be visible
+    // synchronously (between the `if (this.stopping !== undefined)`
+    // guard and the `clearInterval` call inside stop()).
+    const stopPromise = harness.dispatcher.stop();
+    expect(internals.stopping).not.toBeUndefined();
+
+    try {
+      await stopPromise;
+      // After stop() completes, the timer is cleared.
+      expect(internals.refreshTimer).toBeUndefined();
+    } finally {
+      harness.redis.disconnect();
+    }
+  });
+});
+
+describe("AgentDispatcher refresh/updateSchedule mutex (PR-Z6 round-2 Copilot triage)", () => {
+  // Copilot triage: refresh() and updateSchedule() both mutate
+  // `this.registered` + call BullMQ `add`/`removeRepeatable`.
+  // Without a shared mutex they can interleave (e.g. updateSchedule
+  // removes the OLD cron repeatable, refresh tick fires
+  // mid-flight, refresh observes the still-OLD DB row and
+  // re-registers the OLD repeatable, updateSchedule adds the NEW
+  // repeatable on top → cluster fires the agent on TWO crons).
+  // Fix: shared `mutationLock` chained FIFO.
+  it("serialises a concurrent refresh() behind an in-flight updateSchedule()", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      name: "lock-target",
+      scheduleCron: "0 8 * * 1-5",
+    });
+
+    // Track every register/remove call in order so we can pin the
+    // serialisation contract on the BullMQ side.
+    interface Call {
+      readonly verb: "register" | "remove";
+      readonly cron: string;
+    }
+    const calls: Call[] = [];
+    // Gate: hold updateSchedule's FIRST registerScheduleFn call
+    // until we've explicitly fired refresh(). Without the mutex,
+    // refresh()'s db enumeration would race ahead and mutate
+    // `this.registered` before updateSchedule finished.
+    let releaseUpdateRegister: (() => void) | undefined;
+    const updateRegisterGate = new Promise<void>((resolve) => {
+      releaseUpdateRegister = resolve;
+    });
+    let registerCallNumber = 0;
+
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+      refreshIntervalMs: 0, // manual refresh only
+      registerScheduleFn: async (s) => {
+        registerCallNumber += 1;
+        // Boot register: pass through.
+        // 2nd register call = updateSchedule's new-cron register.
+        //   Block on the gate so the test can fire a concurrent
+        //   refresh() and verify it serialises behind us.
+        if (registerCallNumber === 2) {
+          await updateRegisterGate;
+        }
+        calls.push({ verb: "register", cron: s.scheduleCron });
+      },
+      removeScheduleFn: async (s) => {
+        calls.push({ verb: "remove", cron: s.scheduleCron });
+      },
+    });
+
+    try {
+      await dispatcher.start();
+      // Boot register was call #1; drop it from the assertion
+      // window so we only see updateSchedule + refresh activity.
+      calls.length = 0;
+
+      const updatePromise = dispatcher.updateSchedule({
+        entries: [
+          {
+            instanceId,
+            definitionSlug: TEST_DEFINITION.slug,
+            name: "lock-target",
+            oldCron: "0 8 * * 1-5",
+            newCron: "0 9 * * 1-5",
+          },
+        ],
+      });
+
+      // Yield once so updateSchedule reaches its inner register
+      // call and parks on the gate.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      // Now fire a refresh while updateSchedule is held mid-swap.
+      // Without the mutex, this would race ahead, fetch the DB
+      // (still-OLD-cron row, because the route's DB tx hasn't
+      // committed in this test harness), and re-register an OLD
+      // repeatable on top.
+      const refreshPromise = dispatcher.refresh();
+
+      // Give refresh a tick to either start (no-mutex bug) or park
+      // behind the lock (fixed behavior).
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      // Pin: at this point, updateSchedule's swap loop has
+      // recorded its remove(OLD) call, but the register(NEW) is
+      // BLOCKED on the gate. If the mutex is missing, refresh
+      // would have ALREADY emitted its own register/remove pair —
+      // the only call in `calls` would be more than just the
+      // `remove(OLD)` from updateSchedule.
+      expect(calls).toEqual([{ verb: "remove", cron: "0 8 * * 1-5" }]);
+
+      // Release updateSchedule; refresh then proceeds.
+      releaseUpdateRegister!();
+      await Promise.all([updatePromise, refreshPromise]);
+
+      // Final state — updateSchedule's swap committed first
+      // (register NEW), then refresh ran on the up-to-date list
+      // and saw no diff (in-memory now reflects NEW cron,
+      // matches the DB enumeration's NEW row).
+      //
+      // Strict ordering check: remove(OLD) → register(NEW) from
+      // updateSchedule MUST appear before any refresh-driven
+      // mutation. Refresh sees the in-memory `registered` list
+      // (already updated to NEW cron) AND the DB row (still OLD
+      // because our test harness doesn't run the route's tx) —
+      // so refresh treats the cron as CHANGED and remove/re-adds.
+      // The load-bearing assertion is that updateSchedule's pair
+      // happened ATOMICALLY (no interleaved refresh call).
+      const removeOldIdx = calls.findIndex(
+        (c) => c.verb === "remove" && c.cron === "0 8 * * 1-5",
+      );
+      const registerNewIdx = calls.findIndex(
+        (c) => c.verb === "register" && c.cron === "0 9 * * 1-5",
+      );
+      expect(removeOldIdx).toBe(0);
+      expect(registerNewIdx).toBe(1);
+      // No `register` call between updateSchedule's two operations.
+      const between = calls.slice(removeOldIdx + 1, registerNewIdx);
+      expect(between).toEqual([]);
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
     }
   });
 });
