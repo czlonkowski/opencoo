@@ -779,6 +779,54 @@ export function extractAsanaPatFromAuthBlob(plaintext: Buffer): string {
   return pat;
 }
 
+/** Unwrap the Drive `service_account_json` field from the
+ *  credential plaintext. The CredentialStore stores the Drive
+ *  credential as a JSON wrapper:
+ *      `{ service_account_json: "<sa-json-as-string>", root_folder_id: "..." }`
+ *  matching the adapter's `credentialSchema`. `parseServiceAccountJson`
+ *  expects the INNER SA JSON shape (`{ client_email, private_key, ... }`).
+ *
+ *  Z1 originally passed the wrapper bytes straight into
+ *  parseServiceAccountJson, which then (correctly) reported
+ *  "missing required field 'client_email'". PR-Y2 hotfix:
+ *  unwrap explicitly here so parseServiceAccountJson sees the
+ *  shape it actually expects. Observed live on partner cutover
+ *  of 0.1.0-a.3.
+ *
+ *  Exported for unit-test access — see
+ *  `tests/drive-credential-unwrap.test.ts`. */
+export function extractDriveServiceAccountJson(
+  credentialPlaintext: Buffer,
+): string {
+  const wrapperRaw = credentialPlaintext.toString("utf8");
+  let wrapper: unknown;
+  try {
+    wrapper = JSON.parse(wrapperRaw);
+  } catch (err) {
+    throw new Error(
+      `drive: credential blob is not valid JSON (${
+        err instanceof Error ? err.message : String(err)
+      })`,
+    );
+  }
+  if (
+    wrapper === null ||
+    typeof wrapper !== "object" ||
+    Array.isArray(wrapper)
+  ) {
+    throw new Error(
+      "drive: credential blob must be an object with service_account_json",
+    );
+  }
+  const inner = (wrapper as Record<string, unknown>)["service_account_json"];
+  if (typeof inner !== "string" || inner.length === 0) {
+    throw new Error(
+      "drive: credential blob missing required field 'service_account_json'",
+    );
+  }
+  return inner;
+}
+
 /** Try-import + register one adapter factory. A missing optional
  *  adapter package logs + skips rather than crashing composition.
  *  The static-string `import(...)` calls upstream keep TS module
@@ -864,12 +912,22 @@ async function loadSourceAdapterFactories(
         // Note: the `MakeDrive` factory parameter is typed as
         // `refreshToken: Buffer` because the upstream interface
         // was modelled on an OAuth refresh-token. For the Google
-        // service-account path, the bytes are actually the SA
-        // JSON. Renaming locally to make the security-sensitive
-        // flow self-documenting (Copilot PR #106 review).
-        makeDrive: (serviceAccountJsonBytes) => {
-          const json = serviceAccountJsonBytes.toString("utf8");
-          const sa = mod.parseServiceAccountJson(json);
+        // service-account path, the bytes are actually the
+        // Drive credential WRAPPER (the credentialSchema's
+        // `{ service_account_json: string, root_folder_id: string }`
+        // object, JSON-encoded). We unwrap the `service_account_json`
+        // string and pass THAT to parseServiceAccountJson, which
+        // expects the inner SA JSON shape (`{ client_email,
+        // private_key, ... }`).
+        //
+        // PR-Y2 hotfix: Z1 originally passed the wrapper bytes
+        // straight into parseServiceAccountJson, which then
+        // (correctly) reported "missing required field
+        // 'client_email'". Observed live on partner cutover of
+        // 0.1.0-a.3.
+        makeDrive: (credentialPlaintext) => {
+          const inner = extractDriveServiceAccountJson(credentialPlaintext);
+          const sa = mod.parseServiceAccountJson(inner);
           return mod.createGoogleDriveApi(sa);
         },
       });
