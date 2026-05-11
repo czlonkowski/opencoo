@@ -1,13 +1,13 @@
 # Phase-a appendix #12 — partner-cutover completion (make Estyl's deployment actually compile pages)
 
 > **Status:** 🚧 in flight · planned 2026-05-11 · 9 PRs (Z1–Z9) across 3 sub-waves · scoping doc lands as Z0 of the wave (this file).
-> Read after `docs/plan-appendix/phase-a-11-pilot-cutover-hardening.md` (closed wave) and the Estyl deployment journal (private; lives in `docs/local/deployments/estyl-pilot-2026-05-11.md`).
+> Read after `docs/plan-appendix/phase-a-11-pilot-cutover-hardening.md` (closed wave). Internal context for maintainers also lives in a deployment journal under `docs/local/` (gitignored — partner-private; not visible from this repo).
 
 ---
 
 ## Why this exists
 
-The first real partner cutover (Estyl, 2026-05-11) stood up the full opencoo stack on a Hetzner box at `https://opencoo.aiservices.pl/` against the freshly-cut `0.1.0-a.1` GHCR image. Stack came up healthy; provisioning succeeded for 1 domain (`wiki-estyl-pilot`, locale `pl`), 7 source bindings (2 Drive + 5 Asana), 3 scheduled agents (heartbeat/lint/surfacer), and the auxiliary MCP servers (gitea-wiki-mcp + n8n-mcp).
+The first real partner cutover (2026-05-11) stood up the full opencoo stack on the design partner's deployment host (substrate detail held in the partner-private deployment journal) against the freshly-cut `0.1.0-a.1` GHCR image. Stack came up healthy; provisioning succeeded for 1 knowledge-class domain (locale `pl`), 7 source bindings (2 Drive + 5 Asana), 3 scheduled agents (heartbeat/lint/surfacer), and the auxiliary MCP servers (gitea-wiki-mcp + n8n-mcp).
 
 Then we tried to actually ingest content.
 
@@ -28,21 +28,21 @@ This wave (#12) closes every gap that blocks the partner from seeing real wiki p
 
 ### CRITICAL — blocks any compiled wiki page (Estyl can't use opencoo until these merge)
 
-**G1 · `makeDrive` is a runtime stub.** `packages/cli/src/provision/production-composition.ts:427-429` explicitly throws `"drive: production makeDrive not wired in v0.1 — bind via UI when adapter ships"`. The `googleapis` npm package isn't in `pnpm-lock.yaml` at all (verified). The `MakeDrive = (refreshToken: Buffer) => DriveLikeApi` factory shape is defined at `packages/source-drive/src/adapter.ts:45`; the mock satisfies it; production needs a real `googleapis@>=144` Drive client wrapped to that shape.
+**G1 · `makeDrive` is a runtime stub.** `packages/cli/src/provision/production-composition.ts` explicitly throws `"drive: production makeDrive not wired in v0.1 — bind via UI when adapter ships"` (search `makeDrive: () =>`). The `googleapis` npm package isn't in `pnpm-lock.yaml` at all (verified). The `MakeDrive = (refreshToken: Buffer) => DriveLikeApi` factory shape is defined at `packages/adapters/source-drive/src/adapter.ts` (search `export type MakeDrive`); the mock satisfies it; production needs a real `googleapis@>=144` Drive client wrapped to that shape.
 
-**G2 · No seed/backfill primitive on `SourceAdapter`.** The interface at `packages/shared/src/source-adapter/index.ts:261-273` only exposes `scan(SourceScanArgs)` (incremental polling, cursor-keyed) + optional `webhook` helpers. Brand-new bindings sync forward from the moment they're created — Drive's existing files and Asana's existing tasks are invisible until they change. No `seed()` / `backfill()` / `bootstrap()` method exists anywhere.
+**G2 · No seed/backfill primitive on `SourceAdapter`.** The interface at `packages/shared/src/source-adapter/index.ts` (`export interface SourceAdapter`) only exposes `scan(SourceScanArgs)` (incremental polling, cursor-keyed) + optional `webhook` helpers. Brand-new bindings sync forward from the moment they're created — Drive's existing files and Asana's existing tasks are invisible until they change. No `seed()` / `backfill()` / `bootstrap()` method exists anywhere.
 
-**G3 · No scanner cron registration.** Polling-mode adapters need a periodic call. `packages/engine-ingestion/src/workers/index.ts:192` constructs the worker but no code anywhere registers a BullMQ repeat job for `ingestion.scanner`. Only the 3 scheduled agents (heartbeat/lint/surfacer) get repeat-job entries via `packages/engine-self-operating/src/scheduler/agent-dispatcher.ts:286-293`. Drive + n8n bindings never tick. Verified at runtime: `bull:ingestion.scanner:repeat` doesn't exist in Redis on Estyl's box.
+**G3 · No scanner cron registration.** Polling-mode adapters need a periodic call. `packages/engine-ingestion/src/workers/index.ts` (search `startScannerWorker` / `buildEngineWorker`) constructs the worker but no code anywhere registers a BullMQ repeat job for `ingestion.scanner`. Only the 3 scheduled agents (heartbeat/lint/surfacer) get repeat-job entries via `packages/engine-self-operating/src/scheduler/agent-dispatcher.ts` (search the `queue.add(..., { repeat: ... })` call near `registerOne`). Drive + n8n bindings never tick. Verified at runtime: `bull:ingestion.scanner:repeat` doesn't exist in Redis on the partner deployment.
 
-**G4 · `worldview.md` not seeded on domain create.** Engine creates a Gitea repo seeded with `index.md` + `log.md` + `schema.md` (24 bytes total), no worldview. The Heartbeat agent reads `worldview://<slug>` via `gitea-wiki-mcp-server` (`packages/gitea-wiki-mcp-server/src/resources/worldview.ts:68-122`) which returns `McpResourceNotFoundError` on missing file. Verified: every Heartbeat dispatch on the new Estyl domain fails with `error_class=validation, output={"name":"McpResourceNotFoundError"}`.
+**G4 · `worldview.md` not seeded on domain create.** Engine creates a Gitea repo seeded with `index.md` + `log.md` + `schema.md` (24 bytes total), no worldview. The Heartbeat agent reads `worldview://<slug>` via `gitea-wiki-mcp-server` (`packages/gitea-wiki-mcp-server/src/resources/worldview.ts`, search `readWorldview`) which returns `McpResourceNotFoundError` on missing file. Verified at runtime: every Heartbeat dispatch on the partner's new domain fails with `error_class=validation, output={"name":"McpResourceNotFoundError"}`.
 
-**G5 · `OutputChannelRegistry` never instantiated.** The interface + the `output-asana` package both exist (`packages/shared/src/output-adapter/interface.ts:83-88`, `packages/adapters/output-asana/src/adapter.ts`). `OutputChannelRegistry.register(adapter)` is defined at `packages/engine-self-operating/src/output-channels/registry.ts:49-96`. But `production-composition.ts` never instantiates it; grep `new OutputChannelRegistry` returns zero hits. Heartbeat stores `output_channel_ids` on `agent_instances` (writable per `packages/engine-self-operating/src/agent-harness/instances.ts:149-151`) but at dispatch time there's no registry to deliver through. Daily-report-to-Asana isn't a "v1.x feature" — it's 90% built and not wired.
+**G5 · `OutputChannelRegistry` never instantiated in PRODUCTION composition.** The interface + the `output-asana` package both exist (`packages/shared/src/output-adapter/interface.ts`, `packages/adapters/output-asana/src/adapter.ts`). `OutputChannelRegistry.register(adapter)` is defined at `packages/engine-self-operating/src/output-channels/registry.ts`. Test fixtures DO instantiate it (`new OutputChannelRegistry()` appears in the test suite), but `packages/cli/src/provision/production-composition.ts` never does. Heartbeat stores `output_channel_ids` on `agent_instances` (writable per `packages/engine-self-operating/src/agent-harness/instances.ts`) but at dispatch time there's no registry to deliver through in production. Daily-report-to-Asana isn't a "v1.x feature" — it's 90% built and not wired into composition.
 
 ### IMPORTANT — operator hits these on every new binding / agent
 
-**G6 · No post-binding-create initial-scan trigger.** `packages/engine-self-operating/src/admin-api/routes/source-bindings.ts:252-431` POST handler INSERTs the row + writes audit, then returns 201. No enqueue of a scan job. Combined with G3, this means a freshly-bound Drive folder sits forever until G3 adds the cron AND G2 adds the seed.
+**G6 · No post-binding-create initial-scan trigger.** `packages/engine-self-operating/src/admin-api/routes/source-bindings.ts` POST handler INSERTs the row + writes audit, then returns 201. No enqueue of a scan job. Combined with G3, this means a freshly-bound Drive folder sits forever until G3 adds the cron AND G2 adds the seed.
 
-**G7 · Scheduler doesn't re-enumerate after `agents seed`.** `packages/engine-self-operating/src/scheduler/agent-dispatcher.ts:191-252` only enumerates `agent_instances` at boot. `packages/cli/src/commands/agents-seed.ts:212-228` INSERTs rows but has no post-insert hook. Operator runs `opencoo agents seed` after engine boot → seeded instances are invisible until `docker compose restart opencoo`. (Verified live on Estyl box; took 1 round trip to discover.)
+**G7 · Scheduler doesn't re-enumerate after `agents seed`.** `packages/engine-self-operating/src/scheduler/agent-dispatcher.ts` (search the `start()` method's `SELECT ... FROM agent_instances`) only enumerates rows at boot. `packages/cli/src/commands/agents-seed.ts` INSERTs rows but has no post-insert hook. Operator runs `opencoo agents seed` after engine boot → seeded instances are invisible until `docker compose restart opencoo`. (Verified live during the partner deployment; took 1 round trip to discover.)
 
 **G8 · No "Run now" for the scanner per binding.** PR-R3 added "Run now" for the 3 scheduled agents (heartbeat/lint/surfacer) but the scanner has no equivalent admin-API surface. Operator wanting to verify a Drive binding works has to either wait 4h for the cron OR shell into the box and add a BullMQ job manually (which is what we did during the Estyl deployment).
 
@@ -102,11 +102,11 @@ This wave (#12) closes every gap that blocks the partner from seeing real wiki p
 
 | File | PR | Notes |
 |---|---|---|
-| `packages/source-drive/package.json` | Z1 | + googleapis dep |
-| `packages/source-drive/src/google-drive-api.ts` | Z1 (NEW) | real Drive client |
+| `packages/adapters/source-drive/package.json` | Z1 | + googleapis dep |
+| `packages/adapters/source-drive/src/google-drive-api.ts` | Z1 (NEW) | real Drive client |
 | `packages/cli/src/provision/production-composition.ts` | Z1 (replace throw) + Z3 (cron) + Z4 (output registry) | three sub-waves overlap; serialise rebases |
 | `packages/shared/src/source-adapter/index.ts` | Z2 | `seed?` to interface |
-| `packages/source-drive/src/adapter.ts` | Z2 | implement `seed` |
+| `packages/adapters/source-drive/src/adapter.ts` | Z2 | implement `seed` |
 | `packages/adapters/source-asana/src/adapter.ts` | Z2 | implement `seed` |
 | `packages/engine-ingestion/src/pipelines/scanner.ts` | Z2 + Z3 | both touch the scanner; serialise |
 | `packages/engine-self-operating/src/admin-api/routes/source-bindings.ts` | Z3 | initial-scan + scan-now endpoint |
@@ -127,8 +127,8 @@ This wave (#12) closes every gap that blocks the partner from seeing real wiki p
 
 ## Reuse — call these, do not reinvent
 
-- `MakeDrive` factory shape (`packages/source-drive/src/adapter.ts:45`) — Z1's real client must satisfy this.
-- `makeMockDrive` (`packages/source-drive/src/testing/mock-drive.ts:61-106`) — Z1 mirrors the surface.
+- `MakeDrive` factory shape (`packages/adapters/source-drive/src/adapter.ts:45`) — Z1's real client must satisfy this.
+- `makeMockDrive` (`packages/adapters/source-drive/src/testing/mock-drive.ts:61-106`) — Z1 mirrors the surface.
 - `SourceScanResult` shape (`packages/shared/src/source-adapter/index.ts:57-66`) — Z2's `SourceSeedResult` reuses it.
 - `runScanner` intake pipeline (`packages/engine-ingestion/src/pipelines/scanner.ts:117-200`) — Z2's seed flows through the same dedupe + enqueue path.
 - `agent-dispatcher.ts:286-293` BullMQ `repeat:` pattern — Z3's scanner cron mirrors it.
@@ -163,10 +163,10 @@ This wave (#12) closes every gap that blocks the partner from seeing real wiki p
 **Wave-end gate** (against the **live Estyl deployment**, not the local dev box):
 
 - Cut `0.1.0-a.2` tag → release-image.yml builds + pushes
-- Pull `0.1.0-a.2` image on `opencoo.aiservices.pl` → restart compose → verify clean boot
-- Click "Scan now" on a Drive binding (Z3 button) → ≥1 page lands in `estyl/wiki-estyl-pilot` Gitea repo within 60s (Drive seed via Z1 + Z2 fires)
+- Pull `0.1.0-a.2` image on the partner host → restart compose → verify clean boot
+- Click "Scan now" on a Drive binding (Z3 button) → ≥1 page lands in the partner's wiki repo within 60s (Drive seed via Z1 + Z2 fires)
 - Click "Scan now" on an Asana binding → ≥1 page lands within 60s (Asana seed via Z2 fires)
-- Force-fire Heartbeat → no `worldview://...not found` (Z5 placeholder), output lands as a task in the daily-report Asana project (Z4 wires output-asana)
+- Force-fire Heartbeat → no `worldview://...not found` (Z5 placeholder), output lands as a task in the partner's daily-report Asana project (Z4 wires output-asana)
 - Seed a test agent post-boot → registered within 60s without restart (Z6 refresh)
 - The 4h scanner cron has fired at least once after deploying — visible in `bull:ingestion.scanner:repeat`
 - THREAT-MODEL §5 maintainer walk against the wave-12 closing commit
@@ -176,7 +176,7 @@ This wave (#12) closes every gap that blocks the partner from seeing real wiki p
 ## Out of scope (explicit, defer)
 
 - **Per-source `seed` cadence rate-limiting / pause-resume** — Z2 ships unbounded pagination. For Estyl's 2 small Drive folders + 5 Asana projects, this is fine. v0.2 may add a "pause seed" UI button if any partner has a 100k-task project.
-- **Output adapter for Slack / Email** — Z4 ships `output-asana` only. Slack + Email packages are stubs (verify via grep `packages/output-slack`, `packages/output-email`); their composition wiring is identical-pattern but defer to v0.2.
+- **Output adapter for Slack / Email** — Z4 ships `output-asana` only (the only concrete output adapter package today). New `packages/adapters/output-slack` + `output-email` packages are deferred to v0.2 — same composition-wiring pattern as Z4 will be reused.
 - **`source-n8n` real client wiring** — n8n adapter is the same stub-throw pattern as Drive. Estyl doesn't need n8n as a SOURCE (they use n8n as automation, consumed via `n8n-mcp`). Filed as v1.x scope.
 - **Worldview AUTOMATIC compile after first ingest** — Z5 seeds a placeholder; the existing compiler overwrites it on the first ingest cycle. If a partner deploys the engine but never ingests, Heartbeat shows the placeholder forever. That's correct behavior; not a bug.
 - **`/api/admin/source-bindings/:id/scan-now` cap or backpressure** — Z3 ships unbounded; operator can DoS the scanner by spamming the button. v0.2 can add a per-binding cooldown.
@@ -197,8 +197,8 @@ Same agent-team workflow as appendices #4–#11. Coordinator (main thread) → I
 
 1. Wave-11 closeout merged + `0.1.0-a.1` tag cut + image live on GHCR ✓ already done.
 2. Local `main` rebased; `pnpm install && pnpm build && pnpm test` green at root.
-3. Estyl Hetzner box (`opencoo@167.235.240.200`) has SSH access from operator's `~/.ssh/id_ed25519` (verified during the deployment journal).
-4. Operator confirmed acceptance of `googleapis@^144` as a new dependency in `packages/source-drive/` (it pulls a chunky transitive tree — adds ~10 MB to the engine image). Captured 2026-05-11.
+3. Partner deployment host has SSH access from the operator's local key (substrate detail in the partner-private deployment journal).
+4. Operator confirmed acceptance of `googleapis@^144` as a new dependency in `packages/adapters/source-drive/` (it pulls a chunky transitive tree — adds ~10 MB to the engine image). Captured 2026-05-11.
 
 ---
 
