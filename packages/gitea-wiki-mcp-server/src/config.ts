@@ -2,12 +2,53 @@
  * Configuration loading and validation. All env parsing happens here once at
  * startup — downstream code should import `loadConfig()` output, never read
  * `process.env` directly.
+ *
+ * The `_FILE` Docker-secrets convention is honoured for every secret-bearing
+ * variable (`MCP_BEARER_TOKEN`, `GITEA_PAT`, `GITEA_WEBHOOK_SECRET`,
+ * `GITEA_OAUTH_CLIENT_SECRET`, `GITEA_ADMIN_TOKEN`): `<NAME>_FILE` WINS when
+ * both are set; the file is read once at boot, trailing newline runs stripped.
+ * Mirrors the same shape `readWithFile` exposes in
+ * `@opencoo/shared/engine-scaffold` so partner deployments use one secrets
+ * pattern everywhere (closes G9 — phase-a appendix #12 PR-Z8).
  */
 import { z } from "zod";
 import path from "node:path";
+import fs from "node:fs";
 import dotenv from "dotenv";
 
 dotenv.config();
+
+/**
+ * Read a value with the repo-wide `<NAME>` / `<NAME>_FILE` precedence
+ * (Docker-secrets convention): the `_FILE` variant WINS when both are set.
+ * Reads the file at `_FILE`, strips a single trailing newline run, and
+ * returns the contents. Falls through to the inline env var when `_FILE`
+ * is unset/empty. Returns `undefined` when neither is set.
+ *
+ * Synchronous on purpose — boot-time only, runs ONCE per process, and the
+ * rest of `loadConfig()` is already synchronous. Keeping it sync means
+ * callers don't need to thread async/await through the config loader.
+ *
+ * Throws if `<NAME>_FILE` is set but the file is missing or unreadable —
+ * a typo in a Docker-secret mount is a misconfiguration the operator
+ * needs to see LOUD at boot, not silently fall through to the inline
+ * (possibly stale) variant.
+ */
+export function readWithFile(
+  env: Record<string, string | undefined>,
+  name: string,
+): string | undefined {
+  const filePath = env[`${name}_FILE`];
+  if (typeof filePath === "string" && filePath.length > 0) {
+    const raw = fs.readFileSync(filePath, "utf8");
+    return raw.replace(/\r?\n+$/, "");
+  }
+  const inline = env[name];
+  if (typeof inline === "string" && inline.length > 0) {
+    return inline;
+  }
+  return undefined;
+}
 
 const RepoEntrySchema = z
   .object({
@@ -113,23 +154,45 @@ export function loadConfig(): Config {
     process.exit(1);
   }
 
+  // Secret-bearing vars honor the `<NAME>_FILE` Docker-secrets
+  // precedence; non-secret config (URLs, host, port, log level)
+  // stays on direct env reads. Wrap the file reads in try/catch so
+  // a malformed file path surfaces with the env-var NAME the operator
+  // typo'd, not a bare `ENOENT` from node.
+  let bearerToken: string | undefined;
+  let giteaPat: string | undefined;
+  let giteaWebhookSecret: string | undefined;
+  let giteaOauthClientSecret: string | undefined;
+  let giteaAdminToken: string | undefined;
+  try {
+    bearerToken = readWithFile(process.env, "MCP_BEARER_TOKEN");
+    giteaPat = readWithFile(process.env, "GITEA_PAT");
+    giteaWebhookSecret = readWithFile(process.env, "GITEA_WEBHOOK_SECRET");
+    giteaOauthClientSecret = readWithFile(process.env, "GITEA_OAUTH_CLIENT_SECRET");
+    giteaAdminToken = readWithFile(process.env, "GITEA_ADMIN_TOKEN");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`ERROR: secret file read failed — ${msg}`);
+    process.exit(1);
+  }
+
   const parsed = ConfigSchema.safeParse({
     mcpMode: process.env.MCP_MODE,
     port: process.env.PORT,
     host: process.env.HOST,
-    bearerToken: process.env.MCP_BEARER_TOKEN,
-    giteaPat: process.env.GITEA_PAT,
+    bearerToken,
+    giteaPat,
     giteaBaseUrl: process.env.GITEA_BASE_URL,
     repos: reposParsed,
     dataDir: process.env.DATA_DIR,
     syncIntervalMin: process.env.SYNC_INTERVAL_MIN,
-    giteaWebhookSecret: process.env.GITEA_WEBHOOK_SECRET,
+    giteaWebhookSecret: giteaWebhookSecret ?? "",
     logLevel: process.env.LOG_LEVEL,
     publicUrl: process.env.PUBLIC_URL,
     giteaPublicUrl: process.env.GITEA_PUBLIC_URL,
     giteaOauthClientId: process.env.GITEA_OAUTH_CLIENT_ID,
-    giteaOauthClientSecret: process.env.GITEA_OAUTH_CLIENT_SECRET,
-    giteaAdminToken: process.env.GITEA_ADMIN_TOKEN,
+    giteaOauthClientSecret,
+    giteaAdminToken,
     corsOrigins: process.env.CORS_ORIGINS,
   });
 

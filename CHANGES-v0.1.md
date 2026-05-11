@@ -1141,6 +1141,67 @@ Canonical 8-step partner-deployment order (cloud-init VM → SSH as root → cop
 - **Multi-org Gitea bootstraps** — the script provisions one org per run by design (a single partner deployment, one org). Multi-tenant Gitea deployments are out of scope for v0.1; re-running with a different `<org-slug>` works but allocates a fresh PAT each time.
 - **Caddy / Traefik install + cert provisioning** — the host script opens 80/443 but doesn't install a reverse proxy. The partner's `compose.yml` runs one as a sidecar; install is `docker compose up` from there.
 
+## Phase-a follow-up — Z8 (polish bundle: `_FILE` in mcp-server + `REPOS` auto-derive + GHCR public + runbook gotchas)
+
+Four small but consequential polish items captured during the partner cutover (wave-12 scoping doc §G9, G10, G11, G15). Each is too small to justify a standalone PR; bundling them keeps wave-12's cadence efficient while closing every operator-facing gotcha surfaced during real deployment.
+
+### Changed (Z8) — `packages/gitea-wiki-mcp-server/`
+
+- **`_FILE` env-suffix support (closes G9).** `src/config.ts` gains a `readWithFile(env, name)` helper modeled on `@opencoo/shared/engine-scaffold`'s implementation: when `<NAME>_FILE` is set, the file's contents are read and trailing newline runs stripped; otherwise the inline `<NAME>` env var is used. Applied to every secret-bearing var the server reads: `MCP_BEARER_TOKEN`, `GITEA_PAT`, `GITEA_WEBHOOK_SECRET`, `GITEA_OAUTH_CLIENT_SECRET`, `GITEA_ADMIN_TOKEN`. The non-secret config (URLs, host, port, log level, repos JSON) keeps its direct env reads — only secrets get the `_FILE` precedence, mirroring the engine's policy. The helper is synchronous on purpose (boot-time only, runs once) and throws on a missing `_FILE` path so an operator-typo'd Docker secret mount surfaces loud at boot instead of silently falling through to a stale inline value. Documented inline + tested with six unit assertions (file wins over inline, inline used when `_FILE` unset, empty `_FILE` falls through, missing path throws, both unset returns undefined, trailing newlines stripped).
+- **`POST /refresh-all` endpoint (closes G10).** `src/http/server.ts` adds a new bearer-gated route alongside the existing `/refresh/:slug`. Body shape: `{ repos: [{ slug, owner, name?, default?, aggregator?, access_tag? }, ...] }`. The handler normalizes each entry (`name` defaults to `slug`; auto-promotes the first entry to `default: true` when none is flagged — operator convenience for the single-domain partner case), validates via the existing `validateRepos` refinement (rejects reserved slugs, multiple aggregators, duplicates), then calls the new `RepoRegistry.replace()` method to mutate the in-memory registry wholesale. Cloning of new repos is dispatched best-effort via `gitSync.ensureAllCloned()` — a clone failure logs but doesn't fail the request, since the periodic sync scheduler retries. The route is static-token-only: OAuth principals (ChatGPT / Claude.ai) are rejected with 403, since reshaping the registry is an engine-to-engine operation. The existing `/refresh/:slug` route remains untouched (additive change) — the raw-body capture's path-prefix guard `/refresh/` with the trailing slash means `/refresh-all` falls through to the standard JSON parser. `src/services/repo-registry.ts` gains the `replace(repos)` method, which re-enforces the constructor's invariants (exactly one default, unique slugs, non-empty) so a partial application can't drift the registry into an unrecoverable state.
+- **Boot log update.** `[http] listening on ...` now lists the new path (`paths: /mcp, /refresh/:slug, /refresh-all, /health`).
+
+### Changed (Z8) — `packages/engine-self-operating/`
+
+- **Domain-create flow fires `/refresh-all` (G10 engine side).** `src/admin-api/routes/domains.ts` gains a `PingWikiMcpRefreshFn` optional callable, threaded through `admin-api/index.ts`. After the `domains` row commits + the audit row writes, the handler reads the FULL set of active (`disabled_at IS NULL`) domains and dispatches a fire-and-forget ping with the complete payload. The MCP server replaces wholesale (not appends), so partial payloads would drop existing repos — the SELECT is the load-bearing piece. The dispatch is `void refresh(repos).catch(() => undefined)` — no `await`, no error bubble. A slow or unreachable MCP server cannot stretch the 201 response time or fail domain creation. Composition root wires the real helper when BOTH `GITEA_WIKI_MCP_URL` and `MCP_BEARER_TOKEN` are set; partial config falls through to "skip the ping" (a partial setup would 401 or DNS-fail anyway, and the helper swallows both).
+- **New module: `src/composition/wiki-mcp-refresh.ts`** — the `pingRefreshAll(config, repos, logger)` helper. POSTs to `${baseUrl}/refresh-all` with the bearer header + JSON body. Failure semantics: NEVER rejects. 5xx → logs `wiki_mcp_refresh.failed` at warn + resolves; 401 same; network blip / abort / DNS → logs `wiki_mcp_refresh.error` + resolves. Default 3-second abort timeout. Empty repos array → logs `wiki_mcp_refresh.skipped` + returns without dispatching.
+- **`src/composition/env.ts`** — reads `GITEA_WIKI_MCP_URL` and `MCP_BEARER_TOKEN` via the existing `readWithFile` helper (Docker-secrets convention applies). Both are optional; when either is unset the composition root skips wiring `pingWikiMcpRefresh`. Mirrors the existing `giteaWikiMcpUrl` pattern used by the McpToolClient `/mcp` consumer.
+
+### Changed (Z8) — `.github/workflows/release-image.yml`
+
+- **GHCR images flipped to public on tag (closes G11).** After the engine-image push step, a `Make GHCR image public (best-effort)` step iterates `opencoo` + `opencoo-gitea-wiki-mcp-server` and calls `gh api -X PATCH /user/packages/container/<pkg> --field visibility=public`. The default `GITHUB_TOKEN` has `packages:write` (granted at the job level) but NOT `admin:packages`, which is what this endpoint requires. The step uses `secrets.GH_PAT_PACKAGES || secrets.GITHUB_TOKEN` so an operator who provisions a PAT with `admin:packages` (recommended one-time setup) gets the automatic flip; without the PAT, the step logs a clear warn line pointing at the manual one-shot `gh api -X PATCH ...` command. `set +e` ensures the step never fails the workflow regardless. Gate: `if: success() && github.ref_type == 'tag'` — main pushes (`:edge`) stay private (low-priority churn). The image-names line is the authoritative spelling: `opencoo` (engine), `opencoo-gitea-wiki-mcp-server` (mcp-server).
+
+### Changed (Z8) — `docs/pilot-runbook.md`
+
+- **New §11.3 "Runtime gotchas — partner cutover findings" (closes G15).** Three explicit callouts captured from the 2026-05-11 partner deployment journal:
+  1. **Compose secrets file permissions.** Default `0440 root:root` on mounted secret files; engine runs as UID 1001 and gets `permission denied`. Workaround: `chmod 0644 secrets/*.txt` on the host (these files contain bearer tokens, not high-value secrets — operator should rotate them periodically).
+  2. **`docker compose restart` doesn't reload `env_file`.** Changing the contents of an `env_file:` and then `docker compose restart` does NOT pick up the new values. Use `docker compose up -d --force-recreate <service>` instead.
+  3. **`postgres-init.sh` permissions.** The init script mounted at `/docker-entrypoint-initdb.d/` must be mode `0755` (not `0700`) so the postgres user inside the container can read it. Symptom: postgres logs `permission denied` and falls back to an empty cluster.
+- **§11.3 + §12 cross-reference for the GHCR-public flip.** §12 (Residual advisories) gains an item flagging that the workflow's `GITHUB_TOKEN` may lack `admin:packages` scope; the operator may need to set up `GH_PAT_PACKAGES` (a PAT with `admin:packages`) on the repo OR run a one-shot `gh api -X PATCH /user/packages/container/<pkg> --field visibility=public` to flip visibility manually.
+
+### Tests
+
+- **New file: `packages/gitea-wiki-mcp-server/tests/tools/refresh-all.test.ts`** — 13 tests covering the new endpoint + the `readWithFile` helper. `/refresh-all`: 200 happy (registry mutated, `ensureAllCloned` fired), auto-promote-first-to-default when no flag, `name` defaults to slug, 401 without bearer, 401 with wrong static-token bytes, 400 on missing body, 400 on reserved slug `company`, 400 on duplicate slug, 400 on multiple aggregators, and a regression assertion that `POST /refresh/:slug` still routes (returns 401 on missing signature — not 404). `readWithFile`: `_FILE` precedence, both-set → file wins, only-inline → inline returned, both-unset → undefined, empty `_FILE` path falls through, non-existent `_FILE` path throws.
+- **New file: `packages/engine-self-operating/tests/composition/wiki-mcp-refresh.test.ts`** — 7 tests pinning `pingRefreshAll`'s fire-and-forget contract: happy POST (URL + headers + body), trailing-slash baseUrl normalisation, empty-repos skip (no fetch), 5xx resolves, 401 resolves, network failure resolves, abort/timeout resolves.
+- **`packages/engine-self-operating/tests/admin-api/_fixture.ts`** gains a `MockWikiMcpRefresh` class threaded through the fixture; `wikiMcpRefresh.calls` records every dispatch and `nextError` simulates failure.
+- **`packages/engine-self-operating/tests/admin-api/domains-create.test.ts`** adds two new tests inside a `/refresh-all ping` describe block: (1) ping dispatched with the full active-domains set after a commit (pre-existing domain row visible in the dispatched payload, proving the route reads the WHOLE table, not just the new row), (2) the route returns 201 even when the ping throws (fire-and-forget contract). `pnpm --filter gitea-wiki-mcp-server test` → 98 passed (delta +13). `pnpm --filter @opencoo/engine-self-operating test` → 670 passed + 5 skipped (delta +9 over baseline pre-Z8).
+
+### Threat-model alignment (§5 PR checklist)
+
+- **No new env vars on the feature path** — `GITEA_WIKI_MCP_URL` is infrastructure config (per-deployment topology, like `MCP_BASE_URL` already is). `MCP_BEARER_TOKEN` is already in scope. THREAT-MODEL §2 invariant 9 (no new feature env vars) holds; this is a co-deployment knob.
+- **`/refresh-all` is bearer-gated AND static-only.** OAuth principals (ChatGPT / Claude.ai users) get a 403 — reshaping the registry is engine-to-engine, never user-facing. Without bearer the route returns 401 (same WWW-Authenticate shape as `/mcp`).
+- **No PAT / secret bytes in audit-log metadata, body, or stderr.** The `_refresh-all`-dispatch warn lines log slugs only — never bearer bytes, never URLs containing tokens. The `wiki_mcp_refresh.error` log emits `err.name` (e.g. `"AbortError"`), never `err.message` (which could contain the URL).
+- **Append-only invariant preserved.** Z8 doesn't touch any schema, migration, or log path. `redaction_events`, `admin_audit_log`, `log.md` invariants unchanged (THREAT-MODEL §2 invariant 8).
+- **CredentialStore-only sourcing preserved.** The `/refresh-all` body carries no credentials. The MCP server's bearer is read from env (with `_FILE` precedence); the engine carries the matching token in memory only, never persists it.
+
+### Migrations / DB
+
+- No new migrations. Z8 is config-loader + HTTP-route + workflow + docs changes only.
+
+### Documentation
+
+- **`docs/pilot-runbook.md` §11.3** — new "Runtime gotchas — partner cutover findings" subsection (compose secrets mode, env_file requires --force-recreate, postgres-init.sh mode).
+- **`docs/pilot-runbook.md` §12** — new residual advisory for the GHCR-public flip noting the `admin:packages` PAT may be needed.
+- **`IMPLEMENTATION-PLAN.md` §1.1** — Z8 will be added to the phase-a follow-up roster's status snapshot post-merge (matching the Z1 pattern).
+- **`docs/plan-appendix/phase-a-12-cutover-completion.md` (Z0)** — Z8 is listed as the polish bundle in sub-wave 3; no doc edit needed here.
+- **No `architecture.md` impact.** Z8 doesn't touch any product-surface architecture pin.
+
+### Deferred (tracked outside Z8)
+
+- **Branch / ref tracking in `/refresh-all`.** The body accepts a `branch` key silently ignored — the MCP server tracks remote HEAD via simple-git, not a pinned ref. If a partner needs branch pinning (e.g. for staging-vs-prod wiki repos), this becomes a v0.2 follow-up.
+- **Worldview seed file from Z5.** The brief mentions seeding `worldview.md` from Z5 before the `/refresh-all` dispatch. Z5 hasn't landed yet; when it does, the seed list grows but the dispatch site (after audit-log write) is unchanged.
+- **`PROVENANCE` / image signing for the GHCR-public flip path.** PR-X4 (deferred) tracks cosign + SBOM publication; visibility-flip is orthogonal.
+
 ---
 
 _Drafted from `IMPLEMENTATION-PLAN.md` §1.2.1–§1.2.21 + per-PR `gh pr view` body residuals. Maintainer to edit before the `0.1.0` final tag cut (the `0.1.0-a` rollup has already shipped — see the §1.1 status snapshot)._

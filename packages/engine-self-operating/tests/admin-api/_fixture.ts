@@ -390,12 +390,49 @@ export class MockProvisioner {
   }
 }
 
+/** Stub /refresh-all ping callable (phase-a appendix #12 PR-Z8 G10).
+ *  Records every dispatch and (by default) resolves cleanly so the
+ *  domain-create handler never observes a failure mode through this
+ *  seam. Tests that want to assert fire-and-forget semantics can set
+ *  `nextError` to verify the route still returns 201. */
+export class MockWikiMcpRefresh {
+  readonly calls: ReadonlyArray<{
+    readonly slug: string;
+    readonly owner: string;
+    readonly name?: string;
+    readonly default?: boolean;
+    readonly aggregator?: boolean;
+  }>[] = [];
+  /** When set, the next ping rejects with this error. The
+   *  domain-create handler must STILL return 201 — the helper
+   *  is fire-and-forget. */
+  nextError: Error | null = null;
+
+  async ping(
+    repos: ReadonlyArray<{
+      readonly slug: string;
+      readonly owner: string;
+      readonly name?: string;
+      readonly default?: boolean;
+      readonly aggregator?: boolean;
+    }>,
+  ): Promise<void> {
+    (this.calls as Array<typeof repos>).push(repos);
+    if (this.nextError !== null) {
+      const err = this.nextError;
+      this.nextError = null;
+      throw err;
+    }
+  }
+}
+
 export interface AdminFixture {
   readonly app: FastifyInstance;
   readonly db: AdminTestDb;
   readonly raw: PGlite;
   readonly gitea: MockGiteaClient;
   readonly provisioner: MockProvisioner;
+  readonly wikiMcpRefresh: MockWikiMcpRefresh;
   readonly credentialStore: InMemoryCredentialStore;
   readonly close: () => Promise<void>;
 }
@@ -444,6 +481,7 @@ export async function makeAdminFixture(
 
   const gitea = new MockGiteaClient();
   const provisioner = new MockProvisioner();
+  const wikiMcpRefresh = new MockWikiMcpRefresh();
   const credentialStore = new InMemoryCredentialStore({
     logger: silentLogger(),
   });
@@ -464,6 +502,7 @@ export async function makeAdminFixture(
         pat: a.pat,
       }),
     provisionOrg: "opencoo",
+    pingWikiMcpRefresh: (repos) => wikiMcpRefresh.ping(repos),
     credentialStore,
     ...(opts.ingestionQueue !== undefined
       ? { ingestionQueue: opts.ingestionQueue }
@@ -488,6 +527,7 @@ export async function makeAdminFixture(
     raw: pg,
     gitea,
     provisioner,
+    wikiMcpRefresh,
     credentialStore,
     close: async () => {
       await app.close();

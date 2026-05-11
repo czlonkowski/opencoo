@@ -45,6 +45,19 @@ export interface AdminApiCompositionEnv {
    *  defaults to 'opencoo'. The `_FILE` Docker-secrets
    *  convention applies. */
   readonly giteaProvisionOrg: string;
+  /** Phase-a appendix #12 PR-Z8 (G10) — gitea-wiki-mcp-server
+   *  base URL (e.g. `http://gitea-wiki-mcp:3000`). When set
+   *  alongside `MCP_BEARER_TOKEN`, the domain-create handler
+   *  POSTs `/refresh-all` so the MCP server's in-memory REPOS
+   *  list picks up the new repo without operator hand-edit.
+   *  Optional — left undefined means "no MCP server in this
+   *  deployment, skip the ping". */
+  readonly giteaWikiMcpUrl: string | undefined;
+  /** Phase-a appendix #12 PR-Z8 (G10) — bearer token the
+   *  /refresh-all dispatcher carries. Must match the MCP
+   *  server's `MCP_BEARER_TOKEN`. Read with the standard
+   *  `_FILE` precedence. Undefined → skip the ping. */
+  readonly mcpBearerToken: string | undefined;
 }
 
 /**
@@ -103,11 +116,22 @@ export function loadAdminApiCompositionEnv(
     );
   }
 
+  // Phase-a appendix #12 PR-Z8 (G10) — /refresh-all ping config.
+  // Both vars are OPTIONAL: when either is unset the domain-create
+  // handler skips the ping. Partial config (URL but no bearer, or
+  // bearer but no URL) is also treated as "skip" — partial would
+  // either 401 or DNS-fail, and the helper swallows both, but
+  // skipping is cleaner.
+  const giteaWikiMcpUrl = readWithFile(env, "GITEA_WIKI_MCP_URL");
+  const mcpBearerToken = readWithFile(env, "MCP_BEARER_TOKEN");
+
   return {
     adminTeamSlug,
     sessionHmacKey,
     giteaBaseUrl,
     llmDebugLog,
     giteaProvisionOrg,
+    giteaWikiMcpUrl,
+    mcpBearerToken,
   };
 }

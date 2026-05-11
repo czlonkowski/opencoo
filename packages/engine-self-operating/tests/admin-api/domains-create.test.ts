@@ -316,4 +316,79 @@ describe("admin-api POST /api/admin/domains (phase-a appendix #2)", () => {
     });
     expect(res.statusCode).toBe(422);
   });
+
+  // Phase-a appendix #12 PR-Z8 (G10) — gitea-wiki-mcp-server
+  // /refresh-all ping. Fire-and-forget: the route MUST return 201
+  // regardless of whether the ping succeeds, fails, or throws.
+  describe("/refresh-all ping (phase-a appendix #12 PR-Z8, G10)", () => {
+    it("dispatches the ping with the full active-domains set after commit", async () => {
+      const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+      cleanup = f.close;
+      await setupAdmin(f);
+      // Pre-existing active domain so the dispatched payload
+      // proves the route reads the WHOLE table, not just the new
+      // row.
+      await f.raw.exec(
+        `INSERT INTO domains (slug, name, locale) VALUES ('existing', 'Existing', 'en');`,
+      );
+      const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+      const res = await f.app.inject({
+        method: "POST",
+        url: "/api/admin/domains",
+        headers: {
+          authorization: `Bearer ${ADMIN_PAT}`,
+          "x-csrf-token": csrfToken,
+          cookie: `opencoo_csrf=${cookie}`,
+          "content-type": "application/json",
+        },
+        payload: {
+          slug: "wiki-new",
+          class: "knowledge",
+          display_name: "New",
+          default_locale: "en",
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      // Let the fire-and-forget microtask run.
+      await new Promise((r) => setImmediate(r));
+      expect(f.wikiMcpRefresh.calls).toHaveLength(1);
+      const dispatched = f.wikiMcpRefresh.calls[0]!;
+      const slugs = dispatched.map((r) => r.slug).sort();
+      expect(slugs).toEqual(["existing", "wiki-new"]);
+      // Every entry carries the configured org.
+      expect(dispatched.every((r) => r.owner === "opencoo")).toBe(true);
+    });
+
+    it("returns 201 even when the ping throws (fire-and-forget)", async () => {
+      const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+      cleanup = f.close;
+      await setupAdmin(f);
+      f.wikiMcpRefresh.nextError = new Error("mcp server unreachable");
+      const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+      const res = await f.app.inject({
+        method: "POST",
+        url: "/api/admin/domains",
+        headers: {
+          authorization: `Bearer ${ADMIN_PAT}`,
+          "x-csrf-token": csrfToken,
+          cookie: `opencoo_csrf=${cookie}`,
+          "content-type": "application/json",
+        },
+        payload: {
+          slug: "wiki-fnf",
+          class: "knowledge",
+          display_name: "Fire and forget",
+          default_locale: "en",
+        },
+      });
+      // The 201 is the load-bearing assertion: a failing ping must
+      // never bubble through.
+      expect(res.statusCode).toBe(201);
+      // The audit + domain row both landed.
+      const rows = await f.raw.query(
+        `SELECT slug FROM domains WHERE slug = 'wiki-fnf'`,
+      );
+      expect(rows.rows).toHaveLength(1);
+    });
+  });
 });
