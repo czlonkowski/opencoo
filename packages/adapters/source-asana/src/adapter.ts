@@ -53,6 +53,8 @@ import type {
   SourceChangedDocument,
   SourceScanArgs,
   SourceScanResult,
+  SourceSeedArgs,
+  SourceSeedResult,
   SourceWebhookEvent,
   SourceWebhookHelpers,
 } from "@opencoo/shared/source-adapter";
@@ -69,6 +71,7 @@ import { deriveEventType } from "./derive-event-type.js";
 import type { AsanaClient, ProjectSnapshot } from "./asana-client.js";
 import type { LightSummaryRouter } from "./light-summary.js";
 import { summarizeAsanaEvent } from "./light-summary.js";
+import { runAsanaSeed } from "./seed.js";
 
 export const ASANA_ADAPTER_SLUG = "asana" as const;
 
@@ -763,9 +766,95 @@ export function createAsanaSourceAdapter(
   // is respected end-to-end. For now the injected client pattern is the
   // only wiring path and the comment above covers the contract.
 
+  /**
+   * Lazy resolver for the AsanaClient at the FACTORY scope —
+   * separate from the per-helper resolver inside
+   * `buildAsanaWebhookHelpers` so seed() doesn't have to
+   * route through the webhook helpers' enrichEvents resolver
+   * (which would conflate two distinct "first call" timings).
+   * Resolution precedence: explicit `asanaClient` wins;
+   * otherwise `makeAsanaClient` is invoked once and cached.
+   * Returns undefined when neither is provided — seed() then
+   * throws cleanly so the operator sees the misconfig.
+   *
+   * PR-Z2.
+   */
+  let seedCachedClient: AsanaClient | undefined = args.asanaClient;
+  let seedFactoryInvoked = args.asanaClient !== undefined;
+  function resolveSeedClient(): AsanaClient | undefined {
+    if (seedCachedClient !== undefined) return seedCachedClient;
+    if (seedFactoryInvoked) return undefined;
+    if (args.makeAsanaClient !== undefined) {
+      seedFactoryInvoked = true;
+      try {
+        seedCachedClient = args.makeAsanaClient();
+      } catch (err) {
+        seedCachedClient = undefined;
+        // Same fail-open pattern enrichEvents uses (PR-Q8
+        // Copilot triage). A broken `makeAsanaClient` closure
+        // must not propagate out of seed() because the
+        // scanner's at-least-once retry already handles
+        // transient client-construction failures via the
+        // cursor-not-advanced path.
+        console.warn("source-asana: seed() makeAsanaClient threw; seed will skip", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return seedCachedClient;
+    }
+    return undefined;
+  }
+
+  /**
+   * Seed primitive — backfill existing tasks in the bound
+   * project(s) at binding-create / first-tick. Uses
+   * `monitoredProjectGids` when configured, else the binding's
+   * primary `projectGid`. Cursor handoff is `null` — Asana is
+   * webhook-driven for incremental, no resumable cursor in the
+   * REST API.
+   *
+   * When neither `asanaClient` nor `makeAsanaClient` is wired,
+   * we surface a clear error rather than silently returning
+   * empty — webhook-only deployments that genuinely don't want
+   * a seed should leave the `seed` property off the adapter
+   * (which they can't do here because seed() is defined on the
+   * factory; the scanner's `seed === undefined` short-circuit
+   * is for adapters where the property is omitted at module
+   * level). This bias toward "throw on missing client" matches
+   * the factory guards above for periodic/on-event modes.
+   */
+  async function seed(seedArgs: SourceSeedArgs): Promise<SourceSeedResult> {
+    const asanaClient = resolveSeedClient();
+    if (asanaClient === undefined) {
+      throw new Error(
+        "source-asana: seed() requires asanaClient or makeAsanaClient injection",
+      );
+    }
+    const projectGids =
+      config.monitoredProjectGids !== undefined &&
+      config.monitoredProjectGids.length > 0
+        ? config.monitoredProjectGids
+        : [config.projectGid];
+    return runAsanaSeed({
+      seedArgs,
+      asanaClient,
+      projectGids,
+      now: () => new Date(),
+    });
+  }
+
+  // Only attach `seed` to the adapter when a client (eager or lazy)
+  // is wired. Webhook-only deployments without an Asana client
+  // configured get `seed: undefined` so the scanner falls back to
+  // `scan()` on the first tick (which is the existing webhook-mode
+  // behavior — empty intake until the first webhook delivery).
+  const hasAsanaClient =
+    args.asanaClient !== undefined || args.makeAsanaClient !== undefined;
+
   return {
     slug: ASANA_ADAPTER_SLUG,
     scan,
+    ...(hasAsanaClient ? { seed } : {}),
     webhook: buildAsanaWebhookHelpers({
       // exactOptionalPropertyTypes: omit key when undefined.
       ...(config.monitoredProjectGids !== undefined

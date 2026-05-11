@@ -151,20 +151,69 @@ export async function runScanner(args: RunScannerArgs): Promise<ScannerResult> {
       });
       continue;
     }
-    let scanResult;
+    // PR-Z2 — seed-vs-scan dispatch.
+    // Bindings with no persisted cursor (= never scanned) get
+    // routed to `adapter.seed(...)` instead of `adapter.scan(...)`
+    // so existing source content (Drive files, Asana tasks) is
+    // backfilled, not invisible until the next mutation. The
+    // adapter's seed() returns a cursor that we persist as
+    // `last_scan_cursor`, so the NEXT tick goes through scan().
+    //
+    // Webhook-only adapters that don't implement seed (fireflies,
+    // generic webhook, n8n) fall back to scan() even on first
+    // tick — that's correct behavior because their "existing
+    // content" set is genuinely empty (transcripts / events
+    // only exist forward-in-time).
+    //
+    // A failed seed leaves `last_scan_cursor` null; the next
+    // tick re-tries from zero. Partial-seed replay is
+    // idempotent via the `ingestion_intake` UNIQUE constraint.
+    let scanResult: {
+      readonly documents: ReadonlyArray<{
+        readonly sourceDocId: string;
+        readonly sourceRevision: string;
+        readonly sourceRef: string;
+        readonly fetchedAt: Date;
+        readonly contentBytes: Buffer;
+      }>;
+      readonly nextCursor: string | null;
+    };
+    const seedRoute =
+      binding.lastScanCursor === null && adapter.seed !== undefined;
     try {
-      scanResult = await adapter.scan({
-        cursor: binding.lastScanCursor,
-        now: now.getTime(),
-      });
+      if (seedRoute) {
+        args.logger.info("scanner.seed_started", {
+          binding_id: binding.id,
+          adapter_slug: binding.adapterSlug,
+        });
+        const seeded = await adapter.seed!({ now: now.getTime() });
+        scanResult = {
+          documents: seeded.documents,
+          nextCursor: seeded.cursor,
+        };
+        args.logger.info("scanner.seed_completed", {
+          binding_id: binding.id,
+          adapter_slug: binding.adapterSlug,
+          document_count: seeded.documents.length,
+        });
+      } else {
+        scanResult = await adapter.scan({
+          cursor: binding.lastScanCursor,
+          now: now.getTime(),
+        });
+      }
     } catch (err) {
-      args.logger.error("scanner.scan_failed", {
-        binding_id: binding.id,
-        adapter_slug: binding.adapterSlug,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      args.logger.error(
+        seedRoute ? "scanner.seed_failed" : "scanner.scan_failed",
+        {
+          binding_id: binding.id,
+          adapter_slug: binding.adapterSlug,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
       // Don't advance the cursor — the next cron run retries
-      // from the previous cursor.
+      // from the previous cursor (which is null on a failed
+      // seed → next tick re-tries seed from zero).
       continue;
     }
 
