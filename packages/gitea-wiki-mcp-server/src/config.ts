@@ -32,7 +32,10 @@ dotenv.config();
  * Throws if `<NAME>_FILE` is set but the file is missing or unreadable —
  * a typo in a Docker-secret mount is a misconfiguration the operator
  * needs to see LOUD at boot, not silently fall through to the inline
- * (possibly stale) variant.
+ * (possibly stale) variant. The thrown error names BOTH the env var
+ * (`<NAME>_FILE`) and the path that failed, so the operator can fix
+ * the typo without grepping through stack traces — Copilot triage
+ * (PR-Z8 follow-up) called out that a bare `ENOENT` was useless.
  */
 export function readWithFile(
   env: Record<string, string | undefined>,
@@ -40,8 +43,15 @@ export function readWithFile(
 ): string | undefined {
   const filePath = env[`${name}_FILE`];
   if (typeof filePath === "string" && filePath.length > 0) {
-    const raw = fs.readFileSync(filePath, "utf8");
-    return raw.replace(/\r?\n+$/, "");
+    try {
+      const raw = fs.readFileSync(filePath, "utf8");
+      return raw.replace(/\r?\n+$/, "");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Failed to read ${name}_FILE at ${filePath}: ${msg}`,
+      );
+    }
   }
   const inline = env[name];
   if (typeof inline === "string" && inline.length > 0) {

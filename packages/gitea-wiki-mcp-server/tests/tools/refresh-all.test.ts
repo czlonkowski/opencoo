@@ -10,8 +10,11 @@
  *
  * Pin matrix:
  *   1. 200 happy: validated body → registry mutated, ensureAllCloned called
- *   2. 401 without bearer
- *   3. 403 with wrong static-token bytes
+ *   2. 401 without bearer (bearerAuth rejects missing credentials)
+ *   3. 401 with wrong static-token bytes (bearerAuth rejects bad
+ *      credentials — 403 is reserved for non-static/OAuth principals
+ *      on /refresh-all, which static-only auth blocks at the bearer
+ *      layer before the route handler's principal check fires)
  *   4. 400 on missing/invalid body
  *   5. 400 on validation failure (reserved slug, duplicate)
  *   6. Auto-promotes first entry to default when none flagged
@@ -360,5 +363,19 @@ describe("config readWithFile (G9 — _FILE Docker-secrets precedence)", () => {
       MCP_BEARER_TOKEN_FILE: "/nonexistent/path/secret.txt",
     };
     expect(() => mod.readWithFile(env, "MCP_BEARER_TOKEN")).toThrow();
+  });
+
+  it("thrown error names BOTH the env var and the path (Copilot triage — operator legibility)", async () => {
+    const mod = await import("../../src/config.js");
+    const env: Record<string, string | undefined> = {
+      MCP_BEARER_TOKEN_FILE: "/nonexistent/path/secret.txt",
+    };
+    // Operator-debuggability: the error MUST name the env var so the
+    // operator knows which `<NAME>_FILE` typo'd, AND name the path so
+    // they can see what was attempted. A bare `ENOENT` is useless when
+    // five `_FILE` vars are wired through the same try/catch.
+    expect(() => mod.readWithFile(env, "MCP_BEARER_TOKEN")).toThrow(
+      /MCP_BEARER_TOKEN_FILE.*\/nonexistent\/path\/secret\.txt/,
+    );
   });
 });

@@ -139,17 +139,24 @@ describe("pingRefreshAll (phase-a appendix #12 PR-Z8, G10)", () => {
   });
 
   it("resolves (does NOT throw) on an abort/timeout", async () => {
-    const fetchSpy = vi.fn(async (_url: string, init: RequestInit) => {
-      // Simulate an immediately-aborted request.
-      if (init.signal?.aborted) {
-        const err = new Error("aborted");
-        err.name = "AbortError";
-        throw err;
-      }
-      // Wait long enough for the helper's 10ms timeout (configured
-      // via opts.timeoutMs) to fire.
-      await new Promise((r) => setTimeout(r, 50));
-      return new Response("{}", { status: 200 });
+    // Copilot triage (PR-Z8 follow-up): the previous version of this
+    // test only checked `init.signal?.aborted` at call time, then
+    // returned a Response after a 50ms sleep — `AbortSignal.timeout()`
+    // never had a chance to wire its abort event to anything, so the
+    // helper's catch-AbortError path was NEVER exercised. Now we
+    // attach a real listener so the helper's `signal: AbortSignal.timeout(10)`
+    // genuinely fires the rejection path the test claims to cover.
+    const fetchSpy = vi.fn((_url: string, init: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        if (init.signal?.aborted) {
+          reject(new DOMException("Aborted", "AbortError"));
+          return;
+        }
+        init.signal?.addEventListener("abort", () => {
+          reject(new DOMException("Aborted", "AbortError"));
+        });
+        // Never resolves on its own — relies on the signal firing.
+      });
     }) as unknown as typeof fetch;
     await expect(
       pingRefreshAll(
@@ -157,11 +164,16 @@ describe("pingRefreshAll (phase-a appendix #12 PR-Z8, G10)", () => {
           baseUrl: "http://mcp.test:3000",
           bearerToken: "t",
           fetchImpl: fetchSpy,
+          // Real AbortSignal.timeout(10) inside the helper will fire
+          // well before any of vitest's default test timeouts; the
+          // listener above translates that into the rejection the
+          // helper's catch must swallow.
           timeoutMs: 10,
         },
         [{ slug: "exec", owner: "opencoo" }],
         silentLogger(),
       ),
     ).resolves.toBeUndefined();
+    expect(fetchSpy).toHaveBeenCalledOnce();
   });
 });

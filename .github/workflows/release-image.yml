@@ -111,31 +111,6 @@ jobs:
           echo "Inspecting: $tag"
           docker buildx imagetools inspect "$tag"
 
-      # PR-Z8 (phase-a appendix #12, G11). Flip image visibility to
-      # public on tag pushes so first-time partner pulls succeed
-      # without an authenticated `docker login ghcr.io`. The default
-      # `GITHUB_TOKEN` has `packages:write` (granted at the job
-      # level above) but NOT `admin:packages`, which is what the
-      # `PATCH /user/packages/container/<pkg>` endpoint requires.
-      # We swallow the failure with a clear warning so the operator
-      # learns once via the job log that a one-shot manual flip
-      # (or a PAT with `admin:packages` exported as `GH_PAT_PACKAGES`)
-      # is needed. Subsequent tag pushes will reuse the now-public
-      # state. Documented in `docs/pilot-runbook.md` §11.3.
-      - name: Make GHCR image public (best-effort)
-        if: success() && github.ref_type == 'tag'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT_PACKAGES || secrets.GITHUB_TOKEN }}
-        run: |
-          set +e
-          for pkg in opencoo opencoo-gitea-wiki-mcp-server; do
-            gh api -X PATCH "/user/packages/container/$pkg" --field visibility=public
-            if [ $? -ne 0 ]; then
-              echo "warn: could not flip visibility for $pkg — set GH_PAT_PACKAGES (a PAT with admin:packages scope) on the repo OR flip visibility once via gh CLI: gh api -X PATCH /user/packages/container/$pkg --field visibility=public"
-            fi
-          done
-          exit 0
-
   mcp-server-image:
     name: gitea-wiki-mcp-server image (ghcr.io/czlonkowski/opencoo-gitea-wiki-mcp-server)
     runs-on: ubuntu-latest
@@ -194,3 +169,44 @@ jobs:
           tag="$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
           echo "Inspecting: $tag"
           docker buildx imagetools inspect "$tag"
+
+  # PR-Z8 (phase-a appendix #12, G11) — Copilot triage follow-up. Flip
+  # both GHCR image packages to public AFTER both build jobs have
+  # pushed. Previously this step lived inside `engine-image` and
+  # patched both packages, which raced `mcp-server-image` and 404'd
+  # when the mcp-server package hadn't yet been pushed for the first
+  # time. Splitting into a dedicated job that `needs:` both build jobs
+  # eliminates the race entirely.
+  #
+  # The default `GITHUB_TOKEN` has `packages:write` (granted at the
+  # job level below) but NOT `admin:packages`, which is what the
+  # `PATCH /user/packages/container/<pkg>` endpoint requires. We
+  # swallow the failure with a clear warning so the operator learns
+  # once via the job log that a one-shot manual flip (or a PAT with
+  # `admin:packages` exported as `GH_PAT_PACKAGES`) is needed.
+  # Subsequent tag pushes will reuse the now-public state.
+  # Documented in `docs/pilot-runbook.md` §11.3.
+  make-public:
+    name: flip GHCR images to public (best-effort)
+    needs: [engine-image, mcp-server-image]
+    if: success() && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Make GHCR images public
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_PACKAGES || secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          for pkg in opencoo opencoo-gitea-wiki-mcp-server; do
+            gh api -X PATCH "/user/packages/container/$pkg" --field visibility=public
+            if [ $? -ne 0 ]; then
+              echo "warn: could not flip visibility for $pkg — set GH_PAT_PACKAGES (a PAT with admin:packages scope) on the repo OR flip visibility once via gh CLI: gh api -X PATCH /user/packages/container/$pkg --field visibility=public"
+            else
+              echo "ok: $pkg is now public"
+            fi
+          done
+          exit 0
