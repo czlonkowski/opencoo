@@ -215,16 +215,37 @@ export {
 // attack on the agent cannot redirect delivery (Q10).
 export {
   MockOutputChannelAdapter,
+  OutputChannelDisabledError,
+  OutputChannelLookupError,
   OutputChannelMismatchError,
+  OutputChannelMissingChannelIdError,
   OutputChannelRegistry,
   OutputChannelUnknownAdapterError,
+  outputAdapterToChannelAdapter,
   type CapturedDelivery,
+  type LookupOutputChannel,
+  type MergePayload,
+  type OutputAdapterToChannelAdapterArgs,
   type OutputChannelAdapter,
   type OutputChannelBinding,
   type OutputChannelDeliverArgs,
   type OutputChannelDelivery,
   type OutputChannelDeliverInvocation,
+  type OutputChannelRecord,
 } from "./output-channels/index.js";
+
+// PR-Z4 (phase-a appendix #12 G5) — output-channels CRUD route
+// descriptor types + validator builder. The composition root
+// constructs the per-adapter descriptor (one per OutputAdapter
+// package) and threads the map into `registerAdminApi({
+// outputChannelRegistry })`. Re-exported here so the CLI doesn't
+// reach into the engine's internal admin-api routes path.
+export {
+  buildOutputAdapterValidator,
+  type OutputAdapterDescriptor,
+  type OutputAdapterListEntry,
+  type OutputAdapterSlug,
+} from "./admin-api/routes/output-channels.js";
 
 // Agent harness surface (PR 19, plan #87). The composition root
 // (PR 30 CLI) wires concrete agents (PR 20+) onto this harness.

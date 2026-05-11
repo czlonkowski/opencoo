@@ -152,6 +152,22 @@ const TABLES_DDL = `
     updated_at timestamp with time zone DEFAULT now() NOT NULL
   );
 
+  -- PR-Z4 (phase-a appendix #12 G5): output-channels CRUD surface.
+  -- Mirror of the production migration 0012; FK to credentials omitted
+  -- because the InMemoryCredentialStore tests use doesn't persist
+  -- credential rows.
+  CREATE TABLE IF NOT EXISTS output_channels (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    adapter_slug text NOT NULL,
+    name text NOT NULL,
+    config jsonb NOT NULL DEFAULT '{}'::jsonb,
+    credentials_id uuid,
+    enabled boolean NOT NULL DEFAULT true,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT output_channels_adapter_slug_name_unique UNIQUE (adapter_slug, name)
+  );
+
   CREATE TABLE marketplace_updates (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
     marketplace_source text NOT NULL,
@@ -401,6 +417,15 @@ export interface AdminFixtureOptions {
    *  a `vi.fn()` to assert the route DID call it on `?dryRun=0` and did
    *  NOT call it on `?dryRun=1`. */
   readonly forgetJobEnqueuer?: (args: import("../../src/admin-api/routes/source-bindings.js").ForgetJobEnqueueArgs) => Promise<void>;
+  /** PR-Z4 — output-adapter descriptor map. Tests inject a stub
+   *  registry so the routes exercise the descriptor lookups without
+   *  the `@opencoo/output-asana` import surface. */
+  readonly outputChannelRegistry?: Readonly<
+    Record<
+      import("../../src/admin-api/routes/output-channels.js").OutputAdapterSlug,
+      import("../../src/admin-api/routes/output-channels.js").OutputAdapterDescriptor
+    >
+  >;
 }
 
 function silentLogger(): ConsoleLogger {
@@ -451,6 +476,9 @@ export async function makeAdminFixture(
       : {}),
     ...(opts.forgetJobEnqueuer !== undefined
       ? { forgetJobEnqueuer: opts.forgetJobEnqueuer }
+      : {}),
+    ...(opts.outputChannelRegistry !== undefined
+      ? { outputChannelRegistry: opts.outputChannelRegistry }
       : {}),
   });
 

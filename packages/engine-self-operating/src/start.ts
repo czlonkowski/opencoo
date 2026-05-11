@@ -63,7 +63,12 @@ import {
   createSseBus,
   type SseBus,
 } from "./admin-api/sse-bus.js";
+import type {
+  OutputAdapterDescriptor,
+  OutputAdapterSlug,
+} from "./admin-api/routes/output-channels.js";
 import { AgentDefinitionRegistry } from "./agent-harness/index.js";
+import type { OutputChannelRegistry } from "./output-channels/index.js";
 import {
   AgentDispatcher,
   type AgentRunnerRegistry,
@@ -248,6 +253,30 @@ export interface StartOptions
    *
    *  When undefined the route returns 503. */
   readonly forgetJobEnqueuer?: (args: ForgetJobEnqueueArgs) => Promise<void>;
+  /** PR-Z4 (phase-a appendix #12 G5) — output-channel registry.
+   *  When present, the AgentDispatcher invokes the post-run delivery
+   *  hook after each successful agent run, routing the JSON output
+   *  through every binding in `agent_instances.output_channel_ids[]`.
+   *  Q10 binding enforcement (THREAT-MODEL §3.5) is enforced INSIDE
+   *  `OutputChannelRegistry.deliver`; the dispatcher just supplies
+   *  the binding set + payload.
+   *
+   *  When undefined (boot-tolerance — e.g. no OutputAdapter packages
+   *  available, or all of them failed to load at composition), the
+   *  dispatcher still runs every scheduled agent; deliveries are
+   *  a no-op until the registry is wired. */
+  readonly outputChannels?: OutputChannelRegistry;
+  /** PR-Z4 (phase-a appendix #12 G5) — per-adapter descriptor map
+   *  the admin-API Outputs-tab CRUD routes consume. The composition
+   *  root constructs one entry per shipped OutputAdapter package
+   *  (today: `asana`); the route then renders the credential +
+   *  channel-config forms dynamically per architecture §10. When
+   *  undefined, the routes still register but return 500
+   *  `output_channels_registry_unavailable` so the operator sees a
+   *  clean error surface. */
+  readonly outputChannelDescriptors?: Readonly<
+    Record<OutputAdapterSlug, OutputAdapterDescriptor>
+  >;
 }
 
 function defaultDbFactory(config: EngineConfig): StartDb {
@@ -501,6 +530,12 @@ export async function start(
         ...(options.agentRouter !== undefined
           ? { router: options.agentRouter }
           : {}),
+        // PR-Z4 (phase-a appendix #12 G5) — thread the
+        // OutputChannelRegistry so post-run delivery routes through
+        // the operator-bound channels.
+        ...(options.outputChannels !== undefined
+          ? { outputChannels: options.outputChannels }
+          : {}),
       });
     } catch (err) {
       logger.error("scheduler.compose_failed", {
@@ -584,6 +619,11 @@ export async function start(
         : {}),
       ...(options.forgetJobEnqueuer !== undefined
         ? { forgetJobEnqueuer: options.forgetJobEnqueuer }
+        : {}),
+      // PR-Z4 (phase-a appendix #12 G5) — thread the descriptor map
+      // through to the admin-API Outputs-tab CRUD routes.
+      ...(options.outputChannelDescriptors !== undefined
+        ? { outputChannelDescriptors: options.outputChannelDescriptors }
         : {}),
       ...(bodyLimit !== undefined ? { bodyLimit } : {}),
     });

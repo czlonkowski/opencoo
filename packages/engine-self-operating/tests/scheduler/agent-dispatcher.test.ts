@@ -907,3 +907,227 @@ describe("AgentDispatcher.updateSchedule — PR-R6 cadence editor", () => {
     }
   });
 });
+
+// ───────────────────────────────────────────────────────────────
+// PR-Z4 (phase-a appendix #12 G5) — post-run delivery hook.
+// ───────────────────────────────────────────────────────────────
+
+import {
+  MockOutputChannelAdapter,
+  OutputChannelRegistry,
+} from "../../src/output-channels/index.js";
+
+describe("AgentDispatcher — PR-Z4 post-run delivery hook", () => {
+  it("dispatches the run output through each binding's adapter", async () => {
+    const fixture = await freshAgentDb();
+    // Seed an instance with an output_channel_ids binding pointing
+    // at the `asana` adapter slug. The mock adapter captures the
+    // payload + config — we then assert both reached the adapter.
+    const result = await fixture.raw.query<{ id: string }>(
+      `INSERT INTO agent_instances
+         (definition_slug, name, scope_domain_ids, output_channel_ids,
+          memory, locale, enabled, schedule_cron)
+       VALUES ('heartbeat', 'with-asana-binding', $1::uuid[],
+               $2::jsonb,
+               '{"type":"none"}'::jsonb, 'en', true, '0 8 * * 1-5')
+       RETURNING id`,
+      [
+        [fixture.domainId],
+        JSON.stringify([
+          { adapter_slug: "asana", config: { channel_id: "abc-123" } },
+        ]),
+      ],
+    );
+    const instanceId = result.rows[0]!.id;
+
+    const mockAdapter = new MockOutputChannelAdapter("asana");
+    const outputChannels = new OutputChannelRegistry();
+    outputChannels.register(mockAdapter);
+
+    const invocations: string[] = [];
+    const runnerOutput = {
+      version: "v1",
+      summary: "today",
+      alerts: [],
+    };
+    const runners: AgentRunnerRegistry = {
+      get(slug: string) {
+        if (slug !== TEST_DEFINITION.slug) return undefined;
+        return async (ctx) => {
+          invocations.push(ctx.instance.id);
+          return runnerOutput;
+        };
+      },
+    };
+
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners,
+      logger: silentLogger(),
+      autorun: false,
+      outputChannels,
+    });
+
+    const handler = dispatcher.dispatchHandlerForTest();
+    const job = {
+      id: "job-delivery",
+      name: "dispatch",
+      data: { instanceId },
+      queueName: "selfop.dispatch",
+      attemptsMade: 0,
+      timestamp: Date.now(),
+    } as unknown as Job<{ instanceId: string }>;
+    try {
+      await handler(job);
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+
+    expect(invocations).toEqual([instanceId]);
+    expect(mockAdapter.deliveries).toHaveLength(1);
+    expect(mockAdapter.deliveries[0]?.payload).toEqual(runnerOutput);
+    expect(mockAdapter.deliveries[0]?.config).toEqual({
+      channel_id: "abc-123",
+    });
+  });
+
+  it("skips delivery when dryRun=true (operator-issued one-shot)", async () => {
+    const fixture = await freshAgentDb();
+    const result = await fixture.raw.query<{ id: string }>(
+      `INSERT INTO agent_instances
+         (definition_slug, name, scope_domain_ids, output_channel_ids,
+          memory, locale, enabled, schedule_cron)
+       VALUES ('heartbeat', 'dry-run', $1::uuid[],
+               $2::jsonb,
+               '{"type":"none"}'::jsonb, 'en', true, '0 8 * * 1-5')
+       RETURNING id`,
+      [
+        [fixture.domainId],
+        JSON.stringify([
+          { adapter_slug: "asana", config: { channel_id: "abc-123" } },
+        ]),
+      ],
+    );
+    const instanceId = result.rows[0]!.id;
+
+    const mock = new MockOutputChannelAdapter("asana");
+    const outputChannels = new OutputChannelRegistry();
+    outputChannels.register(mock);
+
+    const runners: AgentRunnerRegistry = {
+      get(slug: string) {
+        if (slug !== TEST_DEFINITION.slug) return undefined;
+        return async () => ({ ok: true });
+      },
+    };
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners,
+      logger: silentLogger(),
+      autorun: false,
+      outputChannels,
+    });
+
+    const handler = dispatcher.dispatchHandlerForTest();
+    const job = {
+      id: "job-dryrun",
+      name: "dispatch",
+      data: { instanceId, dryRun: true, triggeredBy: "manual" as const },
+      queueName: "selfop.dispatch",
+      attemptsMade: 0,
+      timestamp: Date.now(),
+    } as unknown as Job<{ instanceId: string; dryRun?: boolean }>;
+    try {
+      await handler(job);
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+    expect(mock.deliveries).toEqual([]);
+  });
+
+  it("does NOT throw when a single delivery fails — the next binding still tries", async () => {
+    const fixture = await freshAgentDb();
+    const result = await fixture.raw.query<{ id: string }>(
+      `INSERT INTO agent_instances
+         (definition_slug, name, scope_domain_ids, output_channel_ids,
+          memory, locale, enabled, schedule_cron)
+       VALUES ('heartbeat', 'two-deliveries', $1::uuid[],
+               $2::jsonb,
+               '{"type":"none"}'::jsonb, 'en', true, '0 8 * * 1-5')
+       RETURNING id`,
+      [
+        [fixture.domainId],
+        JSON.stringify([
+          { adapter_slug: "asana", config: { channel_id: "a" } },
+          { adapter_slug: "slack", config: { channel_id: "b" } },
+        ]),
+      ],
+    );
+    const instanceId = result.rows[0]!.id;
+
+    const outputChannels = new OutputChannelRegistry();
+    // 'asana' throws, 'slack' captures — pin that 'slack' still runs.
+    outputChannels.register({
+      adapterSlug: "asana",
+      async deliver() {
+        throw new Error("simulated asana outage");
+      },
+    });
+    const slackMock = new MockOutputChannelAdapter("slack");
+    outputChannels.register(slackMock);
+
+    const runners: AgentRunnerRegistry = {
+      get(slug: string) {
+        if (slug !== TEST_DEFINITION.slug) return undefined;
+        return async () => ({ version: "v1", summary: "s", alerts: [] });
+      },
+    };
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners,
+      logger: silentLogger(),
+      autorun: false,
+      outputChannels,
+    });
+
+    const handler = dispatcher.dispatchHandlerForTest();
+    const job = {
+      id: "job-2",
+      name: "dispatch",
+      data: { instanceId },
+      queueName: "selfop.dispatch",
+      attemptsMade: 0,
+      timestamp: Date.now(),
+    } as unknown as Job<{ instanceId: string }>;
+    try {
+      await expect(handler(job)).resolves.toBeDefined();
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+    expect(slackMock.deliveries).toHaveLength(1);
+  });
+});

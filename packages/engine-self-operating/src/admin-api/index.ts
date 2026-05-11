@@ -54,6 +54,11 @@ import { registerLintFindingsRoutes } from "./routes/lint-findings.js";
 import { registerLlmModelsRoute } from "./routes/llm-models.js";
 import { registerLogoutRoute } from "./routes/logout.js";
 import { registerMarketplaceUpdatesRoutes } from "./routes/marketplace-updates.js";
+import {
+  registerOutputChannelsRoutes,
+  type OutputAdapterDescriptor,
+  type OutputAdapterSlug,
+} from "./routes/output-channels.js";
 import { registerPipelinesRoutes } from "./routes/pipelines.js";
 import { registerPromptsRoutes } from "./routes/prompts.js";
 import { registerRedactionEventsRoutes } from "./routes/redaction-events.js";
@@ -147,6 +152,14 @@ export interface RegisterAdminApiArgs {
    *  recompile + delete jobs. Tests inject a `vi.fn()`. When
    *  undefined the forget endpoint returns 503. */
   readonly forgetJobEnqueuer?: (args: ForgetJobEnqueueArgs) => Promise<void>;
+  /** PR-Z4 (phase-a appendix #12 G5) — test seam for the
+   *  `/api/admin/output-channels` CRUD routes. Production lets the
+   *  routes lazy-import `@opencoo/output-asana` to derive the
+   *  per-adapter descriptor; tests inject a stub so the admin-API
+   *  fixture doesn't need the cross-package import surface. */
+  readonly outputChannelRegistry?: Readonly<
+    Record<OutputAdapterSlug, OutputAdapterDescriptor>
+  >;
 }
 
 export async function registerAdminApi(
@@ -192,7 +205,25 @@ export async function registerAdminApi(
 
   // Phase-a appendix #2 — adapter picker for the "+ New
   // binding" modal. Read-only; no body, no CSRF.
-  registerAdaptersRoute({ app: guardedApp });
+  registerAdaptersRoute({
+    app: guardedApp,
+    ...(args.outputChannelRegistry !== undefined
+      ? { outputAdapterRegistry: args.outputChannelRegistry }
+      : {}),
+  });
+  // PR-Z4 (phase-a appendix #12 G5) — Outputs tab CRUD. The
+  // route registrar is async because the production path lazy-
+  // imports `@opencoo/output-asana` for the per-adapter descriptor.
+  await registerOutputChannelsRoutes({
+    app: guardedApp,
+    db: args.db,
+    ...(args.credentialStore !== undefined
+      ? { credentialStore: args.credentialStore }
+      : {}),
+    ...(args.outputChannelRegistry !== undefined
+      ? { registry: args.outputChannelRegistry }
+      : {}),
+  });
   registerSourceBindingsRoutes({
     app: guardedApp,
     db: args.db,

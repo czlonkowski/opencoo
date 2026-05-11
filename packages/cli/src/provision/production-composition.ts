@@ -75,10 +75,19 @@ import {
   HEARTBEAT_DEFINITION,
   HttpMcpToolClient,
   LINT_DEFINITION,
+  OutputChannelRegistry,
   SURFACER_DEFINITION,
+  buildOutputAdapterValidator,
+  outputAdapterToChannelAdapter,
   type AgentRunnerRegistry,
+  type LookupOutputChannel,
   type McpToolClient,
+  type OutputAdapterDescriptor,
+  type OutputAdapterSlug,
+  type OutputChannelRecord,
 } from "@opencoo/engine-self-operating";
+import type { CredentialId } from "@opencoo/shared/db";
+import { z } from "zod";
 import {
   GiteaRestClient,
   giteaWikiAdapter,
@@ -117,6 +126,21 @@ export interface ProductionCompositionResult {
    *  SIGTERM AFTER worker drain (mirrors `closeProducers` on the
    *  WorkerContext). */
   readonly closeForgetQueues: () => Promise<void>;
+  /** PR-Z4 (phase-a appendix #12 G5) — output-channel registry the
+   *  AgentDispatcher consumes for post-run delivery. Populated with
+   *  every OutputAdapter package that loaded at composition (today:
+   *  `@opencoo/output-asana`). The orchestrator threads this into
+   *  `engine-self-operating.start({ outputChannels })`. */
+  readonly outputChannels: OutputChannelRegistry;
+  /** PR-Z4 (phase-a appendix #12 G5) — descriptor map the admin-API
+   *  Outputs-tab CRUD routes consume. Keyed by adapter slug; each
+   *  entry carries the JSON-Schema-shape the UI renders + the
+   *  Zod-backed config + credential validators. The orchestrator
+   *  threads this into `registerAdminApi({ outputChannelRegistry })`
+   *  via `engine-self-operating.start({})`. */
+  readonly outputChannelDescriptors: Readonly<
+    Record<OutputAdapterSlug, OutputAdapterDescriptor>
+  >;
 }
 
 /** Narrow shape of the run-event emitter the WorkerContext consumes.
@@ -387,6 +411,29 @@ export async function composeProductionFromEnv(
     ...(args.sseBus !== undefined ? { sseBus: args.sseBus } : {}),
   });
 
+  // PR-Z4 (phase-a appendix #12 G5) — wire the OutputChannelRegistry.
+  // For each shipped OutputAdapter package (today: `@opencoo/output-asana`),
+  // we lazy-import the module, build the adapter against a fetch-backed
+  // real client, bridge it through `outputAdapterToChannelAdapter` (which
+  // looks up the per-channel row + credential at delivery time), and
+  // register it on the engine-internal `OutputChannelRegistry`. A
+  // missing package logs `output_adapter.unavailable` and skips so the
+  // engine still boots if (e.g.) the adapter was excluded from the
+  // build.
+  //
+  // The channel-row lookup is a simple `SELECT ... FROM output_channels
+  // WHERE id = $1` against the same pg.Pool the rest of the composition
+  // uses; the route handlers also write through the same pool inside
+  // the admin-API tx.
+  const outputChannels = new OutputChannelRegistry();
+  const lookupChannel = buildLookupOutputChannel(pgPool);
+  const outputChannelDescriptors = await registerOutputAdapters({
+    outputChannels,
+    lookupChannel,
+    credentialStore,
+    logger,
+  });
+
   return {
     workerContext,
     redisConnection,
@@ -395,7 +442,160 @@ export async function composeProductionFromEnv(
     deleteCap,
     forgetJobEnqueuer,
     closeForgetQueues,
+    outputChannels,
+    outputChannelDescriptors,
   };
+}
+
+/** PR-Z4 — channel-row lookup: SELECT id, adapter_slug, credentials_id,
+ *  config, enabled FROM output_channels WHERE id = $1. The bridge
+ *  invokes this once per delivery (not per binding) — production
+ *  volume is low (a handful of channels per deployment) so a query
+ *  cache is not required in v0.1. */
+function buildLookupOutputChannel(pgPool: pg.Pool): LookupOutputChannel {
+  return async (channelId: string): Promise<OutputChannelRecord | null> => {
+    const result = await pgPool.query<{
+      id: string;
+      adapter_slug: string;
+      credentials_id: string | null;
+      config: Record<string, unknown> | null;
+      enabled: boolean;
+    }>(
+      `SELECT id::text         AS id,
+              adapter_slug,
+              credentials_id::text AS credentials_id,
+              config,
+              enabled
+       FROM output_channels
+       WHERE id = $1::uuid
+       LIMIT 1`,
+      [channelId],
+    );
+    const row = result.rows[0];
+    if (row === undefined) return null;
+    if (row.credentials_id === null) return null;
+    return {
+      id: row.id,
+      adapterSlug: row.adapter_slug,
+      credentialsId: row.credentials_id as CredentialId,
+      config: row.config ?? {},
+      enabled: row.enabled,
+    };
+  };
+}
+
+interface RegisterOutputAdaptersArgs {
+  readonly outputChannels: OutputChannelRegistry;
+  readonly lookupChannel: LookupOutputChannel;
+  readonly credentialStore: DrizzleCredentialStore;
+  readonly logger: Logger;
+}
+
+/** PR-Z4 — register every shipped OutputAdapter against the
+ *  engine's OutputChannelRegistry AND return the corresponding
+ *  descriptor map the admin-API Outputs-tab CRUD consumes.
+ *
+ *  Returns a partial descriptor map (only adapters that loaded
+ *  successfully). The engine's `registerOutputChannelsRoutes`
+ *  treats a missing slug as 422 unknown_adapter_slug at request
+ *  time, so a package that failed to load (e.g. excluded from the
+ *  build) doesn't break the rest of the admin API. */
+async function registerOutputAdapters(
+  args: RegisterOutputAdaptersArgs,
+): Promise<Readonly<Record<OutputAdapterSlug, OutputAdapterDescriptor>>> {
+  const out: Partial<Record<OutputAdapterSlug, OutputAdapterDescriptor>> = {};
+  // output-asana: heartbeat output → Asana task in the configured
+  // project. `mergePayload` derives a task title + notes from the
+  // HeartbeatOutput shape.
+  try {
+    const mod = await import("@opencoo/output-asana");
+    const asanaAdapter = mod.createAsanaOutputAdapter({
+      makeApi: () => mod.createAsanaFetchApi(),
+    });
+    args.outputChannels.register(
+      outputAdapterToChannelAdapter({
+        outputAdapter: asanaAdapter,
+        lookupChannel: args.lookupChannel,
+        credentialStore: args.credentialStore,
+        mergePayload: mergeAsanaPayload,
+      }),
+    );
+    out.asana = {
+      channelConfigJsonSchema: mod.asanaChannelConfigJsonSchema,
+      validateConfig: buildOutputAdapterValidator(
+        mod.asanaChannelConfigSchema as unknown as z.ZodType<
+          Record<string, unknown>
+        >,
+      ),
+      credentialJsonSchema: {
+        type: "object",
+        properties: mod.asanaOutputCredentialSchema.properties as Readonly<
+          Record<
+            string,
+            Readonly<{
+              readonly type: "string" | "boolean";
+              readonly description?: string;
+              readonly secret?: boolean;
+            }>
+          >
+        >,
+        required: mod.asanaOutputCredentialSchema.required ?? [],
+      },
+      validateCredentials: buildOutputAdapterValidator(
+        z
+          .object({
+            asanaPersonalAccessToken: z.string().min(1),
+          })
+          .strict(),
+      ),
+    };
+  } catch (err) {
+    args.logger.warn("output_adapter.unavailable", {
+      adapter_slug: "asana",
+      // Round-3 style — safeErrorMessage handles non-Error +
+      // scrubs credential bytes per THREAT-MODEL §3.6 invariant 11.
+      error: safeErrorMessage(err),
+    });
+  }
+  return out as Readonly<Record<OutputAdapterSlug, OutputAdapterDescriptor>>;
+}
+
+/** PR-Z4 — Asana payload merge. The operator-supplied channel
+ *  config carries `project_gid` (+ optional `assignee_gid` /
+ *  `due_on`); the agent's JSON output carries the briefing /
+ *  heartbeat / lint summary that becomes the task title + notes.
+ *
+ *  Shape resilience: the agent's output shape varies by definition
+ *  (Heartbeat → `{version, summary, alerts}`, Lint → different).
+ *  For v0.1 we duck-type: prefer `summary` as the title, fall back
+ *  to a generic label; render the full output as notes (JSON
+ *  pretty-print). When richer per-agent renderers land, swap the
+ *  closure here without touching the bridge. */
+export function mergeAsanaPayload(args: {
+  readonly channelConfig: Record<string, unknown>;
+  readonly agentOutput: unknown;
+}): import("@opencoo/output-asana").AsanaTaskPayload {
+  const cfg = args.channelConfig;
+  const projectGid = typeof cfg["project_gid"] === "string" ? cfg["project_gid"] : "";
+  if (projectGid.length === 0) {
+    throw new Error(
+      "output-asana: channel config is missing project_gid (string)",
+    );
+  }
+  const out = (args.agentOutput as Record<string, unknown> | null) ?? {};
+  const summaryCandidate = typeof out["summary"] === "string" ? out["summary"] : null;
+  const title = (summaryCandidate ?? "opencoo daily report").slice(0, 500);
+  const notes = JSON.stringify(out, null, 2).slice(0, 32_768);
+  const payload: import("@opencoo/output-asana").AsanaTaskPayload = {
+    projectGid,
+    title,
+    notes,
+  };
+  const assigneeGid = cfg["assignee_gid"];
+  if (typeof assigneeGid === "string" && assigneeGid.length > 0) {
+    return { ...payload, assigneeGid };
+  }
+  return payload;
 }
 
 /** Multi-provider dispatcher — routes every `LlmProviderCall` to

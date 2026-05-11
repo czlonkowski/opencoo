@@ -8,6 +8,7 @@
 export type Tab =
   | "domains"
   | "sources"
+  | "outputs"
   | "llmPolicy"
   | "prompts"
   | "activity"
@@ -15,6 +16,51 @@ export type Tab =
   | "reports"
   | "audit"
   | "cost";
+
+/** PR-Z4 (phase-a appendix #12 G5) — output channel row shape. */
+export interface OutputChannel {
+  readonly id: string;
+  readonly adapterSlug: string;
+  readonly name: string;
+  readonly enabled: boolean;
+  readonly config: Record<string, unknown>;
+  readonly createdAt: string | null;
+  readonly updatedAt: string | null;
+}
+
+/** PR-Z4 — descriptor for one OutputAdapter the `+ New channel`
+ *  modal uses to render the form. Mirrors what `/api/admin/adapters`
+ *  returns under `outputAdapters[]`. */
+export interface OutputAdapterEntry {
+  readonly slug: string;
+  readonly credentialSchema: {
+    readonly type: "object";
+    readonly properties: Readonly<
+      Record<
+        string,
+        Readonly<{
+          readonly type: "string" | "boolean";
+          readonly description?: string;
+          readonly secret?: boolean;
+        }>
+      >
+    >;
+    readonly required: readonly string[];
+  };
+  readonly channelConfigSchema: {
+    readonly type: "object";
+    readonly properties: Readonly<
+      Record<
+        string,
+        Readonly<{
+          readonly type: "string" | "boolean" | "number";
+          readonly description?: string;
+        }>
+      >
+    >;
+    readonly required: readonly string[];
+  };
+}
 
 export interface Domain {
   readonly id: string;
