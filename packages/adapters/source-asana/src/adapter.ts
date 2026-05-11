@@ -780,14 +780,33 @@ export function createAsanaSourceAdapter(
    * PR-Z2.
    */
   let seedCachedClient: AsanaClient | undefined = args.asanaClient;
-  let seedFactoryInvoked = args.asanaClient !== undefined;
+  // The factory-invoked flag means "the factory has been called
+  // SUCCESSFULLY". When `args.asanaClient` is injected at
+  // construction we treat that as an already-resolved (cached)
+  // outcome — `seedCachedClient` is set, so resolveSeedClient
+  // short-circuits before consulting the flag.
+  //
+  // PR-Z2 Copilot triage: previously the flag was flipped to
+  // `true` BEFORE invoking `makeAsanaClient()`. A transient
+  // factory failure (e.g. a credential reload that races a
+  // network blip) would set the flag, leave the cached client
+  // undefined, and lock subsequent seed attempts out of the
+  // factory forever. We now flip the flag only on the success
+  // path so transient failures can retry on the next tick.
+  let seedFactoryInvoked = false;
   function resolveSeedClient(): AsanaClient | undefined {
     if (seedCachedClient !== undefined) return seedCachedClient;
     if (seedFactoryInvoked) return undefined;
     if (args.makeAsanaClient !== undefined) {
-      seedFactoryInvoked = true;
       try {
         seedCachedClient = args.makeAsanaClient();
+        // Only mark the factory invoked AFTER it returned a
+        // client successfully. A throw must remain retryable so
+        // the next scanner tick (cursor-not-advanced → re-seed)
+        // gets another shot. Without this, a single transient
+        // network blip during makeAsanaClient permanently locks
+        // a binding out of seeding.
+        seedFactoryInvoked = true;
       } catch (err) {
         seedCachedClient = undefined;
         // Same fail-open pattern enrichEvents uses (PR-Q8
@@ -809,9 +828,16 @@ export function createAsanaSourceAdapter(
    * Seed primitive — backfill existing tasks in the bound
    * project(s) at binding-create / first-tick. Uses
    * `monitoredProjectGids` when configured, else the binding's
-   * primary `projectGid`. Cursor handoff is `null` — Asana is
-   * webhook-driven for incremental, no resumable cursor in the
-   * REST API.
+   * primary `projectGid`. Cursor handoff is the
+   * `asana-seeded:<ISO>` sentinel produced by `runAsanaSeed()`
+   * — Asana is webhook-driven for incremental and has no
+   * resumable cursor in the REST API, but a non-null sentinel
+   * is intentional: the scanner uses `last_scan_cursor === null`
+   * as the "this binding still needs seeding" flag, so returning
+   * a literal null would cause every 4h tick to re-seed every
+   * task forever. The sentinel is opaque to `scan()` (Asana's
+   * `scan()` ignores its input cursor entirely) and is
+   * operator-readable for forensics.
    *
    * When neither `asanaClient` nor `makeAsanaClient` is wired,
    * we surface a clear error rather than silently returning

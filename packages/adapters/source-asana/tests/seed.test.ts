@@ -324,6 +324,69 @@ describe("Asana seed — makeAsanaClient lazy injection", () => {
     // the adapter should omit the seed property entirely.
     expect(adapter.seed).toBeUndefined();
   });
+
+  // PR-Z2 Copilot triage: previously `seedFactoryInvoked` flipped to true
+  // BEFORE calling `makeAsanaClient()`. A transient factory failure
+  // (network blip during a credential reload) would set the flag, leave the
+  // cached client undefined, and lock subsequent seed attempts out of the
+  // factory forever. Fix: only mark "invoked" on success — the next tick
+  // retries.
+  it("retries makeAsanaClient on the next seed call when the factory throws once", async () => {
+    const { store, credentialId } = await seedCredential();
+    const projectGid = "proj-retry";
+    const fetchSpy = vi.fn(async (gid: string) => ({
+      project_gid: gid,
+      snapshot: [makeTask("retry-task", "X", "2026-05-01T00:00:00Z")],
+      incomplete_count: 1,
+      overdue_count: 0,
+      fetched_at: "2026-05-10T00:00:00.000Z",
+    }));
+    let call = 0;
+    const make = vi.fn<() => AsanaClient>(() => {
+      call++;
+      if (call === 1) {
+        throw new Error("simulated transient factory failure");
+      }
+      return { fetchProjectSnapshot: fetchSpy };
+    });
+    const consoleWarnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+
+    const adapter = createAsanaSourceAdapter({
+      credentialStore: store,
+      credentialId,
+      config: {
+        projectGid,
+        snapshotMode: "on-event",
+        webhookSecretCredentialId: credentialId,
+      },
+      makeAsanaClient: make,
+    });
+
+    // First seed() call: factory throws, the adapter fails open and
+    // surfaces the no-client error to the caller (scanner's catch path
+    // logs + leaves cursor null → re-tries on the next tick).
+    await expect(adapter.seed!({})).rejects.toThrow(
+      /seed\(\) requires asanaClient or makeAsanaClient injection/,
+    );
+    expect(make).toHaveBeenCalledTimes(1);
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      "source-asana: seed() makeAsanaClient threw; seed will skip",
+      expect.objectContaining({ error: expect.stringContaining("transient") }),
+    );
+
+    // Second seed() call: factory succeeds, the seed runs to completion.
+    // If the bug regressed (flag flipped before invocation), this call
+    // would hit `if (seedFactoryInvoked) return undefined` and throw the
+    // same "no client" error — i.e. the binding would be permanently
+    // locked out.
+    const result = await adapter.seed!({});
+    expect(make).toHaveBeenCalledTimes(2);
+    expect(result.documents).toHaveLength(1);
+    expect(result.documents[0]?.sourceDocId).toBe("task-retry-task:seeded");
+    consoleWarnSpy.mockRestore();
+  });
 });
 
 // ---------------------------------------------------------------------------

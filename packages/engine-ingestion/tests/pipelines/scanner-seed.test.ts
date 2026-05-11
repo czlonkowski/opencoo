@@ -374,3 +374,167 @@ describe("scanner — partial-seed replay dedupes via ingestion_intake UNIQUE", 
     expect(countResult.rows[0]?.c).toBe("1");
   });
 });
+
+// ---------------------------------------------------------------------------
+// 7. PR-Z2 Copilot triage: scan() nextCursor null must PRESERVE the existing
+//    binding cursor, not overwrite it. If we ever overwrote a non-null
+//    sentinel (e.g. `asana-seeded:<ISO>`) with null, the next tick would see
+//    `last_scan_cursor === null && adapter.seed !== undefined` and re-route
+//    to seed() — every 4h tick would re-seed every webhook-driven binding
+//    forever.
+// ---------------------------------------------------------------------------
+
+describe("scanner — null scan().nextCursor preserves existing cursor (no re-seed lockout)", () => {
+  it("a webhook-driven adapter (Asana shape) returning null does NOT clobber the sentinel", async () => {
+    const f = await freshPipelineDb({});
+    // Pre-seed a non-null sentinel matching the Asana cursor shape.
+    const sentinel = "asana-seeded:2026-05-10T08:00:00.000Z";
+    await f.raw.query(
+      `UPDATE sources_bindings SET last_scan_cursor = $1 WHERE id = $2`,
+      [sentinel, f.bindingId],
+    );
+
+    const handle = makeStatefulAdapter({
+      slug: "drive", // fixture's adapter_slug; the seed-vs-scan
+      // dispatch is what's being exercised here, not the
+      // adapter identity.
+      seedResult: {
+        documents: [],
+        cursor: sentinel, // adapter has seed defined so we test
+        // the seed-already-completed case
+      },
+      // Critical: scan() returns null nextCursor (the
+      // webhook-driven-adapter shape).
+      scanResult: { documents: [], nextCursor: null },
+    });
+    const enqueue = makeEnqueue();
+    await runScanner({
+      db: f.db as unknown as Parameters<typeof runScanner>[0]["db"],
+      logger: silentLogger(),
+      adapterRegistry: { get: () => handle.adapter },
+      enqueue,
+    });
+
+    // The binding is already seeded (sentinel non-null), so the
+    // scanner took the scan() path.
+    expect(handle.seedCalls.count).toBe(0);
+    expect(handle.scanCalls.count).toBe(1);
+
+    // Cursor STILL the sentinel — null nextCursor from scan()
+    // did not clobber.
+    const after = await f.raw.query<{ last_scan_cursor: string | null }>(
+      `SELECT last_scan_cursor FROM sources_bindings WHERE id = $1`,
+      [f.bindingId],
+    );
+    expect(after.rows[0]?.last_scan_cursor).toBe(sentinel);
+  });
+
+  it("does NOT re-route to seed() on the next tick after a null scan() return", async () => {
+    const f = await freshPipelineDb({});
+    const sentinel = "asana-seeded:2026-05-10T08:00:00.000Z";
+    await f.raw.query(
+      `UPDATE sources_bindings SET last_scan_cursor = $1 WHERE id = $2`,
+      [sentinel, f.bindingId],
+    );
+
+    const handle = makeStatefulAdapter({
+      slug: "drive",
+      seedResult: {
+        documents: [
+          {
+            sourceDocId: "should-never-seed",
+            sourceRevision: "x",
+            sourceRef: "drive:should-never-seed",
+            fetchedAt: new Date(),
+            contentBytes: Buffer.from("x"),
+          },
+        ],
+        cursor: "new-sentinel",
+      },
+      scanResult: { documents: [], nextCursor: null },
+    });
+    const enqueue = makeEnqueue();
+
+    // Tick 1 — scan(), null cursor, sentinel preserved.
+    await runScanner({
+      db: f.db as unknown as Parameters<typeof runScanner>[0]["db"],
+      logger: silentLogger(),
+      adapterRegistry: { get: () => handle.adapter },
+      enqueue,
+    });
+    // Tick 2 — sentinel still non-null → scan() again, NOT seed().
+    await runScanner({
+      db: f.db as unknown as Parameters<typeof runScanner>[0]["db"],
+      logger: silentLogger(),
+      adapterRegistry: { get: () => handle.adapter },
+      enqueue,
+    });
+    expect(handle.seedCalls.count).toBe(0);
+    expect(handle.scanCalls.count).toBe(2);
+    expect(enqueue.jobs).toHaveLength(0);
+  });
+
+  it("scrubs credential bytes from scan() error logs via safeErrorMessage", async () => {
+    const f = await freshPipelineDb({});
+    // Capture the logger output so we can assert the scrubbed
+    // shape — ConsoleLogger emits JSON lines we can parse.
+    const lines: string[] = [];
+    const capturedLogger = new ConsoleLogger({
+      stream: {
+        write(chunk: string): boolean {
+          lines.push(chunk);
+          return true;
+        },
+      },
+    });
+    // Asana PAT pattern: `1/<16+ digits>` — recognised by
+    // packages/shared/src/scrub/pat-scrub.ts's ASANA_PAT_RE.
+    const leakedPat = "1/1234567890123456";
+    const adapter: SourceAdapter = {
+      slug: "drive",
+      async scan(): Promise<SourceScanResult> {
+        throw new Error(`asana-client: auth failed (token=${leakedPat})`);
+      },
+    };
+    await runScanner({
+      db: f.db as unknown as Parameters<typeof runScanner>[0]["db"],
+      logger: capturedLogger,
+      adapterRegistry: { get: () => adapter },
+      enqueue: makeEnqueue(),
+    });
+    const errorLine = lines.find((l) => l.includes("scanner.scan_failed"));
+    expect(errorLine).toBeDefined();
+    // The literal PAT must not appear; the scrub helper replaces
+    // it with `[REDACTED]`.
+    expect(errorLine!.includes(leakedPat)).toBe(false);
+    expect(errorLine!.includes("[REDACTED]")).toBe(true);
+  });
+
+  it("preserves the cursor across a Drive-shape adapter that returns a non-null cursor (no regression)", async () => {
+    const f = await freshPipelineDb({});
+    await f.raw.query(
+      `UPDATE sources_bindings SET last_scan_cursor = $1 WHERE id = $2`,
+      ["prev-cursor", f.bindingId],
+    );
+    // Drive-shape: scan() returns a real next page token. Verify
+    // we still advance the cursor when nextCursor IS non-null
+    // (the bug was specifically the null branch — make sure we
+    // didn't break the happy path).
+    const handle = makeStatefulAdapter({
+      slug: "drive",
+      // No seedResult — webhook-only-style adapter
+      scanResult: { documents: [], nextCursor: "drive-page-2" },
+    });
+    await runScanner({
+      db: f.db as unknown as Parameters<typeof runScanner>[0]["db"],
+      logger: silentLogger(),
+      adapterRegistry: { get: () => handle.adapter },
+      enqueue: makeEnqueue(),
+    });
+    const after = await f.raw.query<{ last_scan_cursor: string | null }>(
+      `SELECT last_scan_cursor FROM sources_bindings WHERE id = $1`,
+      [f.bindingId],
+    );
+    expect(after.rows[0]?.last_scan_cursor).toBe("drive-page-2");
+  });
+});
