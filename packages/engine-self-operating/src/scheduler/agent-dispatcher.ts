@@ -764,10 +764,20 @@ export class AgentDispatcher {
 
   /** PR-Z4 — iterate every binding on the instance and call
    *  `OutputChannelRegistry.deliver(...)` per binding. Per-binding
-   *  failures are logged + emitted onto the SSE bus (so the
-   *  Activity feed surfaces delivery problems) but DO NOT throw out
-   *  of `dispatchOne` — the agent body already terminalised on
-   *  success.
+   *  delivery failures are structured-logged via the
+   *  `output_channel.deliver` log line (status=failed, scrubbed
+   *  error) but DO NOT throw out of `dispatchOne` — the agent body
+   *  already terminalised on success, and one failed channel is
+   *  non-fatal for the run. We deliberately do NOT mutate the
+   *  `agent_runs.status` row on a delivery failure: the agent body
+   *  succeeded; delivery is an out-of-band concern (Q10) so its
+   *  failure mode must not flip the run terminal status.
+   *
+   *  (Future: SSE-emit delivery failures to the Activity feed so
+   *  the operator surfaces them without tailing JSON logs. Filed
+   *  as a v0.2 polish — for v0.1 the structured log is the audit
+   *  surface and the JSON-log harvester groups by
+   *  `(run_id, adapter_slug)` to derive delivery health.)
    *
    *  The registry's `deliver` cross-checks `delivery.adapterSlug`
    *  against the binding set BEFORE calling the adapter — Q10

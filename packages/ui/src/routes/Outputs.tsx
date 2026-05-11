@@ -100,11 +100,32 @@ export function Outputs(props: OutputsProps = {}): JSX.Element {
             <div className="t-micro">{t("outputs.columns.enabled")}</div>
             <div className="t-micro">{t("outputs.columns.createdAt")}</div>
             {rows.map((c) => {
+              // Mirrors `Sources.tsx`'s grid-row click target: every
+              // cell shares the same `onClick` + `onKeyDown` + `aria-label`
+              // so the operator can drill in from any column AND so
+              // keyboard / screen-reader users get parity with mouse
+              // users. The grid uses `display: contents` so we can't
+              // wrap cells in a single clickable element without
+              // breaking the layout — per-cell handlers are the
+              // simplest path that preserves the 4-column grid.
               const onRowClick = (): void => setSelected(c);
+              const onRowKey = (e: React.KeyboardEvent): void => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setSelected(c);
+                }
+              };
               const cellStyle: React.CSSProperties = {
                 cursor: "pointer",
                 padding: "4px 0",
               };
+              const cellProps = {
+                role: "button",
+                tabIndex: 0,
+                onClick: onRowClick,
+                onKeyDown: onRowKey,
+                "aria-label": t("outputs.detail.openAriaLabel", { name: c.name }),
+              } as const;
               return (
                 <div
                   key={c.id}
@@ -117,17 +138,13 @@ export function Outputs(props: OutputsProps = {}): JSX.Element {
                       fontFamily: "var(--font-mono)",
                       fontSize: "var(--fs-mono)",
                     }}
-                    onClick={onRowClick}
-                    role="button"
-                    tabIndex={0}
+                    {...cellProps}
                   >
                     {c.name}
                   </div>
                   <div
                     style={{ ...cellStyle, color: "var(--ink-3)" }}
-                    onClick={onRowClick}
-                    role="button"
-                    tabIndex={0}
+                    {...cellProps}
                   >
                     {c.adapterSlug}
                   </div>
@@ -136,9 +153,7 @@ export function Outputs(props: OutputsProps = {}): JSX.Element {
                       ...cellStyle,
                       color: c.enabled ? "var(--healthy)" : "var(--ink-3)",
                     }}
-                    onClick={onRowClick}
-                    role="button"
-                    tabIndex={0}
+                    {...cellProps}
                   >
                     {c.enabled ? t("outputs.enabledYes") : t("outputs.enabledNo")}
                   </div>
@@ -149,9 +164,7 @@ export function Outputs(props: OutputsProps = {}): JSX.Element {
                       fontSize: "var(--fs-micro)",
                       fontFamily: "var(--font-mono)",
                     }}
-                    onClick={onRowClick}
-                    role="button"
-                    tabIndex={0}
+                    {...cellProps}
                   >
                     {c.createdAt ?? "—"}
                   </div>

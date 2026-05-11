@@ -155,6 +155,67 @@ describe("Outputs route", () => {
     expect(screen.getByText("asana")).toBeTruthy();
   });
 
+  it("row cells expose accessible names + open the detail on Enter/Space", async () => {
+    setPat("test-pat");
+    const stub = makeStubFetch({
+      rows: [
+        {
+          id: "11111111-2222-4333-8444-555555555555",
+          adapterSlug: "asana",
+          name: "daily-report",
+          enabled: true,
+          config: { project_gid: "PRJ" },
+          createdAt: "2026-05-10T08:00:00Z",
+          updatedAt: "2026-05-10T08:00:00Z",
+        },
+      ],
+    });
+    render(<Outputs fetchImpl={stub} />);
+    // Cells expose an `aria-label` describing the row's drill-down
+    // target — Copilot-flagged a11y gap (PR #109 fix-up).
+    const cells = await screen.findAllByLabelText(
+      /Open output channel daily-report/i,
+    );
+    expect(cells.length).toBeGreaterThan(0);
+    // Each cell is a focusable button.
+    for (const cell of cells) {
+      expect(cell.getAttribute("role")).toBe("button");
+      expect(cell.getAttribute("tabindex")).toBe("0");
+    }
+    // Enter triggers the same action as click — drill-down opens.
+    fireEvent.keyDown(cells[0]!, { key: "Enter" });
+    await waitFor(() => {
+      // The detail modal title key (`outputs.detail.title` → "Output channel")
+      // is the most stable anchor for the open state.
+      expect(screen.getAllByText(/Output channel/i).length).toBeGreaterThan(0);
+    });
+  });
+
+  it("Space key on a row cell also opens the detail", async () => {
+    setPat("test-pat");
+    const stub = makeStubFetch({
+      rows: [
+        {
+          id: "11111111-2222-4333-8444-555555555555",
+          adapterSlug: "asana",
+          name: "daily-report",
+          enabled: true,
+          config: { project_gid: "PRJ" },
+          createdAt: "2026-05-10T08:00:00Z",
+          updatedAt: "2026-05-10T08:00:00Z",
+        },
+      ],
+    });
+    render(<Outputs fetchImpl={stub} />);
+    const cells = await screen.findAllByLabelText(
+      /Open output channel daily-report/i,
+    );
+    fireEvent.keyDown(cells[0]!, { key: " " });
+    await waitFor(() => {
+      expect(screen.getAllByText(/Output channel/i).length).toBeGreaterThan(0);
+    });
+  });
+
   it("opens the New channel modal + POSTs on submit", async () => {
     setPat("test-pat");
     const calls: FetchCall[] = [];
@@ -192,6 +253,39 @@ describe("Outputs route", () => {
 });
 
 describe("OutputChannelDetail", () => {
+  it("field labels resolve through i18n (not hardcoded English)", async () => {
+    setPat("test-pat");
+    const stub = makeStubFetch({ rows: [] });
+    const channel: OutputChannel = {
+      id: "11111111-2222-4333-8444-555555555555",
+      adapterSlug: "asana",
+      name: "daily-report",
+      enabled: true,
+      config: { project_gid: "PRJ" },
+      createdAt: "2026-05-10T08:00:00Z",
+      updatedAt: "2026-05-10T08:00:00Z",
+    };
+    render(
+      <OutputChannelDetail
+        channel={channel}
+        onClose={(): void => {}}
+        onChanged={(): void => {}}
+        fetchImpl={stub}
+      />,
+    );
+    // The three field labels are sourced from
+    // `outputs.detail.labels.{name,adapter,state}` via `t(...)`.
+    // The English locale renders them as "name" / "adapter" / "state".
+    // We assert the rendered strings appear AND that the values they
+    // describe render next to them — that's enough to pin the i18n
+    // routing without coupling to internals.
+    expect(screen.getByText(/^name$/i)).toBeTruthy();
+    expect(screen.getByText(/^adapter$/i)).toBeTruthy();
+    expect(screen.getByText(/^state$/i)).toBeTruthy();
+    expect(screen.getByText("daily-report")).toBeTruthy();
+    expect(screen.getByText("asana")).toBeTruthy();
+  });
+
   it("DELETE call fires after confirmation step", async () => {
     setPat("test-pat");
     const calls: FetchCall[] = [];

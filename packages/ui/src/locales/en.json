@@ -592,7 +592,13 @@
       "enable": "Enable",
       "delete": "Delete",
       "deleteConfirm": "Delete this channel? Bindings on agent instances become dangling.",
-      "deleting": "deleting…"
+      "deleting": "deleting…",
+      "openAriaLabel": "Open output channel {{name}}",
+      "labels": {
+        "name": "name",
+        "adapter": "adapter",
+        "state": "state"
+      }
     }
   }
 }

@@ -95,15 +95,21 @@ export function OutputChannelDetail(
     <Modal onClose={props.onClose} title={t("outputs.detail.title")}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={rowStyle}>
-          <div style={{ color: "var(--ink-3)" }}>name</div>
+          <div style={{ color: "var(--ink-3)" }}>
+            {t("outputs.detail.labels.name")}
+          </div>
           <div>{props.channel.name}</div>
         </div>
         <div style={rowStyle}>
-          <div style={{ color: "var(--ink-3)" }}>adapter</div>
+          <div style={{ color: "var(--ink-3)" }}>
+            {t("outputs.detail.labels.adapter")}
+          </div>
           <div>{props.channel.adapterSlug}</div>
         </div>
         <div style={rowStyle}>
-          <div style={{ color: "var(--ink-3)" }}>state</div>
+          <div style={{ color: "var(--ink-3)" }}>
+            {t("outputs.detail.labels.state")}
+          </div>
           <div>
             {props.channel.enabled
               ? t("outputs.enabledYes")
