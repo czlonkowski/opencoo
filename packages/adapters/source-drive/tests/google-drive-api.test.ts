@@ -29,7 +29,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   createGoogleDriveApi,
+  filterChangesByFolderId,
+  isMarkdownExportUnavailable,
   parseServiceAccountJson,
+  type RawDriveChange,
   type ServiceAccountKey,
 } from "../src/google-drive-api.js";
 
@@ -205,5 +208,228 @@ describe("createGoogleDriveApi — DriveLikeApi shape", () => {
     const api = createGoogleDriveApi(sa);
     // Not a Promise; not a thenable.
     expect(typeof (api as { then?: unknown }).then).toBe("undefined");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// filterChangesByFolderId — C1 fix-up
+//
+// The C1 review found that the post-fetch filter previously
+// guarded the folderId-include test with `parents.length > 0
+// && …` — a `parents: []` payload (legitimate for root-moved
+// files, shared-link-only access, certain shared-drive items,
+// or field-mask edge cases) would silently widen scope past
+// the binding's folderId. The strict include-test now always
+// fires; these tests pin that contract.
+// ---------------------------------------------------------------------------
+
+const TARGET_FOLDER = "target-folder-id";
+const DOC_MIME = "application/vnd.google-apps.document";
+const ANY_DOC_MIMES = [DOC_MIME] as const;
+
+interface RawDriveFile {
+  readonly id?: string | null;
+  readonly modifiedTime?: string | null;
+  readonly mimeType?: string | null;
+  readonly parents?: readonly string[] | null;
+}
+
+function makeChange(
+  fileId: string,
+  parents: readonly string[] | null | undefined,
+  overrides: Partial<RawDriveFile> = {},
+): RawDriveChange {
+  return {
+    fileId,
+    removed: false,
+    file: {
+      id: fileId,
+      modifiedTime: "2026-05-11T00:00:00.000Z",
+      mimeType: DOC_MIME,
+      parents: parents ?? undefined,
+      ...overrides,
+    },
+  };
+}
+
+describe("filterChangesByFolderId — C1 scope-leak fix", () => {
+  it("skips entries with parents: [] (the C1 bug — empty parents must NOT widen scope)", () => {
+    const raw: RawDriveChange[] = [makeChange("file-a", [])];
+    const result = filterChangesByFolderId(raw, {
+      folderId: TARGET_FOLDER,
+      mimeTypes: ANY_DOC_MIMES,
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("skips entries with parents: undefined / missing (defensive — same as empty)", () => {
+    const raw: RawDriveChange[] = [makeChange("file-a", undefined)];
+    const result = filterChangesByFolderId(raw, {
+      folderId: TARGET_FOLDER,
+      mimeTypes: ANY_DOC_MIMES,
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("skips entries with parents: ['other-folder'] (no match → drop)", () => {
+    const raw: RawDriveChange[] = [makeChange("file-a", ["other-folder"])];
+    const result = filterChangesByFolderId(raw, {
+      folderId: TARGET_FOLDER,
+      mimeTypes: ANY_DOC_MIMES,
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("keeps entries with parents: ['target-folder-id'] (binding match)", () => {
+    const raw: RawDriveChange[] = [makeChange("file-a", [TARGET_FOLDER])];
+    const result = filterChangesByFolderId(raw, {
+      folderId: TARGET_FOLDER,
+      mimeTypes: ANY_DOC_MIMES,
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.fileId).toBe("file-a");
+    expect(result[0]?.removed).toBe(false);
+    expect(result[0]?.mimeType).toBe(DOC_MIME);
+    expect(result[0]?.revision).toBe("2026-05-11T00:00:00.000Z");
+  });
+
+  it("keeps entries with multi-parent including target (file shared across folders)", () => {
+    const raw: RawDriveChange[] = [
+      makeChange("file-a", ["other-folder", TARGET_FOLDER, "third-folder"]),
+    ];
+    const result = filterChangesByFolderId(raw, {
+      folderId: TARGET_FOLDER,
+      mimeTypes: ANY_DOC_MIMES,
+    });
+    expect(result).toHaveLength(1);
+  });
+
+  it("emits removed=true entries unconditionally (no parents check on tombstones)", () => {
+    // Removed events flow through with a missing `file`
+    // payload by design — the adapter's `removed` filter
+    // drops them downstream, but the boundary must surface
+    // the event so the dedupe logic sees it.
+    const raw: RawDriveChange[] = [
+      { fileId: "deleted-file", removed: true, file: null },
+    ];
+    const result = filterChangesByFolderId(raw, {
+      folderId: TARGET_FOLDER,
+      mimeTypes: ANY_DOC_MIMES,
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.removed).toBe(true);
+    expect(result[0]?.fileId).toBe("deleted-file");
+  });
+
+  it("filters by mimeType before parents (off-whitelist mime → drop)", () => {
+    const raw: RawDriveChange[] = [
+      makeChange("file-a", [TARGET_FOLDER], {
+        mimeType: "application/vnd.google-apps.spreadsheet",
+      }),
+    ];
+    const result = filterChangesByFolderId(raw, {
+      folderId: TARGET_FOLDER,
+      mimeTypes: ANY_DOC_MIMES,
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("skips entries with missing/empty fileId (defensive)", () => {
+    const raw: RawDriveChange[] = [
+      { fileId: undefined, removed: false, file: null },
+      { fileId: "", removed: false, file: null },
+    ];
+    const result = filterChangesByFolderId(raw, {
+      folderId: TARGET_FOLDER,
+      mimeTypes: ANY_DOC_MIMES,
+    });
+    expect(result).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isMarkdownExportUnavailable — I1 predicate-narrowing fix
+//
+// The I1 review found the helper was too broad: any 400 (auth,
+// malformed-fileId, etc.) would downgrade to text/plain. The
+// helper now inspects `errors[0].reason === "exportFormatUnsupported"`
+// with a defensive message-regex fallback. The `code === "400"`
+// string-form branch (I2 fold-in) is removed — gaxios@6.x uses
+// a numeric code.
+// ---------------------------------------------------------------------------
+
+describe("isMarkdownExportUnavailable — I1 predicate matrix", () => {
+  it("returns true for the canonical signal (errors[0].reason: 'exportFormatUnsupported')", () => {
+    const err = {
+      code: 400,
+      errors: [{ reason: "exportFormatUnsupported" }],
+    };
+    expect(isMarkdownExportUnavailable(err)).toBe(true);
+  });
+
+  it("returns false for a 400 with a DIFFERENT reason (permissionDenied)", () => {
+    const err = {
+      code: 400,
+      errors: [{ reason: "permissionDenied" }],
+    };
+    expect(isMarkdownExportUnavailable(err)).toBe(false);
+  });
+
+  it("returns true for a 400 with a message-only signal ('Format not available')", () => {
+    const err = {
+      code: 400,
+      message: "Format not available for this file",
+    };
+    expect(isMarkdownExportUnavailable(err)).toBe(true);
+  });
+
+  it("returns true for 'format is not supported' message variant", () => {
+    const err = {
+      code: 400,
+      message: "Export format is not supported for the requested file",
+    };
+    expect(isMarkdownExportUnavailable(err)).toBe(true);
+  });
+
+  it("returns false for a 401 (auth error) regardless of message", () => {
+    const err = { code: 401, message: "Invalid credentials" };
+    expect(isMarkdownExportUnavailable(err)).toBe(false);
+  });
+
+  it("returns false for a non-error input (null / primitive / undefined)", () => {
+    expect(isMarkdownExportUnavailable(null)).toBe(false);
+    expect(isMarkdownExportUnavailable(undefined)).toBe(false);
+    expect(isMarkdownExportUnavailable("400")).toBe(false);
+    expect(isMarkdownExportUnavailable(400)).toBe(false);
+  });
+
+  it("returns false for a 400 with an unrelated message and no errors[]", () => {
+    // A malformed-fileId 400, for instance — message contains
+    // none of the format-unavailable signals.
+    const err = {
+      code: 400,
+      message: "File not found: bogus-file-id",
+    };
+    expect(isMarkdownExportUnavailable(err)).toBe(false);
+  });
+
+  it("supports SDK versions surfacing the status on `status` instead of `code`", () => {
+    const err = {
+      status: 400,
+      errors: [{ reason: "exportFormatUnsupported" }],
+    };
+    expect(isMarkdownExportUnavailable(err)).toBe(true);
+  });
+
+  it("regex matches the loosely-named reason 'fileFormatUnsupported' too", () => {
+    // The regex /exportFormat|formatUnsupported/i intentionally
+    // catches both Drive's canonical 'exportFormatUnsupported'
+    // and the looser 'fileFormatUnsupported' variant some API
+    // versions emit.
+    const err = {
+      code: 400,
+      errors: [{ reason: "fileFormatUnsupported" }],
+    };
+    expect(isMarkdownExportUnavailable(err)).toBe(true);
   });
 });

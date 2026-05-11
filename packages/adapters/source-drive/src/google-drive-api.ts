@@ -52,6 +52,22 @@
  *     We deliberately avoid pulling `zod` into this module —
  *     a 12-line hand-rolled parser is cheaper than the bundle
  *     hit and the errors it produces are equally actionable.
+ *
+ * Shared-drive support. Drive REST calls that accept a
+ * drive-type flag get `supportsAllDrives: true` (and, where
+ * the endpoint accepts it, `includeItemsFromAllDrives: true`)
+ * unconditionally — `changes.getStartPageToken`,
+ * `changes.list`, and `files.get` all receive it. The binding
+ * might be on My Drive OR a shared drive (the common
+ * enterprise pattern on Google Workspace), and the engine
+ * doesn't know which at scan time. Always opting in matches
+ * Google's recommended pattern for "I don't know which drive
+ * type the user has" and avoids silently dropping shared-drive
+ * items from the change feed. (Note: `files.export` does NOT
+ * accept the flag in Drive REST v3 — by the time we call it
+ * the file's drive type has already been resolved via
+ * changes.list, so the export endpoint operates on a known
+ * fileId without needing the hint.)
  */
 import { google } from "googleapis";
 import { JWT } from "google-auth-library";
@@ -159,7 +175,9 @@ export function createGoogleDriveApi(
 
   return {
     async getStartPageToken(): Promise<string> {
-      const response = await drive.changes.getStartPageToken({});
+      const response = await drive.changes.getStartPageToken({
+        supportsAllDrives: true,
+      });
       const token = response.data.startPageToken;
       if (typeof token !== "string" || token.length === 0) {
         throw new Error(
@@ -186,53 +204,20 @@ export function createGoogleDriveApi(
         // round trip per change.
         fields:
           "nextPageToken,newStartPageToken,changes(fileId,removed,file(id,modifiedTime,mimeType,parents))",
-        // Default `restrictToMyDrive=false` lets shared-drive
-        // scenarios work; v0.1 partners have lived in My Drive
-        // so far, but the SDK default is the safer floor.
+        // Shared-drive support — see file header. Default
+        // `restrictToMyDrive=false` lets shared-drive
+        // scenarios work; opting in via supportsAllDrives +
+        // includeItemsFromAllDrives is Google's recommended
+        // pattern when the consumer doesn't know which drive
+        // type the binding lives on.
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
       });
       const data = response.data;
-
-      const changes: DriveChangeEntry[] = [];
-      for (const change of data.changes ?? []) {
-        const fileId = change.fileId;
-        if (typeof fileId !== "string" || fileId.length === 0) continue;
-
-        // Removed events flow through with a missing `file`
-        // payload — emit them so the adapter's `removed` filter
-        // sees them (the adapter then drops them; the API
-        // honors the contract by surfacing the event).
-        if (change.removed === true) {
-          changes.push({
-            fileId,
-            revision: "",
-            mimeType: "",
-            removed: true,
-          });
-          continue;
-        }
-
-        const file = change.file;
-        if (file === null || file === undefined) continue;
-        const mimeType = file.mimeType;
-        if (typeof mimeType !== "string") continue;
-        if (!args.mimeTypes.includes(mimeType)) continue;
-
-        // Folder scoping: Drive returns `parents: [folderId,…]`
-        // when the file lives under one. The adapter ALSO
-        // filters by folderId in `adapter.ts`, but applying
-        // it here keeps the surface aligned with the mock's
-        // `folderId` filtering and trims the response we
-        // emit upstream.
-        const parents = file.parents ?? [];
-        if (parents.length > 0 && !parents.includes(args.folderId)) continue;
-
-        changes.push({
-          fileId,
-          revision: file.modifiedTime ?? "",
-          mimeType,
-          removed: false,
-        });
-      }
+      const changes = filterChangesByFolderId(data.changes ?? [], {
+        folderId: args.folderId,
+        mimeTypes: args.mimeTypes,
+      });
 
       // Drive returns `nextPageToken` while paginating, then
       // `newStartPageToken` on the final page. The adapter's
@@ -261,6 +246,13 @@ export function createGoogleDriveApi(
         // export call returns a 400; fall back to plain text
         // so the adapter still gets bytes.
         try {
+          // Note: `files.export` does NOT accept
+          // `supportsAllDrives` (the Drive REST API doesn't
+          // expose the flag on this endpoint — only on
+          // changes.list / changes.getStartPageToken /
+          // files.get / files.list / files.update etc.). The
+          // file's drive type was already resolved at the
+          // changes.list step.
           const response = await drive.files.export(
             { fileId: args.fileId, mimeType: MARKDOWN_MIME },
             { responseType: "arraybuffer" },
@@ -280,12 +272,97 @@ export function createGoogleDriveApi(
       }
 
       const response = await drive.files.get(
-        { fileId: args.fileId, alt: "media" },
+        {
+          fileId: args.fileId,
+          alt: "media",
+          // Shared-drive support — see file header.
+          supportsAllDrives: true,
+        },
         { responseType: "arraybuffer" },
       );
       return arrayBufferDataToBuffer(response.data);
     },
   };
+}
+
+/**
+ * Structural shape of a Drive `changes.list` entry — narrow
+ * enough that the helper below can be unit-tested without
+ * standing up the full `googleapis` SDK or its typings. The
+ * real `drive_v3.Schema$Change` is structurally assignable to
+ * this; we re-declare only the fields we read.
+ */
+export interface RawDriveChange {
+  readonly fileId?: string | null;
+  readonly removed?: boolean | null;
+  readonly file?: {
+    readonly id?: string | null;
+    readonly modifiedTime?: string | null;
+    readonly mimeType?: string | null;
+    readonly parents?: readonly string[] | null;
+  } | null;
+}
+
+/**
+ * Pure transform: take Drive's raw `changes` payload + the
+ * binding's `folderId` / `mimeTypes` filter, return the
+ * `DriveChangeEntry[]` the adapter consumes. Extracted from
+ * `listChanges` so the filter logic — in particular the C1
+ * fix-up around `parents.length === 0` — is testable without
+ * mocking the SDK.
+ *
+ * Semantics:
+ *   - Removed events flow through (emit a tombstone-shaped
+ *     entry; the adapter drops them downstream).
+ *   - Missing/empty fileId → skip (defensive).
+ *   - Mime-type whitelist applied against the change's
+ *     `file.mimeType`.
+ *   - Parents include-test is STRICT: empty/missing parents
+ *     skip. This matches the mock's `file.folderId !==
+ *     args.folderId → skip` behavior and closes the C1 scope
+ *     leak (legitimate Drive payloads can return `parents: []`
+ *     for root-moved files, shared-link-only access, certain
+ *     shared-drive items, and field-mask edge cases).
+ */
+export function filterChangesByFolderId(
+  rawChanges: readonly RawDriveChange[],
+  args: {
+    readonly folderId: string;
+    readonly mimeTypes: readonly string[];
+  },
+): DriveChangeEntry[] {
+  const out: DriveChangeEntry[] = [];
+  for (const change of rawChanges) {
+    const fileId = change.fileId;
+    if (typeof fileId !== "string" || fileId.length === 0) continue;
+
+    if (change.removed === true) {
+      out.push({
+        fileId,
+        revision: "",
+        mimeType: "",
+        removed: true,
+      });
+      continue;
+    }
+
+    const file = change.file;
+    if (file === null || file === undefined) continue;
+    const mimeType = file.mimeType;
+    if (typeof mimeType !== "string") continue;
+    if (!args.mimeTypes.includes(mimeType)) continue;
+
+    const parents = file.parents ?? [];
+    if (!parents.includes(args.folderId)) continue;
+
+    out.push({
+      fileId,
+      revision: file.modifiedTime ?? "",
+      mimeType,
+      removed: false,
+    });
+  }
+  return out;
 }
 
 /** googleapis returns `unknown` for `responseType: 'arraybuffer'`
@@ -313,16 +390,51 @@ function arrayBufferDataToBuffer(data: unknown): Buffer {
 
 /** Detects the documented "this file's mime type doesn't
  *  support the requested export format" error so we can fall
- *  back to text/plain. Drive surfaces this as a 400 with
- *  `code: 400` on the `GaxiosError` shape. */
-function isMarkdownExportUnavailable(err: unknown): boolean {
+ *  back to text/plain.
+ *
+ *  Drive's REAL "format unavailable" 400 carries
+ *  `errors[0].reason === "exportFormatUnsupported"` (or, on
+ *  some API versions, a message containing "format" / "not
+ *  supported"). Previously this predicate matched ANY 400 —
+ *  an auth-permission 400 or a malformed-fileId 400 would
+ *  silently downgrade to plain-text instead of bubbling up.
+ *  We now inspect the reason string (canonical signal) with a
+ *  defensive message-substring fallback for API versions that
+ *  don't populate `errors[]`.
+ *
+ *  GaxiosError in gaxios@6.x uses a numeric `code` for HTTP
+ *  status — the previous `code === "400"` string branch was
+ *  dead (I2 fold-in). */
+export function isMarkdownExportUnavailable(err: unknown): boolean {
   if (err === null || typeof err !== "object") return false;
   const obj = err as Record<string, unknown>;
-  const code = obj["code"];
-  // GaxiosError uses numeric `code` for HTTP status; fall back
-  // to `status` for SDK versions that surface it differently.
-  if (code === 400 || code === "400") return true;
-  const status = obj["status"];
-  if (status === 400) return true;
+  // GaxiosError code is numeric in gaxios@6.x; some SDK
+  // versions surface 400 on `status` instead.
+  const isHttp400 = obj["code"] === 400 || obj["status"] === 400;
+  if (!isHttp400) return false;
+  // errors[0].reason === "exportFormatUnsupported" is the
+  // canonical signal.
+  const errors = obj["errors"];
+  if (Array.isArray(errors) && errors.length > 0) {
+    const first = errors[0];
+    if (first !== null && typeof first === "object") {
+      const reason = (first as Record<string, unknown>)["reason"];
+      if (
+        typeof reason === "string" &&
+        /exportFormat|formatUnsupported/i.test(reason)
+      ) {
+        return true;
+      }
+    }
+  }
+  // Defensive fallback: inspect message substring (some API
+  // versions don't populate errors[]).
+  const message = obj["message"];
+  if (
+    typeof message === "string" &&
+    /format.+(unsupported|not (available|supported))/i.test(message)
+  ) {
+    return true;
+  }
   return false;
 }
