@@ -31,6 +31,8 @@
  *      `adapter_slug`, `target_domain_slug` — NEVER the
  *      credential bytes.
  */
+import { randomBytes } from "node:crypto";
+
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -672,10 +674,12 @@ export function registerSourceBindingsRoutes(
 
       // Distinct jobId per click so back-to-back operator clicks
       // each fire (the route does NOT rate-limit in v0.1).
-      // Math.random would also work but Date.now() is deterministic
-      // enough for the dedupe window (BullMQ jobIds are unique
-      // within Redis at insert time).
-      const jobId = `scan-now-${id}-${Date.now()}`;
+      // `Date.now()` alone has ms precision — fine for human clicks
+      // but a programmatic burst (curl loop, test script) can fire
+      // two requests inside the same ms and collide. Append a
+      // short random suffix to harden against that without adding
+      // a real dep. PR-Z3 code-quality review #1.
+      const jobId = `scan-now-${id}-${Date.now()}-${randomBytes(3).toString("hex")}`;
 
       // Audit BEFORE enqueue (audit-before-side-effect invariant —
       // a partial enqueue still leaves a forensic trail). The audit
