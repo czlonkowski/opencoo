@@ -601,7 +601,9 @@ describe("admin-api POST /api/admin/source-bindings/:id/scan-now — receiver-bi
       async getJobCounts(): Promise<Record<string, number>> {
         return {};
       }
-      async add(name: string, _data: unknown, _opts: unknown): Promise<unknown> {
+      async add(name: string, data: unknown, opts: unknown): Promise<unknown> {
+        void data;
+        void opts;
         // The very act of reading `this.secret` is what fails when the
         // method is called as a detached function — `this` is undefined.
         if (this.secret !== "bound") throw new Error("receiver lost");
