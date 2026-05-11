@@ -116,9 +116,12 @@ export interface ProvisionDomainRepoResult {
  * returns 422 [SHA]: Required, which a previous carve-out
  * silently swallowed → empty repo (bug C).
  *
- * The 4th seed (`worldview.md`) is a placeholder body that the
- * worldview compiler (compile-domain.ts) will overwrite via
- * wikiWrite on the first ingest cycle. Before Z5, the Heartbeat
+ * The 4th seed (`worldview.md`) is a placeholder body. The
+ * worldview compiler (`compile-domain.ts`) IS implemented and
+ * tested but has no production caller in phase-a — `wikiWrite`
+ * to `worldview.md` from the IngestionProcessor is not yet
+ * wired (filed as Z11 / phase-b candidate). Until that lands,
+ * the placeholder lives indefinitely. Before Z5, the Heartbeat
  * agent's `worldview://<slug>` MCP resource fetch raised
  * `McpResourceNotFoundError` against any freshly-provisioned
  * domain that had not yet ingested → every Heartbeat dispatch
@@ -264,10 +267,11 @@ function buildSeedFiles(args: SeedArgs): readonly SeedFile[] {
       // reads `worldview://<slug>` via gitea-wiki-mcp-server; a
       // missing file raises `McpResourceNotFoundError`. Seed an
       // empty-but-valid placeholder so Heartbeat succeeds on a
-      // freshly provisioned domain. The worldview compiler
-      // (engine-self-operating/src/pipelines/worldview/
-      // compile-domain.ts) will overwrite this body via wikiWrite
-      // on the first ingest cycle.
+      // freshly provisioned domain. NOTE: the worldview compiler
+      // (`pipelines/worldview/compile-domain.ts`) is implemented
+      // but has no production caller in phase-a; the placeholder
+      // lives until Z11 / phase-b wires the IngestionProcessor →
+      // `wikiWrite('worldview.md')` aggregator.
       path: "worldview.md",
       content: buildWorldviewPlaceholder(args.defaultLocale),
       commitMessage: "seed: empty worldview placeholder",
