@@ -1087,4 +1087,60 @@ Per-package counts after Z4:
 
 ---
 
+## Phase-a follow-up — Z7 (host + Gitea bootstrap scripts)
+
+Two manual sequences appeared in every partner-cutover walkthrough: a half-page of host hardening (Docker install + non-root user + sshd lockdown + UFW + fail2ban + unattended-upgrades) and a four-step Gitea bring-up (admin user via `gitea admin user create`, PAT mint via the tokens API, org create, team create + admin-membership). Each previously lived as a fragile heredoc sequence in the partner-private deployment journal; each had at least one step that silently dropped during a real cutover (the admin-team-membership step in particular, which left a permission gap the engine only noticed on its first wiki write). PR-Z7 codifies both as idempotent POSIX-ish bash scripts under `bin/`, each emitting one structured-JSON event per step plus a final summary line.
+
+### Added — `bin/opencoo-bootstrap-host.sh`
+
+- **9-step host hardening sequence:** distro detect (Debian 12+ / Ubuntu 22.04+), base package install (curl, ca-certificates, ufw, fail2ban, unattended-upgrades, jq, gnupg), Docker install via `get.docker.com` with a hello-world smoke test, `opencoo` user create (uid 1001, `docker` + `sudo` groups, locked password), optional admin SSH pubkey append to `/home/opencoo/.ssh/authorized_keys` (dedupe by exact line match), sshd lockdown drop-in at `/etc/ssh/sshd_config.d/99-opencoo.conf` (PermitRootLogin no / PasswordAuthentication no / KbdInteractiveAuthentication no) with `sshd -t` validation before reload, UFW configure (default deny in + allow out + allow 22/80/443 tcp + enable), fail2ban enable + start, unattended-upgrades configure (write `/etc/apt/apt.conf.d/20auto-upgrades` directly — idempotent two-line file).
+- **Flags:** `--non-interactive` (sets `DEBIAN_FRONTEND=noninteractive` for unattended cloud-init use), `--admin-pubkey-file <path>` (required on first run if the operator wants to SSH back in after sshd reload locks out password auth).
+- **Exit code contract:** 0 on success (steps_failed == 0), 1 on usage error, 2 on any step failure. Every step runs even if an earlier one fails so the final summary reports the full picture in one invocation.
+
+### Added — `bin/opencoo-gitea-bootstrap.sh`
+
+- **6-step Gitea bootstrap:** poll `/api/healthz` up to 60s for readiness, create admin user via `gitea admin user create` (host binary if present, else `docker exec` into the configured container — default `gitea`, override with `--container`), mint a PAT named `opencoo-bootstrap` with scopes `write:repository, write:organization, read:user, admin:org` via `POST /api/v1/users/<admin>/tokens`, create the org (`POST /api/v1/orgs` with `visibility=private`), create the `opencoo-admins` team in the org with `permission=owner` + `includes_all_repositories=true` + `can_create_org_repo=true` + the full unit set, and add the admin to the team via `PUT /api/v1/teams/<id>/members/<admin>` (the step the previous manual sequence had skipped).
+- **Conflict handling:** every step tolerates the "already exists" shape — `user already exists` from the CLI, 422 with the matching message from POST endpoints. Team-id lookup falls back from the search endpoint to a full listing if the search shape is missing. PAT rotation: on 422 the existing token is deleted (by-name on Gitea ≥1.20, by-id fallback for older versions) and re-minted so the on-disk secret is always a usable plaintext (the `sha1` is only ever returned on creation; there's no recovery path otherwise).
+- **Required env:** `OPENCOO_GITEA_ADMIN_PASSWORD`. If unset, the script generates a 32-char alphanumeric random one from `/dev/urandom` and persists it to `<secret-out-dir>/gitea-admin-password.txt` (mode 0600) next to the PAT.
+- **Output paths:** PAT defaults to `./secrets/gitea-pat.txt` (configurable via `--secret-out`, mode 0644 so the engine container can read it via the standard `compose.yml` secrets mount).
+- **Summary line** includes `admin`, `org`, `team_id`, `pat_file`, plus the same `steps_completed`/`steps_skipped`/`steps_failed` counters as the host script.
+
+### Added — `bin/README.md`
+
+Canonical 8-step partner-deployment order (cloud-init VM → SSH as root → copy pubkey → host bootstrap → re-SSH as `opencoo` → `docker compose up` → Gitea bootstrap → wire PAT into `.env`). Documents the JSON event schema, the idempotency expectation per script, and the failure modes worth knowing (sshd reload locks out password auth mid-script; PAT rotates on every run; host script defers swap / timezone / hostname to cloud-init metadata).
+
+### Tests
+
+- **`bin/tests/test-bootstrap-host-idempotent.sh`** — runs the host script twice inside a privileged `debian:12-slim` Docker container. Asserts: run 1 emits ≥3 `installed|configured` events (base packages + user create + sshd lockdown — the systemd-coupled steps degrade gracefully when systemd isn't PID 1, which it isn't in a test container; the live wave-end QA against a real VM is the canonical signal for those). Run 2: `install-base-packages`, `create-opencoo-user`, and `sshd-lockdown` all report `skipped`.
+- **`bin/tests/test-gitea-bootstrap-idempotent.sh`** — spins up a throwaway `gitea/gitea:1.21` container on a random localhost port, runs the bootstrap script twice. Asserts: run 1 reports `created` for admin user + org + team, summary has a non-null `team_id` and a readable `pat_file` containing a non-empty PAT. Run 2 reports `exists` for admin user + org + team (no `created` status anywhere on the second pass).
+- **Gating:** both tests are opt-in behind `RUN_SHELL_TESTS=1` — they pull a Docker image, take ~60–120s, and need the local Docker daemon, so they're inappropriate for the default vitest matrix. A dedicated CI job runs them. `CONVENTIONS.md §3` documents the convention.
+
+### Threat-model alignment (§5 PR checklist)
+
+- **No new env vars in the engine.** `OPENCOO_GITEA_ADMIN_PASSWORD` is read by the bootstrap script only, never by the engine; the engine reads the PAT path from its existing `.env`. THREAT-MODEL §2 invariant 9 (no new feature env vars) holds.
+- **Secrets discipline preserved.** The PAT is the only durable secret the bootstrap writes; it lands at the operator-chosen path (default `./secrets/gitea-pat.txt`, 0644 so the engine container reads via bind mount). If the script generated the admin password, that lands at a sibling path with 0600. Neither secret is logged: the JSON event stream surfaces `pat_file` (the path) and `admin` (the username), never the plaintext.
+- **sshd lockdown validated before reload.** `sshd -t` runs after the drop-in lands; a malformed config refuses to reload (preserves the running daemon, which is the operator's only escape hatch). The drop-in lives in `/etc/ssh/sshd_config.d/99-opencoo.conf` so it composes with the stock sshd_config rather than overwriting it.
+- **UFW enables AFTER the SSH rule lands.** The script populates `allow 22/tcp` before issuing `ufw --force enable`, so an operator running this on a live SSH session keeps the session alive across the enable.
+- **No new internet-facing routes.** Pure shell-scripted host config + one-shot HTTP calls to a freshly-started local Gitea container. Nothing new for the engine's `INTERNET_FACING_PATHS` enumeration.
+- **Append-only invariant preserved.** PR-Z7 ships shell scripts only; no schema, migration, or `log.md` touch. THREAT-MODEL §2 invariant 8 (append-only) unaffected.
+
+### Migrations / DB
+
+- None. PR-Z7 is bash-only.
+
+### Documentation
+
+- **`bin/README.md` (NEW)** — canonical order + JSON event schema + failure-mode notes.
+- **`CONVENTIONS.md §3` (testing conventions)** — adds the `RUN_SHELL_TESTS=1` convention for `bin/tests/*.sh`.
+- **`IMPLEMENTATION-PLAN.md` §1.1** (separate maintainer touch on phase merge) — will record Z7's merge sha alongside the other Z-series PRs on phase rollup.
+- **No `architecture.md` impact.** Operator-runbook codification; doesn't change any adapter / engine surface.
+
+### Deferred (tracked outside Z7)
+
+- **Hostname / timezone / swap configuration** — partner-specific decisions; cloud-init metadata is the right place. Not a host-bootstrap concern.
+- **Multi-org Gitea bootstraps** — the script provisions one org per run by design (a single partner deployment, one org). Multi-tenant Gitea deployments are out of scope for v0.1; re-running with a different `<org-slug>` works but allocates a fresh PAT each time.
+- **Caddy / Traefik install + cert provisioning** — the host script opens 80/443 but doesn't install a reverse proxy. The partner's `compose.yml` runs one as a sidecar; install is `docker compose up` from there.
+
+---
+
 _Drafted from `IMPLEMENTATION-PLAN.md` §1.2.1–§1.2.21 + per-PR `gh pr view` body residuals. Maintainer to edit before the `0.1.0` final tag cut (the `0.1.0-a` rollup has already shipped — see the §1.1 status snapshot)._
