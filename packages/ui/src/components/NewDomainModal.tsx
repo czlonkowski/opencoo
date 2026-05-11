@@ -88,10 +88,22 @@ const FIELDS_STYLE: CSSProperties = {
  *     leading letter)
  *
  * Returns an empty string when the input has no usable letters
- * (so we don't write an invalid prefix into the slug input —
- * the validation step still rejects an empty slug on submit).
+ * OR when the slugified result is shorter than the server's
+ * minimum length (the SLUG_REGEX is `^[a-z][a-z0-9-]{1,62}$`,
+ * so a 1-char result like "a" — produced by display name "A"
+ * or "A!" — would auto-fill an invalid slug, get silently
+ * written into the DOM, and only fail on POST. Empty is better
+ * than wrong: the operator sees a blank slug and either types
+ * one OR keeps typing into display-name until the auto-fill
+ * produces a 2+ char slug. Also means the operator's typed-in
+ * slug isn't accidentally overwritten by a length-changing
+ * display-name edit. The validation step still rejects an empty
+ * slug on submit.
+ *
+ * @internal Exported for unit-test access; not part of the
+ *           component's public API.
  */
-function slugifyDisplayName(input: string): string {
+export function slugifyDisplayName(input: string): string {
   const lowered = input.toLowerCase().normalize("NFKD");
   // Strip combining marks (the diacritic portion of NFKD).
   const stripped = lowered.replace(/[̀-ͯ]/g, "");
@@ -101,7 +113,11 @@ function slugifyDisplayName(input: string): string {
   // requires `^[a-z]`) and any trailing hyphens.
   const trimmed = hyphenated.replace(/^[^a-z]+/, "").replace(/-+$/, "");
   // Slug regex caps at 63 chars total (1 letter + 1..62).
-  return trimmed.slice(0, 63);
+  const clamped = trimmed.slice(0, 63);
+  // Reject sub-minimum-length results — server SLUG_REGEX
+  // requires at least 2 chars (1 leading letter + 1+ trailing).
+  if (clamped.length < 2) return "";
+  return clamped;
 }
 
 /**

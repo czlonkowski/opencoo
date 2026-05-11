@@ -28,7 +28,10 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { NewDomainModal } from "../../src/components/NewDomainModal.js";
+import {
+  NewDomainModal,
+  slugifyDisplayName,
+} from "../../src/components/NewDomainModal.js";
 
 /**
  * Mimic password-manager autofill — set the input value via the
@@ -263,5 +266,49 @@ describe("NewDomainModal", () => {
     // Slug is still the user-typed value — NOT slugified
     // "some-other-name".
     expect(slugInput.value).toBe("my-custom-slug");
+  });
+});
+
+// -----------------------------------------------------------------
+// slugifyDisplayName — Copilot triage on PR-Z9. The server's
+// domains_slug_format CHECK constraint is `^[a-z][a-z0-9-]{1,62}$`,
+// so a slug must be at least 2 characters. Pre-triage,
+// slugifyDisplayName("A") returned "a" — a 1-char slug that the
+// auto-fill silently wrote into the input, then the server
+// rejected on submit. Fix: return empty when result < 2 chars.
+// -----------------------------------------------------------------
+
+describe("slugifyDisplayName — server SLUG_REGEX minimum length", () => {
+  it("returns empty when slugified result is 1 char ('A' → '')", () => {
+    expect(slugifyDisplayName("A")).toBe("");
+  });
+
+  it("returns empty when stripping reduces to 1 char ('A!' → '')", () => {
+    // Non-[a-z0-9] runs collapse to "-", then trailing hyphens
+    // strip — "A!" → "a-" → "a". 1 char < 2, so empty.
+    expect(slugifyDisplayName("A!")).toBe("");
+  });
+
+  it("returns a 2-char slug when result reaches minimum ('AB' → 'ab')", () => {
+    expect(slugifyDisplayName("AB")).toBe("ab");
+  });
+
+  it("happy path still works ('My Wiki' → 'my-wiki')", () => {
+    expect(slugifyDisplayName("My Wiki")).toBe("my-wiki");
+  });
+
+  it("strips diacritics via NFKD ('Áéí' → 'aei')", () => {
+    // Confirms the NFKD-combining-mark strip survives the new
+    // min-length guard for typical 2+ char display names. The
+    // accented letters decompose to base + combining mark, then
+    // the combining-mark range is stripped.
+    expect(slugifyDisplayName("Áéí")).toBe("aei");
+  });
+
+  it("returns empty for inputs with no letters ('123' → '')", () => {
+    // Slug regex requires `^[a-z]` — pure digits get stripped to
+    // empty (was already empty pre-triage; pinned to lock the
+    // contract).
+    expect(slugifyDisplayName("123")).toBe("");
   });
 });
