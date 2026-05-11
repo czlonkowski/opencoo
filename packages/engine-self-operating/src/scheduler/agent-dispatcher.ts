@@ -173,6 +173,23 @@ export interface AgentDispatcherOptions {
    *  ioredis-mock repeatable surface; production passes `undefined`
    *  and the dispatcher uses the real Queue handle. */
   readonly removeScheduleFn?: (entry: RegisteredSchedule) => Promise<void>;
+  /** PR-Z6 (phase-a appendix #12) — how often the dispatcher
+   *  re-enumerates `agent_instances` after the initial `start()`
+   *  enumeration. Production defaults to 60_000ms (every 60s) so a
+   *  freshly-seeded instance (via `opencoo agents seed`) becomes a
+   *  live schedule within a minute without needing
+   *  `docker compose restart opencoo`. The cost of one tick is a
+   *  single `SELECT id, definition_slug, name, schedule_cron FROM
+   *  agent_instances WHERE enabled=true AND schedule_cron IS NOT
+   *  NULL` plus a diff against the in-memory `registered` list —
+   *  cheap by design.
+   *
+   *  Tests pass `0` to disable the interval and drive `refresh()`
+   *  manually so the assertion window is deterministic. The interval
+   *  is armed only when this value is `> 0` AND not `Infinity` —
+   *  passing `Infinity` is treated as "disabled" so production code
+   *  can still opt out symmetrically with the test path. */
+  readonly refreshIntervalMs?: number;
 }
 
 /**
@@ -198,6 +215,32 @@ export class AgentDispatcher {
     | ((entry: RegisteredSchedule) => Promise<void>)
     | undefined;
   private readonly registered: RegisteredSchedule[] = [];
+  private readonly refreshIntervalMs: number;
+  private refreshTimer: ReturnType<typeof setInterval> | undefined;
+  /** PR-Z6 — single-flight mutex on `refresh()` ticks. Set on entry,
+   *  cleared in `finally`. Concurrent calls (e.g. an early manual
+   *  invocation from a test or a slow DB query that lets the next
+   *  interval fire) observe `true` and no-op. Boolean rather than a
+   *  promise: callers don't need to await the in-flight tick, they
+   *  just need to skip a redundant enumeration. */
+  private refreshing = false;
+  /** PR-Z6 round-2 (Copilot triage) — serialises the two code paths
+   *  that mutate `this.registered` AND call BullMQ `add`/`removeRepeatable`:
+   *  the periodic `refresh()` tick and the admin-API-driven
+   *  `updateSchedule()` call. Without this lock the two can interleave:
+   *  e.g. operator clicks Save (updateSchedule starts; removes OLD
+   *  cron from BullMQ; mid-flight, refresh tick fires; refresh
+   *  observes the still-OLD-cron DB row + reconciles by re-registering
+   *  the OLD repeatable; updateSchedule then adds the NEW repeatable
+   *  on top → cluster fires the agent on TWO crons until the next
+   *  engine boot).
+   *
+   *  Implemented as a chained promise (await any in-flight lock, then
+   *  install your own) so callers serialise FIFO rather than no-op'ing
+   *  — both refresh() and updateSchedule() carry real reconciliation
+   *  work; the second caller must observe the first's mutations
+   *  before computing its own diff. */
+  private mutationLock: Promise<void> | null = null;
   private stopping: Promise<void> | undefined;
 
   constructor(options: AgentDispatcherOptions) {
@@ -210,6 +253,10 @@ export class AgentDispatcher {
     this.outputChannels = options.outputChannels;
     this.registerScheduleFn = options.registerScheduleFn;
     this.removeScheduleFn = options.removeScheduleFn;
+    this.refreshIntervalMs =
+      options.refreshIntervalMs !== undefined
+        ? options.refreshIntervalMs
+        : 60_000;
 
     this.queue = new Queue<DispatchJobData>(DISPATCH_QUEUE_NAME, {
       connection: options.connection,
@@ -235,33 +282,20 @@ export class AgentDispatcher {
    * Read every enabled instance with a schedule_cron, validate the
    * cron pattern, and register a recurring job per VALID row.
    * Invalid rows log `scheduler.invalid_cron` and are skipped.
+   *
+   * After the initial enumeration, arms a 60-second `setInterval`
+   * (PR-Z6, phase-a appendix #12) so freshly-seeded `agent_instances`
+   * rows become live schedules without an engine restart. The
+   * interval is cleared in `stop()`. Tests pass
+   * `refreshIntervalMs: 0` to disable the timer and drive `refresh()`
+   * manually.
    */
   async start(): Promise<void> {
-    const result = (await this.db.execute(sql`
-      SELECT id::text             AS id,
-             definition_slug      AS definition_slug,
-             name                 AS name,
-             schedule_cron        AS schedule_cron
-      FROM agent_instances
-      WHERE enabled = true
-        AND schedule_cron IS NOT NULL
-      ORDER BY created_at
-    `)) as unknown as ExecResult<{
-      id: string;
-      definition_slug: string;
-      name: string;
-      schedule_cron: string;
-    }>;
+    const desired = await this.fetchDesiredSchedules();
 
     let registered = 0;
     let skipped = 0;
-    for (const row of result.rows) {
-      const entry: RegisteredSchedule = {
-        instanceId: row.id,
-        definitionSlug: row.definition_slug,
-        name: row.name,
-        scheduleCron: row.schedule_cron,
-      };
+    for (const entry of desired.entries) {
       const v = validateCron(entry.scheduleCron);
       if (!v.valid) {
         this.logger.error("scheduler.invalid_cron", {
@@ -296,8 +330,220 @@ export class AgentDispatcher {
     this.logger.info("scheduler.started", {
       registered,
       skipped,
-      total: result.rows.length,
+      total: desired.totalRows,
     });
+
+    // PR-Z6 (phase-a appendix #12) — arm the periodic refresh after
+    // the initial enumeration so the boot path is always serial
+    // (registered rows appear before the first tick) and the
+    // interval is only created when explicitly enabled. `0`
+    // (or any non-positive / non-finite value) means "disabled" so
+    // tests can drive `refresh()` manually.
+    //
+    // PR-Z6 round-2 (Copilot triage) — start/stop race guard: if
+    // `stop()` was called while `fetchDesiredSchedules()` / the
+    // registration loop above was awaiting, `this.stopping` is now
+    // set. Arming the interval here would leak a timer past shutdown
+    // because `stop()` already ran its `clearInterval` branch before
+    // this code path got to assign `this.refreshTimer`. Bail loudly
+    // so the leak is surfaced in logs rather than as a process that
+    // refuses to exit.
+    if (this.stopping !== undefined) {
+      this.logger.warn("scheduler.start_aborted_during_stop");
+      return;
+    }
+    if (
+      this.refreshTimer === undefined &&
+      Number.isFinite(this.refreshIntervalMs) &&
+      this.refreshIntervalMs > 0
+    ) {
+      this.refreshTimer = setInterval(() => {
+        // Errors in `refresh()` are swallowed so a transient DB
+        // hiccup doesn't crash the dispatcher's event loop tick.
+        // The method itself logs `scheduler.refresh_failed`.
+        void this.refresh().catch(() => undefined);
+      }, this.refreshIntervalMs);
+      // Allow the host process to exit while this timer is armed
+      // (matches BullMQ's own internal timers).
+      this.refreshTimer.unref?.();
+    }
+  }
+
+  /**
+   * PR-Z6 (phase-a appendix #12) — re-enumerate `agent_instances`,
+   * diff against the in-memory `registered` list, and reconcile:
+   * register newly-enabled rows, deregister rows that disappeared
+   * or flipped to `enabled=false`. Invalid-cron rows are logged
+   * once per call and skipped.
+   *
+   * Single-flight: if a previous refresh tick is still in-flight,
+   * the second call observes `this.refreshing === true` and no-ops
+   * (refresh is idempotent; running it twice back-to-back has no
+   * useful effect).
+   *
+   * PR-Z6 round-2 (Copilot triage) — additionally serialises against
+   * the admin-API `updateSchedule()` path via `mutationLock`. Without
+   * this lock the two paths can interleave on `this.registered` and
+   * the BullMQ `add`/`removeRepeatable` calls — e.g. a refresh tick
+   * fires mid-flight of an updateSchedule rollback and reconciles to
+   * a now-stale view of the DB row before the rollback finishes
+   * unwinding. The single-flight boolean ABOVE handles
+   * refresh-vs-refresh; the lock here handles refresh-vs-updateSchedule.
+   *
+   * Cron-pattern CHANGES on an existing instance are handled by the
+   * admin-API `updateSchedule` path; this refresh treats a same-
+   * instance row with a changed cron as a delete-then-add to keep
+   * the diff simple (the admin path is the operator-driven happy
+   * path; the refresh is the "operator ran `agents seed` directly
+   * against the DB" fallback).
+   */
+  async refresh(): Promise<void> {
+    if (this.refreshing) return;
+    if (this.stopping !== undefined) return;
+    this.refreshing = true;
+    // PR-Z6 round-2 — acquire the cross-method mutation lock BEFORE
+    // any DB read or registered-list mutation. Any in-flight
+    // updateSchedule() finishes first; subsequent refresh callers
+    // already short-circuited above on `this.refreshing`.
+    const priorLock = this.mutationLock;
+    let releaseLock!: () => void;
+    this.mutationLock = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    try {
+      if (priorLock !== null) await priorLock;
+      // Re-check stop AFTER the lock — a long-held lock could mean
+      // stop() was called while we waited; bailing here keeps the
+      // shutdown-ordering contract intact.
+      if (this.stopping !== undefined) return;
+      let desired: { readonly entries: RegisteredSchedule[]; readonly totalRows: number };
+      try {
+        desired = await this.fetchDesiredSchedules();
+      } catch (err) {
+        this.logger.error("scheduler.refresh_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
+
+      const desiredById = new Map<string, RegisteredSchedule>();
+      for (const entry of desired.entries) {
+        desiredById.set(entry.instanceId, entry);
+      }
+      const registeredById = new Map<string, RegisteredSchedule>();
+      for (const entry of this.registered) {
+        registeredById.set(entry.instanceId, entry);
+      }
+
+      // Removals: in `registered` but not in `desired` (row gone or
+      // flipped to enabled=false / schedule_cron NULL). Also treats
+      // a same-id row whose `scheduleCron` changed since boot as a
+      // remove (the matching add below re-registers with the NEW
+      // cron).
+      let removed = 0;
+      for (const entry of [...this.registered]) {
+        const next = desiredById.get(entry.instanceId);
+        const cronChanged =
+          next !== undefined && next.scheduleCron !== entry.scheduleCron;
+        if (next === undefined || cronChanged) {
+          try {
+            await this.removeOne(entry);
+            const idx = this.registered.findIndex(
+              (s) => s.instanceId === entry.instanceId,
+            );
+            if (idx !== -1) this.registered.splice(idx, 1);
+            registeredById.delete(entry.instanceId);
+            removed += 1;
+          } catch (err) {
+            this.logger.error("scheduler.deregister_failed", {
+              instance_id: entry.instanceId,
+              definition_slug: entry.definitionSlug,
+              cron: entry.scheduleCron,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      }
+
+      // Additions: in `desired` but not in `registered`. Validates
+      // the cron pattern up-front so the dispatcher's
+      // "invalid-cron-doesn't-take-the-whole-scheduler-down"
+      // invariant from `start()` extends to the refresh path.
+      let added = 0;
+      for (const entry of desired.entries) {
+        if (registeredById.has(entry.instanceId)) continue;
+        const v = validateCron(entry.scheduleCron);
+        if (!v.valid) {
+          this.logger.error("scheduler.invalid_cron", {
+            instance_id: entry.instanceId,
+            definition_slug: entry.definitionSlug,
+            cron: entry.scheduleCron,
+            error: v.error ?? "unknown",
+          });
+          continue;
+        }
+        try {
+          await this.registerOne(entry);
+          this.registered.push(entry);
+          registeredById.set(entry.instanceId, entry);
+          added += 1;
+        } catch (err) {
+          this.logger.error("scheduler.register_failed", {
+            instance_id: entry.instanceId,
+            definition_slug: entry.definitionSlug,
+            cron: entry.scheduleCron,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      this.logger.info("scheduler.refreshed", {
+        registered: this.registered.length,
+        added,
+        removed,
+      });
+    } finally {
+      this.refreshing = false;
+      // PR-Z6 round-2 — release the cross-method lock. A follow-up
+      // caller may already have chained on top of `this.mutationLock`
+      // before this line runs; their pending promise stays in the
+      // field and serves the next waiter correctly. Once every
+      // caller drains, the last release leaves a settled promise in
+      // the slot — harmless, awaits on it resolve synchronously.
+      releaseLock();
+    }
+  }
+
+  /** PR-Z6 — single `SELECT` that powers both `start()` and
+   *  `refresh()`. Same WHERE clause as the original `start()`
+   *  enumeration so the two code paths see the same row set;
+   *  refactored into one helper to keep the contract in lockstep. */
+  private async fetchDesiredSchedules(): Promise<{
+    readonly entries: RegisteredSchedule[];
+    readonly totalRows: number;
+  }> {
+    const result = (await this.db.execute(sql`
+      SELECT id::text             AS id,
+             definition_slug      AS definition_slug,
+             name                 AS name,
+             schedule_cron        AS schedule_cron
+      FROM agent_instances
+      WHERE enabled = true
+        AND schedule_cron IS NOT NULL
+      ORDER BY created_at
+    `)) as unknown as ExecResult<{
+      id: string;
+      definition_slug: string;
+      name: string;
+      schedule_cron: string;
+    }>;
+    const entries: RegisteredSchedule[] = result.rows.map((row) => ({
+      instanceId: row.id,
+      definitionSlug: row.definition_slug,
+      name: row.name,
+      scheduleCron: row.schedule_cron,
+    }));
+    return { entries, totalRows: result.rows.length };
   }
 
   /**
@@ -424,114 +670,137 @@ export class AgentDispatcher {
     }>;
   }): Promise<void> {
     if (args.entries.length === 0) return;
-    // Pair every input entry with its old/new RegisteredSchedule
-    // shapes up-front so the swap loop only references what it
-    // needs and the rollback path doesn't have to re-derive the
-    // shapes from the caller's input shape.
-    interface Plan {
-      readonly oldRegistered: RegisteredSchedule;
-      readonly newRegistered: RegisteredSchedule;
-      readonly noop: boolean;
-    }
-    const plans: Plan[] = args.entries.map((entry) => {
-      const common = {
-        instanceId: entry.instanceId,
-        definitionSlug: entry.definitionSlug,
-        name: entry.name,
-      };
-      return {
-        oldRegistered: { ...common, scheduleCron: entry.oldCron },
-        newRegistered: { ...common, scheduleCron: entry.newCron },
-        noop: entry.oldCron === entry.newCron,
-      };
+    // PR-Z6 round-2 (Copilot triage) — acquire the cross-method
+    // mutation lock so refresh() ticks don't interleave with the
+    // remove/add swap loop below. Without this, a periodic refresh
+    // could reconcile mid-flight (e.g. seeing the still-OLD-cron DB
+    // row right after we removed the OLD-cron repeatable but before
+    // we added the NEW one) and re-register a stale BullMQ
+    // repeatable on top of the partially-completed swap. The lock
+    // is chained FIFO: any in-flight refresh finishes its
+    // reconciliation pass before we begin mutating.
+    const priorLock = this.mutationLock;
+    let releaseLock!: () => void;
+    this.mutationLock = new Promise<void>((resolve) => {
+      releaseLock = resolve;
     });
-
-    // Successfully swapped entries (BullMQ now carries NEW cron).
-    // On a later throw we walk this set in REVERSE and roll each
-    // back to OLD cron before re-throwing.
-    const swapped: Plan[] = [];
-
+    if (priorLock !== null) await priorLock;
     try {
-      for (const plan of plans) {
-        // Skip the no-op case so a redundant PUT (operator clicks
-        // Save without changing the picker) doesn't churn the
-        // BullMQ repeatable index unnecessarily.
-        if (plan.noop) continue;
-        await this.removeOne(plan.oldRegistered);
-        await this.registerOne(plan.newRegistered);
-        swapped.push(plan);
+      // Pair every input entry with its old/new RegisteredSchedule
+      // shapes up-front so the swap loop only references what it
+      // needs and the rollback path doesn't have to re-derive the
+      // shapes from the caller's input shape.
+      interface Plan {
+        readonly oldRegistered: RegisteredSchedule;
+        readonly newRegistered: RegisteredSchedule;
+        readonly noop: boolean;
       }
-    } catch (err) {
-      // Multi-instance rollback: every entry that ALREADY swapped
-      // to NEW cron earlier in the same call needs to come back
-      // to OLD cron. Walk in reverse order (mirror of the swap
-      // walk) so the cluster state moves through the same
-      // sequence the swap took, just in the opposite direction.
-      // A failure inside the rollback is logged and the loop
-      // continues — the operator's DB tx still unwinds, and the
-      // next engine boot reconciles from `agent_instances` rows.
-      for (const plan of swapped.slice().reverse()) {
-        try {
-          await this.removeOne(plan.newRegistered);
-          await this.registerOne(plan.oldRegistered);
-        } catch (rollbackErr) {
-          this.logger.error("scheduler.update_rollback_failed", {
-            instance_id: plan.oldRegistered.instanceId,
-            error:
-              rollbackErr instanceof Error
-                ? rollbackErr.message
-                : String(rollbackErr),
-          });
-        }
-      }
-      // The FAILING entry: registerOne may have thrown after
-      // removeOne succeeded, so the old pattern is no longer in
-      // BullMQ for this instance. Try to re-register the OLD
-      // pattern so we don't leave the instance with NO cron entry
-      // registered. Best-effort — a failure here is logged and we
-      // still re-throw the original error so the route's DB tx
-      // unwinds.
-      const failing = plans[swapped.length];
-      if (failing !== undefined && !failing.noop) {
-        try {
-          await this.registerOne(failing.oldRegistered);
-        } catch (rollbackErr) {
-          this.logger.error("scheduler.update_rollback_failed", {
-            instance_id: failing.oldRegistered.instanceId,
-            error:
-              rollbackErr instanceof Error
-                ? rollbackErr.message
-                : String(rollbackErr),
-          });
-        }
-      }
-      throw err;
-    }
+      const plans: Plan[] = args.entries.map((entry) => {
+        const common = {
+          instanceId: entry.instanceId,
+          definitionSlug: entry.definitionSlug,
+          name: entry.name,
+        };
+        return {
+          oldRegistered: { ...common, scheduleCron: entry.oldCron },
+          newRegistered: { ...common, scheduleCron: entry.newCron },
+          noop: entry.oldCron === entry.newCron,
+        };
+      });
 
-    // All swaps succeeded — mutate the in-memory registered list.
-    // Doing this AFTER the swap loop (rather than per-entry) means
-    // a partial failure can't leave `registered` in a mixed
-    // (some new, some old) state: the throw above bubbles out
-    // before this point and the in-memory list still reflects the
-    // pre-call (= post-rollback) cron pattern.
-    for (const plan of plans) {
-      if (plan.noop) continue;
-      // Index by instanceId rather than position so we stay safe
-      // if start() ever changes ordering.
-      const idx = this.registered.findIndex(
-        (s) => s.instanceId === plan.newRegistered.instanceId,
-      );
-      if (idx === -1) {
-        // Instance wasn't in the registered list (e.g. it was
-        // skipped at boot due to invalid cron). Push the new
-        // entry so listSchedules() picks it up; the route only
-        // calls updateSchedule for instances it just verified
-        // exist + are enabled, so this is the recovery path for
-        // a previously-invalid cron getting fixed via the UI.
-        this.registered.push(plan.newRegistered);
-      } else {
-        this.registered[idx] = plan.newRegistered;
+      // Successfully swapped entries (BullMQ now carries NEW cron).
+      // On a later throw we walk this set in REVERSE and roll each
+      // back to OLD cron before re-throwing.
+      const swapped: Plan[] = [];
+
+      try {
+        for (const plan of plans) {
+          // Skip the no-op case so a redundant PUT (operator clicks
+          // Save without changing the picker) doesn't churn the
+          // BullMQ repeatable index unnecessarily.
+          if (plan.noop) continue;
+          await this.removeOne(plan.oldRegistered);
+          await this.registerOne(plan.newRegistered);
+          swapped.push(plan);
+        }
+      } catch (err) {
+        // Multi-instance rollback: every entry that ALREADY swapped
+        // to NEW cron earlier in the same call needs to come back
+        // to OLD cron. Walk in reverse order (mirror of the swap
+        // walk) so the cluster state moves through the same
+        // sequence the swap took, just in the opposite direction.
+        // A failure inside the rollback is logged and the loop
+        // continues — the operator's DB tx still unwinds, and the
+        // next engine boot reconciles from `agent_instances` rows.
+        for (const plan of swapped.slice().reverse()) {
+          try {
+            await this.removeOne(plan.newRegistered);
+            await this.registerOne(plan.oldRegistered);
+          } catch (rollbackErr) {
+            this.logger.error("scheduler.update_rollback_failed", {
+              instance_id: plan.oldRegistered.instanceId,
+              error:
+                rollbackErr instanceof Error
+                  ? rollbackErr.message
+                  : String(rollbackErr),
+            });
+          }
+        }
+        // The FAILING entry: registerOne may have thrown after
+        // removeOne succeeded, so the old pattern is no longer in
+        // BullMQ for this instance. Try to re-register the OLD
+        // pattern so we don't leave the instance with NO cron entry
+        // registered. Best-effort — a failure here is logged and we
+        // still re-throw the original error so the route's DB tx
+        // unwinds.
+        const failing = plans[swapped.length];
+        if (failing !== undefined && !failing.noop) {
+          try {
+            await this.registerOne(failing.oldRegistered);
+          } catch (rollbackErr) {
+            this.logger.error("scheduler.update_rollback_failed", {
+              instance_id: failing.oldRegistered.instanceId,
+              error:
+                rollbackErr instanceof Error
+                  ? rollbackErr.message
+                  : String(rollbackErr),
+            });
+          }
+        }
+        throw err;
       }
+
+      // All swaps succeeded — mutate the in-memory registered list.
+      // Doing this AFTER the swap loop (rather than per-entry) means
+      // a partial failure can't leave `registered` in a mixed
+      // (some new, some old) state: the throw above bubbles out
+      // before this point and the in-memory list still reflects the
+      // pre-call (= post-rollback) cron pattern.
+      for (const plan of plans) {
+        if (plan.noop) continue;
+        // Index by instanceId rather than position so we stay safe
+        // if start() ever changes ordering.
+        const idx = this.registered.findIndex(
+          (s) => s.instanceId === plan.newRegistered.instanceId,
+        );
+        if (idx === -1) {
+          // Instance wasn't in the registered list (e.g. it was
+          // skipped at boot due to invalid cron). Push the new
+          // entry so listSchedules() picks it up; the route only
+          // calls updateSchedule for instances it just verified
+          // exist + are enabled, so this is the recovery path for
+          // a previously-invalid cron getting fixed via the UI.
+          this.registered.push(plan.newRegistered);
+        } else {
+          this.registered[idx] = plan.newRegistered;
+        }
+      }
+    } finally {
+      // PR-Z6 round-2 — release the cross-method lock so any waiting
+      // refresh() can proceed. The release is always safe to call —
+      // a throw from the swap loop already triggered rollback above;
+      // a successful path falls through here cleanly.
+      releaseLock();
     }
   }
 
@@ -598,11 +867,32 @@ export class AgentDispatcher {
    */
   async stop(): Promise<void> {
     if (this.stopping !== undefined) return this.stopping;
-    this.stopping = (async (): Promise<void> => {
+    // PR-Z6 round-2 (Copilot triage) — set `this.stopping` BEFORE any
+    // other shutdown work. The flag is the cross-method shutdown
+    // signal: `start()` checks it before arming the periodic timer
+    // (so a `stop()` that races a slow `start()` doesn't leak a
+    // setInterval handle that nothing will ever clear), and
+    // `refresh()` checks it before mutating any state. Both checks
+    // are racy with the OLD ordering (timer cleared first, flag set
+    // later) — the new ordering installs the signal first so every
+    // other code path observes "we are stopping" before this method
+    // does any cleanup work.
+    let resolveStopping!: () => void;
+    let rejectStopping!: (err: unknown) => void;
+    this.stopping = new Promise<void>((resolve, reject) => {
+      resolveStopping = resolve;
+      rejectStopping = reject;
+    });
+    // Now safe to tear down: any concurrent `start()` will bail on
+    // the new flag check; any concurrent `refresh()` short-circuits.
+    if (this.refreshTimer !== undefined) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = undefined;
+    }
+    void (async (): Promise<void> => {
       try {
         // Pause first so no new jobs start while we drain.
         await this.worker.pause(true).catch(() => undefined);
-      } finally {
         // Close worker + queue in parallel; both are idempotent
         // internally.
         await Promise.all([
@@ -617,6 +907,13 @@ export class AgentDispatcher {
             });
           }),
         ]);
+        resolveStopping();
+      } catch (err) {
+        // Anything thrown after the pause/close catches above must
+        // still terminate the promise so awaiters don't hang. The
+        // per-step catches already log; this is a belt-and-suspenders
+        // path for an unexpected throw.
+        rejectStopping(err);
       }
     })();
     return this.stopping;
