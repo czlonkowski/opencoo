@@ -36,6 +36,10 @@ import type { DeleteCap } from "@opencoo/shared/wiki-write";
 
 import { registerAdminApi } from "../admin-api/index.js";
 import type { GiteaClient } from "../admin-api/auth.js";
+import type {
+  OutputAdapterDescriptor,
+  OutputAdapterSlug,
+} from "../admin-api/routes/output-channels.js";
 import type { ForgetJobEnqueueArgs } from "../admin-api/routes/source-bindings.js";
 import { createSseBus, type SseBus } from "../admin-api/sse-bus.js";
 import type {
@@ -101,6 +105,14 @@ export interface ProductionServerFactoryArgs {
    *  for the actual forget action (PR-R7). When undefined the
    *  forget endpoint returns 503. */
   readonly forgetJobEnqueuer?: (args: ForgetJobEnqueueArgs) => Promise<void>;
+  /** PR-Z4 (phase-a appendix #12 G5) — per-adapter descriptor map
+   *  the admin-API Outputs-tab CRUD consumes. Composition root
+   *  builds one entry per shipped OutputAdapter; when undefined the
+   *  routes register but return 500
+   *  `output_channels_registry_unavailable`. */
+  readonly outputChannelDescriptors?: Readonly<
+    Record<OutputAdapterSlug, OutputAdapterDescriptor>
+  >;
   /** PR-Q6 (phase-a appendix #9) fix-up — Fastify request body
    *  limit. The orchestrator sets this to `WEBHOOK_BODY_LIMIT_BYTES`
    *  (5 MB) when co-booting engine-ingestion in workers mode so a
@@ -168,6 +180,9 @@ export async function productionServerFactory(
     ...(args.deleteCap !== undefined ? { deleteCap: args.deleteCap } : {}),
     ...(args.forgetJobEnqueuer !== undefined
       ? { forgetJobEnqueuer: args.forgetJobEnqueuer }
+      : {}),
+    ...(args.outputChannelDescriptors !== undefined
+      ? { outputChannelRegistry: args.outputChannelDescriptors }
       : {}),
     provisionOrg: args.compositionEnv.giteaProvisionOrg,
     provisionDomainRepo: async (a) => {

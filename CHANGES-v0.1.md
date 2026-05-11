@@ -1032,6 +1032,59 @@ The seed primitive is OPTIONAL on the interface. Webhook-only adapters where the
 - **`docs/plan-appendix/phase-a-12-cutover-completion.md` (Z0)** already lists Z2 as the second PR of sub-wave 1 — no doc edit needed here; the scoping doc landed before this PR.
 - **No `architecture.md` impact.** The `SourceAdapter` port gains an optional method; §10 (adapter boundaries) already covers extensibility via per-adapter capabilities.
 
+## Phase-a follow-up — Z4 (Output channels)
+
+The same partner cutover that surfaced G1 (Drive `makeDrive` stub) also exposed G5: the `OutputAdapter` interface, the `@opencoo/output-asana` package, and the `OutputChannelRegistry` class ALL existed in the repo — but `packages/cli/src/provision/production-composition.ts` never instantiated the registry. Heartbeat stored `output_channel_ids` on `agent_instances` (writable through the management UI), but at dispatch time there was no registry to deliver through in production. The daily-report-to-Asana path was 90% built and not wired. PR-Z4 closes the loop.
+
+### Motivation
+
+- G5 (`docs/plan-appendix/phase-a-12-cutover-completion.md`): `OutputChannelRegistry` never instantiated in production composition. Test fixtures wired the registry; production didn't.
+- Partner cutover needed the Heartbeat daily report to land as a task in a specific Asana project (Estyl daily-ops). The package handled the write; nothing routed agent output to it.
+- No CRUD surface for managing the channels. An operator could store `output_channel_ids` on the instance row, but couldn't create the underlying channel without a manual SQL INSERT.
+
+### What shipped
+
+- **Registry instantiation at the composition root.** `composeProductionFromEnv` now builds an `OutputChannelRegistry`, lazy-imports `@opencoo/output-asana`, wraps the resulting `OutputAdapter` via a new `outputAdapterToChannelAdapter` bridge, and registers it. The composition returns the registry + the per-adapter descriptor map; the CLI orchestrator threads both into `engine-self-operating.start({ outputChannels, outputChannelDescriptors })`. A missing OutputAdapter package logs `output_adapter.unavailable` and skips — boot-tolerance mirrors the source-adapter factory pattern.
+- **Post-run delivery hook on `AgentDispatcher`.** After every successful agent run, the dispatcher iterates the instance's `output_channel_ids[]` bindings and calls `OutputChannelRegistry.deliver({bindings, delivery})` per binding. Q10 binding enforcement (THREAT-MODEL §3.5) is enforced INSIDE the registry — the dispatcher just supplies the binding set + payload. Per-binding failures are logged via the structured `output_channel.deliver` log line (status: success | failed, error: scrubbed); they do NOT flip `agent_runs.status` because the agent body already terminalised on success. `dryRun: true` (operator-issued one-shot) skips delivery so re-runs don't produce side effects.
+- **New `output_channels` table.** Drizzle migration `0012_output_channels.sql` adds the operator-managed channel-row table: `(id, adapter_slug, name, config, credentials_id, enabled, created_at, updated_at)` with `UNIQUE (adapter_slug, name)` and FK to `credentials.id` (ON DELETE RESTRICT). The agent-instance binding (`output_channel_ids[]`) points at `output_channels.id` via `config.channel_id`; dangling references are tolerated (the bridge throws `OutputChannelLookupError`, the dispatcher logs + skips). Schema definition at `packages/shared/src/db/schema/output-channels.ts`.
+- **CRUD admin-API at `/api/admin/output-channels`** — full matrix (`GET` list, `POST` create with credential encryption via `CredentialStore.write`, `PATCH` with mutually-exclusive `{enabled} | {config} | {credentials}` branches, `DELETE` with best-effort credential cleanup). All state-changing routes CSRF-gated + admin-team-gated via `makeGuardedApp`. Audit rows for every action: `output_channel.create`, `output_channel.update`, `output_channel.credentials_rotate`, `output_channel.delete` — metadata captures `(channel_id, adapter_slug, name, caller_username)`; for update the changed field NAMES (never values); credentials NEVER appear in audit metadata. UNIQUE violation maps to 409 via the existing `isPgUniqueViolation` narrower.
+- **`/api/admin/adapters` extended** with `outputAdapters[]` alongside the existing `adapters[]`: each entry is `{slug, credentialSchema, channelConfigSchema}`. The schemas are JSON-Schema-shaped so the management UI renders the credential + channel-config form dynamically per architecture §10 (no hardcoded adapter UI).
+- **UI: new Outputs tab.** Sidebar entry between Sources and LLM Policy. The route (`packages/ui/src/routes/Outputs.tsx`) mirrors `Sources.tsx`'s shape: list + `+ New output channel` modal + per-row drill-down. The modal (`NewOutputChannelModal.tsx`) auto-renders the credential + channel-config form from `/api/admin/adapters`. The detail modal (`OutputChannelDetail.tsx`) supports Enable/Disable + Delete with an inline confirmation step.
+- **Asana production wiring.** `createAsanaFetchApi` (new in `packages/adapters/output-asana/`) is a fetch-backed `AsanaLikeApi` implementation that wraps `POST https://app.asana.com/api/1.0/tasks`. Error mapping: 429 → `AsanaApiHttpError` with `retryAfterSeconds`; 4xx/5xx → `AsanaApiHttpError`; network failure → `AsanaApiTransientError`. The access token NEVER appears in error messages — the wrapper builds the Authorization header internally; response body excerpts cap at 200 bytes. `asanaChannelConfigSchema` exports `{project_gid: string, assignee_gid?: string}` (Zod-strict). The composition's `mergeAsanaPayload` closure combines the channel's `project_gid` with the agent's emitted JSON output (title from `summary`, notes from JSON pretty-print).
+
+### Threat-model alignment
+
+- **§3.5 Q10 binding enforcement.** The `OutputChannelRegistry.deliver` cross-check between `delivery.adapterSlug` and the instance's `bindings[].adapter_slug` set survives — the dispatcher just hands the set + the delivery in. A prompt-injection attack on the agent cannot redirect delivery to a slug outside the instance's allow-list. The bridge's additional channel-row lookup (`channel_id` → `output_channels`) is a strict include-test: any failure mode (missing channel_id in the binding config, deleted channel row, disabled row) throws a `validation`-class error and DLQs.
+- **§3.6 invariant 11 — credential bytes never leak.** The admin-API routes encrypt the operator-submitted credential payload via the existing `CredentialStore.write` BEFORE persisting any state. The audit-log writer records only `credentials_id` (uuid) — not the plaintext. The Asana fetch client builds the Authorization header internally and throws with a generic shape (`asana: <status> <text>`); the response body excerpt caps at 200 bytes and excludes request headers. Output adapter error messages flow through the existing `safeErrorMessage` scrubber on the dispatcher's log line.
+- **§2 invariant 9 — no new feature env vars.** Every channel-config + credential lives in Postgres; no new `OPENCOO_*` env var was added. The output-adapter package list at the composition root is a TypeScript-level registry, not env.
+- **§2 invariant 8 — append-only logs preserved.** The new `output_channels` table is full CRUD (operator config, not an audit surface), but the **audit log** (`admin_audit_log`) remains append-only — every CRUD action writes ONE row, never updates. The existing `opencoo/no-update-append-only` ESLint rule is unaffected.
+- **CSRF + admin-team gate.** Every state-changing route is wrapped by the admin-api plugin's `makeGuardedApp` proxy — `verifyAdmin` always runs first, `requireCsrf` runs second. The 401-without-auth + 403-without-CSRF matrix is pinned in the new admin-api test suite.
+
+### Tests
+
+- **Composition test** (`packages/cli/tests/output-channels-registry.test.ts`, new): asserts `composeProductionFromEnv` returns an `OutputChannelRegistry` with `asana` registered, plus a descriptor map carrying the channel-config + credential JSON-Schema shapes the admin-API routes consume. PGlite-backed.
+- **Dispatcher delivery test** (extends `packages/engine-self-operating/tests/scheduler/agent-dispatcher.test.ts`, +3 tests): seeds a heartbeat instance with `output_channel_ids = [{adapter_slug, config}]`; injects a `MockOutputChannelAdapter`; force-dispatches via the test seam; asserts `deliver` was called with the heartbeat output payload + the binding config. Two more tests pin (a) `dryRun: true` skips delivery, (b) one-binding failure doesn't block the next.
+- **Bridge test** (`packages/engine-self-operating/tests/output-channels/bridge.test.ts`, new): pins (a) happy: `mergePayload` runs + the wrapped `OutputAdapter.write` is called with the resolved `credentialId`; (b) `OutputChannelMissingChannelIdError` on a binding with no `channel_id`; (c) `OutputChannelLookupError` on a missing row; (d) `OutputChannelDisabledError` on a disabled row.
+- **Admin-API CRUD test** (`packages/engine-self-operating/tests/admin-api/output-channels.test.ts`, new): 14 assertions covering the full matrix — happy paths + 404/409/422/auth gates + credential encryption + audit-row content + `GET /api/admin/adapters` surfacing `outputAdapters[]`.
+- **UI test** (`packages/ui/tests/unit/output-channel-detail.test.tsx`, new): 4 assertions — empty state, populated row, `+ New output channel` modal flow POSTing the right body, DELETE confirmation flow.
+
+Per-package counts after Z4:
+- `pnpm --filter @opencoo/output-asana test` → 22 passed
+- `pnpm --filter @opencoo/engine-self-operating test` → 682 passed (was 670 pre-Z4: +12 = 11 admin-api + bridge + dispatcher)
+- `pnpm --filter @opencoo/cli test` → 100 passed (was 99 pre-Z4: +1 composition wiring)
+- `pnpm --filter @opencoo/ui test` → 254 passed (was 250 pre-Z4: +4)
+- Repo-wide `pnpm test`: 2559 passed + 14 skipped (was ~2537 pre-Z4). Pre-existing EPIPE flake in `engine-ingestion/tests/start-webhook-mount.test.ts` unaffected (same 42 unhandled rejections both before + after Z4).
+
+### Migration
+
+- **New migration**: `packages/shared/drizzle/0012_output_channels.sql` (CREATE TABLE + UNIQUE + FK). Round-trips cleanly via `pnpm --filter @opencoo/shared db:check` (zero drift). Idempotent (Drizzle's journal-tracked migrator + auto-migrate at engine boot — PR-X1).
+- **No destructive ops.** Pure CREATE.
+- **Schema-ownership rule honored** (architecture §14.4): the pgTable lives in `packages/shared/src/db/schema/output-channels.ts`; engine-self-operating consumes it as a read-only schema import.
+
+### IMPLEMENTATION-PLAN
+
+- **§1.1 status snapshot** appended with Z4's scope summary (registry instantiation + CRUD routes + UI tab + migration + post-run delivery hook). The wave-end closeout will add the §1.2.22 wave-12 pointer; this PR doesn't pre-create that section.
+
 ---
 
 _Drafted from `IMPLEMENTATION-PLAN.md` §1.2.1–§1.2.21 + per-PR `gh pr view` body residuals. Maintainer to edit before the `0.1.0` final tag cut (the `0.1.0-a` rollup has already shipped — see the §1.1 status snapshot)._

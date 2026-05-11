@@ -52,6 +52,7 @@ import { sql } from "drizzle-orm";
 
 import type { Logger } from "@opencoo/shared/logger";
 import type { LlmRouter } from "@opencoo/shared/llm-router";
+import { safeErrorMessage } from "@opencoo/shared/scrub";
 
 import type { SseBus } from "../admin-api/sse-bus.js";
 import {
@@ -60,6 +61,10 @@ import {
   type AgentDefinitionRegistry,
   type AgentRunContext,
 } from "../agent-harness/index.js";
+import type {
+  OutputChannelBinding,
+  OutputChannelRegistry,
+} from "../output-channels/index.js";
 
 import { validateCron } from "./cron-validate.js";
 
@@ -129,6 +134,25 @@ export interface AgentDispatcherOptions {
   /** Optional SSE bus passed through to the agent harness so the
    *  Activity feed reflects scheduled runs as they unfold. */
   readonly sseBus?: SseBus;
+  /** PR-Z4 (phase-a appendix #12 G5) — output-channel registry.
+   *  When present, `dispatchOne` invokes the post-run delivery hook
+   *  after the harness returns `status: 'success'`. For each
+   *  `agent_instances.output_channel_ids[]` binding, the registry's
+   *  `deliver(...)` is called with the agent's JSON output as
+   *  payload. Q10 binding enforcement happens INSIDE
+   *  `OutputChannelRegistry.deliver` — the dispatcher just iterates
+   *  the bindings; the registry rejects deliveries to slugs not in
+   *  the binding set.
+   *
+   *  Per-delivery failures are logged + emitted to SSE but do NOT
+   *  fail the run — the agent_runs row stays `success` because the
+   *  agent body completed. A separate `output_channel.deliver`
+   *  structured log line carries the per-channel outcome.
+   *
+   *  When undefined (boot-tolerance, e.g. no OutputAdapter packages
+   *  available), the post-run hook is a no-op — the agent still
+   *  runs to completion. */
+  readonly outputChannels?: OutputChannelRegistry;
   /** When `false`, the BullMQ Worker is constructed but does NOT
    *  start the background pull loop. Tests use `false` so the
    *  dispatch handler can be invoked directly. Defaults to
@@ -163,6 +187,7 @@ export class AgentDispatcher {
   private readonly logger: Logger;
   private readonly router: LlmRouter | undefined;
   private readonly sseBus: SseBus | undefined;
+  private readonly outputChannels: OutputChannelRegistry | undefined;
   private readonly queue: Queue<DispatchJobData>;
   private readonly worker: Worker<DispatchJobData>;
   private readonly handler: (job: Job<DispatchJobData>) => Promise<unknown>;
@@ -182,6 +207,7 @@ export class AgentDispatcher {
     this.logger = options.logger;
     this.router = options.router;
     this.sseBus = options.sseBus;
+    this.outputChannels = options.outputChannels;
     this.registerScheduleFn = options.registerScheduleFn;
     this.removeScheduleFn = options.removeScheduleFn;
 
@@ -697,7 +723,116 @@ export class AgentDispatcher {
       run: runner,
       ...(this.sseBus !== undefined ? { sseBus: this.sseBus } : {}),
     });
+
+    // PR-Z4 (phase-a appendix #12 G5) — post-run delivery hook.
+    // Per architecture §9.4 + THREAT-MODEL §3.5 Q10: the agent's
+    // JSON output is delivered post-LLM (out-of-band) to the
+    // operator-bound output channels. The LLM does NOT have an
+    // `output_channel_deliver` tool — delivery is the engine's
+    // responsibility, gated by the per-instance binding closed set.
+    //
+    // PR-R3 (on-demand dispatch) — when the operator triggered the
+    // run with `dryRun: true`, we skip delivery so the operator
+    // can sanity-re-run without producing side effects.
+    //
+    // Failures here are LOGGED but DO NOT fail the run — the agent
+    // body completed; the audit row stays `success`. The structured
+    // log line `output_channel.deliver` carries the per-channel
+    // outcome for the operator to inspect.
+    if (
+      result.status === "success" &&
+      job.data.dryRun !== true &&
+      this.outputChannels !== undefined &&
+      instance.outputChannelIds.length > 0
+    ) {
+      await this.dispatchDeliveries({
+        runId: result.runId,
+        definitionSlug: instance.definitionSlug,
+        instanceId: instance.id,
+        bindings: instance.outputChannelIds.map(
+          (b): OutputChannelBinding => ({
+            adapter_slug: b.adapter_slug,
+            config: b.config,
+          }),
+        ),
+        payload: result.output,
+      });
+    }
+
     return result;
+  }
+
+  /** PR-Z4 — iterate every binding on the instance and call
+   *  `OutputChannelRegistry.deliver(...)` per binding. Per-binding
+   *  delivery failures are structured-logged via the
+   *  `output_channel.deliver` log line (status=failed, scrubbed
+   *  error) but DO NOT throw out of `dispatchOne` — the agent body
+   *  already terminalised on success, and one failed channel is
+   *  non-fatal for the run. We deliberately do NOT mutate the
+   *  `agent_runs.status` row on a delivery failure: the agent body
+   *  succeeded; delivery is an out-of-band concern (Q10) so its
+   *  failure mode must not flip the run terminal status.
+   *
+   *  (Future: SSE-emit delivery failures to the Activity feed so
+   *  the operator surfaces them without tailing JSON logs. Filed
+   *  as a v0.2 polish — for v0.1 the structured log is the audit
+   *  surface and the JSON-log harvester groups by
+   *  `(run_id, adapter_slug)` to derive delivery health.)
+   *
+   *  The registry's `deliver` cross-checks `delivery.adapterSlug`
+   *  against the binding set BEFORE calling the adapter — Q10
+   *  binding enforcement. We pass every binding's `adapter_slug`
+   *  as the delivery target verbatim, so the closed-set check is
+   *  trivially satisfied for the iteration loop. The real check
+   *  guards against a future code path that proposes a delivery
+   *  whose slug doesn't match any binding (e.g. an agent body
+   *  returning a routing hint). */
+  private async dispatchDeliveries(args: {
+    readonly runId: string;
+    readonly definitionSlug: string;
+    readonly instanceId: string;
+    readonly bindings: readonly OutputChannelBinding[];
+    readonly payload: unknown;
+  }): Promise<void> {
+    const registry = this.outputChannels;
+    if (registry === undefined) return;
+    for (const binding of args.bindings) {
+      try {
+        await registry.deliver({
+          bindings: args.bindings,
+          delivery: {
+            adapterSlug: binding.adapter_slug,
+            payload: args.payload,
+          },
+        });
+        this.logger.info("output_channel.deliver", {
+          run_id: args.runId,
+          definition_slug: args.definitionSlug,
+          instance_id: args.instanceId,
+          adapter_slug: binding.adapter_slug,
+          status: "success",
+        });
+      } catch (err) {
+        // Per-binding failure: log; do NOT throw — the run already
+        // terminalised on success and the next channel may still
+        // succeed. The structured log line `output_channel.deliver`
+        // is the audit surface (the JSON log harvester groups by
+        // `(run_id, adapter_slug)` to derive delivery health). We
+        // deliberately do NOT mutate the agent_runs row on a
+        // delivery failure: the agent body succeeded; delivery is
+        // an out-of-band concern (Q10) so its failure mode must
+        // not flip the run terminal status.
+        const errorMessage = safeErrorMessage(err);
+        this.logger.warn("output_channel.deliver", {
+          run_id: args.runId,
+          definition_slug: args.definitionSlug,
+          instance_id: args.instanceId,
+          adapter_slug: binding.adapter_slug,
+          status: "failed",
+          error: errorMessage,
+        });
+      }
+    }
   }
 
   // ── Test seams ─────────────────────────────────────────────────

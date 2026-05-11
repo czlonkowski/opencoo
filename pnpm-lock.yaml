@@ -280,6 +280,9 @@ importers:
       '@opencoo/guard-redaction-regex':
         specifier: workspace:*
         version: link:../adapters/guard-redaction-regex
+      '@opencoo/output-asana':
+        specifier: workspace:*
+        version: link:../adapters/output-asana
       '@opencoo/shared':
         specifier: workspace:*
         version: link:../shared

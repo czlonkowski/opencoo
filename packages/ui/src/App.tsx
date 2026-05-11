@@ -18,6 +18,7 @@ import { Audit } from "./routes/Audit.js";
 import { Cost } from "./routes/Cost.js";
 import { Domains } from "./routes/Domains.js";
 import { LlmPolicy } from "./routes/LlmPolicy.js";
+import { Outputs } from "./routes/Outputs.js";
 import { Prompts } from "./routes/Prompts.js";
 import { Reports } from "./routes/Reports.js";
 import { Review } from "./routes/Review.js";
@@ -107,6 +108,7 @@ export function App(): JSX.Element {
   const tabs: Record<Tab, JSX.Element> = {
     domains: <Domains />,
     sources: <Sources />,
+    outputs: <Outputs />,
     llmPolicy: <LlmPolicy />,
     prompts: <Prompts />,
     activity: <Activity onAuthFailed={onSseAuthFailed} />,
@@ -119,6 +121,7 @@ export function App(): JSX.Element {
   const titles: Record<Tab, string> = {
     domains: t("domains.title"),
     sources: t("sources.title"),
+    outputs: t("outputs.title"),
     llmPolicy: t("llmPolicy.title"),
     prompts: t("prompts.title"),
     activity: t("activity.title"),

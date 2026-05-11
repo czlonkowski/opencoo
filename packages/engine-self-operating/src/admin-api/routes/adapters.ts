@@ -1,6 +1,7 @@
 /**
  * `GET /api/admin/adapters` — adapter descriptor list (phase-a
- * appendix #2; PR-Q9 adds `bindingConfigSchema`).
+ * appendix #2; PR-Q9 adds `bindingConfigSchema`; PR-Z4 adds
+ * `outputAdapters` for the Outputs tab "+ New channel" modal).
  *
  * The Management UI's "+ New binding" modal picker calls this
  * to populate the adapter dropdown. Returning the same
@@ -17,6 +18,17 @@
  *         credentialSchema: { type: 'object', properties: {...} },
  *         bindingConfigSchema: { type: 'object', properties: {...},
  *                                required: [...] },
+ *       },
+ *       ...
+ *     ],
+ *     // PR-Z4 (phase-a appendix #12 G5) — alongside the source
+ *     // adapters, the OutputAdapter descriptors the new
+ *     // `+ New output channel` modal uses to render the form.
+ *     outputAdapters: [
+ *       {
+ *         slug: 'asana' | …,
+ *         credentialSchema: { type: 'object', properties: {...} },
+ *         channelConfigSchema: { type: 'object', properties: {...} },
  *       },
  *       ...
  *     ]
@@ -42,6 +54,13 @@ import {
   type SourceAdapterSlug,
 } from "@opencoo/shared/source-adapter";
 
+import {
+  getOutputAdapterListEntries,
+  type OutputAdapterDescriptor,
+  type OutputAdapterListEntry,
+  type OutputAdapterSlug,
+} from "./output-channels.js";
+
 export interface AdapterListEntry {
   readonly slug: SourceAdapterSlug;
   readonly mode: SourceAdapterCredentialDescriptor["mode"];
@@ -59,6 +78,12 @@ export interface RegisterAdaptersRouteArgs {
   readonly bindingConfigRegistry?: Readonly<
     Record<SourceAdapterSlug, BindingConfigSchema>
   >;
+  /** PR-Z4 — output-adapter registry. Defaults to a lazy import
+   *  of `@opencoo/output-asana`; tests pass a stub via the
+   *  admin-API plugin's `outputChannelRegistry` field. */
+  readonly outputAdapterRegistry?: Readonly<
+    Record<OutputAdapterSlug, OutputAdapterDescriptor>
+  >;
 }
 
 export function registerAdaptersRoute(args: RegisterAdaptersRouteArgs): void {
@@ -74,6 +99,8 @@ export function registerAdaptersRoute(args: RegisterAdaptersRouteArgs): void {
         credentialSchema: registry[slug].credentialSchema,
         bindingConfigSchema: bindingConfigRegistry[slug],
       }));
-    return { adapters };
+    const outputAdapters: readonly OutputAdapterListEntry[] =
+      getOutputAdapterListEntries(args.outputAdapterRegistry);
+    return { adapters, outputAdapters };
   });
 }

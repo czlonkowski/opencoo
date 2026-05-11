@@ -145,6 +145,17 @@ export type ServeStartFactory = (opts: {
    *  enqueuer from the ingestion preflight. Same typed-unknown
    *  treatment as `deleteCap`. */
   readonly forgetJobEnqueuer?: unknown;
+  /** PR-Z4 (phase-a appendix #12 G5) — output-channel registry
+   *  from the ingestion preflight. Same typed-unknown treatment
+   *  as `deleteCap` — orchestrator stays on the
+   *  no-cross-engine-import side; the default factory narrows
+   *  back to `OutputChannelRegistry` at the engine boundary. */
+  readonly outputChannels?: unknown;
+  /** PR-Z4 — output-adapter descriptor map. Threaded into the
+   *  admin-API Outputs-tab CRUD routes so the schema-driven form
+   *  rendering works. Same typed-unknown treatment as
+   *  `outputChannels`. */
+  readonly outputChannelDescriptors?: unknown;
 }) => Promise<ServeStartedEngine>;
 
 /** Matches `start({env})` from `@opencoo/engine-ingestion`. The
@@ -224,6 +235,20 @@ export interface ServeIngestionPreflightResult {
   /** PR-W1 (phase-a appendix #11) — composition-built forget
    *  enqueuer. Same typed-unknown treatment as `deleteCap`. */
   readonly forgetJobEnqueuer?: unknown;
+  /** PR-Z4 (phase-a appendix #12 G5) — composition-built
+   *  OutputChannelRegistry the orchestrator forwards verbatim into
+   *  self-op's `start({outputChannels})`. Typed `unknown` so the
+   *  engine-self-operating surface doesn't bleed across the
+   *  no-cross-engine-import boundary; the engine narrows back to
+   *  `OutputChannelRegistry` at consumption. Optional for
+   *  backward-compat with test factories that don't synthesise
+   *  one. */
+  readonly outputChannels?: unknown;
+  /** PR-Z4 — composition-built descriptor map. Threaded into the
+   *  admin-API Outputs-tab CRUD routes so the schema-driven form
+   *  rendering works. Same typed-unknown treatment as
+   *  `outputChannels`. */
+  readonly outputChannelDescriptors?: unknown;
 }
 
 export type ServeIngestionPreflightFactory = (opts: {
@@ -309,6 +334,8 @@ type EngineStartFn = (opts: {
    *  to keep this layer on the no-cross-engine-import side. */
   readonly deleteCap?: unknown;
   readonly forgetJobEnqueuer?: unknown;
+  readonly outputChannels?: unknown;
+  readonly outputChannelDescriptors?: unknown;
 }) => Promise<ServeStartedEngine>;
 
 interface ComposeStartedEngineArgs {
@@ -324,6 +351,14 @@ interface ComposeStartedEngineArgs {
    *  so the source-forget admin route stops 503'ing in production. */
   readonly deleteCap?: unknown;
   readonly forgetJobEnqueuer?: unknown;
+  /** PR-Z4 (phase-a appendix #12 G5) — forwarded verbatim into
+   *  `engine-self-operating.start({outputChannels})` so the
+   *  AgentDispatcher's post-run delivery hook reaches the
+   *  operator-bound channels. */
+  readonly outputChannels?: unknown;
+  /** PR-Z4 — descriptor map for the admin-API Outputs-tab CRUD
+   *  routes. */
+  readonly outputChannelDescriptors?: unknown;
   /** Logger for the round-2 fix #3 boot-failure-close-failed
    *  warn line. */
   readonly logger: {
@@ -394,6 +429,16 @@ export async function composeStartedEngineWithBundle(
       ...(args.forgetJobEnqueuer !== undefined
         ? { forgetJobEnqueuer: args.forgetJobEnqueuer }
         : {}),
+      // PR-Z4 (phase-a appendix #12 G5) — forward the composition's
+      // OutputChannelRegistry. When preflight returned null,
+      // `args.outputChannels` is undefined and the dispatcher's
+      // post-run delivery hook is a no-op (boot-tolerance).
+      ...(args.outputChannels !== undefined
+        ? { outputChannels: args.outputChannels }
+        : {}),
+      ...(args.outputChannelDescriptors !== undefined
+        ? { outputChannelDescriptors: args.outputChannelDescriptors }
+        : {}),
     });
   } catch (err) {
     if (bundle !== null) {
@@ -435,6 +480,8 @@ async function defaultStartFactory(opts: {
   readonly bodyLimit?: number;
   readonly deleteCap?: unknown;
   readonly forgetJobEnqueuer?: unknown;
+  readonly outputChannels?: unknown;
+  readonly outputChannelDescriptors?: unknown;
 }): Promise<ServeStartedEngine> {
   const mod = await import("@opencoo/engine-self-operating");
   const composition = await import(
@@ -469,6 +516,15 @@ async function defaultStartFactory(opts: {
     ...(opts.deleteCap !== undefined ? { deleteCap: opts.deleteCap } : {}),
     ...(opts.forgetJobEnqueuer !== undefined
       ? { forgetJobEnqueuer: opts.forgetJobEnqueuer }
+      : {}),
+    // PR-Z4 (phase-a appendix #12 G5) — forward the preflight-built
+    // OutputChannelRegistry into the engine so post-run delivery
+    // reaches operator-bound channels (heartbeat → Asana, etc.).
+    ...(opts.outputChannels !== undefined
+      ? { outputChannels: opts.outputChannels }
+      : {}),
+    ...(opts.outputChannelDescriptors !== undefined
+      ? { outputChannelDescriptors: opts.outputChannelDescriptors }
       : {}),
   });
 }
@@ -540,6 +596,15 @@ async function defaultIngestionPreflightFactory(opts: {
     // source" → "Nie udało się załadować wpływu").
     deleteCap: composed.deleteCap as unknown,
     forgetJobEnqueuer: composed.forgetJobEnqueuer as unknown,
+    // PR-Z4 (phase-a appendix #12 G5) — surface the composition's
+    // OutputChannelRegistry so the orchestrator can forward it
+    // into self-op's `start({outputChannels})`. Without this thread,
+    // post-run delivery is a no-op even though the registry,
+    // `output-asana`, and the channel CRUD all exist (the bug G5
+    // captures: the daily-report-to-Asana path is 90% built but
+    // not wired).
+    outputChannels: composed.outputChannels as unknown,
+    outputChannelDescriptors: composed.outputChannelDescriptors as unknown,
   };
 }
 
@@ -762,6 +827,18 @@ export async function runServe(args: ServeArgs): Promise<void> {
         : {}),
       ...(preflight?.forgetJobEnqueuer !== undefined
         ? { forgetJobEnqueuer: preflight.forgetJobEnqueuer }
+        : {}),
+      // PR-Z4 (phase-a appendix #12 G5) — forward the preflight's
+      // OutputChannelRegistry so the AgentDispatcher's post-run
+      // delivery hook reaches operator-bound channels. Mirrors the
+      // deleteCap / forgetJobEnqueuer pattern above: when preflight
+      // returned null, the field stays omitted and the dispatcher's
+      // delivery hook is a no-op (boot-tolerance).
+      ...(preflight?.outputChannels !== undefined
+        ? { outputChannels: preflight.outputChannels }
+        : {}),
+      ...(preflight?.outputChannelDescriptors !== undefined
+        ? { outputChannelDescriptors: preflight.outputChannelDescriptors }
         : {}),
     });
   } catch (err) {

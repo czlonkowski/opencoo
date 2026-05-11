@@ -16,6 +16,7 @@ export * from "./llm-usage-debug.js";
 export * from "./marketplace-updates.js";
 export * from "./miner-runs.js";
 export * from "./miner-suppressions.js";
+export * from "./output-channels.js";
 export * from "./page-citations.js";
 export * from "./redaction-events.js";
 export * from "./sources-bindings.js";

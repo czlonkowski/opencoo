@@ -8,6 +8,7 @@
   "nav": {
     "domains": "domains",
     "sources": "sources",
+    "outputs": "outputs",
     "llmPolicy": "llm policy",
     "prompts": "prompts",
     "activity": "activity",
@@ -556,6 +557,46 @@
       "model": "model",
       "tier": "tier",
       "agent": "agent"
+    }
+  },
+  "outputs": {
+    "title": "Outputs",
+    "subtitle": "Delivery channels agents send their JSON output to.",
+    "empty": "No output channels yet — add one to enable agent deliveries.",
+    "newChannel": "+ New output channel",
+    "columns": {
+      "name": "name",
+      "adapter": "adapter",
+      "enabled": "enabled",
+      "createdAt": "created"
+    },
+    "enabledYes": "enabled",
+    "enabledNo": "disabled",
+    "create": {
+      "title": "New output channel",
+      "adapter": "adapter",
+      "name": "name",
+      "namePlaceholder": "daily-report",
+      "submit": "Create channel",
+      "cancel": "Cancel",
+      "saving": "saving…",
+      "credSection": "credentials",
+      "configSection": "operational settings"
+    },
+    "detail": {
+      "title": "Output channel",
+      "close": "Close",
+      "disable": "Disable",
+      "enable": "Enable",
+      "delete": "Delete",
+      "deleteConfirm": "Delete this channel? Bindings on agent instances become dangling.",
+      "deleting": "deleting…",
+      "openAriaLabel": "Open output channel {{name}}",
+      "labels": {
+        "name": "name",
+        "adapter": "adapter",
+        "state": "state"
+      }
     }
   }
 }

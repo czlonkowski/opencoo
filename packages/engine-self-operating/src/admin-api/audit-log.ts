@@ -116,6 +116,19 @@ export const AUDIT_LOG_ACTIONS = [
   // matches the actual on-disk state (mirrors PR-Q10b's
   // source-binding delete pattern).
   "scheduler.update",
+  // Phase-a appendix #12 PR-Z4 — Outputs tab CRUD. The
+  // `output_channels` table backs operator-managed delivery
+  // channels the AgentDispatcher reads from at post-run delivery.
+  // Metadata captures channel_id + adapter_slug + name +
+  // caller_username (for create / delete) and additionally the
+  // changed_field NAMES + (for `enabled`) the new boolean for
+  // update. Credentials NEVER appear in audit metadata — the
+  // `credentials_rotate` row references the credential id, never
+  // the plaintext.
+  "output_channel.create",
+  "output_channel.update",
+  "output_channel.credentials_rotate",
+  "output_channel.delete",
   // Logout — records the operator-initiated session-end so an
   // audit-log read can correlate an action burst with the
   // operator's session window.

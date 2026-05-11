@@ -29,6 +29,9 @@ interface SidebarProps {
 const TABS: ReadonlyArray<{ key: Tab; labelKey: string }> = [
   { key: "domains", labelKey: "nav.domains" },
   { key: "sources", labelKey: "nav.sources" },
+  // PR-Z4 (phase-a appendix #12 G5) — Outputs tab between Sources and LLM
+  // policy: same surface family (binding-style CRUD over operator config).
+  { key: "outputs", labelKey: "nav.outputs" },
   { key: "llmPolicy", labelKey: "nav.llmPolicy" },
   { key: "prompts", labelKey: "nav.prompts" },
   // Phase-a appendix #4 PR-B: Activity tab (5th tab).

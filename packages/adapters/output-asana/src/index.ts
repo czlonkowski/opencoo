@@ -19,8 +19,19 @@ export {
 } from "./payload-schema.js";
 
 export {
+  asanaChannelConfigJsonSchema,
+  asanaChannelConfigSchema,
+  type AsanaChannelConfig,
+} from "./channel-config.js";
+
+export {
   type AsanaApiError,
   type AsanaCreateTaskArgs,
   type AsanaCreateTaskResult,
   type AsanaLikeApi,
 } from "./asana-api.js";
+
+export {
+  createAsanaFetchApi,
+  type CreateAsanaFetchApiArgs,
+} from "./asana-fetch-api.js";
