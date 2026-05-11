@@ -107,17 +107,21 @@ export interface SourceSeedResult {
    *  source_revision) dedupe path that `scan()` results do —
    *  a partial-seed replay is idempotent. */
   readonly documents: readonly SourceChangedDocument[];
-  /** Cursor for the FIRST subsequent `scan()` call. For Drive
-   *  this is the `getStartPageToken()` snapshot captured at
-   *  seed-START (so the change feed doesn't double-deliver
-   *  files between seed-start and seed-end as "changes"). For
-   *  webhook adapters where seed is a one-shot batch fetch
-   *  and the steady state is webhook-driven, `null` is
-   *  legal — the next scanner tick's `scan()` returns
-   *  `{ documents: [], nextCursor: null }` and the cursor
-   *  stays null forever (which is the existing webhook-mode
-   *  behavior). */
-  readonly cursor: string | null;
+  /** Cursor for the FIRST subsequent `scan()` call. **Always
+   *  non-null** because the scanner uses `last_scan_cursor ===
+   *  null` as the "this binding still needs seeding" flag — a
+   *  null cursor after a successful seed would cause every tick
+   *  to re-route to `seed()` forever. For Drive this is the
+   *  `getStartPageToken()` snapshot captured at seed-START (so
+   *  the change feed doesn't double-deliver files between
+   *  seed-start and seed-end as "changes"). For webhook
+   *  adapters where there's no resumable cursor (e.g. Asana),
+   *  return an opaque sentinel like `<slug>-seeded:<ISO>` that
+   *  `scan()` MUST treat as "no-op" (Asana's scan ignores its
+   *  input cursor entirely; sentinel is operator-readable for
+   *  forensics). Future webhook adapters that don't need a
+   *  sentinel can return any non-empty marker string. */
+  readonly cursor: string;
 }
 
 /**
