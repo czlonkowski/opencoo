@@ -578,13 +578,21 @@ async function loadSourceAdapterFactories(
   });
   await tryLoadAdapter(out, logger, "drive", async () => {
     const mod = await import("@opencoo/source-drive");
+    // PR-Z1 (phase-a appendix #12): replace the v0.1 stub with
+    // the real `googleapis@^144` Drive client. The credential
+    // store hands us the raw service-account JSON Buffer; we
+    // decode + validate via `parseServiceAccountJson` then
+    // construct the SDK-backed `DriveLikeApi`. Per the adapter
+    // contract, `makeDrive` is invoked once per scan with the
+    // freshly-resolved refreshToken — that lets a rotated SA
+    // key pick up on the next scan without restart.
     return (a) =>
       mod.createGoogleDriveAdapter({
         ...a,
-        makeDrive: () => {
-          throw new Error(
-            "drive: production makeDrive not wired in v0.1 — bind via UI when adapter ships",
-          );
+        makeDrive: (refreshToken) => {
+          const json = refreshToken.toString("utf8");
+          const sa = mod.parseServiceAccountJson(json);
+          return mod.createGoogleDriveApi(sa);
         },
       });
   });

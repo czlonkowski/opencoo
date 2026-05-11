@@ -27,3 +27,14 @@ export {
   type CreateDriveAdapterArgs,
   type MakeDrive,
 } from "./adapter.js";
+
+/**
+ * Real `googleapis@^144` Drive client (PR-Z1, phase-a appendix #12).
+ * Exposed from the package root so the production composition
+ * root can construct `MakeDrive` without a deep subpath import.
+ */
+export {
+  createGoogleDriveApi,
+  parseServiceAccountJson,
+  type ServiceAccountKey,
+} from "./google-drive-api.js";

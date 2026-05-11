@@ -26,6 +26,8 @@
   },
   "dependencies": {
     "@opencoo/shared": "workspace:*",
+    "google-auth-library": "^9.15.0",
+    "googleapis": "^144.0.0",
     "zod": "4.3.6"
   },
   "devDependencies": {
