@@ -119,6 +119,16 @@ async function startDispatcher(args: {
    *  through. Tests pass a sentinel and assert the SAME instance
    *  reaches the runner closure via `ctx.router`. */
   readonly router?: ConstructorParameters<typeof AgentDispatcher>[0]["router"];
+  /** PR-Z6 — explicit per-test override. Tests that exercise the
+   *  refresh path pass `0` to disable the timer and drive
+   *  `refresh()` manually; the default below pins the same value so
+   *  no test accidentally arms a real 60-second timer that leaks
+   *  past `afterEach`. */
+  readonly refreshIntervalMs?: number;
+  /** PR-Z6 — optional override for the `removeRepeatable` test seam.
+   *  The default no-op records nothing; the deregister test passes
+   *  its own array-pusher to assert the seam fired. */
+  readonly removeScheduleFn?: (entry: RegisteredSchedule) => Promise<void>;
 }): Promise<DispatcherHarness> {
   const redis = new IORedisMock();
   const registry = args.registry ?? buildRegistryWith(TEST_DEFINITION);
@@ -154,7 +164,11 @@ async function startDispatcher(args: {
     logger,
     autorun: false,
     registerScheduleFn,
+    refreshIntervalMs: args.refreshIntervalMs ?? 0,
     ...(args.router !== undefined ? { router: args.router } : {}),
+    ...(args.removeScheduleFn !== undefined
+      ? { removeScheduleFn: args.removeScheduleFn }
+      : {}),
   });
 
   return {
@@ -1129,5 +1143,183 @@ describe("AgentDispatcher — PR-Z4 post-run delivery hook", () => {
       redis.disconnect();
     }
     expect(slackMock.deliveries).toHaveLength(1);
+
+describe("AgentDispatcher.refresh — PR-Z6 post-boot re-enumeration (closes G7)", () => {
+  it("registers a post-boot seeded agent_instance on refresh tick", async () => {
+    // Reproduces the partner-deployment bug: `opencoo agents seed`
+    // runs AFTER the engine is up → the row exists in
+    // `agent_instances` but the dispatcher only enumerated at boot
+    // → operator had to `docker compose restart opencoo` to pick
+    // it up. The refresh tick closes that gap.
+    const fixture = await freshAgentDb();
+
+    const harness = await startDispatcher({ fixture });
+    activeHarness = harness;
+    await harness.dispatcher.start();
+    expect(harness.registered).toHaveLength(0);
+    expect(harness.dispatcher.listSchedules()).toHaveLength(0);
+
+    // Operator runs `opencoo agents seed` against the live engine
+    // — direct INSERT mirrors what the CLI command does.
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      name: "post-boot",
+      scheduleCron: "0 8 * * *",
+    });
+
+    // Manually drive the tick (the production 60-second interval
+    // is disabled in tests via `refreshIntervalMs: 0`).
+    await harness.dispatcher.refresh();
+
+    expect(harness.registered).toHaveLength(1);
+    expect(harness.registered[0]).toMatchObject({
+      instanceId,
+      definitionSlug: TEST_DEFINITION.slug,
+      name: "post-boot",
+      scheduleCron: "0 8 * * *",
+    });
+    expect(harness.dispatcher.listSchedules()).toHaveLength(1);
+    expect(harness.dispatcher.listSchedules()[0]?.instanceId).toBe(
+      instanceId,
+    );
+  });
+
+  it("deregisters a disabled agent_instance on refresh tick", async () => {
+    // Inverse of the above: the operator disables an instance
+    // post-boot (UI toggle, `agents disable` CLI, or direct DB
+    // edit) and the refresh tick should tear down the BullMQ
+    // repeatable so the disabled instance stops firing within a
+    // minute.
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      name: "to-disable",
+      scheduleCron: "0 8 * * *",
+    });
+
+    const removed: RegisteredSchedule[] = [];
+    const harness = await startDispatcher({
+      fixture,
+      removeScheduleFn: async (entry) => {
+        removed.push(entry);
+      },
+    });
+    activeHarness = harness;
+    await harness.dispatcher.start();
+    expect(harness.registered).toHaveLength(1);
+
+    // Flip the row to enabled=false (mirrors the UI toggle path).
+    await fixture.raw.query(
+      `UPDATE agent_instances SET enabled = false WHERE id = $1::uuid`,
+      [instanceId],
+    );
+
+    await harness.dispatcher.refresh();
+
+    expect(removed).toHaveLength(1);
+    expect(removed[0]).toMatchObject({
+      instanceId,
+      scheduleCron: "0 8 * * *",
+    });
+    expect(harness.dispatcher.listSchedules()).toHaveLength(0);
+  });
+
+  it("is idempotent — concurrent refresh calls don't double-register", async () => {
+    // Two refresh() calls fire back-to-back while the FIRST call's
+    // DB enumeration is still in flight (simulated by a pending
+    // promise we resolve manually). The single-flight mutex
+    // (`this.refreshing`) must cause the second call to no-op so
+    // the seam-supplied registration stub fires once, not twice.
+    // We seed AFTER `start()` so the initial enumeration finds
+    // nothing — the new row only becomes visible to the refresh
+    // path, isolating the assertion window to the two concurrent
+    // refresh ticks.
+    const fixture = await freshAgentDb();
+    const harness = await startDispatcher({ fixture });
+    activeHarness = harness;
+    await harness.dispatcher.start();
+    expect(harness.registered).toHaveLength(0);
+
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      name: "single-flight",
+      scheduleCron: "0 8 * * *",
+    });
+
+    // Block the dispatcher's `db.execute()` so the first refresh()
+    // hangs inside `fetchDesiredSchedules`. The second refresh()
+    // must observe `this.refreshing === true` and bail BEFORE it
+    // would otherwise call `db.execute()` a second time.
+    //
+    // Access `db` via `[...]` because it's a private field — the
+    // private modifier is a TypeScript compile-time fence; at
+    // runtime the property is reachable like any other. Tests need
+    // this seam to drive the mutex deterministically without
+    // racing the production timer.
+    interface DispatcherInternals {
+      readonly db: { execute: (query: unknown) => Promise<unknown> };
+    }
+    const internals = harness.dispatcher as unknown as DispatcherInternals;
+    const originalExecute = internals.db.execute.bind(internals.db);
+    let releaseFirst: (() => void) | undefined;
+    const firstQueryGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let callCount = 0;
+    const executeSpy = vi
+      .spyOn(internals.db, "execute")
+      .mockImplementation(async (query: unknown) => {
+        callCount += 1;
+        if (callCount === 1) {
+          await firstQueryGate;
+        }
+        return originalExecute(query);
+      });
+
+    try {
+      const first = harness.dispatcher.refresh();
+      // Second call MUST be invoked while the first is still
+      // pending — fire it synchronously without awaiting.
+      const second = harness.dispatcher.refresh();
+
+      // Release the first call's DB query.
+      releaseFirst!();
+
+      await Promise.all([first, second]);
+
+      // Single-flight contract: the DB `execute` ran exactly once
+      // — the second refresh() saw `refreshing === true` and
+      // returned without enumerating.
+      expect(executeSpy).toHaveBeenCalledTimes(1);
+      // And the registration side-effect fired exactly once.
+      expect(harness.registered).toHaveLength(1);
+      expect(harness.registered[0]?.instanceId).toBe(instanceId);
+    } finally {
+      executeSpy.mockRestore();
+    }
+  });
+
+  it("clears the refresh interval in stop() so the timer doesn't leak past shutdown", async () => {
+    // Belt-and-suspenders: hand the dispatcher a small (non-zero)
+    // interval so the timer arms, then assert `stop()` clears it.
+    // Without this, a long-running process that re-creates
+    // dispatchers (test runs, integration suites) leaks
+    // setInterval handles and node ends up holding the event loop
+    // open until process exit.
+    const fixture = await freshAgentDb();
+    const harness = await startDispatcher({
+      fixture,
+      refreshIntervalMs: 50,
+    });
+    activeHarness = null; // We tear down manually below.
+    await harness.dispatcher.start();
+
+    // The dispatcher armed the timer; spy on `clearInterval` so
+    // we can pin that stop() reaches it.
+    const clearSpy = vi.spyOn(globalThis, "clearInterval");
+    try {
+      await harness.dispatcher.stop();
+      expect(clearSpy).toHaveBeenCalled();
+    } finally {
+      clearSpy.mockRestore();
+      harness.redis.disconnect();
+    }
   });
 });

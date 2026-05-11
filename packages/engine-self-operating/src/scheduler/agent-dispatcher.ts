@@ -173,6 +173,23 @@ export interface AgentDispatcherOptions {
    *  ioredis-mock repeatable surface; production passes `undefined`
    *  and the dispatcher uses the real Queue handle. */
   readonly removeScheduleFn?: (entry: RegisteredSchedule) => Promise<void>;
+  /** PR-Z6 (phase-a appendix #12) — how often the dispatcher
+   *  re-enumerates `agent_instances` after the initial `start()`
+   *  enumeration. Production defaults to 60_000ms (every 60s) so a
+   *  freshly-seeded instance (via `opencoo agents seed`) becomes a
+   *  live schedule within a minute without needing
+   *  `docker compose restart opencoo`. The cost of one tick is a
+   *  single `SELECT id, definition_slug, name, schedule_cron FROM
+   *  agent_instances WHERE enabled=true AND schedule_cron IS NOT
+   *  NULL` plus a diff against the in-memory `registered` list —
+   *  cheap by design.
+   *
+   *  Tests pass `0` to disable the interval and drive `refresh()`
+   *  manually so the assertion window is deterministic. The interval
+   *  is armed only when this value is `> 0` AND not `Infinity` —
+   *  passing `Infinity` is treated as "disabled" so production code
+   *  can still opt out symmetrically with the test path. */
+  readonly refreshIntervalMs?: number;
 }
 
 /**
@@ -198,6 +215,15 @@ export class AgentDispatcher {
     | ((entry: RegisteredSchedule) => Promise<void>)
     | undefined;
   private readonly registered: RegisteredSchedule[] = [];
+  private readonly refreshIntervalMs: number;
+  private refreshTimer: ReturnType<typeof setInterval> | undefined;
+  /** PR-Z6 — single-flight mutex on `refresh()` ticks. Set on entry,
+   *  cleared in `finally`. Concurrent calls (e.g. an early manual
+   *  invocation from a test or a slow DB query that lets the next
+   *  interval fire) observe `true` and no-op. Boolean rather than a
+   *  promise: callers don't need to await the in-flight tick, they
+   *  just need to skip a redundant enumeration. */
+  private refreshing = false;
   private stopping: Promise<void> | undefined;
 
   constructor(options: AgentDispatcherOptions) {
@@ -210,6 +236,10 @@ export class AgentDispatcher {
     this.outputChannels = options.outputChannels;
     this.registerScheduleFn = options.registerScheduleFn;
     this.removeScheduleFn = options.removeScheduleFn;
+    this.refreshIntervalMs =
+      options.refreshIntervalMs !== undefined
+        ? options.refreshIntervalMs
+        : 60_000;
 
     this.queue = new Queue<DispatchJobData>(DISPATCH_QUEUE_NAME, {
       connection: options.connection,
@@ -235,33 +265,20 @@ export class AgentDispatcher {
    * Read every enabled instance with a schedule_cron, validate the
    * cron pattern, and register a recurring job per VALID row.
    * Invalid rows log `scheduler.invalid_cron` and are skipped.
+   *
+   * After the initial enumeration, arms a 60-second `setInterval`
+   * (PR-Z6, phase-a appendix #12) so freshly-seeded `agent_instances`
+   * rows become live schedules without an engine restart. The
+   * interval is cleared in `stop()`. Tests pass
+   * `refreshIntervalMs: 0` to disable the timer and drive `refresh()`
+   * manually.
    */
   async start(): Promise<void> {
-    const result = (await this.db.execute(sql`
-      SELECT id::text             AS id,
-             definition_slug      AS definition_slug,
-             name                 AS name,
-             schedule_cron        AS schedule_cron
-      FROM agent_instances
-      WHERE enabled = true
-        AND schedule_cron IS NOT NULL
-      ORDER BY created_at
-    `)) as unknown as ExecResult<{
-      id: string;
-      definition_slug: string;
-      name: string;
-      schedule_cron: string;
-    }>;
+    const desired = await this.fetchDesiredSchedules();
 
     let registered = 0;
     let skipped = 0;
-    for (const row of result.rows) {
-      const entry: RegisteredSchedule = {
-        instanceId: row.id,
-        definitionSlug: row.definition_slug,
-        name: row.name,
-        scheduleCron: row.schedule_cron,
-      };
+    for (const entry of desired.entries) {
       const v = validateCron(entry.scheduleCron);
       if (!v.valid) {
         this.logger.error("scheduler.invalid_cron", {
@@ -296,8 +313,175 @@ export class AgentDispatcher {
     this.logger.info("scheduler.started", {
       registered,
       skipped,
-      total: result.rows.length,
+      total: desired.totalRows,
     });
+
+    // PR-Z6 (phase-a appendix #12) — arm the periodic refresh after
+    // the initial enumeration so the boot path is always serial
+    // (registered rows appear before the first tick) and the
+    // interval is only created when explicitly enabled. `0`
+    // (or any non-positive / non-finite value) means "disabled" so
+    // tests can drive `refresh()` manually.
+    if (
+      this.refreshTimer === undefined &&
+      Number.isFinite(this.refreshIntervalMs) &&
+      this.refreshIntervalMs > 0
+    ) {
+      this.refreshTimer = setInterval(() => {
+        // Errors in `refresh()` are swallowed so a transient DB
+        // hiccup doesn't crash the dispatcher's event loop tick.
+        // The method itself logs `scheduler.refresh_failed`.
+        void this.refresh().catch(() => undefined);
+      }, this.refreshIntervalMs);
+      // Allow the host process to exit while this timer is armed
+      // (matches BullMQ's own internal timers).
+      this.refreshTimer.unref?.();
+    }
+  }
+
+  /**
+   * PR-Z6 (phase-a appendix #12) — re-enumerate `agent_instances`,
+   * diff against the in-memory `registered` list, and reconcile:
+   * register newly-enabled rows, deregister rows that disappeared
+   * or flipped to `enabled=false`. Invalid-cron rows are logged
+   * once per call and skipped.
+   *
+   * Single-flight: if a previous tick is still in-flight, the
+   * second call observes `this.refreshing === true` and no-ops.
+   *
+   * Cron-pattern CHANGES on an existing instance are handled by the
+   * admin-API `updateSchedule` path; this refresh treats a same-
+   * instance row with a changed cron as a delete-then-add to keep
+   * the diff simple (the admin path is the operator-driven happy
+   * path; the refresh is the "operator ran `agents seed` directly
+   * against the DB" fallback).
+   */
+  async refresh(): Promise<void> {
+    if (this.refreshing) return;
+    if (this.stopping !== undefined) return;
+    this.refreshing = true;
+    try {
+      let desired: { readonly entries: RegisteredSchedule[]; readonly totalRows: number };
+      try {
+        desired = await this.fetchDesiredSchedules();
+      } catch (err) {
+        this.logger.error("scheduler.refresh_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
+
+      const desiredById = new Map<string, RegisteredSchedule>();
+      for (const entry of desired.entries) {
+        desiredById.set(entry.instanceId, entry);
+      }
+      const registeredById = new Map<string, RegisteredSchedule>();
+      for (const entry of this.registered) {
+        registeredById.set(entry.instanceId, entry);
+      }
+
+      // Removals: in `registered` but not in `desired` (row gone or
+      // flipped to enabled=false / schedule_cron NULL). Also treats
+      // a same-id row whose `scheduleCron` changed since boot as a
+      // remove (the matching add below re-registers with the NEW
+      // cron).
+      let removed = 0;
+      for (const entry of [...this.registered]) {
+        const next = desiredById.get(entry.instanceId);
+        const cronChanged =
+          next !== undefined && next.scheduleCron !== entry.scheduleCron;
+        if (next === undefined || cronChanged) {
+          try {
+            await this.removeOne(entry);
+            const idx = this.registered.findIndex(
+              (s) => s.instanceId === entry.instanceId,
+            );
+            if (idx !== -1) this.registered.splice(idx, 1);
+            registeredById.delete(entry.instanceId);
+            removed += 1;
+          } catch (err) {
+            this.logger.error("scheduler.deregister_failed", {
+              instance_id: entry.instanceId,
+              definition_slug: entry.definitionSlug,
+              cron: entry.scheduleCron,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      }
+
+      // Additions: in `desired` but not in `registered`. Validates
+      // the cron pattern up-front so the dispatcher's
+      // "invalid-cron-doesn't-take-the-whole-scheduler-down"
+      // invariant from `start()` extends to the refresh path.
+      let added = 0;
+      for (const entry of desired.entries) {
+        if (registeredById.has(entry.instanceId)) continue;
+        const v = validateCron(entry.scheduleCron);
+        if (!v.valid) {
+          this.logger.error("scheduler.invalid_cron", {
+            instance_id: entry.instanceId,
+            definition_slug: entry.definitionSlug,
+            cron: entry.scheduleCron,
+            error: v.error ?? "unknown",
+          });
+          continue;
+        }
+        try {
+          await this.registerOne(entry);
+          this.registered.push(entry);
+          registeredById.set(entry.instanceId, entry);
+          added += 1;
+        } catch (err) {
+          this.logger.error("scheduler.register_failed", {
+            instance_id: entry.instanceId,
+            definition_slug: entry.definitionSlug,
+            cron: entry.scheduleCron,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      this.logger.info("scheduler.refreshed", {
+        registered: this.registered.length,
+        added,
+        removed,
+      });
+    } finally {
+      this.refreshing = false;
+    }
+  }
+
+  /** PR-Z6 — single `SELECT` that powers both `start()` and
+   *  `refresh()`. Same WHERE clause as the original `start()`
+   *  enumeration so the two code paths see the same row set;
+   *  refactored into one helper to keep the contract in lockstep. */
+  private async fetchDesiredSchedules(): Promise<{
+    readonly entries: RegisteredSchedule[];
+    readonly totalRows: number;
+  }> {
+    const result = (await this.db.execute(sql`
+      SELECT id::text             AS id,
+             definition_slug      AS definition_slug,
+             name                 AS name,
+             schedule_cron        AS schedule_cron
+      FROM agent_instances
+      WHERE enabled = true
+        AND schedule_cron IS NOT NULL
+      ORDER BY created_at
+    `)) as unknown as ExecResult<{
+      id: string;
+      definition_slug: string;
+      name: string;
+      schedule_cron: string;
+    }>;
+    const entries: RegisteredSchedule[] = result.rows.map((row) => ({
+      instanceId: row.id,
+      definitionSlug: row.definition_slug,
+      name: row.name,
+      scheduleCron: row.schedule_cron,
+    }));
+    return { entries, totalRows: result.rows.length };
   }
 
   /**
@@ -598,6 +782,14 @@ export class AgentDispatcher {
    */
   async stop(): Promise<void> {
     if (this.stopping !== undefined) return this.stopping;
+    // PR-Z6 — clear the periodic-refresh timer FIRST so a tick that
+    // would otherwise fire mid-shutdown doesn't race with the worker
+    // close. `refresh()` also checks `this.stopping` and bails for
+    // belt-and-suspenders.
+    if (this.refreshTimer !== undefined) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = undefined;
+    }
     this.stopping = (async (): Promise<void> => {
       try {
         // Pause first so no new jobs start while we drain.
