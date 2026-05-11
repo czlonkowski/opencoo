@@ -593,6 +593,13 @@ export function registerSourceBindingsRoutes(
       // We log + continue.
       if (args.ingestionQueue?.add !== undefined) {
         try {
+          // NOTE: scanner currently scans all enabled bindings per tick;
+          // the empty payload is intentional. Threading bindingId through
+          // scanner.add() to scope a single scan is a follow-up (filed
+          // as Z10 / phase-b candidate). The dedupe pipeline keeps this
+          // correct — extra bindings re-scanned by the same tick fall
+          // out via source_doc_id + cursor dedupe — but it is mildly
+          // confusing operator UX worth tightening later.
           await args.ingestionQueue.add(
             "post-create-scan",
             {},
@@ -603,10 +610,14 @@ export function registerSourceBindingsRoutes(
             },
           );
         } catch (err) {
+          // Route through `safeErrorMessage` (scrub-then-cap) rather
+          // than `err.name` — `err.name` is almost always "Error" and
+          // not actionable. THREAT-MODEL §3 invariant: logged error
+          // bytes are scrubbed before they hit the structured log.
           req.log?.warn({
             msg: "binding_create.initial_scan_enqueue_failed",
             binding_id: id,
-            err: err instanceof Error ? err.name : "unknown",
+            err: safeErrorMessage(err),
           });
         }
       }
@@ -698,6 +709,12 @@ export function registerSourceBindingsRoutes(
       });
 
       try {
+        // NOTE: scanner currently scans all enabled bindings per tick;
+        // the empty payload is intentional. Threading bindingId through
+        // scanner.add() to scope a single scan is a follow-up (filed as
+        // Z10 / phase-b candidate). The dedupe pipeline keeps this
+        // correct (cursor + source_doc_id), but a per-binding tick
+        // would be the cleaner operator UX.
         await enqueue(
           "scan-now",
           {},
@@ -708,10 +725,15 @@ export function registerSourceBindingsRoutes(
           },
         );
       } catch (err) {
+        // Route through `safeErrorMessage` (scrub-then-cap) rather
+        // than `err.name` — `err.name` is almost always "Error" and
+        // not actionable. Matches the response body's `reason` field
+        // (which already uses `safeErrorMessage`) so the log and the
+        // 500 response carry the same scrubbed string.
         req.log?.warn({
           msg: "binding_scan_now.enqueue_failed",
           binding_id: id,
-          err: err instanceof Error ? err.name : "unknown",
+          err: safeErrorMessage(err),
         });
         return reply.code(500).send({
           error: "enqueue_failed",

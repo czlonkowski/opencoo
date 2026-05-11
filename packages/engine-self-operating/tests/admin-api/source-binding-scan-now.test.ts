@@ -26,7 +26,7 @@
  *  13. Without an ingestionQueue: the binding still creates cleanly
  *      (no exception); the next 4h cron tick picks it up.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { getCsrf, makeAdminFixture } from "./_fixture.js";
 
@@ -576,9 +576,5 @@ describe("admin-api POST /api/admin/source-bindings — post-create initial scan
     });
     expect(res.statusCode).toBe(422);
     expect(mock.calls).toHaveLength(0);
-
-    // Suppress the otherwise-unused `vi` import warning if the
-    // fixture's eslint config flags it.
-    void vi;
   });
 });

@@ -1276,6 +1276,7 @@ The same partner cutover that surfaced Z1 (Drive client wiring) also surfaced th
 - **Per-binding scan-now cooldown / rate-limit.** v0.2 follow-up per the wave-12 scoping doc's "Out of scope" §. The UI's 3-second client-side button-disable is the only anti-spam protection in v0.1.
 - **Backpressure / queue-depth probe before enqueue.** A misbehaving operator could click "Scan now" against 100 bindings sequentially and saturate the scanner queue. v0.2 could probe `queue.getJobCounts("waiting")` and refuse with 429 when above a threshold.
 - **`scanNowState` carrying the jobId for SSE deep-link.** Currently the success toast says "see the Activity tab"; an enhancement would deep-link the toast to the specific run row. Deferred until the Activity tab grows a per-job filter.
+- **Per-binding scoping of the scanner payload.** Both the post-create initial-scan and the `:id/scan-now` route enqueue `ingestion.scanner` jobs with an empty `{}` payload, and the scanner worker enumerates ALL enabled bindings per tick rather than scoping to a single `bindingId`. The dedupe pipeline (cursor + `source_doc_id`) keeps this correct — extra bindings re-scanned by the same tick are no-ops — but it is mildly confusing operator UX (the "Scan now" button on binding A causes binding B to scan too). Threading `bindingId` through `scanner.add(...)` + narrowing the worker's SELECT is its own refactor; filed as Z10 / phase-b candidate. Inline comments at both enqueue sites point at this entry.
 
 ---
 
