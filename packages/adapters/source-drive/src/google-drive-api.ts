@@ -235,10 +235,18 @@ export function createGoogleDriveApi(
     },
 
     async exportAsBytes(args: DriveExportArgs): Promise<Buffer> {
-      // Google-native types (Docs, Sheets, Slides, Forms,
-      // Drawings) require the `files.export` endpoint with a
-      // target mime type. Everything else (PDF, plain text,
-      // images, etc.) flows through `files.get?alt=media`.
+      // v0.1 scope: only Google Docs flow through `files.export`.
+      // Other Google-native types (Sheets, Slides, Forms, Drawings)
+      // would also need export with a per-type target mime — they're
+      // out of scope today because the default binding-config
+      // `mimeTypes` whitelist is `[google-doc, pdf]` (see
+      // binding-config.ts), so Sheets/Slides/Forms/Drawings never
+      // appear in the changes stream. If an operator widens the
+      // whitelist, the `files.get?alt=media` path below will surface
+      // Drive's "Use Export with Docs Editors files" 400 — that's
+      // the signal to extend this routing. Tracked as a v0.2
+      // follow-up. PDF, plain text, images, etc. continue through
+      // `files.get?alt=media`.
       if (args.mimeType === GOOGLE_DOC_MIME) {
         // Prefer markdown — Drive added it in 2024 and the
         // wiki compiler likes the lighter normalization step.
@@ -372,14 +380,11 @@ export function filterChangesByFolderId(
 function arrayBufferDataToBuffer(data: unknown): Buffer {
   if (Buffer.isBuffer(data)) return data;
   if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (
-    data !== null &&
-    typeof data === "object" &&
-    "byteLength" in data &&
-    "buffer" in data
-  ) {
-    // ArrayBufferView (Uint8Array, etc.) — Buffer.from
-    // accepts a typed-array directly.
+  if (ArrayBuffer.isView(data)) {
+    // Typed-array / DataView (Uint8Array, etc.) — Buffer.from
+    // accepts a typed-array directly. The platform guard is more
+    // precise than duck-typing on `byteLength`/`buffer` (Copilot
+    // PR #106 review).
     const view = data as ArrayBufferView;
     return Buffer.from(view.buffer, view.byteOffset, view.byteLength);
   }

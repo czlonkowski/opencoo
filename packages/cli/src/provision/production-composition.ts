@@ -589,8 +589,14 @@ async function loadSourceAdapterFactories(
     return (a) =>
       mod.createGoogleDriveAdapter({
         ...a,
-        makeDrive: (refreshToken) => {
-          const json = refreshToken.toString("utf8");
+        // Note: the `MakeDrive` factory parameter is typed as
+        // `refreshToken: Buffer` because the upstream interface
+        // was modelled on an OAuth refresh-token. For the Google
+        // service-account path, the bytes are actually the SA
+        // JSON. Renaming locally to make the security-sensitive
+        // flow self-documenting (Copilot PR #106 review).
+        makeDrive: (serviceAccountJsonBytes) => {
+          const json = serviceAccountJsonBytes.toString("utf8");
           const sa = mod.parseServiceAccountJson(json);
           return mod.createGoogleDriveApi(sa);
         },
