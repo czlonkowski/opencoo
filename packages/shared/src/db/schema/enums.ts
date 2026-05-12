@@ -24,6 +24,7 @@ export const intakeStatus = pgEnum("intake_status", [
   "pending",
   "classified",
   "skipped",
+  "failed",
 ]);
 
 export const webhookStatus = pgEnum("webhook_status", [

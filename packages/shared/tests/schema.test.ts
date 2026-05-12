@@ -524,12 +524,13 @@ describe("sources_bindings table", () => {
 // ---------------------------------------------------------------------------
 
 describe("pg enums (ingestion-side)", () => {
-  it("intake_status has three values", () => {
+  it("intake_status has four values (pending → classified → skipped → failed; phase-a appendix #14 PR-W3)", () => {
     expect(intakeStatus.enumName).toBe("intake_status");
     expect([...intakeStatus.enumValues]).toEqual([
       "pending",
       "classified",
       "skipped",
+      "failed",
     ]);
   });
 
