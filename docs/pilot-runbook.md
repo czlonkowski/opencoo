@@ -416,7 +416,7 @@ Three known follow-ups operators should be aware of as of the 0.1.0-a phase-a ap
 
 ## 13. Wiring n8n via the webhook output channel
 
-The `output-webhook` adapter (wired in composition by PR-W3, phase-a appendix #13) is the bridge for routing agent outputs into n8n workflows — or any other downstream automation that exposes an HTTP webhook receiver. Every delivery is signed with HMAC-SHA256 over the raw request body and carries a deterministic delivery id (UUID v5 derived from the channel + payload) so the receiver can dedupe replays.
+The `output-webhook` adapter (wired in composition by PR-W3, phase-a appendix #13) is the bridge for routing agent outputs into n8n workflows — or any other downstream automation that exposes an HTTP webhook receiver. Every delivery is signed with HMAC-SHA256 over the raw request body and carries a deterministic delivery id — `X-OpenCoo-Delivery-Id`: UUID v5 derived from the channel credential identifier + a SHA-256 of the payload. **Note**: delivery IDs change when the channel credential is rotated; n8n dedupe tables should expire entries on a TTL rather than storing them indefinitely.
 
 ### Outgoing request shape
 
@@ -424,7 +424,7 @@ The `output-webhook` adapter (wired in composition by PR-W3, phase-a appendix #1
 POST <targetUrl>
 content-type: application/json
 x-opencoo-signature: <64-hex HMAC-SHA256 over the raw body>
-x-opencoo-delivery-id: <UUID v5 derived from channel + payload>
+x-opencoo-delivery-id: <UUID v5 derived from the channel credential identifier + a SHA-256 of the payload — changes when the credential is rotated; receivers should TTL-expire dedupe entries>
 [operator-supplied headers, Authorization forbidden]
 
 { "event": "agent.run.completed", "data": { ...agent's verbatim JSON output... } }

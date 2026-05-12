@@ -256,6 +256,16 @@ describe("composeProductionFromEnv — PR-Z4 output-channels wiring", () => {
             ? f.recompileQueue
             : f.deleteQueue,
         registerScannerCronFn: async () => undefined,
+        // PR-W1 (phase-a appendix #13) — bypass BullMQ Queue / cron
+        // construction in the worldview bundle (analogous to the
+        // existing registerScannerCronFn seam). Without these the test
+        // hangs constructing a real Queue against the stub Redis.
+        worldviewQueueFactory: () =>
+          ({
+            add: async () => undefined,
+            close: async () => undefined,
+          }) as unknown as ReturnType<typeof Object>,
+        registerWorldviewSafetyNetCronFn: async () => undefined,
       });
 
       // 1. Registry has BOTH adapters.

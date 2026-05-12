@@ -190,15 +190,26 @@ export function NewOutputChannelModal(
                       {prop.description}
                     </span>
                   ) : null}
-                  <input
-                    id={`config-${key}`}
-                    type="text"
-                    value={configFields[key] ?? ""}
-                    onChange={(e): void =>
-                      setConfigFields((s) => ({ ...s, [key]: e.target.value }))
-                    }
-                    style={inputStyle}
-                  />
+                  {/* PR-W3 Copilot triage — `object`-typed entries are
+                      documentation-only in v0.1 (e.g. webhook `headers`,
+                      `retryPolicy`). Skip the `<input>` widget; the
+                      description above explains the field and server-
+                      side Zod still validates the shape when the
+                      operator submits it through `config` JSON. */}
+                  {prop.type !== "object" ? (
+                    <input
+                      id={`config-${key}`}
+                      type="text"
+                      value={configFields[key] ?? ""}
+                      onChange={(e): void =>
+                        setConfigFields((s) => ({
+                          ...s,
+                          [key]: e.target.value,
+                        }))
+                      }
+                      style={inputStyle}
+                    />
+                  ) : null}
                 </div>
               ),
             )}

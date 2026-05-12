@@ -78,10 +78,35 @@ export interface OutputAdapterEntry {
     readonly properties: Readonly<
       Record<
         string,
-        Readonly<{
-          readonly type: "string" | "boolean" | "number";
-          readonly description?: string;
-        }>
+        // Mirror of `OutputAdapterDescriptorChannelConfigProperty` in
+        // `engine-self-operating`. Scalar entries are rendered as
+        // `<input>` widgets; `object`-typed entries are documentation
+        // only (the description is shown, but no nested widget is
+        // generated — server-side Zod still enforces the shape).
+        | Readonly<{
+            readonly type: "string" | "boolean" | "number" | "integer";
+            readonly description?: string;
+            readonly minimum?: number;
+            readonly maximum?: number;
+          }>
+        | Readonly<{
+            readonly type: "object";
+            readonly description?: string;
+            readonly additionalProperties?: Readonly<{
+              readonly type: "string" | "boolean" | "number" | "integer";
+            }>;
+            readonly properties?: Readonly<
+              Record<
+                string,
+                Readonly<{
+                  readonly type: "string" | "boolean" | "number" | "integer";
+                  readonly description?: string;
+                  readonly minimum?: number;
+                  readonly maximum?: number;
+                }>
+              >
+            >;
+          }>
       >
     >;
     readonly required: readonly string[];
