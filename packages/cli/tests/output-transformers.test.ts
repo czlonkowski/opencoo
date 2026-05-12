@@ -87,7 +87,7 @@ describe("heartbeatToAsana", () => {
     // Each alert produces one h2 + bare-text body + one ul.
     // PR-Y5: <p> dropped (Asana html_notes rejects it).
     expect(html.match(/<h2>/g)?.length).toBe(2);
-    expect(html).not.toMatch(/<p>/);
+    expect(html).not.toMatch(/<p\b/);
     expect(html.match(/<ul>/g)?.length).toBe(2);
     // Specific content present.
     expect(html).toContain("Q3 deck slipping");
@@ -146,7 +146,7 @@ describe("heartbeatToAsana", () => {
       agentOutput: { summary: "", alerts: [] },
     });
     expect(payload.htmlNotes).toContain("No alerts today.");
-    expect(payload.htmlNotes).not.toMatch(/<p>/);
+    expect(payload.htmlNotes).not.toMatch(/<p\b/);
     // Empty summary → fallback ISO-date title.
     expect(payload.title).toMatch(/^opencoo heartbeat — \d{4}-\d{2}-\d{2}$/);
   });
@@ -278,7 +278,7 @@ describe("heartbeatToAsana", () => {
     // Each opening tag has its closing pair (PR-Y5: <p> dropped).
     const countTag = (re: RegExp): number => (html.match(re) ?? []).length;
     expect(countTag(/<h2>/g)).toBe(countTag(/<\/h2>/g));
-    expect(html).not.toMatch(/<p>/);
+    expect(html).not.toMatch(/<p\b/);
     expect(countTag(/<ul>/g)).toBe(countTag(/<\/ul>/g));
     expect(countTag(/<li>/g)).toBe(countTag(/<\/li>/g));
     expect(countTag(/<em>/g)).toBe(countTag(/<\/em>/g));

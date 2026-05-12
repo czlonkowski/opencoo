@@ -28,9 +28,10 @@
  *     parser is stricter than the public docs claim): `<body>`,
  *     `<h1>`, `<h2>`, `<strong>`, `<em>`, `<u>`, `<s>`, `<code>`,
  *     `<a>`, `<blockquote>`, `<pre>`, `<ol>`, `<ul>`, `<li>`,
- *     `<hr/>`, `<img>`, `<table>`, `<tr>`, `<td>`. **`<p>` and
- *     `<br/>` are NOT supported** — observed live on partner
- *     cutover (`xml_parsing_error: XML is invalid`).
+ *     `<hr/>`, `<img/>` (self-closing — XML requires it),
+ *     `<table>`, `<tr>`, `<td>`. **`<p>` and `<br/>` are NOT
+ *     supported** — observed live on partner cutover
+ *     (`xml_parsing_error: XML is invalid`).
  *   - Old supported-tag list (now corrected): `<body>`, `<h1>`, `<h2>`,
  *     `<ul>/<ol>/<li>`, `<a>`, `<b>/<strong>`, `<i>/<em>`,
  *     `<u>`, `<s>`, `<code>`, `<pre>`.
@@ -182,7 +183,12 @@ function wrapBodyWithCap(siblings: readonly string[]): string {
     kept.push(block);
     used += blockBytes;
   }
-  const innerJoined = truncated ? kept.join("") + TRUNCATION_MARKER : kept.join("");
+  // PR-Y5 Copilot triage: separate the truncation marker from the
+  // last kept sibling with `<hr/>` so it doesn't glue to a bare-text
+  // body. `<hr/>` is on Asana's allow-list.
+  const innerJoined = truncated
+    ? kept.join("") + "<hr/>" + TRUNCATION_MARKER
+    : kept.join("");
   return `<body>${innerJoined}</body>`;
 }
 
