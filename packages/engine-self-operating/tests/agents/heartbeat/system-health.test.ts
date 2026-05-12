@@ -145,7 +145,14 @@ describe("gatherSystemHealth — shape + scope + truncation", () => {
       adapterSlug: "drive",
       allowedPaths: ["meetings/**"],
     });
-    const longErr = "x".repeat(500); // 500 chars; expect 200-char trim.
+    // Use prose-shaped bytes that scrubPat leaves alone — a
+    // long sequence of alphanum > 31 chars would match the
+    // generic-token rule and get redacted to `[REDACTED]`
+    // (which is correct behavior for credentials, but masks
+    // the cap-to-200 assertion we want here). Spaces break the
+    // generic-token regex's run-length so 500 chars of "x x x"
+    // survive scrub and exercise pure truncation.
+    const longErr = "x ".repeat(500); // 1000 chars; expect 200-char cap.
     await fixture.raw.query(
       `INSERT INTO ingestion_intake
          (binding_id, source_doc_id, source_revision, content_hash, status, error_class, error_text)
@@ -161,12 +168,67 @@ describe("gatherSystemHealth — shape + scope + truncation", () => {
       now: () => NOW,
     });
 
+    // safeErrorMessage caps at ERROR_MESSAGE_MAX_LENGTH (200);
+    // the prose-shaped bytes survive the scrub layer
+    // unchanged, so the snippet is exactly 200 chars.
     expect(result.intake_failures_recent[0]?.error_text_snippet).toHaveLength(
       200,
     );
+    // First 200 chars of "x x x ..." → "x x x ... x " (each
+    // pair takes 2 bytes, so 100 "x " pairs fill 200 chars).
     expect(result.intake_failures_recent[0]?.error_text_snippet).toBe(
-      "x".repeat(200),
+      "x ".repeat(100),
     );
+  });
+
+  // PR-W6 follow-up (Copilot #3229578187) — spotlight() handles
+  // XML sentinels but does NOT scrub secrets. The gatherer is
+  // the load-bearing layer for "no credentials in the LLM
+  // prompt" (THREAT-MODEL §2 invariant 11). We pin the chain
+  // here by seeding an error_text with three credential
+  // families that `scrubPat` recognises (Bearer header, JWT,
+  // 32+ alphanum token) and asserting all three are redacted
+  // before the snippet reaches the gatherer's return value.
+  it("scrubs credential-shaped substrings from error_text_snippet (Bearer / JWT / 32+ alphanum)", async () => {
+    const fixture = await freshAgentDb();
+    const { bindingId } = await seedBinding(fixture, {
+      adapterSlug: "drive",
+      allowedPaths: ["meetings/**"],
+    });
+    // Three credential shapes a deployed compile-worker could
+    // conceivably surface in error_text:
+    //   - Bearer header in a 401 response
+    //   - JWT (three base64url-shaped segments separated by dots)
+    //   - 40+ char generic API key
+    const malicious = [
+      "401 Unauthorized: Bearer sk-veryverysensitivekeythatleaksifnotscrubbed",
+      "jwt: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+      "api key abcdefghijklmnopqrstuvwxyz0123456789ABCDEF",
+    ].join(" | ");
+    await fixture.raw.query(
+      `INSERT INTO ingestion_intake
+         (binding_id, source_doc_id, source_revision, content_hash, status, error_class, error_text)
+       VALUES ($1::uuid, 'd-mal', 'r', 'h', 'failed', 'validation'::error_class, $2)`,
+      [bindingId, malicious],
+    );
+
+    const result = await gatherSystemHealth({
+      db: fixture.db as unknown as Parameters<typeof gatherSystemHealth>[0]["db"],
+      scopeDomainIds: [fixture.domainId],
+      domainSlug: "test-domain",
+      wikiAdapter: stubWiki(),
+      now: () => NOW,
+    });
+
+    const snippet = result.intake_failures_recent[0]?.error_text_snippet ?? "";
+    // None of the secret bytes survive — every credential family
+    // is replaced with `[REDACTED]`.
+    expect(snippet).not.toContain("sk-veryverysensitivekey");
+    expect(snippet).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+    expect(snippet).not.toContain("abcdefghijklmnopqrstuvwxyz0123456789");
+    expect(snippet).toContain("[REDACTED]");
+    // Snippet still fits within the 200-char prompt-size cap.
+    expect(snippet.length).toBeLessThanOrEqual(200);
   });
 
   it("respects scope: a binding/intake row in domain X is NOT visible when scope is [Y]", async () => {

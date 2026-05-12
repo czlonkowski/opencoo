@@ -155,11 +155,24 @@ export async function runHeartbeat(
   const systemHealthEnvelope = spotlight({
     // JSON-encode the snapshot so the LLM sees a structured
     // payload it can lift fields from (`wiki_stats.page_count`,
-    // `intake_counts.failed`). The spotlight() amp→sentinel→
-    // xmlbody chain still escapes any user-derived bytes
-    // (binding_name from notes, error_text_snippet from
-    // upstream errors) before they reach the model — see
-    // `@opencoo/shared/spotlight` header comment for the chain.
+    // `intake_counts.failed`).
+    //
+    // Defense-in-depth chain for fields containing operator-
+    // visible strings (error_text_snippet, last_failure_message,
+    // binding_name):
+    //   (1) gatherSystemHealth applies `safeErrorMessage` —
+    //       scrubs credential-shaped substrings (postgres://,
+    //       sk-…, env-var-style tokens) AND caps to 200 chars.
+    //       This is the load-bearing layer for "no credentials
+    //       in the LLM prompt" (THREAT-MODEL §2 invariant 11).
+    //   (2) spotlight() — XML sentinel guard ONLY. It escapes
+    //       `<system>` / `</source_content>` tag-shaped bytes
+    //       so they cannot terminate the envelope or forge a
+    //       chat-format role marker. spotlight() is NOT a
+    //       secret-scrubber; a credential that survived (1)
+    //       would be XML-escaped here but still reach the model.
+    //   See `@opencoo/shared/spotlight` header for the
+    //   amp → sentinel → xmlbody escape order.
     content: JSON.stringify(systemHealth, null, 2),
     source: `system-health://${args.domainSlug}`,
     fetchedAt,

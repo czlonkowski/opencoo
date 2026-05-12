@@ -31,15 +31,35 @@
  * `'failed'` already or not. Once W3 lands, the gatherer keeps
  * returning correct counts without a change here.
  *
- * # Truncation
+ * # Defense-in-depth chain for `error_text_snippet`
  *
- * `error_text_snippet` is truncated to 200 chars AT THE
- * GATHERER (not downstream). Bounds prompt size + reduces the
- * surface area for a malicious source-doc-induced error message
- * that tries to inject the LLM prompt.
+ *   (1) SQL `LEFT(error_text, 1000)` — row-size bound. Prevents
+ *       a hostile error message larger than the BullMQ job
+ *       limit from flowing into the gatherer's in-memory rows.
+ *   (2) JS `safeErrorMessage(...)` — credential scrub + cap to
+ *       `ERROR_MESSAGE_MAX_LENGTH` (200). This is the gate that
+ *       rejects credential-shaped substrings (`postgres://user:
+ *       secret@host`, env-var-style tokens, etc.) before the
+ *       snippet reaches the LLM prompt. Scrub-then-cap order
+ *       per `safe-error.ts` docblock — cap-then-scrub would
+ *       leave secret bytes straddling the boundary.
+ *   (3) `spotlight()` envelope (run.ts) — XML sentinel guard
+ *       only; NOT a secret-scrubber. It would XML-escape a
+ *       leaked credential but the credential bytes would still
+ *       reach the model. Hence the (2) scrub above is the
+ *       load-bearing layer against credential leakage; (3) is
+ *       structural injection defense.
+ *
+ * The (1)→(2)→(3) order is intentional: SQL bounds row size
+ * cheaply, JS scrubs secrets, spotlight() XML-escapes. Reversing
+ * (1) and (2) is wrong — scrubbing a 10 KB raw error_text in JS
+ * is wasteful when SQL can cap it; reversing (2) and (3) is also
+ * wrong — XML-escaping credential bytes still leaks the secret.
  */
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
+
+import { safeErrorMessage } from "@opencoo/shared/scrub";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
@@ -47,7 +67,14 @@ interface ExecResult<R> {
   readonly rows: R[];
 }
 
-const ERROR_TEXT_SNIPPET_MAX_CHARS = 200;
+/** Row-size bound — applied SQL-side via `LEFT(error_text, N)`.
+ *  Caps how many bytes flow from PG into the gatherer's
+ *  in-memory rows even if an upstream compile-worker wrote a
+ *  multi-KB error message. The 1000 budget is comfortably above
+ *  `ERROR_MESSAGE_MAX_LENGTH` (200) so the JS-side scrub still
+ *  sees enough of the message to match credential patterns
+ *  that straddle byte boundaries. */
+const ERROR_TEXT_ROW_MAX_CHARS = 1000;
 const INTAKE_FAILURES_RECENT_CAP = 3;
 const RECENT_AGENT_RUNS_WINDOW_HOURS = 24;
 
@@ -225,13 +252,25 @@ export async function gatherSystemHealth(
 
   // 2. intake_failures_recent — top-N most-recent rows with
   //    status='failed', joined to the binding for a label.
-  //    `error_text` truncated AT THE QUERY so the snippet never
-  //    leaves the gatherer over the cap.
+  //
+  //    Defense-in-depth chain for `error_text` (see module
+  //    docblock "Defense-in-depth chain" section):
+  //      (1) SQL `LEFT(error_text, 1000)` caps row size before
+  //          PG ships bytes to the gatherer. Cheap; protects
+  //          memory.
+  //      (2) `safeErrorMessage(...)` (applied below in the
+  //          mapper) scrubs credential-shaped substrings AND
+  //          caps to `ERROR_MESSAGE_MAX_LENGTH` (200). This is
+  //          the load-bearing layer for "no credentials in the
+  //          LLM prompt" (THREAT-MODEL §2 invariant 11).
+  //      (3) spotlight() in run.ts XML-escapes the JSON-encoded
+  //          payload — structural injection defense only,
+  //          NOT a secret-scrubber.
   const failuresRaw = (await args.db.execute(sql`
     SELECT
       COALESCE(NULLIF(b.notes, ''), b.adapter_slug || ':' || COALESCE(b.source_id, b.id::text)) AS binding_name,
       i.error_class::text AS error_class,
-      i.error_text AS error_text
+      LEFT(i.error_text, ${ERROR_TEXT_ROW_MAX_CHARS}) AS error_text
     FROM ingestion_intake i
     JOIN sources_bindings b ON b.id = i.binding_id
     WHERE i.status::text = 'failed'
@@ -243,7 +282,11 @@ export async function gatherSystemHealth(
   const intake_failures_recent = failuresRaw.rows.map((r) => ({
     binding_name: r.binding_name,
     error_class: r.error_class ?? "unknown",
-    error_text_snippet: truncate(r.error_text ?? "", ERROR_TEXT_SNIPPET_MAX_CHARS),
+    // safeErrorMessage = scrub THEN cap to ERROR_MESSAGE_MAX_LENGTH
+    // (200). Per `@opencoo/shared/scrub/safe-error.ts` the order
+    // matters: cap-then-scrub would leave credential bytes
+    // straddling the 200-char boundary unredacted.
+    error_text_snippet: safeErrorMessage(r.error_text ?? ""),
   }));
 
   // 3. source_bindings — per-binding scan lag + per-status
@@ -327,7 +370,16 @@ export async function gatherSystemHealth(
     agent_slug: r.agent_slug,
     success_count: Number(r.success_count),
     failure_count: Number(r.failure_count),
-    last_failure_message: r.last_failure_message ?? null,
+    // Apply the same scrub-then-cap chain as
+    // `error_text_snippet`. Agent runs are engine-internal but
+    // an upstream LLM provider error message can carry the API
+    // key in `.message` (e.g. "401 Unauthorized: sk-…");
+    // safeErrorMessage scrubs those families before the snippet
+    // reaches the LLM prompt.
+    last_failure_message:
+      r.last_failure_message === null
+        ? null
+        : safeErrorMessage(r.last_failure_message),
   }));
 
   // 5. wiki_stats — page_count via wikiAdapter.listMarkdown,
@@ -412,8 +464,4 @@ async function readWikiStats(args: WikiStatsArgs): Promise<{
     worldview_bytes,
     worldview_last_compiled_at,
   };
-}
-
-function truncate(s: string, max: number): string {
-  return s.length <= max ? s : s.slice(0, max);
 }
