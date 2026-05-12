@@ -128,9 +128,18 @@ export interface OutputDeliveryDlqEvent {
  *
  *  The event's payload mirrors the same shape the W4 GET handler
  *  surfaces under `recentFailedIntake` so the SourceBindingDetail
- *  panel + the Activity feed render the same data. */
+ *  panel + the Activity feed render the same data.
+ *
+ *  Copilot triage — no payload-level `type` discriminator. The SSE
+ *  event NAME (`pipeline.intake_failed`, written by
+ *  `events.ts`'s `writeEvent`) is the discriminator on the wire,
+ *  and the ingestion-side `IntakeFailedEvent` in
+ *  `engine-ingestion/src/workers/context.ts` matches this shape
+ *  structurally. The earlier `type: "pipeline.intake_failed"` field
+ *  was emitter/UI-asymmetric (the worker never wrote it and the UI
+ *  client never read it) and risked drift across the cross-engine
+ *  seam — dropped here so the contract has one source of truth. */
 export interface IntakeFailedEvent {
-  readonly type: "pipeline.intake_failed";
   readonly bindingId: string;
   readonly intakeId: string;
   /** `OpencooError.errorClass` literal when the caught error was an

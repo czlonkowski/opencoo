@@ -193,9 +193,27 @@ describe("SourceBindingDetail — Intake state panel (PR-W4)", () => {
         fetchImpl={fetchImpl}
       />,
     );
-    // The panel renders, but the per-failure list section either
-    // does not render or shows the "no failures" affordance — the
-    // test pins the absence of a row element.
-    expect(screen.queryByTestId("intake-failed-row-")).toBeNull();
+    // The panel renders the count tiles; the per-failure <ul> is
+    // ONLY mounted when there are rows to show.
+    //
+    // Copilot triage: the prior assertion was
+    // `queryByTestId("intake-failed-row-")` (literal trailing dash,
+    // no id), which always returned null because real test IDs carry
+    // the row's intake id (`intake-failed-row-<uuid>`). That made
+    // the assertion vacuously true and provided no coverage.
+    //
+    // Pin both surfaces:
+    //   1. The list container is absent (asserts the <ul> itself
+    //      isn't mounted with an empty body).
+    //   2. Zero `intake-failed-row-*` test IDs landed in the DOM
+    //      (defensive — catches a future refactor that mounts the
+    //      <ul> unconditionally and renders rows conditionally).
+    // Both flip to FAIL on a non-empty `recentFailedIntake` fixture
+    // (manually verified against the "renders the Retry button…"
+    // test above, which exercises exactly this row shape).
+    expect(screen.queryByTestId("intake-failed-list")).toBeNull();
+    expect(
+      screen.queryAllByTestId(/^intake-failed-row-/),
+    ).toHaveLength(0);
   });
 });

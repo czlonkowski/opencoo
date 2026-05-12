@@ -63,15 +63,21 @@ interface FeedEntry {
 }
 
 /** PR-W4 — bookkeeping for the "similar failures in the last hour"
- *  count rendered on `pipeline.intake_failed` feed entries. Indexed
- *  by `${bindingId}${errorClass}` and carries the rolling
- *  window of timestamps so we drop entries older than 1 hour cheaply.
- *  Held in component state because the count needs to update with
- *  the feed re-render.
+ *  count rendered on `pipeline.intake_failed` feed entries. The map
+ *  is keyed by `JSON.stringify([bindingId, errorClass])` and stores
+ *  the rolling 1-hour window of timestamps so we drop entries older
+ *  than the window cheaply.
  *
- *  The window helper is pure; the state structure is small enough
- *  (per-binding+class entries × ≤a few hundred events/hour) that we
- *  don't need a more complex datastructure here. */
+ *  Implementation note — the map lives in the SSE-subscriber
+ *  effect closure (NOT React state); each event arrival snapshots
+ *  the freshly-computed count INTO the rendered entry, so each
+ *  row's count is stable across re-renders of the entry it was
+ *  attached to. This avoids a per-event re-render of every prior
+ *  entry just because their rolling-window counters slid forward.
+ *
+ *  The window helper is pure; the structure is small enough
+ *  (per-binding+class entries × ≤a few hundred events/hour) that
+ *  we don't need a more complex data-structure here. */
 const INTAKE_FAILED_WINDOW_MS = 60 * 60 * 1000;
 
 function bumpIntakeFailedCount(
@@ -80,7 +86,13 @@ function bumpIntakeFailedCount(
   errorClass: string,
   occurredAtMs: number,
 ): { readonly map: ReadonlyMap<string, readonly number[]>; readonly count: number } {
-  const key = `${bindingId}${errorClass}`;
+  // PR-W4 Copilot triage — key uses JSON.stringify so the
+  // composite (bindingId, errorClass) key has no invisible-
+  // delimiter bytes (a prior revision used a literal SOH char
+  // which was easy to miss in review and could be mangled by
+  // editors / formatters / greps). JSON.stringify on a 2-tuple
+  // is unambiguous, printable, and survives every transport.
+  const key = JSON.stringify([bindingId, errorClass]);
   const cutoff = occurredAtMs - INTAKE_FAILED_WINDOW_MS;
   const prior = prev.get(key) ?? [];
   // Drop entries older than the 1-hour window; append the new one.
