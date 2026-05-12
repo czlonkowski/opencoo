@@ -75,6 +75,24 @@ export interface ServeSseBus {
     readonly endedAt?: string;
     readonly errorMessage?: string;
   }): void;
+  /** PR-W4 (phase-a appendix #14) — `pipeline.intake_failed` event
+   *  emitted by the ingestion engine's Compilation Worker when a
+   *  intake row flips to `status='failed'`. The self-op SseBus
+   *  fans this out to the SSE route; engine-ingestion's
+   *  `IngestionRunEventEmitter.emitIntakeFailed?` declares the same
+   *  shape so the structural seam still holds.
+   *
+   *  Optional in the cross-engine seam shape so a composition that
+   *  has not yet wired this method (older callers / test fixtures)
+   *  still satisfies the type — engine-ingestion null-guards on
+   *  every call. */
+  emitIntakeFailed?(event: {
+    readonly bindingId: string;
+    readonly intakeId: string;
+    readonly errorClass: string;
+    readonly errorTextSnippet: string;
+    readonly occurredAt: string;
+  }): void;
 }
 
 /** Minimal `StartedEngine` shape consumed by `runServe`.

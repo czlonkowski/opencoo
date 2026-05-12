@@ -122,6 +122,14 @@ export function registerEventsRoute(args: RegisterEventsRouteArgs): void {
       const offDlq = args.bus.onOutputDeliveryDlq((e) => {
         writeEvent(reply, "output_delivery_dlq", e);
       });
+      // PR-W4 (phase-a appendix #14): broadcast `pipeline.intake_failed`
+      // events emitted by the ingestion engine's Compilation Worker
+      // when an intake row flips to `status='failed'`. The event name
+      // matches the spec verbatim so the Activity-feed client + the
+      // wire format stay aligned.
+      const offIntakeFailed = args.bus.onIntakeFailed((e) => {
+        writeEvent(reply, "pipeline.intake_failed", e);
+      });
 
       // Heartbeat to keep the connection alive through idle-closing proxies.
       // Resolves setInterval lazily so vitest fake timers applied after route
@@ -136,6 +144,7 @@ export function registerEventsRoute(args: RegisterEventsRouteArgs): void {
         offToken();
         offRun();
         offDlq();
+        offIntakeFailed();
         reply.raw.end();
       });
 

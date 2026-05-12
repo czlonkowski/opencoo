@@ -222,6 +222,15 @@
       "retryFailed": {
         "success": "Re-enqueued {{count}} failed job(s) — see the Activity tab."
       },
+      "intakeState": {
+        "title": "intake state",
+        "pending": "pending",
+        "classified": "classified",
+        "skipped": "skipped",
+        "failed": "failed",
+        "retry": "Retry",
+        "retryDisabledTooltip": "Per-job retry ships in PR-W2."
+      },
       "errors": {
         "patchFailed": "Could not update the binding. Try again or check the audit log.",
         "disableFailed": "Could not disable binding (server rejected the request).",
@@ -350,6 +359,10 @@
       "dlq": "delivery failed",
       "dlqAlert": "output delivery DLQ —",
       "dlqDeliveryId": "delivery-id",
+      "intakeFailed": "intake failed",
+      "intakeFailedRow": "binding",
+      "intakeFailedClass": "class",
+      "intakeFailedRecentCount": "similar (1h)",
       "authFailed": {
         "title": "Sign-in expired",
         "body": "Re-paste your PAT to reconnect to the activity feed.",

@@ -63,6 +63,10 @@ import {
 } from "../compiler/asana-project.js";
 
 import type { ScannerClassifyJob } from "./scanner.js";
+import type {
+  IngestionRunEventEmitter,
+  IntakeFailedEvent,
+} from "../workers/context.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
@@ -96,6 +100,20 @@ export interface RunCompilationWorkerArgs {
    * binding is a document or catalog binding.
    */
   readonly guardAdapter: GuardAdapter;
+  /**
+   * Optional SSE event emitter (PR-W4). When wired, the worker
+   * publishes a `pipeline.intake_failed` event on every caught
+   * failure AFTER the `markIntakeFailed` DB write succeeds. The
+   * event carries the binding/intake ids + classified error + a
+   * scrubbed, 200-char-capped error snippet so the Activity feed
+   * can render the failure live without a polling round-trip.
+   *
+   * Optional so composition-incomplete shapes (tests, headless
+   * CLI invocations) can run the worker without an SSE bus. The
+   * emit is best-effort: a throw from `emitIntakeFailed` is logged
+   * but does not mask the original worker error.
+   */
+  readonly sseBus?: IngestionRunEventEmitter;
 }
 
 export interface CompilationWorkerResult {
@@ -115,6 +133,16 @@ export interface CompilationWorkerResult {
  * §W3 threat-model.
  */
 const ERROR_TEXT_CAP = 1000;
+
+/**
+ * Truncation cap for the SSE `pipeline.intake_failed` event's
+ * `errorTextSnippet` (PR-W4). Tighter than the 1000-char DB cap
+ * because the snippet is a live-render preview on the Activity feed
+ * — operators just need a "what broke?" hint, not the full message.
+ * The W4 admin-API GET handler applies the same 200-char cap at the
+ * query (`LEFT(error_text, 200)`) so the panel + feed stay aligned.
+ */
+const ERROR_SNIPPET_CAP = 200;
 
 /**
  * Persist a `failed` terminal state on the intake row with the
@@ -321,6 +349,25 @@ export async function runCompilationWorker(
       errorClass,
       errorMessage: intakeMessage,
     });
+    // PR-W4 — publish the failure to the SSE bus so the Activity feed
+    // and the SourceBindingDetail "Intake state" panel render the
+    // event live. Best-effort: a throw from `emitIntakeFailed` is
+    // logged but does NOT mask the original worker error — BullMQ
+    // must still see the rethrow below to land the job in its
+    // `failed` set, and the W3 DB row is already committed. The
+    // snippet is scrubbed via `safeErrorMessage` (caps at the shared
+    // ERROR_MESSAGE_MAX_LENGTH and redacts PAT/JWT shapes) and then
+    // truncated to ERROR_SNIPPET_CAP — the Activity feed is a live
+    // preview, not the source of truth (the row carries the full
+    // 1000-char message and the GET handler exposes a 200-char
+    // snippet from the same column).
+    emitIntakeFailed(args.sseBus, args.logger, {
+      bindingId: args.job.bindingId,
+      intakeId: args.job.intakeId,
+      errorClass,
+      errorTextSnippet: safeErrorMessage(err).slice(0, ERROR_SNIPPET_CAP),
+      occurredAt: new Date().toISOString(),
+    });
     // The structured logger is the OTHER exit gate for error
     // strings; route through `safeErrorMessage` so PAT-shaped
     // tokens that may have leaked into a downstream `Error.message`
@@ -334,6 +381,43 @@ export async function runCompilationWorker(
       error_message: safeErrorMessage(err),
     });
     throw err;
+  }
+}
+
+/**
+ * Best-effort publish of an `IntakeFailedEvent` onto the optional
+ * SSE bus. Isolated as a helper because both the catch path and the
+ * emit-throws regression test exercise the same shape — and any
+ * future producer (webhook-receiver intake DLQ consumer, v0.2)
+ * should call the same wrapper instead of inlining the null-guard
+ * and the swallow-and-log shape.
+ *
+ * The bus interface declares `emitIntakeFailed?` (optional) so
+ * structural-typing consumers (the cross-engine seam in
+ * `cli/serve.ts`) can be widened in lockstep without breaking
+ * older composition shapes. A bus with no method present silently
+ * no-ops here.
+ */
+function emitIntakeFailed(
+  bus: IngestionRunEventEmitter | undefined,
+  logger: Logger,
+  event: IntakeFailedEvent,
+): void {
+  if (bus === undefined) return;
+  if (typeof bus.emitIntakeFailed !== "function") return;
+  try {
+    bus.emitIntakeFailed(event);
+  } catch (busErr) {
+    // Swallow + log: the original worker error must win — BullMQ
+    // sees the rethrow on the next line of the caller, and the
+    // operator already has the failure persisted on the intake row
+    // (W3) and exposed via the GET handler (W4). Losing the SSE
+    // event is a graceful degradation, not a data-loss path.
+    logger.warn("compilation_worker.intake_failed_emit_failed", {
+      binding_id: event.bindingId,
+      intake_id: event.intakeId,
+      error: safeErrorMessage(busErr),
+    });
   }
 }
 

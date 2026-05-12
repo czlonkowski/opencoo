@@ -117,6 +117,32 @@ export interface OutputDeliveryDlqEvent {
   readonly occurredAt: string;
 }
 
+/** A per-intake-row failure surfaced to the Activity feed when the
+ *  Compilation Worker catches an error and marks
+ *  `ingestion_intake.status = 'failed'` (PR-W4, phase-a appendix
+ *  #14). Distinct from `RunEvent.status='failed'` because:
+ *    - `RunEvent` is per BullMQ job (worker-lifecycle granularity);
+ *    - `IntakeFailedEvent` is per failed intake row, which is what
+ *      the operator's mental model expects ("this binding has 3
+ *      pending failures").
+ *
+ *  The event's payload mirrors the same shape the W4 GET handler
+ *  surfaces under `recentFailedIntake` so the SourceBindingDetail
+ *  panel + the Activity feed render the same data. */
+export interface IntakeFailedEvent {
+  readonly type: "pipeline.intake_failed";
+  readonly bindingId: string;
+  readonly intakeId: string;
+  /** `OpencooError.errorClass` literal when the caught error was an
+   *  `OpencooError`; otherwise `'transient'`. */
+  readonly errorClass: string;
+  /** Scrubbed + 200-char-capped `Error.message`. THREAT-MODEL §3.6
+   *  invariant 11: scrubbed at the worker before reaching the bus. */
+  readonly errorTextSnippet: string;
+  /** ISO timestamp when the event was emitted. */
+  readonly occurredAt: string;
+}
+
 export interface SseBus {
   /** Emit a streaming token event. Gated by `includePrompt`. */
   emitToken(args: EmitTokenArgs): void;
@@ -132,6 +158,18 @@ export interface SseBus {
   emitOutputDeliveryDlq(event: OutputDeliveryDlqEvent): void;
   /** Subscribe to output-delivery DLQ events. Returns an unsubscribe fn. */
   onOutputDeliveryDlq(listener: (e: OutputDeliveryDlqEvent) => void): () => void;
+
+  /** Emit a `pipeline.intake_failed` alert (PR-W4). Called by the
+   *  Compilation Worker's catch path after the W3 DB write commits.
+   *
+   *  Named `emitIntakeFailed` (not `emitIntakeFailedEvent`) so the
+   *  cross-engine seam in `cli/serve.ts` declares a stable, narrow
+   *  shape both engines satisfy structurally — the engine-ingestion
+   *  side declares `IngestionRunEventEmitter.emitIntakeFailed?` so a
+   *  composition-incomplete shape (no SSE bus) still typechecks. */
+  emitIntakeFailed(event: IntakeFailedEvent): void;
+  /** Subscribe to `pipeline.intake_failed` events. */
+  onIntakeFailed(listener: (e: IntakeFailedEvent) => void): () => void;
 
   /**
    * Returns a closure suitable for direct injection as the `onDlq`
@@ -165,6 +203,7 @@ export interface SseBus {
 const TOKEN_EVENT = "token";
 const RUN_EVENT = "run";
 const OUTPUT_DLQ_EVENT = "output_dlq";
+const INTAKE_FAILED_EVENT = "intake_failed";
 
 /** Factory that returns a fresh SSE bus backed by a Node EventEmitter. */
 export function createSseBus(): SseBus {
@@ -204,6 +243,15 @@ export function createSseBus(): SseBus {
     onOutputDeliveryDlq(listener: (e: OutputDeliveryDlqEvent) => void): () => void {
       emitter.on(OUTPUT_DLQ_EVENT, listener);
       return () => emitter.off(OUTPUT_DLQ_EVENT, listener);
+    },
+
+    emitIntakeFailed(event: IntakeFailedEvent): void {
+      emitter.emit(INTAKE_FAILED_EVENT, event);
+    },
+
+    onIntakeFailed(listener: (e: IntakeFailedEvent) => void): () => void {
+      emitter.on(INTAKE_FAILED_EVENT, listener);
+      return () => emitter.off(INTAKE_FAILED_EVENT, listener);
     },
 
     bindOutputDlq(): (args: {

@@ -60,12 +60,56 @@ export interface IngestionRunEvent {
   readonly errorMessage?: string;
 }
 
+/**
+ * Per-failure pipeline event emitted by the Compilation Worker when
+ * it catches an error and writes `status='failed'` to the intake row
+ * (PR-W4, phase-a appendix #14). Distinct from `IngestionRunEvent`
+ * because:
+ *   - it is per-INTAKE-ROW (not per-job) — one event = one operator-
+ *     facing failure on the Activity feed;
+ *   - it carries the typed `errorClass` (`OpencooError.errorClass`
+ *     literal — `'transient' | 'upstream-quota' | 'validation'`)
+ *     plus a scrubbed + truncated `errorTextSnippet` so the SSE
+ *     subscriber can render both the chip and the human-readable
+ *     reason without an extra round-trip;
+ *   - the `bindingId` lets the Activity feed render the binding
+ *     label resolved via the source-binding cache.
+ *
+ * THREAT-MODEL §3.6 invariant 11: `errorTextSnippet` is scrubbed via
+ * `safeErrorMessage` and capped at 200 chars BEFORE it reaches the
+ * bus. Subscribers can render it directly as React text (no HTML
+ * escape needed; React text rendering is implicit escape).
+ */
+export interface IntakeFailedEvent {
+  readonly bindingId: string;
+  readonly intakeId: string;
+  /** `OpencooError.errorClass` literal when the caught error was an
+   *  `OpencooError`; otherwise `'transient'` (the safe default since
+   *  unknown causes get a cheap one-shot retry). */
+  readonly errorClass: string;
+  /** Scrubbed + 200-char-capped `Error.message`. THREAT-MODEL §3.6
+   *  invariant 11: no credential bytes. */
+  readonly errorTextSnippet: string;
+  /** ISO timestamp when the event was emitted. Lets the Activity
+   *  feed group "similar failures in the last hour" without
+   *  introducing a clock skew between the worker and the browser. */
+  readonly occurredAt: string;
+}
+
 /** Narrow subset of the SseBus the workers need. The cross-engine
  *  seam in `cli/serve.ts` casts the SseBus to this shape — both
  *  satisfy it structurally because `RunEvent` is a superset of
- *  `IngestionRunEvent`. */
+ *  `IngestionRunEvent`.
+ *
+ *  PR-W4 widens the contract with `emitIntakeFailed` — the
+ *  cross-engine seam declares the same method on `ServeSseBus`. */
 export interface IngestionRunEventEmitter {
   emitRunEvent(event: IngestionRunEvent): void;
+  /** Optional in the contract so tests + composition-incomplete
+   *  shapes can satisfy the type without the W4 wiring. Production
+   *  builds (engine-self-operating's SseBus) always provide it; the
+   *  Compilation Worker null-guards before calling. */
+  emitIntakeFailed?(event: IntakeFailedEvent): void;
 }
 
 type DrizzleDb = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;

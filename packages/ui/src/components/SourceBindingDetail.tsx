@@ -205,6 +205,127 @@ const ERROR_TEXT_STYLE: CSSProperties = {
   margin: 0,
 };
 
+// ─── PR-W4 (phase-a appendix #14) — Intake state panel styles ──────────────
+
+const INTAKE_PANEL_STYLE: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "var(--space-3)",
+  paddingTop: "var(--space-3)",
+  borderTop: "1px solid var(--rule)",
+};
+
+const INTAKE_COUNTS_GRID_STYLE: CSSProperties = {
+  display: "grid",
+  // 4 equal columns for the 4 statuses — narrow enough that the labels
+  // fit on a single line without wrapping mid-word.
+  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+  gap: "var(--space-3)",
+};
+
+const INTAKE_COUNT_TILE_STYLE: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "var(--space-1)",
+  padding: "var(--space-3)",
+  background: "var(--paper-2)",
+  border: "1px solid var(--rule)",
+  borderRadius: "var(--radius-m)",
+};
+
+const INTAKE_COUNT_TILE_LABEL_STYLE: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontWeight: 600,
+  fontSize: "var(--fs-micro)",
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  color: "var(--fg-3)",
+};
+
+const INTAKE_COUNT_TILE_VALUE_STYLE: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: "var(--fs-display)",
+  lineHeight: 1,
+  color: "var(--fg-1)",
+};
+
+/** Failure-tile value carries the alert tone so the operator's eye
+ *  jumps to it across the four counts. Falls back to the neutral fg-1
+ *  on zero so a healthy binding doesn't paint red.
+ *  (Per design-system rules `--alert` is reserved for destructive /
+ *  flagged items — a non-zero failed-count IS exactly that.) */
+const INTAKE_COUNT_TILE_VALUE_FAILED_STYLE: CSSProperties = {
+  ...INTAKE_COUNT_TILE_VALUE_STYLE,
+  color: "var(--alert)",
+};
+
+const INTAKE_FAILED_LIST_STYLE: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "var(--space-2)",
+  margin: 0,
+  padding: 0,
+  listStyle: "none",
+};
+
+const INTAKE_FAILED_ROW_STYLE: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "var(--space-3)",
+  padding: "var(--space-2) var(--space-3)",
+  background: "var(--paper)",
+  border: "1px solid var(--rule)",
+  borderRadius: "var(--radius-m)",
+};
+
+const INTAKE_FAILED_ROW_CHIP_STYLE: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: "var(--fs-micro)",
+  letterSpacing: "0.04em",
+  textTransform: "uppercase",
+  color: "var(--alert)",
+  border: "1px solid var(--alert)",
+  borderRadius: "var(--radius-s)",
+  padding: "2px 6px",
+  flexShrink: 0,
+};
+
+const INTAKE_FAILED_ROW_SNIPPET_STYLE: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: "var(--fs-mono)",
+  lineHeight: "var(--lh-mono)",
+  color: "var(--fg-2)",
+  flex: "1 1 auto",
+  minWidth: 0,
+  // Snippet may carry punctuation/spaces; break-word lets long single
+  // tokens wrap so the row's right-edge Retry button doesn't get
+  // pushed off the modal at 200-char snippet widths.
+  wordBreak: "break-word",
+  margin: 0,
+};
+
+const INTAKE_FAILED_ROW_ID_STYLE: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: "var(--fs-micro)",
+  color: "var(--fg-3)",
+  flexShrink: 0,
+};
+
+/** Retry button — PR-W4 ships it DISABLED with a tooltip that
+ *  references PR-W2 (the per-job retry endpoint). The operator sees
+ *  the affordance and knows it lands soon; W2 wires it. */
+const INTAKE_RETRY_BTN_STYLE: CSSProperties = {
+  background: "var(--paper-2)",
+  color: "var(--fg-3)",
+  border: "1px solid var(--rule)",
+  borderRadius: "var(--radius-m)",
+  padding: "var(--space-1) var(--space-3)",
+  fontFamily: "var(--font-sans)",
+  fontSize: "var(--fs-small)",
+  cursor: "not-allowed",
+  flexShrink: 0,
+};
+
 const ACTION_ROW_STYLE: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
@@ -1373,12 +1494,22 @@ export function SourceBindingDetail(
          *  field is undefined on older fixtures; otherwise renders
          *  the chips (empty array surfaces an empty chip row plus
          *  the Edit button so the operator can fix it without
-         *  dropping to SQL). */}
+         *  dropping to SQL). Renders BEFORE the Intake state panel
+         *  so the operator's eye moves "config → outcome" as they
+         *  scan the modal. */}
         <AllowedPathsPanel
           binding={props.binding}
           onChanged={props.onChanged}
           fetchImpl={props.fetchImpl}
         />
+
+        {/* PR-W4 (phase-a appendix #14) — Intake state panel. Renders
+         *  the four per-status `intakeCounts` (defaulted to 0 for
+         *  back-compat) and the most-recent 3 `failed` rows. The
+         *  Retry button is intentionally disabled in W4 — the
+         *  per-job retry endpoint ships in PR-W2; the affordance
+         *  surfaces here so the operator sees the path forward. */}
+        <IntakeStatePanel binding={props.binding} />
 
         {actionError !== null ? (
           <p style={ERROR_TEXT_STYLE} role="alert">
@@ -1864,5 +1995,139 @@ function AllowedPathsPanel(props: AllowedPathsPanelProps): JSX.Element | null {
         </>
       ) : null}
     </div>
+  );
+}
+
+// ─── PR-W4 (phase-a appendix #14) — Intake state panel ────────────────────
+
+/** Defaulted zeros so a back-compat fixture without `intakeCounts`
+ *  still paints the four tiles (showing "no intake yet" rather than
+ *  blanks). The 4 status literals must stay in lock-step with the
+ *  admin-API GET handler's `INTAKE_STATUS_KEYS` constant. */
+const ZERO_INTAKE_COUNTS = {
+  pending: 0,
+  classified: 0,
+  skipped: 0,
+  failed: 0,
+} as const;
+
+interface IntakeStatePanelProps {
+  readonly binding: SourceBinding;
+}
+
+/** "Intake state" panel — renders the four per-status counts from the
+ *  GET response plus up to 3 most-recent failed-intake rows. Each
+ *  failed row carries a Retry button parked in disabled state until
+ *  PR-W2 ships the per-job retry endpoint; the tooltip names the PR
+ *  so the operator can correlate the affordance with the roadmap. */
+function IntakeStatePanel(props: IntakeStatePanelProps): JSX.Element {
+  const { t } = useTranslation();
+  const counts = props.binding.intakeCounts ?? ZERO_INTAKE_COUNTS;
+  const recent = props.binding.recentFailedIntake ?? [];
+  return (
+    <div style={INTAKE_PANEL_STYLE} data-testid="intake-state-panel">
+      <span style={LABEL_STYLE}>
+        {t("sources.detail.intakeState.title")}
+      </span>
+      <div style={INTAKE_COUNTS_GRID_STYLE}>
+        <IntakeCountTile
+          label={t("sources.detail.intakeState.pending")}
+          value={counts.pending}
+        />
+        <IntakeCountTile
+          label={t("sources.detail.intakeState.classified")}
+          value={counts.classified}
+        />
+        <IntakeCountTile
+          label={t("sources.detail.intakeState.skipped")}
+          value={counts.skipped}
+        />
+        <IntakeCountTile
+          label={t("sources.detail.intakeState.failed")}
+          value={counts.failed}
+          tone="alert"
+        />
+      </div>
+      {recent.length > 0 ? (
+        <ul
+          style={INTAKE_FAILED_LIST_STYLE}
+          data-testid="intake-failed-list"
+        >
+          {recent.map((row) => (
+            <IntakeFailedRow key={row.id} row={row} />
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+interface IntakeCountTileProps {
+  readonly label: string;
+  readonly value: number;
+  readonly tone?: "alert";
+}
+
+function IntakeCountTile(props: IntakeCountTileProps): JSX.Element {
+  // `--alert` only when the operator actually has failures — a zero
+  // failed-count paints neutral so a healthy binding doesn't surface
+  // a red tile (design-system: alert is destructive-only).
+  const valueStyle =
+    props.tone === "alert" && props.value > 0
+      ? INTAKE_COUNT_TILE_VALUE_FAILED_STYLE
+      : INTAKE_COUNT_TILE_VALUE_STYLE;
+  return (
+    <div style={INTAKE_COUNT_TILE_STYLE}>
+      <span style={INTAKE_COUNT_TILE_LABEL_STYLE}>{props.label}</span>
+      <span style={valueStyle}>{props.value}</span>
+    </div>
+  );
+}
+
+interface IntakeFailedRowProps {
+  readonly row: {
+    readonly id: string;
+    readonly errorClass: string | null;
+    readonly errorTextSnippet: string | null;
+  };
+}
+
+function IntakeFailedRow(props: IntakeFailedRowProps): JSX.Element {
+  const { t } = useTranslation();
+  // Truncated 8-char prefix mirrors the Activity-feed DLQ row pattern
+  // so the operator gets a stable affordance for "which intake row?"
+  // across surfaces. The full UUID lives in the title for audit.
+  const shortId = props.row.id.slice(0, 8);
+  return (
+    <li
+      style={INTAKE_FAILED_ROW_STYLE}
+      data-testid={`intake-failed-row-${props.row.id}`}
+    >
+      <span style={INTAKE_FAILED_ROW_ID_STYLE} title={props.row.id}>
+        {shortId}
+      </span>
+      {props.row.errorClass !== null ? (
+        <span style={INTAKE_FAILED_ROW_CHIP_STYLE}>
+          {props.row.errorClass}
+        </span>
+      ) : null}
+      <p style={INTAKE_FAILED_ROW_SNIPPET_STYLE}>
+        {props.row.errorTextSnippet ?? ""}
+      </p>
+      {/* Retry — disabled in W4, wires up in W2. The tooltip names
+       *  PR-W2 so the operator knows why the affordance is parked
+       *  without reading docs. `aria-disabled` mirrors the prop so
+       *  screen readers announce the disabled state. */}
+      <button
+        type="button"
+        disabled
+        aria-disabled
+        title={t("sources.detail.intakeState.retryDisabledTooltip")}
+        style={INTAKE_RETRY_BTN_STYLE}
+        data-testid={`intake-failed-row-retry-${props.row.id}`}
+      >
+        {t("sources.detail.intakeState.retry")}
+      </button>
+    </li>
   );
 }
