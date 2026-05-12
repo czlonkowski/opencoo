@@ -24,9 +24,13 @@
  *      re-enqueue calls fire — a transport blip still leaves a
  *      forensic trail.
  *   9. 400 on invalid uuid.
- *  10. Audit metadata captures binding_id + retried_count +
+ *  10. Audit metadata captures binding_id + target_count +
  *      intake_id (when single-job) + caller_username, NEVER any
- *      operator-supplied freeform text.
+ *      operator-supplied freeform text. The audit field is named
+ *      `target_count` (NOT `retried_count`) because the value is
+ *      captured BEFORE the enqueue loop runs and reflects operator
+ *      INTENT — the HTTP response's `retriedCount` is the actual
+ *      completed count post-loop. Copilot review #131 (id 3230502111).
  */
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -472,7 +476,7 @@ describe("admin-api POST /api/admin/source-bindings/:id/retry-failed", () => {
     expect(auditRows.rows[0]!.metadata["binding_id"]).toBe(bindingId);
   });
 
-  it("audit metadata captures binding_id + retried_count + caller_username + intake_id (when single-job)", async () => {
+  it("audit metadata captures binding_id + target_count + caller_username + intake_id (when single-job)", async () => {
     const harness = makeFailedJobsHarness();
     const f = await makeAdminFixture({
       adminTeamSlug: "opencoo-admins",
@@ -528,16 +532,24 @@ describe("admin-api POST /api/admin/source-bindings/:id/retry-failed", () => {
        ORDER BY created_at ASC`,
     );
     expect(auditRows.rows).toHaveLength(2);
-    // Bulk: no intake_id, retried_count = 2.
+    // Bulk: no intake_id, target_count = 2 (operator INTENT — the
+    // enumerator returned 2 jobs to retry; the audit row records that
+    // plan BEFORE the enqueue loop). The legacy field name
+    // `retried_count` MUST NOT appear — Copilot review #131 flagged
+    // it as misleading because a partial transport failure mid-loop
+    // would leave the field's value larger than the actual retried
+    // count surfaced in the HTTP response.
     const bulkMeta = auditRows.rows[0]!.metadata;
     expect(bulkMeta["binding_id"]).toBe(bindingId);
-    expect(bulkMeta["retried_count"]).toBe(2);
+    expect(bulkMeta["target_count"]).toBe(2);
+    expect(bulkMeta["retried_count"]).toBeUndefined();
     expect(bulkMeta["caller_username"]).toBe("alice");
     expect(bulkMeta["intake_id"]).toBeUndefined();
     // Single-job: intake_id present.
     const singleMeta = auditRows.rows[1]!.metadata;
     expect(singleMeta["binding_id"]).toBe(bindingId);
-    expect(singleMeta["retried_count"]).toBe(1);
+    expect(singleMeta["target_count"]).toBe(1);
+    expect(singleMeta["retried_count"]).toBeUndefined();
     expect(singleMeta["caller_username"]).toBe("alice");
     expect(singleMeta["intake_id"]).toBe("i-1");
   });

@@ -999,12 +999,25 @@ export function registerSourceBindingsRoutes(
       }
 
       // Audit BEFORE re-enqueue (audit-before-side-effect invariant).
-      // Metadata: binding_id + retried_count + caller_username +
+      // Metadata: binding_id + target_count + caller_username +
       // (when scoped) intake_id. NEVER any operator-supplied freeform
       // text — the URL params are bounded and the body is empty.
+      //
+      // Field naming: `target_count` (NOT `retried_count`). The audit
+      // row is written BEFORE the enqueue loop runs, so the value
+      // captures the operator's INTENT — how many failed jobs the
+      // route enumerated and planned to re-enqueue. On a partial
+      // enqueue failure (transport blip mid-loop) fewer jobs actually
+      // ship; the HTTP response's `retriedCount` reflects the actual
+      // completed count after the loop. Naming the audit field
+      // `target_count` makes that distinction explicit so an operator
+      // cross-referencing the audit log against BullMQ state doesn't
+      // assume both numbers must match. Copilot review #131 (id
+      // 3230502111) — security invariant (audit-before-mutate) is
+      // unchanged; this is a label rename for forensic clarity.
       const auditMetadata: Record<string, unknown> = {
         binding_id: id,
-        retried_count: toRetry.length,
+        target_count: toRetry.length,
         caller_username: ctx.username,
       };
       if (intakeIdParam !== undefined) {
