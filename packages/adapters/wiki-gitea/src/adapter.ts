@@ -145,10 +145,20 @@ class GiteaWikiAdapterImpl implements GiteaWikiAdapter {
   }
 
   private repoFor(domainSlug: DomainSlug): GiteaRepoLocator {
-    return {
-      owner: this.deps.owner,
-      name: `${this.deps.repoPrefix}-${domainSlug}`,
-    };
+    // PR-Y3 (phase-a follow-up) — provisioning creates the Gitea repo
+    // as the BARE slug (`gitea-provisioning.ts:144` → `name: args.slug`),
+    // not `${prefix}-${slug}`. Earlier partner cutovers picked slugs that
+    // already carried the `wiki-` prefix (e.g. `wiki-estyl-pilot`), so
+    // the actual repo on disk is `wiki-estyl-pilot`. The original
+    // `${prefix}-${slug}` template would compute `wiki-wiki-estyl-pilot`
+    // and 404 on every read. Strip the prefix if the slug already
+    // carries it so reads + writes always resolve the same repo
+    // provisioning actually created.
+    const slug = String(domainSlug);
+    const name = slug.startsWith(`${this.deps.repoPrefix}-`)
+      ? slug
+      : `${this.deps.repoPrefix}-${slug}`;
+    return { owner: this.deps.owner, name };
   }
 
   /**
