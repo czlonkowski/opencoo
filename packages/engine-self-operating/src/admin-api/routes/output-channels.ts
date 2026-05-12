@@ -51,10 +51,16 @@ import { isPgUniqueViolation } from "../pg-error.js";
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
 /** Closed set of OutputAdapter slugs the routes accept. v0.1 ships
- *  one (`asana`). Adding a slug = registering a per-adapter config
- *  validator + UI form spec; the route Zod schema picks them up
- *  via the registry below. */
-export const OUTPUT_ADAPTER_SLUGS = ["asana"] as const;
+ *  two (`asana`, `webhook`). Adding a slug = registering a per-adapter
+ *  config validator + UI form spec; the route Zod schema picks them up
+ *  via the registry below.
+ *
+ *  PR-W3 (phase-a appendix #13 G3) — `webhook` joined the set. The
+ *  `@opencoo/output-webhook` adapter ships HMAC-SHA256 signing,
+ *  deterministic delivery IDs (UUID v5), exponential-backoff retry,
+ *  and append-only `output_deliveries` audit. The CLI composition
+ *  root lazy-imports it alongside the asana adapter. */
+export const OUTPUT_ADAPTER_SLUGS = ["asana", "webhook"] as const;
 export type OutputAdapterSlug = (typeof OUTPUT_ADAPTER_SLUGS)[number];
 
 /** Per-adapter validators the routes use. Keyed by adapter slug.

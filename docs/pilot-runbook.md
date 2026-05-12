@@ -413,3 +413,63 @@ Three known follow-ups operators should be aware of as of the 0.1.0-a phase-a ap
 4. **Migration auto-apply on boot** — closed by PR-X1 (phase-a follow-up); manual `opencoo migrate` is now optional. The engine acquires a `pg_advisory_xact_lock` and applies pending Drizzle migrations before binding the Fastify listener. Operators who prefer the legacy manual flow set `OPENCOO_AUTO_MIGRATE=0` in `.env` and continue running `opencoo migrate` after every `git pull` (see §11.1).
 5. **CI required-checks list changed (PR-X3, phase-a follow-up — maintainer action)** — the prior monolithic `toolchain` job in `.github/workflows/ci.yml` was split into four parallel jobs (`lint`, `typecheck`, `test (matrix shards 1..4)`, `drift-and-fixtures`); the existing `prompt-injection-corpus (deterministic tier)` job is unchanged. Wall time on a green PR drops from ~27 min to ~6–8 min. The maintainer must update the `main`-branch protection rule on github.com to replace the old `toolchain (lint / typecheck / test / fixtures)` required check with the new check names: `lint`, `typecheck`, `test (1)`, `test (2)`, `test (3)`, `test (4)`, `drift-and-fixtures`, plus the unchanged `prompt-injection-corpus (deterministic tier)`. Until the protection rule is updated, the old check name will appear "expected — Waiting for status to be reported" on every PR and block merge. This is a one-time UI action; no operator-side change.
 6. **GHCR image visibility flip needs `admin:packages` (PR-Z8, phase-a appendix #12)** — the `release-image.yml` workflow tries to flip both `opencoo` and `opencoo-gitea-wiki-mcp-server` GHCR images to `visibility=public` on every tag push so first-time partner pulls succeed without `docker login ghcr.io`. The default `GITHUB_TOKEN` has `packages:write` but NOT `admin:packages`, so the flip step logs a `warn:` line and exits 0 (best-effort). To enable automatic public-flip: create a Personal Access Token with `admin:packages` scope, store it as the repo secret `GH_PAT_PACKAGES`, and the workflow uses it on the next tag push. To flip ONCE manually instead: `gh api -X PATCH /user/packages/container/opencoo --field visibility=public && gh api -X PATCH /user/packages/container/opencoo-gitea-wiki-mcp-server --field visibility=public`. Subsequent tag pushes keep the now-public state.
+
+## 13. Wiring n8n via the webhook output channel
+
+The `output-webhook` adapter (wired in composition by PR-W3, phase-a appendix #13) is the bridge for routing agent outputs into n8n workflows — or any other downstream automation that exposes an HTTP webhook receiver. Every delivery is signed with HMAC-SHA256 over the raw request body and carries a deterministic delivery id (UUID v5 derived from the channel + payload) so the receiver can dedupe replays.
+
+### Outgoing request shape
+
+```
+POST <targetUrl>
+content-type: application/json
+x-opencoo-signature: <64-hex HMAC-SHA256 over the raw body>
+x-opencoo-delivery-id: <UUID v5 derived from channel + payload>
+[operator-supplied headers, Authorization forbidden]
+
+{ "event": "agent.run.completed", "data": { ...agent's verbatim JSON output... } }
+```
+
+Per-binding retries follow exponential backoff (default 5 attempts, 500ms base delay). 4xx validation failures and 429 + `Retry-After` route to the append-only `output_deliveries` audit table without further retry — operators inspect failures via the Activity tab. The 1 MiB payload ceiling matches the source-webhook receiver ceiling.
+
+### One-time n8n setup
+
+1. In n8n, create a workflow with a **Webhook** trigger node. Set:
+   - HTTP Method: `POST`
+   - Path: `/opencoo-webhook` (or any operator-chosen path)
+   - Authentication: leave on `None` — opencoo signs with HMAC, not basic auth
+   - Respond: `Immediately` with status `200`
+2. Copy the production webhook URL (n8n generates it; shape is `https://n8n.example.com/webhook/<uuid>`).
+3. Generate a strong shared secret: `openssl rand -hex 32`. Keep it out of source control.
+4. In the n8n workflow, add a node *after* the Webhook trigger that verifies the signature. Two common shapes:
+   - A **Crypto** node operating on `{{$binary.data}}` or `{{$json}}` stringified, algorithm `HMAC`, hash `SHA256`, secret = the shared secret from step 3, then an **IF** node comparing the result to `{{$headers["x-opencoo-signature"]}}`. The IF's false branch drops the request (return 401 / log).
+   - A small **Code** node that re-computes the HMAC over the raw body and compares timing-safe to the header. The n8n-skills repo (vendored in `automation-n8n-mcp`) carries a reference snippet.
+5. For exactly-once semantics, add a **DataTable** lookup keyed on `{{$headers["x-opencoo-delivery-id"]}}` and skip when a row exists. Optional but recommended for production pipelines that mutate external systems.
+
+### Provisioning the opencoo side
+
+6. Open the management UI → **Outputs** tab → **+ New output channel**. Pick `webhook` from the adapter dropdown. The form is rendered from `webhookChannelConfigJsonSchema` + `webhookOutputCredentialSchema`:
+   - **Name** — operator-friendly label (e.g. `n8n-daily-pipeline`). UNIQUE per `adapter_slug`; the route 409s on duplicates.
+   - **targetUrl** — the n8n webhook URL from step 2. Validated as a URL at the route; rejection surface is `422 channel_config_schema_mismatch`.
+   - **signingSecret** (credential field, masked) — the shared secret from step 3. Encrypted at rest by the `CredentialStore`; never logged.
+7. Open the **Agents** tab → click the agent that should drive the channel (Heartbeat, Lint, or Surfacer) → in the Detail modal, multi-select the new `n8n-daily-pipeline` output channel → Save. The save writes to `agent_instances.output_channel_ids[]`.
+
+### What the dispatcher does
+
+When the agent's scheduled run completes, the dispatcher (Z4) iterates the binding's `output_channel_ids[]` and calls the registry's `deliver` per channel. For webhook channels the registry:
+
+- Looks up the channel row by id (the binding's `channel_id`).
+- Rejects disabled channels (validation → DLQ; operator either re-enables or removes the binding).
+- Constructs a per-delivery `WebhookOutputAdapter` with the row's `targetUrl` + retry policy + headers, threading the row's `credentials_id` as the signing-secret reference.
+- Picks the per-(agent, adapter) transformer (`heartbeatToWebhook` / `lintToWebhook` / `surfacerToWebhook` for v0.1 agents; `mergeWebhookPayloadGeneric` for any unknown agent) which produces the `{event, data}` body.
+- Calls `adapter.write` — the adapter resolves the signing secret bytes from `CredentialStore`, computes the HMAC, derives the delivery id, and POSTs the body with the retry loop. THREAT-MODEL §3.6 invariant 11 holds: the signing secret never appears in headers, body, log lines, or audit rows.
+
+### Rotation
+
+Rotate the shared secret by editing the channel in the Outputs UI: open the channel row → **Rotate credential** → paste the new value → Save. The next delivery picks up the new bytes (no restart). The OLD secret stops working immediately, so flip the n8n side in the same window.
+
+### Failure surfaces
+
+- **HMAC mismatch in n8n** — the operator likely pasted a different secret on the two sides. Re-do steps 3 + 6's credential field. Validate by triggering a one-off agent run from the management UI's "Run now" button (§7.3) and watching the Activity tab.
+- **`output_deliveries.status = 'dlq'`** — terminal failure after the retry budget exhausted, OR an immediate 4xx/422 from n8n. Inspect `response_body_excerpt` (first 500 bytes) for the receiver's reason.
+- **`targetUrl` not reachable from the engine** — the engine container needs egress to the n8n host. For partner deployments where n8n is on a separate network, add the n8n DNS name to `extra_hosts:` in `compose.partner.yml` or use a routable URL.

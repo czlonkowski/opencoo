@@ -291,6 +291,7 @@ export {
 // reach into the engine's internal admin-api routes path.
 export {
   buildOutputAdapterValidator,
+  getOutputAdapterListEntries,
   type OutputAdapterDescriptor,
   type OutputAdapterListEntry,
   type OutputAdapterSlug,
