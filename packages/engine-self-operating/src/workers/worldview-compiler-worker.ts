@@ -16,10 +16,16 @@
  *      event-driven from cron-driven refreshes.
  *
  * Error taxonomy:
- *   - `WorldviewOverflowError` → log + return (DON'T re-throw, so
- *     BullMQ marks the job as failed-permanent on its attempts cap
- *     rather than retrying a problem retry won't fix). The
- *     `[worldview-overflow]` log line surfaces in the Activity feed.
+ *   - `WorldviewOverflowError` → log + return `{status: 'overflow'}`.
+ *     BullMQ treats this as a SUCCESSFUL completion (not a DLQ /
+ *     failed-permanent), which is the desired behavior: the LLM
+ *     emitted >24KB twice in a row, and a retry will hit the same
+ *     bound. Burning attempts on a non-retriable failure mode is
+ *     pure cost with no recovery. The operator-visible signal is
+ *     the `worldview.compile_overflow` structured log line (which
+ *     surfaces in the Activity feed); the completed-with-overflow
+ *     status simply lets BullMQ move past the job without retry-
+ *     looping.
  *   - Other errors → re-throw so BullMQ retries per the queue's
  *     attempts policy. A transient LLM/transport failure recovers
  *     on the next attempt.
@@ -207,14 +213,20 @@ export async function runWorldviewCompile(
     throw err;
   }
 
-  // 3. Commit via wikiWrite. The `[worldview]` tag scopes the
-  //    write; the `worldviewRecompile` field becomes the
-  //    `Worldview-Recompile:` trailer on the commit.
+  // 3. Commit via wikiWrite. The compiled body is the FILE CONTENT
+  //    of `worldview.md` (the `operations[0].content` field). It is
+  //    deliberately NOT passed as the wikiWrite `body` field, which
+  //    is the commit-message body — putting kilobytes of worldview
+  //    prose there would bloat the commit log AND can trip the
+  //    `TRAILER_LINE` regex validator (compiled bodies may contain
+  //    lines that happen to look like trailers). The commit message
+  //    is left short: `[worldview] worldview-compile: <triggerType>`
+  //    on the subject line + the `Worldview-Recompile:` trailer
+  //    carries the structured trigger metadata for audit greps.
   const writeResult = await wikiWrite(args.wikiDeps, {
     domainSlug,
     tag: "[worldview]",
     description: `worldview-compile: ${job.triggerType}`,
-    body,
     author: args.author,
     caller: { kind: "engine" },
     operations: [

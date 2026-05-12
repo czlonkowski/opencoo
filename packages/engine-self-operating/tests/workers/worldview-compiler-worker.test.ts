@@ -24,6 +24,7 @@ import {
   InMemoryWikiWriteQueue,
   type WikiAuthor,
   type WikiWriteDeps,
+  type WriteAtomicArgs,
 } from "@opencoo/shared/wiki-write";
 import { InMemoryWikiAdapter } from "@opencoo/shared/wiki-write/testing";
 
@@ -177,6 +178,91 @@ describe("runWorldviewCompile — happy path", () => {
     expect(msg.startsWith("[worldview] worldview-compile: trailer-medium")).toBe(true);
     expect(msg).toContain("Worldview-Recompile: trailer-medium");
     expect(msg).toContain("Opencoo-Instance: test-instance");
+  });
+
+  it("routes the compiled body to operations[0].content, NOT into the commit-message body", async () => {
+    // Regression test for the wikiWrite-field bug: the worker
+    // previously passed the compiled worldview body as wikiWrite's
+    // `body` field, which is the COMMIT-MESSAGE body (not the page
+    // content). The bug bloated commits AND, more dangerously,
+    // would have tripped the `TRAILER_LINE` Zod refine if the LLM
+    // ever emitted a line starting with one of the trailer prefixes.
+    //
+    // This test pins the correct mapping:
+    //   - operations[0].content carries the compiled body (file content)
+    //   - the commit message stays short — first line + trailers only,
+    //     no body paragraph carrying the compiled prose
+    const fixture = await freshAgentDb();
+    const h = buildHarness();
+    h.wiki.inject(SLUG, "p.md", "# page");
+
+    // Compiled body deliberately contains a line that would trip
+    // the wikiWrite `body` refine (TRAILER_LINE regex) if it ever
+    // landed in the commit-message body — proves the body field is
+    // not being used.
+    const compiledBody =
+      "# Worldview\n\nA bounded synthesis.\n\nWorldview-Impact: regression line\n\n## Section";
+
+    const captured: WriteAtomicArgs[] = [];
+    const origWriteAtomic = h.wiki.writeAtomic.bind(h.wiki);
+    h.wiki.writeAtomic = async (args) => {
+      captured.push(args);
+      return origWriteAtomic(args);
+    };
+
+    const router = makeRouter(
+      fakeProvider([{ version: "v1", body: compiledBody }]),
+      fixture.db,
+    );
+
+    await runWorldviewCompile({
+      router,
+      wikiAdapter: h.wiki,
+      wikiDeps: h.wikiDeps,
+      author: h.author,
+      logger: h.logger,
+      resolveLocale: async () => "en",
+      job: {
+        domainId: fixture.domainId,
+        domainSlug: SLUG,
+        triggerType: "manual",
+      },
+    });
+
+    expect(captured).toHaveLength(1);
+    const call = captured[0]!;
+
+    // 1. The compiled body lands in operations[0].content (the file
+    //    body that Gitea writes to `worldview.md`).
+    expect(call.operations).toHaveLength(1);
+    const op = call.operations[0]!;
+    expect(op.mode).toBe("replace");
+    expect(op.path).toBe("worldview.md");
+    // narrow for the union: replace + append carry `content`.
+    if (op.mode === "delete") throw new Error("expected replace");
+    expect(op.content).toBe(compiledBody);
+
+    // 2. The commit message MUST NOT carry the compiled prose. It is
+    //    metadata-only: subject line + trailers; the compiled body
+    //    belongs on the file, not in the commit log.
+    const msg = call.commitMessage;
+    expect(msg).not.toContain("A bounded synthesis.");
+    expect(msg).not.toContain("## Section");
+
+    // 3. The `Worldview-Recompile:` trailer still emits correctly.
+    expect(msg).toContain("Worldview-Recompile: manual");
+
+    // 4. Shape sanity: commit message lines are subject + blank +
+    //    trailer block. No multi-paragraph body in between.
+    const lines = msg.split("\n");
+    expect(lines[0]).toBe("[worldview] worldview-compile: manual");
+    expect(lines[1]).toBe("");
+    // Remaining lines are trailers (each matches `^[A-Z][A-Za-z-]+:`).
+    const trailerLines = lines.slice(2).filter((l) => l.length > 0);
+    expect(trailerLines.length).toBeGreaterThan(0);
+    expect(
+      trailerLines.every((l) => /^[A-Z][A-Za-z-]+:\s/.test(l)),
+    ).toBe(true);
   });
 });
 

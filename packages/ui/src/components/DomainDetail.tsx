@@ -319,9 +319,14 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
    *       prevent operator-spam (the server doesn't rate-limit yet).
    *
    *  Error paths route through the same `mapActionError` machinery
-   *  the rest of this modal uses, with one extra branch for the
-   *  composition-incomplete 503 surface so the copy points at engine
-   *  config rather than blaming the operator.
+   *  the rest of this modal uses. Both generic transients and the
+   *  composition-incomplete 503 surface through the same generic
+   *  `domains.detail.errors.transient` copy in v0.1 — `fetchAdmin`
+   *  discards 5xx response bodies, so the server's structured
+   *  `worldview_queue_unavailable` reason is operator-visible in
+   *  engine logs but is not surfaced in the UI toast. Distinguishing
+   *  the 503 surface in copy is parked until a customer brings a
+   *  triggering case.
    */
   const submitRecompileWorldview = async (): Promise<void> => {
     setActionError(null);
@@ -639,9 +644,12 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
             role="status"
             data-testid="recompile-worldview-success"
           >
+            {/* Decorative glyph — the adjacent toast copy already
+             *  conveys the queued state to assistive tech via the
+             *  `role="status"` live region, so `title` is omitted
+             *  and `GlyphFilledDisc` self-applies `aria-hidden`. */}
             <GlyphFilledDisc
               size={10}
-              title="queued"
               style={{ color: "var(--healthy)" }}
             />
             {t("domains.detail.recompileWorldview.success")}

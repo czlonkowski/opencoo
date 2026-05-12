@@ -46,6 +46,7 @@ import { z } from "zod";
 
 import { safeErrorMessage } from "@opencoo/shared/scrub";
 
+import { WORLDVIEW_COMPILE_JOB_NAME } from "../../pipelines/worldview/trigger.js";
 import { writeAuditLog } from "../audit-log.js";
 import { requireAdminContext } from "../auth.js";
 import { requireCsrf } from "../csrf.js";
@@ -950,8 +951,12 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
       });
 
       try {
+        // Use the shared constant so the route, the trigger pipeline,
+        // and the worker all agree on the BullMQ job-name surface — a
+        // typo here would silently route operator-initiated recompiles
+        // to a queue the worker isn't listening on.
         await queue.add(
-          "worldview.compile",
+          WORLDVIEW_COMPILE_JOB_NAME,
           {
             domainId: domain.id,
             domainSlug: domain.slug,

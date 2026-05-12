@@ -97,7 +97,7 @@ export type WikiAuthor = z.infer<typeof WikiAuthorSchema>;
 //   3. `description` single-line (covered by `singleLineString`);
 //      `body` may be multi-line but cannot contain a trailer-shaped
 //      line (`Co-authored-by:` / `Opencoo-Instance:` /
-//      `Worldview-Impact:`).
+//      `Worldview-Impact:` / `Worldview-Recompile:`).
 //   4. `worldviewImpact` (PR 16, plan #72) — at most 20 entries,
 //      each ≤200 chars, single-line. The compiler sources these
 //      from the LLM's `worldview_impact` array; one bullet =
@@ -111,7 +111,7 @@ export const WikiWriteInputSchema = z
       .string()
       .refine(
         (s) => !s.split("\n").some((line) => TRAILER_LINE.test(line)),
-        "body must not contain trailer-shaped lines (Co-authored-by: / Opencoo-Instance: / Worldview-Impact:)",
+        "body must not contain trailer-shaped lines (Co-authored-by: / Opencoo-Instance: / Worldview-Impact: / Worldview-Recompile:)",
       )
       .optional(),
     author: WikiAuthorSchema,
