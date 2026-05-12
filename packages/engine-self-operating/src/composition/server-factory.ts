@@ -128,6 +128,15 @@ export interface ProductionServerFactoryArgs {
   readonly outputChannelDescriptors?: Readonly<
     Record<OutputAdapterSlug, OutputAdapterDescriptor>
   >;
+  /** PR-W1 (phase-a appendix #13) — worldview-compile queue handle.
+   *  Production passes the orchestrator's `new Queue(...)` so the
+   *  admin-API `POST /api/admin/domains/:slug/recompile-worldview`
+   *  route can enqueue against the SAME backlog the worldview-compile
+   *  worker reads. When undefined the route returns 503
+   *  (composition incomplete). */
+  readonly worldviewQueue?: {
+    add(name: string, data: unknown, opts?: unknown): Promise<unknown>;
+  };
   /** PR-Q6 (phase-a appendix #9) fix-up — Fastify request body
    *  limit. The orchestrator sets this to `WEBHOOK_BODY_LIMIT_BYTES`
    *  (5 MB) when co-booting engine-ingestion in workers mode so a
@@ -198,6 +207,9 @@ export async function productionServerFactory(
       : {}),
     ...(args.outputChannelDescriptors !== undefined
       ? { outputChannelRegistry: args.outputChannelDescriptors }
+      : {}),
+    ...(args.worldviewQueue !== undefined
+      ? { worldviewQueue: args.worldviewQueue }
       : {}),
     provisionOrg: args.compositionEnv.giteaProvisionOrg,
     provisionDomainRepo: async (a) => {

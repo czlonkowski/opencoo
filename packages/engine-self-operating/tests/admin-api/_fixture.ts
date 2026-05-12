@@ -467,6 +467,14 @@ export interface AdminFixtureOptions {
       import("../../src/admin-api/routes/output-channels.js").OutputAdapterDescriptor
     >
   >;
+  /** PR-W1 (phase-a appendix #13) — worldview-compile queue handle
+   *  for the `POST /api/admin/domains/:slug/recompile-worldview`
+   *  endpoint. Tests inject a stub queue (or a `QueueWithThis`
+   *  receiver-binding regression class) to assert the route enqueues
+   *  + handles the failure surfaces. */
+  readonly worldviewQueue?: {
+    add(name: string, data: unknown, opts?: unknown): Promise<unknown>;
+  };
 }
 
 function silentLogger(): ConsoleLogger {
@@ -522,6 +530,9 @@ export async function makeAdminFixture(
       : {}),
     ...(opts.outputChannelRegistry !== undefined
       ? { outputChannelRegistry: opts.outputChannelRegistry }
+      : {}),
+    ...(opts.worldviewQueue !== undefined
+      ? { worldviewQueue: opts.worldviewQueue }
       : {}),
   });
 

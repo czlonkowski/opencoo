@@ -229,6 +229,71 @@ describe("DomainDetail", () => {
     expect(String(deleteCall[0])).not.toContain("hard=1");
   });
 
+  it("Recompile-worldview click POSTs to the slug-keyed endpoint, shows the toast, and disables the button (PR-W1)", async () => {
+    const user = userEvent.setup();
+    const fetchImpl = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (
+        url === `/api/admin/domains/wiki-test/recompile-worldview` &&
+        init?.method === "POST"
+      ) {
+        return new Response(
+          JSON.stringify({ enqueued: true, jobId: "recompile-worldview-x-1-aa" }),
+          { status: 202, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+    render(
+      <DomainDetail
+        domain={makeDomain()}
+        onClose={() => undefined}
+        onChanged={() => undefined}
+        fetchImpl={fetchImpl as unknown as typeof fetch}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: /recompile worldview/i });
+    await user.click(btn);
+
+    // POST landed against the slug-keyed route.
+    await waitFor(() => {
+      const postCall = fetchImpl.mock.calls.find(
+        (c) =>
+          String(c[0]) ===
+            `/api/admin/domains/wiki-test/recompile-worldview` &&
+          (c[1] as RequestInit | undefined)?.method === "POST",
+      );
+      expect(postCall).toBeDefined();
+    });
+
+    // Success toast is visible.
+    const toast = await screen.findByTestId("recompile-worldview-success");
+    expect(toast.textContent).toMatch(/enqueued/i);
+
+    // Button is disabled during cooldown.
+    expect(
+      (
+        screen.getByRole("button", {
+          name: /recompile worldview/i,
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  });
+
+  it("Recompile-worldview button is disabled when the domain is soft-disabled", async () => {
+    const fetchImpl = vi.fn(async () => new Response("", { status: 404 }));
+    render(
+      <DomainDetail
+        domain={makeDomain({ disabledAt: "2026-05-10T00:00:00Z" })}
+        onClose={() => undefined}
+        onChanged={() => undefined}
+        fetchImpl={fetchImpl as unknown as typeof fetch}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: /recompile worldview/i });
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("Save with 409 aggregator_already_set surfaces the specific i18n string, not raw err.message", async () => {
     const user = userEvent.setup();
     const fetchImpl = vi.fn(async (input: RequestInfo, init?: RequestInit) => {

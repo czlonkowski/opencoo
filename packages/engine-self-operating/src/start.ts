@@ -277,6 +277,15 @@ export interface StartOptions
   readonly outputChannelDescriptors?: Readonly<
     Record<OutputAdapterSlug, OutputAdapterDescriptor>
   >;
+  /** PR-W1 (phase-a appendix #13) — worldview-compile queue handle.
+   *  Threaded into `productionServerFactory` → `registerAdminApi` so
+   *  the `POST /api/admin/domains/:slug/recompile-worldview` route
+   *  can enqueue against the SAME backlog the worldview-compile
+   *  worker reads. Boot tolerance: when undefined the route returns
+   *  503 (composition incomplete). */
+  readonly worldviewQueue?: {
+    add(name: string, data: unknown, opts?: unknown): Promise<unknown>;
+  };
 }
 
 function defaultDbFactory(config: EngineConfig): StartDb {
@@ -624,6 +633,13 @@ export async function start(
       // through to the admin-API Outputs-tab CRUD routes.
       ...(options.outputChannelDescriptors !== undefined
         ? { outputChannelDescriptors: options.outputChannelDescriptors }
+        : {}),
+      // PR-W1 (phase-a appendix #13) — worldview-compile queue.
+      // The orchestrator constructs the queue at composition root
+      // and threads it through here; the admin-API recompile
+      // endpoint enqueues against it.
+      ...(options.worldviewQueue !== undefined
+        ? { worldviewQueue: options.worldviewQueue }
         : {}),
       ...(bodyLimit !== undefined ? { bodyLimit } : {}),
     });

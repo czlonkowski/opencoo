@@ -24,11 +24,12 @@
  *   - NO emoji / NO marketing voice / NO spinners
  *   - lowercase `opencoo` in any future copy
  */
-import { useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Btn } from "./Btn.js";
 import { Modal } from "./Modal.js";
+import { GlyphFilledDisc } from "./Glyph.js";
 import {
   ApiAuthError,
   ApiTransientError,
@@ -52,6 +53,24 @@ export interface DomainDetailProps {
 }
 
 type Stage = "idle" | "disable" | "delete";
+
+/** PR-W1 (phase-a appendix #13) — Recompile-worldview button
+ *  disabled-window in ms. Mirrors the PR-Z3 Scan-now pattern: prevents
+ *  the operator from spamming the endpoint while the recompile job is
+ *  in flight. The server doesn't rate-limit the route in v0.1; this
+ *  client-side gate is the only protection from accidental fork-
+ *  bombing. 3s is generous enough for the operator to see the toast +
+ *  short enough that a real retry after the toast clears succeeds. */
+const RECOMPILE_WORLDVIEW_DISABLE_MS = 3000;
+
+const TOAST_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "var(--space-2)",
+  fontFamily: "var(--font-sans)",
+  fontSize: "var(--fs-small)",
+  color: "var(--healthy)",
+};
 
 const SECTION_STYLE: CSSProperties = {
   display: "flex",
@@ -194,6 +213,22 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
   // irreversible actions).
   const [hardDeleteAck, setHardDeleteAck] = useState(false);
 
+  // PR-W1 (phase-a appendix #13) — Recompile-worldview button state.
+  // `queued` flashes the success toast; `cooldown` keeps the button
+  // disabled for `RECOMPILE_WORLDVIEW_DISABLE_MS`.
+  const [recompileState, setRecompileState] = useState<
+    "idle" | "queued" | "cooldown"
+  >("idle");
+
+  // Mounted ref so the cooldown clearTimeout doesn't setState into
+  // a detached tree on rapid dismount.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const bindingCount = props.domain.bindingCount ?? 0;
 
   /** Map a thrown error to an operator-facing i18n string.
@@ -272,6 +307,50 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
       );
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  /** PR-W1 (phase-a appendix #13) — POST `/api/admin/domains/:slug/recompile-worldview`.
+   *
+   *  Success path:
+   *    1. POST → 202 with `{enqueued: true, jobId}`.
+   *    2. Flash a `--healthy` toast for ~3s.
+   *    3. Disable the button for `RECOMPILE_WORLDVIEW_DISABLE_MS` to
+   *       prevent operator-spam (the server doesn't rate-limit yet).
+   *
+   *  Error paths route through the same `mapActionError` machinery
+   *  the rest of this modal uses. Both generic transients and the
+   *  composition-incomplete 503 surface through the same generic
+   *  `domains.detail.errors.transient` copy in v0.1 — `fetchAdmin`
+   *  discards 5xx response bodies, so the server's structured
+   *  `worldview_queue_unavailable` reason is operator-visible in
+   *  engine logs but is not surfaced in the UI toast. Distinguishing
+   *  the 503 surface in copy is parked until a customer brings a
+   *  triggering case.
+   */
+  const submitRecompileWorldview = async (): Promise<void> => {
+    setActionError(null);
+    setRecompileState("cooldown");
+    try {
+      await fetchAdmin<{ enqueued: boolean; jobId: string }>(
+        `/api/admin/domains/${props.domain.slug}/recompile-worldview`,
+        {
+          method: "POST",
+          body: {},
+          ...fetchOptsFor(props.fetchImpl),
+        },
+      );
+      if (!mountedRef.current) return;
+      setRecompileState("queued");
+      window.setTimeout(() => {
+        if (mountedRef.current) setRecompileState("idle");
+      }, RECOMPILE_WORLDVIEW_DISABLE_MS);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setRecompileState("idle");
+      setActionError(
+        mapActionError(err, "domains.detail.errors.recompileWorldviewFailed"),
+      );
     }
   };
 
@@ -417,6 +496,28 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
             {t("domains.detail.actions.close")}
           </Btn>
           <div style={DESTRUCTIVE_GROUP_STYLE}>
+            {/* PR-W1 (phase-a appendix #13) — Recompile worldview.
+             *  Disabled for `RECOMPILE_WORLDVIEW_DISABLE_MS` after a
+             *  successful click so consecutive operator-clicks don't
+             *  fork-bomb the worldview queue (the server doesn't rate-
+             *  limit yet — v0.2 follow-up). Also disabled while the
+             *  domain is soft-disabled (server returns 409 there
+             *  anyway; this is the operator-visible affordance). */}
+            <Btn
+              variant="subtle"
+              disabled={
+                recompileState === "cooldown" ||
+                recompileState === "queued" ||
+                submitting ||
+                (props.domain.disabledAt !== null &&
+                  props.domain.disabledAt !== undefined)
+              }
+              onClick={(): void => {
+                void submitRecompileWorldview();
+              }}
+            >
+              {t("domains.detail.actions.recompileWorldview")}
+            </Btn>
             <Btn
               variant="subtle"
               onClick={(): void => setStage("disable")}
@@ -527,6 +628,32 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
           <p style={ERROR_TEXT_STYLE} role="alert">
             {actionError}
           </p>
+        ) : null}
+
+        {/* PR-W1 (phase-a appendix #13) — Recompile-worldview success
+         *  toast. Reuses the same `--healthy` filled-disc glyph the
+         *  copy feedback uses in SourceBindingDetail so the operator
+         *  gets a consistent "this worked" signal across the modal.
+         *  Hidden in idle and cooldown-only states; visible only
+         *  after a successful 202 lands. The button stays disabled
+         *  until the cooldown window expires (which clears
+         *  `recompileState` back to idle in one render). */}
+        {recompileState === "queued" ? (
+          <span
+            style={TOAST_STYLE}
+            role="status"
+            data-testid="recompile-worldview-success"
+          >
+            {/* Decorative glyph — the adjacent toast copy already
+             *  conveys the queued state to assistive tech via the
+             *  `role="status"` live region, so `title` is omitted
+             *  and `GlyphFilledDisc` self-applies `aria-hidden`. */}
+            <GlyphFilledDisc
+              size={10}
+              style={{ color: "var(--healthy)" }}
+            />
+            {t("domains.detail.recompileWorldview.success")}
+          </span>
         ) : null}
       </div>
     </Modal>

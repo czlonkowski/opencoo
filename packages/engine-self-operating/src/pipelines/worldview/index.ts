@@ -34,6 +34,29 @@ export {
   WorldviewSovereigntyError,
 } from "./errors.js";
 
+// PR-W1 (phase-a appendix #13) — trigger pipeline + queue constants.
+export {
+  TRIGGER_HIGH_DEBOUNCE_MS,
+  TRIGGER_LOG_WINDOW,
+  TRIGGER_MEDIUM_COUNT_THRESHOLD,
+  TRIGGER_MEDIUM_MAX_AGE_MS,
+  WORLDVIEW_COMPILE_JOB_NAME,
+  WORLDVIEW_COMPILE_QUEUE_SLUG,
+  freshDomainTriggerState,
+  mintTriggerJobId,
+  parseWorldviewImpactLines,
+  runWorldviewTrigger,
+  type DomainCommitsReader,
+  type DomainTriggerState,
+  type RunWorldviewTriggerArgs,
+  type RunWorldviewTriggerResult,
+  type TriggerCommit,
+  type TriggerDomain,
+  type TriggerEnqueueRecord,
+  type WorldviewCompileQueue,
+  type WorldviewImpactLevel,
+} from "./trigger.js";
+
 export {
   WORLDVIEW_BODY_MAX_BYTES,
   WORLDVIEW_OUTPUT_SCHEMA,

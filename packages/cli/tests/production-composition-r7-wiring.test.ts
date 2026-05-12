@@ -238,6 +238,13 @@ describe("composeProductionFromEnv — PR-R7 forget wiring (PR-W1)", () => {
       // repeat path. The Z3-specific composition tests below
       // override this with a recording stub.
       registerScannerCronFn: async () => undefined,
+      // PR-W1 (phase-a appendix #13) — same shape as the scanner
+      // cron stub: bypass the real BullMQ Queue + cron path.
+      worldviewQueueFactory: () => ({
+        add: async () => ({ id: "stub" }),
+        close: async () => undefined,
+      }),
+      registerWorldviewSafetyNetCronFn: async () => undefined,
     });
 
     // 1. The deleteCap field is populated and is an InMemoryDeleteCap
@@ -277,6 +284,13 @@ describe("composeProductionFromEnv — PR-R7 forget wiring (PR-W1)", () => {
       // repeat path. The Z3-specific composition tests below
       // override this with a recording stub.
       registerScannerCronFn: async () => undefined,
+      // PR-W1 (phase-a appendix #13) — same shape as the scanner
+      // cron stub: bypass the real BullMQ Queue + cron path.
+      worldviewQueueFactory: () => ({
+        add: async () => ({ id: "stub" }),
+        close: async () => undefined,
+      }),
+      registerWorldviewSafetyNetCronFn: async () => undefined,
     });
 
     // The queue factory was called for both queue slugs at composition.
@@ -340,6 +354,13 @@ describe("composeProductionFromEnv — PR-R7 forget wiring (PR-W1)", () => {
       forgetQueueFactory: (name) =>
         name === WIKI_RECOMPILE_QUEUE_SLUG ? f.recompileQueue : f.deleteQueue,
       registerScannerCronFn: async () => undefined,
+      // PR-W1 (phase-a appendix #13) — same shape as the scanner
+      // cron stub: bypass the real BullMQ Queue + cron path.
+      worldviewQueueFactory: () => ({
+        add: async () => ({ id: "stub" }),
+        close: async () => undefined,
+      }),
+      registerWorldviewSafetyNetCronFn: async () => undefined,
     });
 
     await result.closeForgetQueues();
