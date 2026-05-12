@@ -274,6 +274,27 @@ export function registerAgentInstancesRoutes(
         }
         const channelIds = parsed.data.output_channel_ids;
 
+        // Reject duplicate UUIDs BEFORE the exists-check.
+        // Without this the dispatcher would deliver to the same
+        // channel multiple times per run; we go strict (422)
+        // instead of silent dedupe so the operator notices they
+        // double-clicked / double-typed. Copilot triage #3.
+        const seen = new Set<string>();
+        const dupes: string[] = [];
+        for (const cid of channelIds) {
+          if (seen.has(cid)) {
+            if (!dupes.includes(cid)) dupes.push(cid);
+          } else {
+            seen.add(cid);
+          }
+        }
+        if (dupes.length > 0) {
+          return reply.code(422).send({
+            error: "duplicate_output_channel_ids",
+            duplicates: dupes,
+          });
+        }
+
         // Validate every UUID references an existing
         // output_channels row. One SELECT with IN(...). When
         // any miss → 422 + the full missing list so the UI can

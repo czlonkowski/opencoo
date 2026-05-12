@@ -167,7 +167,10 @@ export function AgentInstanceDetail(
         setChannelCatalog(r.rows);
       } catch (err) {
         if (!mountedRef.current) return;
-        setCatalogError(mapErr(err, "errors.transient"));
+        // Pass the TRANSLATED string, not the i18n key — `mapErr`
+        // returns its fallback verbatim, and the render path
+        // displays it as-is. Copilot triage #2.
+        setCatalogError(mapErr(err, t("errors.transient")));
       }
     })();
   }, []);

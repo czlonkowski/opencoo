@@ -268,6 +268,51 @@ describe("admin-api /api/admin/agent-instances (PR-W2)", () => {
     expect(auditRows.rows).toHaveLength(0);
   });
 
+  it("PATCH {output_channel_ids} rejects duplicate UUIDs with 422", async () => {
+    // Copilot triage #3 — duplicate UUIDs in the binding array
+    // would otherwise let the dispatcher deliver to the same
+    // channel multiple times per run. Strict 422 so the operator
+    // is made aware of the double-binding intent (matches the
+    // existing 422 pattern for unknown_output_channel_ids).
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    const domainId = await seedDomain(f.raw);
+    const instanceId = await seedInstance(f.raw, domainId);
+    const c1 = await seedChannel(f.raw);
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+
+    const res = await f.app.inject({
+      method: "PATCH",
+      url: `/api/admin/agent-instances/${instanceId}`,
+      headers: {
+        authorization: `Bearer ${ADMIN_PAT}`,
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: { output_channel_ids: [c1, c1] },
+    });
+    expect(res.statusCode).toBe(422);
+    const body = JSON.parse(res.body) as {
+      error: string;
+      duplicates: string[];
+    };
+    expect(body.error).toBe("duplicate_output_channel_ids");
+    expect(body.duplicates).toEqual([c1]);
+    // Audit NOT written on validation failure.
+    const auditRows = await f.raw.query(
+      `SELECT id FROM admin_audit_log WHERE action = 'agent_instance.bind_outputs'`,
+    );
+    expect(auditRows.rows).toHaveLength(0);
+    // DB row unchanged.
+    const dbRow = await f.raw.query<{ output_channel_ids: unknown }>(
+      `SELECT output_channel_ids FROM agent_instances WHERE id = $1::uuid`,
+      [instanceId],
+    );
+    expect(dbRow.rows[0]!.output_channel_ids).toEqual([]);
+  });
+
   it("PATCH {output_channel_ids: []} is a legal un-bind", async () => {
     const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
     cleanup = f.close;

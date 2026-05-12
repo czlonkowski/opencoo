@@ -195,6 +195,95 @@ describe("heartbeatToAsana", () => {
     });
     expect(payload.htmlNotes!.length).toBeLessThanOrEqual(32_768);
   });
+
+  // ── Copilot triage #4 — sibling-boundary truncation ────────────────
+  //
+  // The old byte-walk `capHtmlBody` could slice the final `</body>`
+  // close in half and could cut mid-HTML-entity (e.g. between
+  // `&amp` and `;`), producing invalid XML that Asana 400s on.
+  // The replacement truncates at SIBLING boundaries with a
+  // reserved budget for the wrapper + a marker. These tests pin
+  // that contract.
+
+  it("truncates at sibling boundaries — never splits a tag or entity", () => {
+    // A small first sibling (h2) + a giant second sibling (p) that
+    // pushes the running total over the cap. The truncation must
+    // drop the giant <p> wholesale, not slice into it.
+    const giantBody = "x".repeat(50_000);
+    const payload = heartbeatToAsana({
+      channelConfig: CHANNEL_CONFIG,
+      agentOutput: {
+        summary: "huge",
+        alerts: [{ title: "T", body: giantBody, citations: [] }],
+      },
+    });
+    const html = payload.htmlNotes!;
+    // Body wrapper intact — the closing tag wasn't sliced.
+    expect(html.startsWith("<body>")).toBe(true);
+    expect(html.endsWith("</body>")).toBe(true);
+    // No bare half-tag (we'd see e.g. `<p` without a closing `>`).
+    expect(html).not.toMatch(/<[a-zA-Z][^>]*$/);
+    // No half-escaped entity (e.g. `&am` or `&amp` without `;`).
+    expect(html).not.toMatch(/&[a-zA-Z]+$/);
+    // The small first sibling survived.
+    expect(html).toContain("<h2>T</h2>");
+    // The giant body was dropped wholesale — no run of 1000 xs.
+    expect(html).not.toMatch(/x{1000}/);
+  });
+
+  it("appends a truncation marker when at least one sibling was dropped", () => {
+    const giantBody = "x".repeat(50_000);
+    const payload = heartbeatToAsana({
+      channelConfig: CHANNEL_CONFIG,
+      agentOutput: {
+        summary: "huge",
+        alerts: [{ title: "T", body: giantBody, citations: [] }],
+      },
+    });
+    expect(payload.htmlNotes!).toContain("<p>(truncated…)</p>");
+  });
+
+  it("does NOT add a truncation marker when content fits under the cap", () => {
+    const payload = heartbeatToAsana({
+      channelConfig: CHANNEL_CONFIG,
+      agentOutput: {
+        summary: "small",
+        alerts: [{ title: "T", body: "B", citations: ["c1"] }],
+      },
+    });
+    expect(payload.htmlNotes!).not.toContain("(truncated");
+  });
+
+  it("produces a parseable body — open/close tag counts balance, no half-tags", () => {
+    // Use many medium siblings so the cap kicks in mid-stream and
+    // we can verify the surviving HTML is well-formed.
+    const alerts = Array.from({ length: 200 }, (_, i) => ({
+      title: `Alert ${i}`,
+      body: "y".repeat(400),
+      citations: ["c"],
+    }));
+    const payload = heartbeatToAsana({
+      channelConfig: CHANNEL_CONFIG,
+      agentOutput: { summary: "many", alerts },
+    });
+    const html = payload.htmlNotes!;
+    // Under cap.
+    expect(Buffer.byteLength(html, "utf8")).toBeLessThanOrEqual(32_768);
+    // Body wrapper intact.
+    expect(html.startsWith("<body>")).toBe(true);
+    expect(html.endsWith("</body>")).toBe(true);
+    // Each opening tag has its closing pair.
+    const countTag = (re: RegExp): number => (html.match(re) ?? []).length;
+    expect(countTag(/<h2>/g)).toBe(countTag(/<\/h2>/g));
+    expect(countTag(/<p>/g)).toBe(countTag(/<\/p>/g));
+    expect(countTag(/<ul>/g)).toBe(countTag(/<\/ul>/g));
+    expect(countTag(/<li>/g)).toBe(countTag(/<\/li>/g));
+    expect(countTag(/<body>/g)).toBe(1);
+    expect(countTag(/<\/body>/g)).toBe(1);
+    // Truncation marker present (we built much more than 32 KB
+    // of siblings).
+    expect(html).toContain("<p>(truncated…)</p>");
+  });
 });
 
 describe("lintToAsana", () => {

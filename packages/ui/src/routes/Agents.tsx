@@ -39,6 +39,10 @@ export function Agents(props: AgentsProps = {}): JSX.Element {
 
   useEffect((): void => {
     void (async (): Promise<void> => {
+      // Clear any prior error at the start of each request so a
+      // transient failure followed by a successful refetch doesn't
+      // leave the stale error banner up. Copilot triage #1.
+      setError(null);
       try {
         const r = await fetchAdmin<AgentsResponse>(
           "/api/admin/agent-instances",

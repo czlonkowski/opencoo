@@ -131,24 +131,50 @@ export function escapeHtml(text: string): string {
  *  on the wire — they see a slightly-shortened delivery. */
 const HTML_NOTES_BYTE_CAP = 32_768;
 
-/** Slice an HTML body to at most `HTML_NOTES_BYTE_CAP` bytes
- *  by codepoint walk (mirrors the audit-log truncateUserAgent
- *  pattern). Sufficient — if the cap kicks in we've already
- *  lost the closing `</body>` and Asana will surface the
- *  partial as a 400. Operators see the truncation in the
- *  scrubbed log; the partial-payload case is the v0.1
- *  ceiling, a richer per-section budget belongs in v0.2. */
-function capHtmlBody(html: string): string {
-  if (Buffer.byteLength(html, "utf8") <= HTML_NOTES_BYTE_CAP) return html;
-  let out = "";
+/** Bytes of `<body>` + `</body>`. Reserved up-front so the
+ *  inner-content cap leaves room for the wrapping tags. */
+const BODY_WRAPPER_BYTES =
+  Buffer.byteLength("<body>", "utf8") + Buffer.byteLength("</body>", "utf8");
+
+/** Bytes of the truncation marker block we append when at least
+ *  one sibling was dropped. */
+const TRUNCATION_MARKER = "<p>(truncated…)</p>";
+const TRUNCATION_MARKER_BYTES = Buffer.byteLength(TRUNCATION_MARKER, "utf8");
+
+/** Extra safety budget on top of the wrapper + marker bytes —
+ *  guards against any future change to the marker / wrapper
+ *  going over budget by a handful of bytes. */
+const SAFETY_BYTES = 64;
+
+/** Append HTML sibling blocks (e.g. `<h2>…</h2>`, `<p>…</p>`,
+ *  `<ul>…</ul>`) under a `<body>…</body>` wrapper, stopping
+ *  before the running byte total exceeds `HTML_NOTES_BYTE_CAP`.
+ *
+ *  Truncation is at SIBLING BOUNDARIES — we never cut inside a
+ *  tag or an HTML entity (the previous codepoint-walk version
+ *  could leave a half-escaped `&amp` or a half-closed `<body`
+ *  on the wire, which Asana 400s on). When at least one sibling
+ *  is dropped we append a final `<p>(truncated…)</p>` marker so
+ *  the operator sees the delivery was clipped.
+ *
+ *  Copilot triage #4 — replaces the old `capHtmlBody` byte-walk. */
+function wrapBodyWithCap(siblings: readonly string[]): string {
+  const reserved = BODY_WRAPPER_BYTES + TRUNCATION_MARKER_BYTES + SAFETY_BYTES;
+  const innerBudget = HTML_NOTES_BYTE_CAP - reserved;
   let used = 0;
-  for (const ch of html) {
-    const chBytes = Buffer.byteLength(ch, "utf8");
-    if (used + chBytes > HTML_NOTES_BYTE_CAP) break;
-    out += ch;
-    used += chBytes;
+  let truncated = false;
+  const kept: string[] = [];
+  for (const block of siblings) {
+    const blockBytes = Buffer.byteLength(block, "utf8");
+    if (used + blockBytes > innerBudget) {
+      truncated = true;
+      break;
+    }
+    kept.push(block);
+    used += blockBytes;
   }
-  return out;
+  const innerJoined = truncated ? kept.join("") + TRUNCATION_MARKER : kept.join("");
+  return `<body>${innerJoined}</body>`;
 }
 
 /** Pull the project gid from a channel config; throw a clean
@@ -203,8 +229,12 @@ interface HeartbeatAlertLike {
 /** Build the `<body><h2>…<p>…<ul>…</ul></body>` HTML for one
  *  Heartbeat alert. Headers and lists are SIBLINGS at the body
  *  level (Asana rejects nested headers in lists and vice versa).
- *  Every agent-supplied byte is HTML-entity-escaped first. */
-function renderHeartbeatAlertHtml(alert: HeartbeatAlertLike): string {
+ *  Every agent-supplied byte is HTML-entity-escaped first.
+ *
+ *  Returns the per-alert sibling blocks SEPARATELY so the
+ *  outer cap can truncate at sibling boundaries (Copilot
+ *  triage #4) without splitting a tag mid-block. */
+function renderHeartbeatAlertHtml(alert: HeartbeatAlertLike): string[] {
   const parts: string[] = [];
   const title = typeof alert.title === "string" ? alert.title : "";
   parts.push(`<h2>${escapeHtml(title)}</h2>`);
@@ -224,7 +254,7 @@ function renderHeartbeatAlertHtml(alert: HeartbeatAlertLike): string {
       parts.push(`<ul>${items}</ul>`);
     }
   }
-  return parts.join("");
+  return parts;
 }
 
 // ── Heartbeat ─────────────────────────────────────────────────────────────
@@ -253,17 +283,18 @@ export function heartbeatToAsana(args: OutputTransformerArgs): AsanaTaskPayload 
   const title = summary ?? `opencoo heartbeat — ${todayIso()}`;
   const alerts = Array.isArray(out.alerts) ? out.alerts : [];
 
-  const inner: string[] = [];
+  const siblings: string[] = [];
   for (const a of alerts) {
-    inner.push(renderHeartbeatAlertHtml(a));
+    for (const block of renderHeartbeatAlertHtml(a)) {
+      siblings.push(block);
+    }
   }
   // Empty-alerts case still produces a renderable body so Asana
   // doesn't reject the `html_notes` for a missing inner block.
-  const bodyInner =
-    inner.length > 0
-      ? inner.join("")
-      : `<p>${escapeHtml("No alerts today.")}</p>`;
-  const htmlNotes = capHtmlBody(`<body>${bodyInner}</body>`);
+  if (siblings.length === 0) {
+    siblings.push(`<p>${escapeHtml("No alerts today.")}</p>`);
+  }
+  const htmlNotes = wrapBodyWithCap(siblings);
 
   const assigneeGid = assigneeGidFromConfig(args.channelConfig);
   return {
@@ -297,13 +328,13 @@ export function lintToAsana(args: OutputTransformerArgs): AsanaTaskPayload {
 
   const title = `Wiki lint findings — ${todayIso()}`;
 
-  const inner: string[] = [];
+  const siblings: string[] = [];
   for (const f of findings) {
     const fHead = typeof f.title === "string" ? f.title : "";
-    inner.push(`<h2>${escapeHtml(fHead)}</h2>`);
+    siblings.push(`<h2>${escapeHtml(fHead)}</h2>`);
     const fBody = typeof f.body === "string" ? f.body : "";
     if (fBody.length > 0) {
-      inner.push(`<p>${escapeHtml(fBody)}</p>`);
+      siblings.push(`<p>${escapeHtml(fBody)}</p>`);
     }
     const citations: readonly unknown[] = Array.isArray(f.citations)
       ? f.citations
@@ -314,15 +345,14 @@ export function lintToAsana(args: OutputTransformerArgs): AsanaTaskPayload {
         .map((c: string) => `<li>${escapeHtml(c)}</li>`)
         .join("");
       if (items.length > 0) {
-        inner.push(`<ul>${items}</ul>`);
+        siblings.push(`<ul>${items}</ul>`);
       }
     }
   }
-  const bodyInner =
-    inner.length > 0
-      ? inner.join("")
-      : `<p>${escapeHtml("No findings.")}</p>`;
-  const htmlNotes = capHtmlBody(`<body>${bodyInner}</body>`);
+  if (siblings.length === 0) {
+    siblings.push(`<p>${escapeHtml("No findings.")}</p>`);
+  }
+  const htmlNotes = wrapBodyWithCap(siblings);
 
   const assigneeGid = assigneeGidFromConfig(args.channelConfig);
   return {
@@ -358,30 +388,31 @@ export function surfacerToAsana(args: OutputTransformerArgs): AsanaTaskPayload {
     asTitleString(out.summary, 500);
   const title = titleCandidate ?? `opencoo surfacer — ${todayIso()}`;
 
-  const inner: string[] = [];
+  const siblings: string[] = [];
   const rationale = typeof out.rationale === "string" ? out.rationale : "";
   if (rationale.length > 0) {
-    inner.push(`<h2>${escapeHtml("Rationale")}</h2>`);
-    inner.push(`<p>${escapeHtml(rationale)}</p>`);
+    siblings.push(`<h2>${escapeHtml("Rationale")}</h2>`);
+    siblings.push(`<p>${escapeHtml(rationale)}</p>`);
   }
   const citations: readonly unknown[] = Array.isArray(out.citations)
     ? out.citations
     : [];
   if (citations.length > 0) {
-    inner.push(`<h2>${escapeHtml("Citations")}</h2>`);
+    siblings.push(`<h2>${escapeHtml("Citations")}</h2>`);
     const items = citations
       .filter((c: unknown): c is string => typeof c === "string" && c.length > 0)
       .map((c: string) => `<li>${escapeHtml(c)}</li>`)
       .join("");
     if (items.length > 0) {
-      inner.push(`<ul>${items}</ul>`);
+      siblings.push(`<ul>${items}</ul>`);
     }
   }
-  const bodyInner =
-    inner.length > 0
-      ? inner.join("")
-      : `<p>${escapeHtml("Surfacer produced no rationale or citations.")}</p>`;
-  const htmlNotes = capHtmlBody(`<body>${bodyInner}</body>`);
+  if (siblings.length === 0) {
+    siblings.push(
+      `<p>${escapeHtml("Surfacer produced no rationale or citations.")}</p>`,
+    );
+  }
+  const htmlNotes = wrapBodyWithCap(siblings);
 
   const assigneeGid = assigneeGidFromConfig(args.channelConfig);
   return {
