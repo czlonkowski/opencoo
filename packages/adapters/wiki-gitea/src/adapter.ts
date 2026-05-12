@@ -147,13 +147,23 @@ class GiteaWikiAdapterImpl implements GiteaWikiAdapter {
   private repoFor(domainSlug: DomainSlug): GiteaRepoLocator {
     // PR-Y3 (phase-a follow-up) — provisioning creates the Gitea repo
     // as the BARE slug (`gitea-provisioning.ts:144` → `name: args.slug`),
-    // not `${prefix}-${slug}`. Earlier partner cutovers picked slugs that
-    // already carried the `wiki-` prefix (e.g. `wiki-estyl-pilot`), so
-    // the actual repo on disk is `wiki-estyl-pilot`. The original
+    // not `${prefix}-${slug}`. Earlier partner cutovers picked slugs
+    // that already carried the `wiki-` prefix (e.g. `wiki-estyl-pilot`),
+    // so the actual repo on disk is `wiki-estyl-pilot`. The original
     // `${prefix}-${slug}` template would compute `wiki-wiki-estyl-pilot`
-    // and 404 on every read. Strip the prefix if the slug already
-    // carries it so reads + writes always resolve the same repo
-    // provisioning actually created.
+    // and 404 on every read. Avoid double-prefixing: if the slug
+    // already starts with `${prefix}-`, pass it through unchanged;
+    // otherwise prepend the prefix. Reads + writes then always resolve
+    // the same repo that provisioning actually created.
+    //
+    // KNOWN RISK (Y3 Copilot triage): two distinct slugs `exec` and
+    // `wiki-exec` would both resolve to `wiki-exec` under this rule,
+    // so a second domain whose slug happens to match the
+    // prefix-shape of an existing domain would silently share the
+    // Gitea repo. v0.2 domain-create validation should reject slugs
+    // starting with `${repoPrefix}-` for NEW domains (grandfather
+    // existing partner-legacy ones via a one-time DB-state check).
+    // Filed as a phase-b candidate.
     const slug = String(domainSlug);
     const name = slug.startsWith(`${this.deps.repoPrefix}-`)
       ? slug
