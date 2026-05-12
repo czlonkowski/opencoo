@@ -40,6 +40,7 @@ import type {
   SourceBindingId,
 } from "@opencoo/shared/db";
 import { isOpencooError, type ErrorClass } from "@opencoo/shared/errors";
+import { safeErrorMessage } from "@opencoo/shared/scrub";
 import type {
   WikiAuthor,
   WikiWriteDeps,
@@ -143,11 +144,17 @@ async function markIntakeFailed(args: {
       WHERE id = ${args.intakeId}::uuid
     `);
   } catch (updateErr) {
+    // `safeErrorMessage` scrubs credential bytes (PAT-shaped tokens,
+    // etc.) and caps to ERROR_MESSAGE_MAX_LENGTH before the message
+    // reaches the structured logger — THREAT-MODEL §2 invariant 11 +
+    // §3.6 invariant 11. The shared logger itself does not scrub;
+    // every site that funnels an `Error.message` into a log payload
+    // must call this helper (PR-W3 Copilot triage; pattern previously
+    // codified across PR-N3/O2/O3/P3).
     args.logger.error("compilation_worker.mark_failed_update_error", {
       intake_id: args.intakeId,
       error_class: args.errorClass,
-      message:
-        updateErr instanceof Error ? updateErr.message : String(updateErr),
+      message: safeErrorMessage(updateErr),
     });
   }
 }
@@ -260,9 +267,18 @@ export async function runCompilationWorker(
       }
     }
 
+    // Clear error_class/error_text alongside the status flip so a
+    // fail-then-retry-success sequence doesn't leave the row
+    // self-contradictory (status='classified' AND error fields
+    // populated). Without the clear, the W4 SourceBindingDetail
+    // panel + W6 heartbeat system-health gatherer would surface
+    // ghost failures on rows that actually succeeded on retry
+    // (PR-W3 Copilot triage).
     await args.db.execute(sql`
       UPDATE ingestion_intake
-      SET status = 'classified'
+      SET status = 'classified',
+          error_class = NULL,
+          error_text = NULL
       WHERE id = ${args.job.intakeId}::uuid
     `);
 
@@ -290,23 +306,32 @@ export async function runCompilationWorker(
     const errorClass: ErrorClass = isOpencooError(err)
       ? err.errorClass
       : "transient";
-    const message =
+    // `intakeMessage` is the raw `.message` we persist to
+    // `ingestion_intake.error_text`. The intake column is operator-
+    // facing engine-internal data (not a log sink) and W6/W4 apply
+    // their own output-side sanitization when these strings surface
+    // to LLM prompts / UI render paths. The 1000-char cap matches
+    // the appendix's `LEFT($err.message, 1000)` policy.
+    const intakeMessage =
       err instanceof Error ? err.message : String(err);
     await markIntakeFailed({
       db: args.db,
       logger: args.logger,
       intakeId: args.job.intakeId,
       errorClass,
-      errorMessage: message,
+      errorMessage: intakeMessage,
     });
+    // The structured logger is the OTHER exit gate for error
+    // strings; route through `safeErrorMessage` so PAT-shaped
+    // tokens that may have leaked into a downstream `Error.message`
+    // (pg driver errors echoing SQL, fetch errors echoing headers,
+    // etc.) are scrubbed before they reach the log transport
+    // (THREAT-MODEL §3.6 invariant 11; PR-W3 Copilot triage).
     args.logger.warn("compilation_worker.failed", {
       binding_id: args.job.bindingId,
       intake_id: args.job.intakeId,
       error_class: errorClass,
-      // Logger-side scrub is the responsibility of the structured
-      // logger config; we forward the raw message here and let the
-      // pino redaction layer handle PII shape.
-      error_message: message.slice(0, ERROR_TEXT_CAP),
+      error_message: safeErrorMessage(err),
     });
     throw err;
   }

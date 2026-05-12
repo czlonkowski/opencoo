@@ -273,6 +273,88 @@ describe("runCompilationWorker — failure capture (PR-W3)", () => {
     expect(row.error_text!.startsWith("x")).toBe(true);
   });
 
+  it("clears error_class/error_text on a fail-then-retry-success sequence (PR-W3 Copilot triage)", async () => {
+    // Models the production flow the wave-14 plan documents: a
+    // binding initially fails (e.g. empty `allowed_paths`); operator
+    // fixes the config via the W1 PATCH route; W2 re-enqueues the
+    // job; the same intake row should land at `classified` with NO
+    // stale error fields. Without the success-path clear, the W4
+    // UI panel + W6 system-health gatherer would surface a ghost
+    // failure on a row that actually succeeded on retry.
+    const mock = new MockLlmClient();
+    mock.register({
+      match: { model: "gpt-4o-mini", promptIncludes: "opencoo Classifier" },
+      response: {
+        text: JSON.stringify({
+          version: "v1",
+          language: "en",
+          summary: "Q3 priorities",
+          target_domains: [
+            {
+              domain_slug: "test-domain",
+              page_paths: ["strategy/q3-2026.md"],
+            },
+          ],
+          pipelines: ["compile.single-source"],
+        }),
+        tokensIn: 100,
+        tokensOut: 50,
+      },
+    });
+    mock.register({
+      match: { model: "gpt-4o-mini", promptIncludes: "opencoo Compiler" },
+      response: {
+        text: JSON.stringify({
+          merged_body: "# Q3\n\nDistribution motion.\n",
+          worldview_impact: ["Distribution prioritised"],
+        }),
+        tokensIn: 100,
+        tokensOut: 50,
+      },
+    });
+    const f = await makeFixture(mock);
+
+    // First run — empty allowed_paths triggers BindingConfigError.
+    await f.raw.query(
+      `UPDATE sources_bindings SET allowed_paths = $1 WHERE id = $2`,
+      [[], f.bindingId],
+    );
+    await expect(
+      runCompilationWorker({
+        db: f.db as unknown as Parameters<typeof runCompilationWorker>[0]["db"],
+        logger: silentLogger(),
+        router: f.router,
+        wikiDeps: f.wikiDeps,
+        author: COMPILER_AUTHOR,
+        guardAdapter: passThroughGuard(),
+        job: buildJob({ bindingId: f.bindingId, intakeId: f.intakeId }),
+      }),
+    ).rejects.toThrow();
+    const failedRow = await readIntake(f.raw, f.intakeId);
+    expect(failedRow.status).toBe("failed");
+    expect(failedRow.error_class).toBe("validation");
+    expect(failedRow.error_text).not.toBeNull();
+
+    // Second run — operator backfilled `allowed_paths`; retry succeeds.
+    await f.raw.query(
+      `UPDATE sources_bindings SET allowed_paths = $1 WHERE id = $2`,
+      [["strategy/**", "executive/**"], f.bindingId],
+    );
+    await runCompilationWorker({
+      db: f.db as unknown as Parameters<typeof runCompilationWorker>[0]["db"],
+      logger: silentLogger(),
+      router: f.router,
+      wikiDeps: f.wikiDeps,
+      author: COMPILER_AUTHOR,
+      guardAdapter: passThroughGuard(),
+      job: buildJob({ bindingId: f.bindingId, intakeId: f.intakeId }),
+    });
+    const finalRow = await readIntake(f.raw, f.intakeId);
+    expect(finalRow.status).toBe("classified");
+    expect(finalRow.error_class).toBeNull();
+    expect(finalRow.error_text).toBeNull();
+  });
+
   it("leaves error_class/error_text untouched and sets status='classified' on the happy path", async () => {
     const mock = new MockLlmClient();
     mock.register({
