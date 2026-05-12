@@ -193,16 +193,25 @@ export function toIso(value: Date | string | null): string | null {
 const REVIEW_MODES = ["auto", "approve", "review"] as const;
 
 /** PR-W1 (phase-a appendix #14): build a Postgres `text[]` array
- *  literal from a JS string array. Drizzle's `sql` template binds a
- *  JS array via `$N::text[]` inconsistently across drivers
- *  (pglite vs. node-postgres), so we serialise to the array-literal
- *  syntax `'{"a","b"}'` and let Postgres parse it server-side.
+ *  literal from a JS string array.
  *
- *  Escapes both `\` and `"` so the helper is safe against any string
- *  the caller passes, even though the upstream guard
- *  (`assertBindingNotWildcardOnly`) plus the wizard's chip input
- *  restrict the practical accept-set to bounded subtree globs. The
- *  belt-and-suspenders escaping keeps a future caller that passes
+ *  Returns the UNQUOTED braces form (e.g. `{"meetings/**","docs/**"}`)
+ *  — NOT a single-quoted SQL literal. The caller passes the result as
+ *  a parameter slot in the `sql` template and casts it server-side
+ *  with `::text[]`, e.g.
+ *  `sql\`... allowed_paths = ${toPgTextArrayLiteral(arr)}::text[] ...\``.
+ *  Postgres parses the braces form as `text[]` at parameter-bind time.
+ *
+ *  Driver-agnostic on purpose: Drizzle's `sql` template binds a JS
+ *  array via `$N::text[]` inconsistently across drivers (pglite vs.
+ *  node-postgres), so we serialise to this string form and let the
+ *  server cast handle it the same way on both.
+ *
+ *  Escapes both `\` and `"` inside each element so the helper is safe
+ *  against any string the caller passes, even though the upstream
+ *  guard (`assertBindingNotWildcardOnly`) plus the wizard's chip
+ *  input restrict the practical accept-set to bounded subtree globs.
+ *  The belt-and-suspenders escaping keeps a future caller that passes
  *  e.g. `"foo\"bar"` from corrupting the literal. */
 export function toPgTextArrayLiteral(values: readonly string[]): string {
   const inner = values

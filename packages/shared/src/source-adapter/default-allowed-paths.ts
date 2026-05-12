@@ -22,7 +22,9 @@
  *   - Empty list is rejected by the guard. The registry returns a
  *     non-empty array per slug.
  *   - Bare `**` and `**\/foo` shapes are rejected by the guard.
- *   - Bounded subtree globs like `"meetings/**\"` are accepted.
+ *   - Bounded subtree globs like `meetings/\*\*` are accepted
+ *     (the runtime accept-set: any pattern with a non-empty
+ *     prefix before the globstar).
  *
  * Drift prevention: each adapter package re-exports a
  * `DEFAULT_ALLOWED_PATHS` constant and ships a vitest case asserting

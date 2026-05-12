@@ -130,7 +130,12 @@ async function advanceToAllowedPaths(
 }
 
 describe("NewSourceBindingModal — allowed_paths step (PR-W1)", () => {
-  it("renders the adapter's defaultAllowedPaths as click-to-add suggestion chips", async () => {
+  it("pre-populates the chip list with the adapter's defaultAllowedPaths on first entry", async () => {
+    // PR-W1 Copilot triage #1: the wizard arrives at the 4th step
+    // with the adapter's defaults already selected so a one-click
+    // submit lands a compileable binding. The runtime-classifier-
+    // rejection cascade that triggered wave-14 was 260 bindings
+    // landing on `allowed_paths='{}'` — pre-fill closes that gap.
     const { fetchImpl } = makeFetchMock();
     const user = userEvent.setup();
     render(
@@ -141,24 +146,52 @@ describe("NewSourceBindingModal — allowed_paths step (PR-W1)", () => {
       />,
     );
     await advanceToAllowedPaths(user);
+    expect(
+      document.querySelector("[data-testid='allowed-path-chip-meetings/**']"),
+    ).not.toBeNull();
+    expect(
+      document.querySelector(
+        "[data-testid='allowed-path-chip-transcripts/**']",
+      ),
+    ).not.toBeNull();
+    expect(
+      document.querySelector("[data-testid='allowed-path-chip-docs/**']"),
+    ).not.toBeNull();
+    // All defaults are already selected, so the suggestions row is empty
+    // (the AllowedPathsStep filters out already-selected paths).
     expect(
       document.querySelector(
         "[data-testid='allowed-path-suggestion-meetings/**']",
       ),
-    ).not.toBeNull();
-    expect(
-      document.querySelector(
-        "[data-testid='allowed-path-suggestion-transcripts/**']",
-      ),
-    ).not.toBeNull();
-    expect(
-      document.querySelector(
-        "[data-testid='allowed-path-suggestion-docs/**']",
-      ),
-    ).not.toBeNull();
+    ).toBeNull();
   });
 
-  it("clicking a suggestion moves the chip to the selected row", async () => {
+  it("submit fires POST with the pre-filled defaults when the operator clicks Create immediately", async () => {
+    // PR-W1 Copilot triage #1: one-click submit yields a non-empty
+    // `allowed_paths` body — the practical proof that pre-fill makes
+    // the wizard "compileable by default".
+    const { fetchImpl, postCalls } = makeFetchMock();
+    const user = userEvent.setup();
+    render(
+      <NewSourceBindingModal
+        onCreated={() => undefined}
+        onClose={() => undefined}
+        fetchImpl={fetchImpl as unknown as typeof fetch}
+      />,
+    );
+    await advanceToAllowedPaths(user);
+    await user.click(screen.getByRole("button", { name: /create binding/i }));
+    await waitFor(() => expect(postCalls().length).toBe(1));
+    const [, init] = postCalls()[0]!;
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(body["allowed_paths"]).toEqual([
+      "meetings/**",
+      "transcripts/**",
+      "docs/**",
+    ]);
+  });
+
+  it("clicking a suggestion moves it from suggestions to selected", async () => {
     const { fetchImpl } = makeFetchMock();
     const user = userEvent.setup();
     render(
@@ -169,14 +202,18 @@ describe("NewSourceBindingModal — allowed_paths step (PR-W1)", () => {
       />,
     );
     await advanceToAllowedPaths(user);
+    // Remove one of the pre-filled chips so its suggestion re-appears.
+    await user.click(
+      screen.getByRole("button", { name: /remove meetings\/\*\*/i }),
+    );
     const suggestion = document.querySelector(
       "[data-testid='allowed-path-suggestion-meetings/**']",
     ) as HTMLElement;
+    expect(suggestion).not.toBeNull();
     await user.click(suggestion);
     expect(
       document.querySelector("[data-testid='allowed-path-chip-meetings/**']"),
     ).not.toBeNull();
-    // Suggestion is no longer rendered.
     expect(
       document.querySelector(
         "[data-testid='allowed-path-suggestion-meetings/**']",
@@ -205,7 +242,7 @@ describe("NewSourceBindingModal — allowed_paths step (PR-W1)", () => {
     ).not.toBeNull();
   });
 
-  it("remove button on a selected chip drops it back out of the list", async () => {
+  it("remove button on a selected chip drops it; pre-filled defaults re-surface as suggestions", async () => {
     const { fetchImpl } = makeFetchMock();
     const user = userEvent.setup();
     render(
@@ -216,25 +253,20 @@ describe("NewSourceBindingModal — allowed_paths step (PR-W1)", () => {
       />,
     );
     await advanceToAllowedPaths(user);
-    const suggestion = document.querySelector(
-      "[data-testid='allowed-path-suggestion-docs/**']",
-    ) as HTMLElement;
-    await user.click(suggestion);
-    expect(
-      document.querySelector("[data-testid='allowed-path-chip-docs/**']"),
-    ).not.toBeNull();
+    // Remove the pre-filled `docs/**` chip.
     const removeBtn = screen.getByRole("button", { name: /remove docs\/\*\*/i });
     await user.click(removeBtn);
     expect(
       document.querySelector("[data-testid='allowed-path-chip-docs/**']"),
     ).toBeNull();
-    // Re-surfaced in suggestions.
+    // Re-surfaced in suggestions (the filter de-overlaps selected vs
+    // suggestions on every render).
     expect(
       document.querySelector("[data-testid='allowed-path-suggestion-docs/**']"),
     ).not.toBeNull();
   });
 
-  it("submit fires POST with allowed_paths array", async () => {
+  it("submit fires POST with the chip list when the operator curates it", async () => {
     const { fetchImpl, postCalls } = makeFetchMock();
     const user = userEvent.setup();
     render(
@@ -245,25 +277,22 @@ describe("NewSourceBindingModal — allowed_paths step (PR-W1)", () => {
       />,
     );
     await advanceToAllowedPaths(user);
-    // Click two suggestions so we know which two paths land in the body.
+    // Drop two of the three pre-filled chips so only `meetings/**`
+    // remains, then submit.
     await user.click(
-      document.querySelector(
-        "[data-testid='allowed-path-suggestion-meetings/**']",
-      ) as HTMLElement,
+      screen.getByRole("button", { name: /remove transcripts\/\*\*/i }),
     );
     await user.click(
-      document.querySelector(
-        "[data-testid='allowed-path-suggestion-transcripts/**']",
-      ) as HTMLElement,
+      screen.getByRole("button", { name: /remove docs\/\*\*/i }),
     );
     await user.click(screen.getByRole("button", { name: /create binding/i }));
     await waitFor(() => expect(postCalls().length).toBe(1));
     const [, init] = postCalls()[0]!;
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-    expect(body["allowed_paths"]).toEqual(["meetings/**", "transcripts/**"]);
+    expect(body["allowed_paths"]).toEqual(["meetings/**"]);
   });
 
-  it("submit blocked when the selected list is empty", async () => {
+  it("submit blocked when the operator empties the chip list", async () => {
     const { fetchImpl, postCalls } = makeFetchMock();
     const user = userEvent.setup();
     render(
@@ -274,7 +303,13 @@ describe("NewSourceBindingModal — allowed_paths step (PR-W1)", () => {
       />,
     );
     await advanceToAllowedPaths(user);
-    // No chip selected; click Create.
+    // Remove every pre-filled chip.
+    for (const path of ["meetings/**", "transcripts/**", "docs/**"]) {
+      const escaped = path.replace(/\*/g, "\\*").replace(/\//g, "\\/");
+      const re = new RegExp(`remove ${escaped}`, "i");
+      const btn = screen.getByRole("button", { name: re });
+      await user.click(btn);
+    }
     await user.click(screen.getByRole("button", { name: /create binding/i }));
     expect(postCalls().length).toBe(0);
     // Inline error rendered.

@@ -229,18 +229,15 @@ async function advanceFromConfigToAllowedPaths(
   );
 }
 
-/** Pick the first suggestion chip on the allowed_paths step, then
- *  click "Create binding" to submit. */
-async function pickFirstSuggestionAndSubmit(
+/** Submit from the allowed_paths step. PR-W1 Copilot triage #1
+ *  pre-fills the chip list with the adapter's `defaultAllowedPaths`
+ *  on first entry into the step, so the operator can click Create
+ *  immediately without touching any chip. The previous behavior
+ *  (click a suggestion first, then Create) is also valid but
+ *  unnecessary for these config-shape tests. */
+async function submitFromAllowedPaths(
   user: ReturnType<typeof userEvent.setup>,
 ): Promise<void> {
-  const suggestions = document.querySelectorAll(
-    "[data-testid^='allowed-path-suggestion-']",
-  );
-  if (suggestions.length === 0) {
-    throw new Error("expected at least one suggestion chip");
-  }
-  await user.click(suggestions[0]! as HTMLElement);
   await user.click(screen.getByRole("button", { name: /create binding/i }));
 }
 
@@ -344,7 +341,7 @@ describe("NewSourceBindingModal — operational settings step (PR-Q9)", () => {
     // PR-W1 (phase-a appendix #14): advance into the allowed_paths
     // step, click the first suggestion chip, then submit.
     await advanceFromConfigToAllowedPaths(user);
-    await pickFirstSuggestionAndSubmit(user);
+    await submitFromAllowedPaths(user);
 
     await waitFor(() => expect(postCalls().length).toBe(1));
     const [, init] = postCalls()[0]!;
@@ -454,7 +451,7 @@ describe("NewSourceBindingModal — operational settings step (PR-Q9)", () => {
       "1ABC",
     );
     await advanceFromConfigToAllowedPaths(user);
-    await pickFirstSuggestionAndSubmit(user);
+    await submitFromAllowedPaths(user);
 
     await waitFor(() => expect(postCalls().length).toBe(1));
     const [, init] = postCalls()[0]!;

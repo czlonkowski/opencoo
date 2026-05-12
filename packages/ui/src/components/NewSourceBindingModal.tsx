@@ -187,10 +187,19 @@ export function NewSourceBindingModal(
    *  submit step. */
   const [configValues, setConfigValues] = useState<Record<string, string>>({});
   /** PR-W1 (phase-a appendix #14): the 4th step's chip list. Stored
-   *  as a sorted-stable array of subtree-globs (e.g. `"meetings/**"`);
+   *  as a sorted-stable array of subtree-globs (e.g. `meetings/\*\*`);
    *  the API contract is `allowed_paths: string[]`. */
   const [allowedPaths, setAllowedPaths] = useState<readonly string[]>([]);
   const [allowedPathInput, setAllowedPathInput] = useState<string>("");
+  /** PR-W1 (Copilot triage #1): tracks whether the operator has
+   *  manually edited the chip list (added or removed at least one
+   *  entry). The wizard pre-populates the chip list from the
+   *  adapter's `defaultAllowedPaths` on first entry into the 4th
+   *  step so the binding is "compileable by default" — but only
+   *  when the operator hasn't already curated the list (covers the
+   *  "operator navigated back, then forward again" case). Toggled
+   *  in onAdd / onRemove handlers. */
+  const [allowedPathsTouched, setAllowedPathsTouched] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
 
@@ -528,7 +537,13 @@ export function NewSourceBindingModal(
           adapter={currentAdapter}
           values={configValues}
           errors={errors}
-          submitting={false}
+          // PR-W1 Copilot triage #2: propagate the real `submitting`
+          // flag so the Next CTA is disabled while a POST is in
+          // flight. Prior to this fix the literal `false` allowed a
+          // double-submit if the operator navigated back to the
+          // config step mid-request (the AllowedPathsStep already
+          // honors `submitting` for the same reason).
+          submitting={submitting}
           onValueChange={(key, v): void => {
             setConfigValues((cur) => ({ ...cur, [key]: v }));
             if (errors[key] !== undefined) {
@@ -546,6 +561,25 @@ export function NewSourceBindingModal(
               // advances to the 4th "Allowed wiki paths" step
               // rather than submitting. Submit happens at the
               // allowed-paths step's Create button.
+              //
+              // PR-W1 Copilot triage #1: pre-populate the chip list
+              // from the adapter's `defaultAllowedPaths` when the
+              // operator hasn't curated the list yet. This makes
+              // "fresh binding compiles by default" the wizard's
+              // out-of-the-box behavior — the partner-cutover
+              // failure that triggered wave-14 was 260 bindings
+              // landing on `allowed_paths='{}'`; pre-fill closes
+              // that gap. The `!allowedPathsTouched` guard keeps a
+              // back-then-forward navigation from clobbering an
+              // operator's edits.
+              if (
+                !allowedPathsTouched &&
+                allowedPaths.length === 0 &&
+                currentAdapter?.defaultAllowedPaths !== undefined &&
+                currentAdapter.defaultAllowedPaths.length > 0
+              ) {
+                setAllowedPaths([...currentAdapter.defaultAllowedPaths]);
+              }
               setStep("allowedPaths");
             }
           }}
@@ -567,6 +601,10 @@ export function NewSourceBindingModal(
               cur.includes(trimmed) ? cur : [...cur, trimmed],
             );
             setAllowedPathInput("");
+            // PR-W1 Copilot triage #1: operator interaction — disable
+            // adapter-default pre-fill on subsequent step entries so
+            // back-then-forward navigation doesn't clobber edits.
+            setAllowedPathsTouched(true);
             if (errors["allowed_paths"] !== undefined) {
               setErrors((prev) => {
                 const next = { ...prev };
@@ -577,6 +615,10 @@ export function NewSourceBindingModal(
           }}
           onRemove={(p): void => {
             setAllowedPaths((cur) => cur.filter((v) => v !== p));
+            // PR-W1 Copilot triage #1: explicit removal counts as
+            // operator curation — preserve the empty / pruned list
+            // on a re-entry rather than re-pre-filling.
+            setAllowedPathsTouched(true);
           }}
           onCustomInputChange={setAllowedPathInput}
           onBack={(): void => setStep("config")}
