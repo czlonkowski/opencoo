@@ -54,7 +54,10 @@
  * structurally enforces this by calling the transformer BEFORE
  * the CredentialStore is touched.
  */
-import type { AsanaTaskPayload } from "@opencoo/output-asana";
+import {
+  ASANA_CHANNEL_CONFIG_DEFAULTS,
+  type AsanaTaskPayload,
+} from "@opencoo/output-asana";
 
 // ── Public types ──────────────────────────────────────────────────────────
 
@@ -230,38 +233,31 @@ function sectionGidFromConfig(cfg: OutputChannelConfig): string | undefined {
   return undefined;
 }
 
-/** PR-W5 (phase-a appendix #14) — channel-config defaults for the
- *  heartbeat transformer. Mirrored verbatim from
- *  `ASANA_CHANNEL_CONFIG_DEFAULTS` in `@opencoo/output-asana` so
- *  legacy channel-config rows persisted before this PR (missing
- *  the new keys) still produce the n8n-baseline shape. The
- *  output-asana package is the source of truth; we re-declare
- *  the literals here to keep the cli package's import surface
- *  stable. */
-const HEARTBEAT_TITLE_PREFIX_DEFAULT = "[COO] Raport -- ";
-const HEARTBEAT_DUE_DATE_POLICY_DEFAULT: "today" | "none" = "today";
-
 /** Read the title_prefix from channel config; falls back to the
- *  n8n-baseline `"[COO] Raport -- "`. An empty string is preserved
- *  (it has a distinct meaning — caller falls back to the
- *  `<date> — <summary>` shape). */
+ *  n8n-baseline `"[COO] Raport -- "` — sourced from
+ *  `ASANA_CHANNEL_CONFIG_DEFAULTS` in `@opencoo/output-asana` to
+ *  keep this module in lockstep with the adapter's Zod default
+ *  (Copilot PR-W5 review — single source of truth). An empty
+ *  string is preserved (it has a distinct meaning — caller falls
+ *  back to the `<date> — <summary>` shape). */
 function titlePrefixFromConfig(cfg: OutputChannelConfig): string {
   const v = cfg["title_prefix"];
   if (typeof v === "string") return v;
-  return HEARTBEAT_TITLE_PREFIX_DEFAULT;
+  return ASANA_CHANNEL_CONFIG_DEFAULTS.title_prefix;
 }
 
 /** Read the due_date_policy from channel config; falls back to
- *  `"today"`. Unknown values fall through to the default — the
- *  channel-config Zod schema rejects bad values at write-time,
- *  but legacy / hand-crafted rows shouldn't crash the
- *  transformer at run-time. */
+ *  the adapter's `ASANA_CHANNEL_CONFIG_DEFAULTS.due_date_policy`
+ *  (single source of truth — Copilot PR-W5 review). Unknown
+ *  values fall through to the default — the channel-config Zod
+ *  schema rejects bad values at write-time, but legacy /
+ *  hand-crafted rows shouldn't crash the transformer at run-time. */
 function dueDatePolicyFromConfig(
   cfg: OutputChannelConfig,
 ): "today" | "none" {
   const v = cfg["due_date_policy"];
   if (v === "today" || v === "none") return v;
-  return HEARTBEAT_DUE_DATE_POLICY_DEFAULT;
+  return ASANA_CHANNEL_CONFIG_DEFAULTS.due_date_policy;
 }
 
 /** Coerce arbitrary value → trimmed string for use as a title
