@@ -81,6 +81,19 @@ export const AUDIT_LOG_ACTIONS = [
   // (THREAT-MODEL §3.13). Audit row is written BEFORE the BullMQ
   // enqueue so a partial enqueue still leaves a forensic trail.
   "source_binding.scan_now",
+  // Phase-a appendix #14 (PR-W2) — Re-enqueue failed compile-classify
+  // jobs for a binding. After W1 lands and the operator backfills
+  // `allowed_paths`, the BullMQ jobs in the `ingestion.scanner.classify`
+  // failed-set are stale (they failed against the old config). This
+  // route enumerates those failed jobs (filtered by payload bindingId
+  // and optionally intakeId) and re-enqueues each as a fresh job.
+  // Metadata captures binding_id + retried_count + caller_username +
+  // (when scoped) intake_id. NEVER any operator-supplied freeform
+  // text — the URL params are bounded (UUID + optional UUID-like
+  // intakeId from the W4 panel) and the body is empty. Audit row is
+  // written BEFORE the re-enqueue calls so a partial enqueue still
+  // leaves a forensic trail (mirrors PR-Z3 scan_now invariant).
+  "source_binding.retry_failed",
   // Phase-a appendix #14 (PR-W1) — `allowed_paths` operator-side
   // edit. The runtime classifier guard (`assertBindingNotWildcardOnly`)
   // rejects empty/wildcard-only arrays; this PATCH branch lets the
