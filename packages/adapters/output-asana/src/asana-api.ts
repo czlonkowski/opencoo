@@ -31,6 +31,12 @@ export interface AsanaCreateTaskArgs {
   readonly htmlNotes?: string;
   readonly dueOn?: string;
   readonly assigneeGid?: string;
+  /** PR-W5 (phase-a appendix #14) — optional Asana section gid.
+   *  When set, the task is placed in that section by sending
+   *  `memberships: [{ project: projectGid, section: sectionGid }]`
+   *  instead of the bare `projects: [...]` field. Asana resolves
+   *  the workspace from the project so no workspace arg is needed. */
+  readonly sectionGid?: string;
 }
 
 export interface AsanaCreateTaskResult {

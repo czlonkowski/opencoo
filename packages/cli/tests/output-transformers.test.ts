@@ -40,6 +40,11 @@ import {
 const PROJECT_GID = "1214005588882595";
 const CHANNEL_CONFIG = { project_gid: PROJECT_GID } as const;
 
+// PR-W5 (phase-a appendix #14) — fixed clock for deterministic
+// date assertions on title prefix + dueOn fields.
+const FIXED_NOW = new Date("2026-05-13T08:00:00Z");
+const FIXED_TODAY = "2026-05-13";
+
 describe("escapeHtml", () => {
   it("escapes the standard five entity chars", () => {
     expect(escapeHtml(`&<>"'`)).toBe("&amp;&lt;&gt;&quot;&#39;");
@@ -51,8 +56,12 @@ describe("escapeHtml", () => {
 });
 
 describe("heartbeatToAsana", () => {
-  it("happy path: alerts become sibling h2 + p + ul", () => {
+  it("happy path: alerts become sibling h2 + body-text + ul, summary leads as <h1>", () => {
+    // PR-W5 (phase-a appendix #14) — title is now the date-templated
+    // prefix shape (default `[COO] Raport -- YYYY-MM-DD`); the
+    // summary leads the body as `<h1>`.
     const payload = heartbeatToAsana({
+      now: FIXED_NOW,
       channelConfig: CHANNEL_CONFIG,
       agentOutput: {
         version: "1.0",
@@ -77,13 +86,15 @@ describe("heartbeatToAsana", () => {
       },
     });
     expect(payload.projectGid).toBe(PROJECT_GID);
-    expect(payload.title).toBe("Two alerts today");
+    expect(payload.title).toBe(`[COO] Raport -- ${FIXED_TODAY}`);
     expect(payload.htmlNotes).toBeDefined();
     expect(payload.notes).toBeUndefined();
     const html = payload.htmlNotes!;
     // Root is <body>.
     expect(html.startsWith("<body>")).toBe(true);
     expect(html.endsWith("</body>")).toBe(true);
+    // PR-W5: summary leads the body as <h1>.
+    expect(html.startsWith(`<body><h1>Two alerts today</h1>`)).toBe(true);
     // Each alert produces one h2 + bare-text body + one ul.
     // PR-Y5: <p> dropped (Asana html_notes rejects it).
     expect(html.match(/<h2>/g)?.length).toBe(2);
@@ -92,6 +103,8 @@ describe("heartbeatToAsana", () => {
     // Specific content present.
     expect(html).toContain("Q3 deck slipping");
     expect(html).toContain("wiki-executive/q3-plan.md");
+    // PR-W5: dueOn defaults to today.
+    expect(payload.dueOn).toBe(FIXED_TODAY);
   });
 
   it("siblings rule: h2 NEVER appears inside ul, ul NEVER appears inside h2", () => {
@@ -142,19 +155,31 @@ describe("heartbeatToAsana", () => {
 
   it("renders empty-alerts case with default bare text (PR-Y5: no <p>)", () => {
     const payload = heartbeatToAsana({
+      now: FIXED_NOW,
       channelConfig: CHANNEL_CONFIG,
       agentOutput: { summary: "", alerts: [] },
     });
     expect(payload.htmlNotes).toContain("No alerts today.");
     expect(payload.htmlNotes).not.toMatch(/<p\b/);
-    // Empty summary → fallback ISO-date title.
-    expect(payload.title).toMatch(/^opencoo heartbeat — \d{4}-\d{2}-\d{2}$/);
+    // PR-W5: empty summary still gets the date-prefixed default title.
+    expect(payload.title).toBe(`[COO] Raport -- ${FIXED_TODAY}`);
   });
 
-  it("title caps at 500 chars", () => {
+  it("title caps at 500 chars (long custom title_prefix is clipped)", () => {
+    // PR-W5: title is now the date-prefixed shape; we cap the whole
+    // title at 500 chars to match the payload schema's .max(500).
+    // The Zod schema bounds title_prefix at 200 chars; combined with
+    // the 10-char ISO date that's well under 500. The cap matters
+    // when the schema is bypassed (e.g. legacy channel-config rows);
+    // we simulate that here by feeding the transformer a raw
+    // channel-config record with an oversized prefix.
     const payload = heartbeatToAsana({
-      channelConfig: CHANNEL_CONFIG,
-      agentOutput: { summary: "x".repeat(700), alerts: [] },
+      now: FIXED_NOW,
+      channelConfig: {
+        project_gid: PROJECT_GID,
+        title_prefix: "x".repeat(600),
+      },
+      agentOutput: { summary: "x", alerts: [] },
     });
     expect(payload.title.length).toBe(500);
   });
@@ -276,7 +301,9 @@ describe("heartbeatToAsana", () => {
     expect(html.startsWith("<body>")).toBe(true);
     expect(html.endsWith("</body>")).toBe(true);
     // Each opening tag has its closing pair (PR-Y5: <p> dropped).
+    // PR-W5: <h1> (summary lead) also balanced.
     const countTag = (re: RegExp): number => (html.match(re) ?? []).length;
+    expect(countTag(/<h1>/g)).toBe(countTag(/<\/h1>/g));
     expect(countTag(/<h2>/g)).toBe(countTag(/<\/h2>/g));
     expect(html).not.toMatch(/<p\b/);
     expect(countTag(/<ul>/g)).toBe(countTag(/<\/ul>/g));
@@ -286,6 +313,191 @@ describe("heartbeatToAsana", () => {
     expect(countTag(/<\/body>/g)).toBe(1);
     // Truncation marker present (we built much more than 32 KB of siblings).
     expect(html).toContain("<em>(truncated…)</em>");
+  });
+
+  // ── PR-W5 (phase-a appendix #14) — title shape, dueOn, summary lead ──
+
+  it("PR-W5 title: default prefix '[COO] Raport -- ' + injected today's date", () => {
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: CHANNEL_CONFIG,
+      agentOutput: { summary: "Sales priority", alerts: [] },
+    });
+    expect(payload.title).toBe(`[COO] Raport -- ${FIXED_TODAY}`);
+  });
+
+  it("PR-W5 title: custom title_prefix from channel-config is honored", () => {
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: {
+        project_gid: PROJECT_GID,
+        title_prefix: "opencoo daily — ",
+      },
+      agentOutput: { summary: "x", alerts: [] },
+    });
+    expect(payload.title).toBe(`opencoo daily — ${FIXED_TODAY}`);
+  });
+
+  it("PR-W5 title: empty-string prefix falls back to '${date} — ${summary[0..100]}'", () => {
+    const longSummary = "A".repeat(150);
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: { project_gid: PROJECT_GID, title_prefix: "" },
+      agentOutput: { summary: longSummary, alerts: [] },
+    });
+    // Date · em-dash · first 100 chars of summary (not the full 150).
+    expect(payload.title).toBe(`${FIXED_TODAY} — ${"A".repeat(100)}`);
+  });
+
+  it("PR-W5 title: empty-string prefix + no summary degrades to bare date", () => {
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: { project_gid: PROJECT_GID, title_prefix: "" },
+      agentOutput: { summary: "", alerts: [] },
+    });
+    expect(payload.title).toBe(FIXED_TODAY);
+  });
+
+  it("PR-W5 dueOn: defaults to today (channel-config omits due_date_policy)", () => {
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: CHANNEL_CONFIG,
+      agentOutput: { summary: "x", alerts: [] },
+    });
+    expect(payload.dueOn).toBe(FIXED_TODAY);
+  });
+
+  it("PR-W5 dueOn: explicit 'today' policy sets today", () => {
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: {
+        project_gid: PROJECT_GID,
+        due_date_policy: "today",
+      },
+      agentOutput: { summary: "x", alerts: [] },
+    });
+    expect(payload.dueOn).toBe(FIXED_TODAY);
+  });
+
+  it("PR-W5 dueOn: 'none' policy omits dueOn entirely", () => {
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: {
+        project_gid: PROJECT_GID,
+        due_date_policy: "none",
+      },
+      agentOutput: { summary: "x", alerts: [] },
+    });
+    expect(payload.dueOn).toBeUndefined();
+  });
+
+  it("PR-W5 assignee: passes through when channel-config sets assignee_gid", () => {
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: { project_gid: PROJECT_GID, assignee_gid: "u-99" },
+      agentOutput: { summary: "x", alerts: [] },
+    });
+    expect(payload.assigneeGid).toBe("u-99");
+  });
+
+  it("PR-W5 assignee: omitted when channel-config has no assignee_gid", () => {
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: CHANNEL_CONFIG,
+      agentOutput: { summary: "x", alerts: [] },
+    });
+    expect(payload.assigneeGid).toBeUndefined();
+  });
+
+  it("PR-W5 sectionGid: passes through when channel-config sets section_gid", () => {
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: { project_gid: PROJECT_GID, section_gid: "sec-123" },
+      agentOutput: { summary: "x", alerts: [] },
+    });
+    expect(payload.sectionGid).toBe("sec-123");
+  });
+
+  it("PR-W5 sectionGid: omitted when channel-config has no section_gid", () => {
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: CHANNEL_CONFIG,
+      agentOutput: { summary: "x", alerts: [] },
+    });
+    expect(payload.sectionGid).toBeUndefined();
+  });
+
+  it("PR-W5 body lead: <body><h1>summary</h1> precedes per-alert <h2> blocks", () => {
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: CHANNEL_CONFIG,
+      agentOutput: {
+        summary: "Top of mind",
+        alerts: [
+          { title: "Alert A", body: "Body A", citations: [] },
+          { title: "Alert B", body: "Body B", citations: [] },
+        ],
+      },
+    });
+    const html = payload.htmlNotes!;
+    expect(html.startsWith("<body><h1>Top of mind</h1>")).toBe(true);
+    // h1 strictly precedes the first h2 in the document order.
+    const h1End = html.indexOf("</h1>");
+    const h2Start = html.indexOf("<h2>");
+    expect(h1End).toBeGreaterThanOrEqual(0);
+    expect(h2Start).toBeGreaterThan(h1End);
+  });
+
+  it("PR-W5 body lead: summary is HTML-escaped in <h1>", () => {
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: CHANNEL_CONFIG,
+      agentOutput: {
+        summary: "<script>x</script> & \"q\" 'a'",
+        alerts: [],
+      },
+    });
+    const html = payload.htmlNotes!;
+    expect(html).toContain(
+      "<h1>&lt;script&gt;x&lt;/script&gt; &amp; &quot;q&quot; &#39;a&#39;</h1>",
+    );
+    // No raw <script> bleed.
+    expect(html).not.toContain("<script>");
+  });
+
+  it("PR-W5 body lead: empty summary skips the <h1> lead but body still wraps", () => {
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: CHANNEL_CONFIG,
+      agentOutput: {
+        summary: "",
+        alerts: [{ title: "T", body: "B", citations: [] }],
+      },
+    });
+    const html = payload.htmlNotes!;
+    expect(html).not.toContain("<h1>");
+    expect(html.startsWith("<body>")).toBe(true);
+    expect(html).toContain("<h2>T</h2>");
+  });
+
+  it("PR-W5 Y5 invariants preserved: no <p>, <hr/> before truncation marker, body wrapper intact", () => {
+    const giantBody = "x".repeat(50_000);
+    const payload = heartbeatToAsana({
+      now: FIXED_NOW,
+      channelConfig: CHANNEL_CONFIG,
+      agentOutput: {
+        summary: "big",
+        alerts: [{ title: "T", body: giantBody, citations: [] }],
+      },
+    });
+    const html = payload.htmlNotes!;
+    // Y5: no <p>.
+    expect(html).not.toMatch(/<p\b/);
+    // Y5: <hr/> separator immediately precedes truncation marker.
+    expect(html).toMatch(/<hr\/>\s*<em>\(truncated…\)<\/em>/);
+    // <body>...</body> wrapper intact.
+    expect(html.startsWith("<body>")).toBe(true);
+    expect(html.endsWith("</body>")).toBe(true);
   });
 });
 

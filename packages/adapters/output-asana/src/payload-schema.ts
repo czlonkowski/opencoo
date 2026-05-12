@@ -44,6 +44,13 @@ export const asanaTaskPayloadSchema = z
       .optional(),
     /** Optional Asana user gid for assignment. */
     assigneeGid: z.string().min(1).optional(),
+    /** PR-W5 (phase-a appendix #14) — optional Asana section gid.
+     *  When set, the underlying API call sends
+     *  `memberships: [{ project, section }]` instead of the bare
+     *  `projects: [...]` field so the task lands in a specific
+     *  Asana section. Channel-config-controlled — the transformer
+     *  populates it from `channelConfig.section_gid`. */
+    sectionGid: z.string().min(1).optional(),
   })
   .strict()
   .refine(
