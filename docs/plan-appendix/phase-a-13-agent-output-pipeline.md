@@ -31,11 +31,11 @@ And `agent_instances.output_channel_ids = []` on heartbeat — even with a worki
 
 Investigation surfaced **three concrete gaps in opencoo itself** (not migration-specific):
 
-1. **G1 — Worldview compiler exists but isn't called.** `compileDomainWorldview` at `packages/engine-self-operating/src/pipelines/worldview/compile-domain.ts:67` is fully implemented + has 5 test cases. Zero production callers. The ingestion compiler emits `Worldview-Impact: high|medium|low` git trailers on every commit per architecture.md §9.4 — but nothing reads them to schedule a recompile. The pre-Z5 partner domain doesn't even have the placeholder.
+1. **G1 — Worldview compiler exists but isn't called.** `compileDomainWorldview` at `packages/engine-self-operating/src/pipelines/worldview/compile-domain.ts:67` is fully implemented + tested. Zero production callers. The ingestion compiler emits `Worldview-Impact: high|medium|low` git trailers on every commit per architecture.md §9.4 — but nothing reads them to schedule a recompile. The pre-Z5 partner domain doesn't even have the placeholder.
 
-2. **G2 — No agent-instance → output-channel binding surface.** The `output_channel_ids jsonb[]` column on `agent_instances` exists, the dispatcher's post-run `dispatchDeliveries` correctly iterates it (Z4), but there's no UI or admin-API to populate the array. Operator has no path to bind a channel to heartbeat.
+2. **G2 — No agent-instance → output-channel binding surface.** The `output_channel_ids` jsonb column (array stored as JSON) on `agent_instances` exists, the dispatcher's post-run `dispatchDeliveries` correctly iterates it (Z4), but there's no UI or admin-API to populate the array. Operator has no path to bind a channel to heartbeat.
 
-3. **G3 — `output-webhook` not registered in composition.** Package is built + 34 tests pin HMAC-SHA256 signing, deterministic delivery IDs, exponential backoff, append-only audit, no-secret-leak. Production composition registers `output-asana` only. One missing `tryLoadAdapter` block blocks n8n drop-in.
+3. **G3 — `output-webhook` not registered in composition.** Package is built + has extensive test coverage pinning HMAC-SHA256 signing, deterministic delivery IDs, exponential backoff, append-only audit, no-secret-leak. Production composition registers `output-asana` only. One missing `tryLoadAdapter` block blocks n8n drop-in.
 
 This wave closes those three gaps + ships the per-(agent, adapter) transformers needed to render heartbeat output as a pretty Asana task body (Asana doesn't render markdown — requires `html_notes` with a restricted HTML tag whitelist).
 
@@ -94,7 +94,7 @@ Sourced from the Asana OpenAPI spec + developers.asana.com/docs/{rich-text,rate-
 
 ## Worldview compiler cadence (load-bearing for W1)
 
-Architecture.md §9.4 specifies:
+Per the internal architecture spec at `architecture.md` §9.4 (gitignored; public contributors see `docs/ARCHITECTURE.md` per CLAUDE.md's repo-state note):
 
 | Trigger | Debounce / threshold | Action |
 |---|---|---|
