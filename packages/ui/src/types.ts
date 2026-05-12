@@ -169,6 +169,13 @@ export interface SourceBinding {
    *  (those live behind `credentials_id`, never in config). Optional
    *  for backward-compat with older fixtures. */
   readonly config?: Record<string, unknown>;
+  /** PR-W1 (phase-a appendix #14) — subtree-glob list the classifier
+   *  may write into. Sources row drill-down shows this as a chip list
+   *  with an Edit button that dispatches PATCH `{allowed_paths}`.
+   *  Optional for backward-compat with older fixtures; the server
+   *  surfaces an empty array `[]` for bindings still on the pre-W1
+   *  default. */
+  readonly allowedPaths?: readonly string[];
 }
 
 export interface PromptManifestEntry {

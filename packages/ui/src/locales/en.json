@@ -166,6 +166,15 @@
         "generic": "Could not create binding. Try again or check the audit log."
       }
     },
+    "allowedPaths": {
+      "title": "Allowed wiki paths",
+      "subtitle": "Subtree globs the classifier may write into. Empty or wildcard-only lists are rejected — pick at least one bounded subtree.",
+      "suggestions": "Suggested for this adapter:",
+      "addCustom": "Add custom",
+      "placeholder": "e.g. meetings/**",
+      "empty": "No paths yet. Add a chip from the suggestions or type your own.",
+      "invalidPattern": "Wildcard-only patterns are not allowed."
+    },
     "detail": {
       "title": "Source binding",
       "subtitle": "Webhook URL, recent activity, and lifecycle actions.",
@@ -247,6 +256,12 @@
         "auth": "Sign-in expired or insufficient permissions — re-paste your PAT.",
         "transient": "Server is unreachable or returned an error. Try again."
       }
+    },
+    "allowedPaths": {
+      "title": "Allowed wiki paths",
+      "subtitle": "Subtree globs the classifier may write into. The runtime guard rejects empty or wildcard-only lists.",
+      "editOpen": "Edit",
+      "saveFailed": "Could not save allowed paths. Try again or check the audit log."
     }
   },
   "llmPolicy": {

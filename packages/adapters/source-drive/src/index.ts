@@ -45,6 +45,18 @@ export {
 } from "./adapter.js";
 
 /**
+ * PR-W1 (phase-a appendix #14) — per-adapter `allowed_paths`
+ * suggestions surfaced as click-to-add chips in the Management
+ * UI's `+ New binding` wizard. Drift-checked against the
+ * authoritative registry in `@opencoo/shared/source-adapter`.
+ */
+export const DEFAULT_ALLOWED_PATHS = [
+  "meetings/**",
+  "transcripts/**",
+  "docs/**",
+] as const satisfies readonly string[];
+
+/**
  * Real `googleapis@^144` Drive client (PR-Z1, phase-a appendix #12).
  * Exposed from the package root so the production composition
  * root can construct `MakeDrive` without a deep subpath import.

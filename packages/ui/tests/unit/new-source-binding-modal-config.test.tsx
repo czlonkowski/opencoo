@@ -77,6 +77,7 @@ const ADAPTERS_RESPONSE = {
         },
         required: ["folderId"],
       },
+      defaultAllowedPaths: ["meetings/**", "transcripts/**", "docs/**"],
     },
     {
       slug: "asana",
@@ -128,6 +129,7 @@ const ADAPTERS_RESPONSE = {
         },
         required: ["projectGid"],
       },
+      defaultAllowedPaths: ["projects/**", "tasks/**"],
     },
   ],
 };
@@ -209,6 +211,39 @@ async function bootAndAdvanceToConfig(
   await user.click(screen.getByRole("button", { name: /next/i }));
 }
 
+/** PR-W1 (phase-a appendix #14): advance from the config step into
+ *  the allowed_paths step. The config step's primary CTA is now
+ *  "Next" (used to be "Create binding"); the allowed_paths step's
+ *  primary CTA is "Create binding". After this call, the operator
+ *  is on the allowed_paths step with the suggestions visible. */
+async function advanceFromConfigToAllowedPaths(
+  user: ReturnType<typeof userEvent.setup>,
+): Promise<void> {
+  // The config step's submit button is now "Next" (the wizard's
+  // primary CTA propagates through every step except the last).
+  await user.click(screen.getByRole("button", { name: /^next$/i }));
+  await waitFor(() =>
+    expect(
+      document.querySelector("[data-testid='allowed-paths-selected']"),
+    ).not.toBeNull(),
+  );
+}
+
+/** Pick the first suggestion chip on the allowed_paths step, then
+ *  click "Create binding" to submit. */
+async function pickFirstSuggestionAndSubmit(
+  user: ReturnType<typeof userEvent.setup>,
+): Promise<void> {
+  const suggestions = document.querySelectorAll(
+    "[data-testid^='allowed-path-suggestion-']",
+  );
+  if (suggestions.length === 0) {
+    throw new Error("expected at least one suggestion chip");
+  }
+  await user.click(suggestions[0]! as HTMLElement);
+  await user.click(screen.getByRole("button", { name: /create binding/i }));
+}
+
 describe("NewSourceBindingModal — operational settings step (PR-Q9)", () => {
   it("renders binding-config inputs for a polling adapter (drive)", async () => {
     const { fetchImpl } = makeFetchMock();
@@ -260,10 +295,17 @@ describe("NewSourceBindingModal — operational settings step (PR-Q9)", () => {
         "1XYZ",
       );
     });
-    // Click Create without filling folderId.
-    await user.click(screen.getByRole("button", { name: /create binding/i }));
+    // Click Next without filling folderId. PR-W1: the config-step
+    // CTA is now "Next" — the required-field gate still blocks
+    // advancement into the allowed_paths step, so no POST is sent.
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
     // No POST went out — required-field validation kept us here.
     expect(postCalls().length).toBe(0);
+    // And the wizard did NOT advance to the allowed_paths step:
+    // the data-testid that only exists in the 4th step is absent.
+    expect(
+      document.querySelector("[data-testid='allowed-paths-selected']"),
+    ).toBeNull();
   });
 
   it("submit body carries nested `config` for the asana wizard", async () => {
@@ -299,7 +341,10 @@ describe("NewSourceBindingModal — operational settings step (PR-Q9)", () => {
       document.querySelector("input[name='workspaceGid']")!,
       "ws-1",
     );
-    await user.click(screen.getByRole("button", { name: /create binding/i }));
+    // PR-W1 (phase-a appendix #14): advance into the allowed_paths
+    // step, click the first suggestion chip, then submit.
+    await advanceFromConfigToAllowedPaths(user);
+    await pickFirstSuggestionAndSubmit(user);
 
     await waitFor(() => expect(postCalls().length).toBe(1));
     const [, init] = postCalls()[0]!;
@@ -316,6 +361,11 @@ describe("NewSourceBindingModal — operational settings step (PR-Q9)", () => {
         workspaceGid: "ws-1",
       },
     });
+    // PR-W1: allowed_paths must be present + non-empty.
+    expect(Array.isArray(body["allowed_paths"])).toBe(true);
+    expect((body["allowed_paths"] as readonly string[]).length).toBeGreaterThan(
+      0,
+    );
   });
 
   it("hidden config fields do NOT render an input (asana.webhookSecretCredentialId)", async () => {
@@ -403,7 +453,8 @@ describe("NewSourceBindingModal — operational settings step (PR-Q9)", () => {
       document.querySelector("input[name='folderId']")!,
       "1ABC",
     );
-    await user.click(screen.getByRole("button", { name: /create binding/i }));
+    await advanceFromConfigToAllowedPaths(user);
+    await pickFirstSuggestionAndSubmit(user);
 
     await waitFor(() => expect(postCalls().length).toBe(1));
     const [, init] = postCalls()[0]!;

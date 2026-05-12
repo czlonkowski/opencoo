@@ -373,6 +373,31 @@ export {
   type BindingConfigSchema,
 } from "./binding-config-schemas.js";
 
+/** PR-W1 (phase-a appendix #14) — per-adapter `allowed_paths`
+ *  suggestions. UI renders these as click-to-add chips in the
+ *  `+ New binding` wizard's 4th step; bootstrap scripts seed them
+ *  on partner fixtures. The runtime classifier guard
+ *  (`assertBindingNotWildcardOnly`) is unchanged — these are
+ *  suggestions, not enforcement. */
+export {
+  SOURCE_ADAPTER_DEFAULT_ALLOWED_PATHS,
+  getDefaultAllowedPaths,
+} from "./default-allowed-paths.js";
+
+/** PR-W1 (phase-a appendix #14) — the runtime classifier guard
+ *  symbols moved from `@opencoo/engine-ingestion/classifier` into
+ *  `@opencoo/shared/source-adapter` so the admin-API
+ *  POST/PATCH paths in `@opencoo/engine-self-operating` can
+ *  pre-validate `allowed_paths` without crossing the cross-engine
+ *  boundary. The classifier still calls `assertBindingNotWildcardOnly`
+ *  at scan-time — it just re-exports the symbol now. THREAT-MODEL
+ *  §3.4 invariant 2 (the wildcard-only fail-closed boundary) is
+ *  unchanged. */
+export {
+  assertBindingNotWildcardOnly,
+  BindingConfigError,
+} from "./binding-guard.js";
+
 export {
   TRANSCRIPTION_ADAPTER_SLUGS,
   defaultReviewModeFor,
