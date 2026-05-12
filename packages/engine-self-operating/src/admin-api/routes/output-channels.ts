@@ -51,24 +51,64 @@ import { isPgUniqueViolation } from "../pg-error.js";
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
 /** Closed set of OutputAdapter slugs the routes accept. v0.1 ships
- *  one (`asana`). Adding a slug = registering a per-adapter config
- *  validator + UI form spec; the route Zod schema picks them up
- *  via the registry below. */
-export const OUTPUT_ADAPTER_SLUGS = ["asana"] as const;
+ *  two (`asana`, `webhook`). Adding a slug = registering a per-adapter
+ *  config validator + UI form spec; the route Zod schema picks them up
+ *  via the registry below.
+ *
+ *  PR-W3 (phase-a appendix #13 G3) — `webhook` joined the set. The
+ *  `@opencoo/output-webhook` adapter ships HMAC-SHA256 signing,
+ *  deterministic delivery IDs (UUID v5), exponential-backoff retry,
+ *  and append-only `output_deliveries` audit. The CLI composition
+ *  root lazy-imports it alongside the asana adapter. */
+export const OUTPUT_ADAPTER_SLUGS = ["asana", "webhook"] as const;
 export type OutputAdapterSlug = (typeof OUTPUT_ADAPTER_SLUGS)[number];
 
 /** Per-adapter validators the routes use. Keyed by adapter slug.
  *  Each entry validates EITHER the channel config (operator
  *  per-channel form) OR the credential payload (operator's PAT /
  *  token). Bound by the routes at composition time. */
+/** Property shape allowed inside `channelConfigJsonSchema.properties`.
+ *  Scalar entries (`string`/`boolean`/`number`/`integer`) carry an
+ *  optional `description` + numeric bounds; object entries can declare
+ *  `additionalProperties` (for free-form maps) and/or `properties`
+ *  (for nested forms). The UI renders scalars as `<input>` and treats
+ *  object-typed entries as documentation-only — the operator-facing
+ *  description is shown but no widget is generated for nested fields.
+ *  Server-side validation still runs the Zod schema, so the channel
+ *  config is rejected if nested fields are malformed. */
+export type OutputAdapterDescriptorChannelConfigProperty =
+  | Readonly<{
+      readonly type: "string" | "boolean" | "number" | "integer";
+      readonly description?: string;
+      readonly minimum?: number;
+      readonly maximum?: number;
+    }>
+  | Readonly<{
+      readonly type: "object";
+      readonly description?: string;
+      readonly additionalProperties?: Readonly<{
+        readonly type: "string" | "boolean" | "number" | "integer";
+      }>;
+      readonly properties?: Readonly<
+        Record<
+          string,
+          Readonly<{
+            readonly type: "string" | "boolean" | "number" | "integer";
+            readonly description?: string;
+            readonly minimum?: number;
+            readonly maximum?: number;
+          }>
+        >
+      >;
+    }>;
+
 export interface OutputAdapterDescriptor {
   /** UI-renderable JSON-Schema-shape for the channel config form. */
   readonly channelConfigJsonSchema: Readonly<{
     readonly type: "object";
-    readonly properties: Readonly<Record<string, Readonly<{
-      readonly type: "string" | "boolean" | "number";
-      readonly description?: string;
-    }>>>;
+    readonly properties: Readonly<
+      Record<string, OutputAdapterDescriptorChannelConfigProperty>
+    >;
     readonly required: readonly string[];
   }>;
   /** Zod validator for the channel config — runs server-side

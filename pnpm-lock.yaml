@@ -283,6 +283,9 @@ importers:
       '@opencoo/output-asana':
         specifier: workspace:*
         version: link:../adapters/output-asana
+      '@opencoo/output-webhook':
+        specifier: workspace:*
+        version: link:../adapters/output-webhook
       '@opencoo/shared':
         specifier: workspace:*
         version: link:../shared

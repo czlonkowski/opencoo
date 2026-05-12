@@ -63,6 +63,7 @@ import {
   createProvider,
   type LlmProvider,
 } from "@opencoo/shared/llm-router";
+import { ValidationError } from "@opencoo/shared/errors";
 import { ConsoleLogger, type Logger } from "@opencoo/shared/logger";
 import { safeErrorMessage } from "@opencoo/shared/scrub";
 import {
@@ -75,6 +76,9 @@ import {
   HEARTBEAT_DEFINITION,
   HttpMcpToolClient,
   LINT_DEFINITION,
+  OutputChannelDisabledError,
+  OutputChannelLookupError,
+  OutputChannelMissingChannelIdError,
   OutputChannelRegistry,
   SURFACER_DEFINITION,
   buildOutputAdapterValidator,
@@ -729,7 +733,275 @@ async function registerOutputAdapters(
       error: safeErrorMessage(err),
     });
   }
+
+  // PR-W3 (phase-a appendix #13 G3) — wire the webhook output adapter.
+  // HMAC-SHA256 signing + deterministic delivery IDs (UUID v5) +
+  // exponential-backoff retry + append-only `output_deliveries` audit
+  // are already implemented in `@opencoo/output-webhook`; this block
+  // lazy-imports it + registers a per-channel adapter wrapper on the
+  // engine-internal `OutputChannelRegistry`.
+  //
+  // The webhook adapter binds `targetUrl` + retry policy + extra
+  // headers at factory time (those fields live in its
+  // `webhookOutputBindingConfigSchema`). The channel-registry model
+  // stores those per channel row, so the wrapper below skips
+  // `outputAdapterToChannelAdapter` (which is designed for adapters
+  // whose config is static across deliveries) and implements the
+  // bridge inline:
+  //
+  //   1. Look up the channel row (id from `config.channel_id`).
+  //   2. Reject disabled channels (validation → DLQ).
+  //   3. Construct a per-channel `WebhookOutputAdapter` using the
+  //      row's `config` (targetUrl + optional headers + optional
+  //      retry policy) and the row's `credentialsId` as the
+  //      signing-secret credential id.
+  //   4. Run the per-(agent, adapter) transformer to merge the
+  //      agent output into the `{event, data}` shape.
+  //   5. Call `adapter.write(...)` — the adapter resolves the
+  //      signing secret from CredentialStore and signs the body.
+  //
+  // The channel config the operator submits via the Outputs UI is
+  // `{ targetUrl: string, headers?: Record<string, string>,
+  //    retryPolicy?: { maxAttempts, baseDelayMs } }`. The signing
+  // secret is the channel row's `credentials_id` (separate from
+  // `config` — same pattern as the asana PAT).
+  try {
+    const mod = await import("@opencoo/output-webhook");
+    // PR-W3 Copilot triage — the prior `const adapterSlug: OutputAdapterSlug
+    // = "webhook"; void adapterSlug;` lines were dead code: the actual slug
+    // used at registration time is `mod.WEBHOOK_OUTPUT_ADAPTER_SLUG` inside
+    // `buildWebhookChannelAdapter`. Drop the locals.
+    const channelAdapter = buildWebhookChannelAdapter({
+      mod,
+      lookupChannel: args.lookupChannel,
+      credentialStore: args.credentialStore,
+    });
+    args.outputChannels.register(channelAdapter);
+    out.webhook = {
+      channelConfigJsonSchema: WEBHOOK_CHANNEL_CONFIG_JSON_SCHEMA,
+      validateConfig: buildOutputAdapterValidator(
+        webhookChannelConfigSchema as unknown as z.ZodType<
+          Record<string, unknown>
+        >,
+      ),
+      credentialJsonSchema: {
+        type: "object",
+        properties: mod.webhookOutputCredentialSchema.properties as Readonly<
+          Record<
+            string,
+            Readonly<{
+              readonly type: "string" | "boolean";
+              readonly description?: string;
+              readonly secret?: boolean;
+            }>
+          >
+        >,
+        required: mod.webhookOutputCredentialSchema.required ?? [],
+      },
+      validateCredentials: buildOutputAdapterValidator(
+        z
+          .object({
+            signingSecret: z.string().min(1),
+          })
+          .strict(),
+      ),
+    };
+  } catch (err) {
+    args.logger.warn("output_adapter.unavailable", {
+      adapter_slug: "webhook",
+      error: safeErrorMessage(err),
+    });
+  }
+
   return out as Readonly<Record<OutputAdapterSlug, OutputAdapterDescriptor>>;
+}
+
+// ─── output-webhook channel adapter wiring (PR-W3) ────────────────
+
+/** PR-W3 — operator-facing channel-config Zod schema. The Outputs UI
+ *  renders the form from `WEBHOOK_CHANNEL_CONFIG_JSON_SCHEMA`; the
+ *  route validates the POSTed body via `webhookChannelConfigSchema`.
+ *  Distinct from `@opencoo/output-webhook`'s
+ *  `webhookOutputBindingConfigSchema` which expects
+ *  `signingSecretCredentialId` — credentials at the channel layer
+ *  route through `output_channels.credentials_id`, so that field is
+ *  injected by the wrapper at delivery time.
+ *
+ *  THREAT-MODEL §3.6 invariant 11: `headers` MUST NOT contain
+ *  Authorization (case-insensitive) — refined inline. Same constraint
+ *  the adapter package enforces at its own factory time. */
+const webhookHeadersSchema = z
+  .record(z.string(), z.string())
+  .refine(
+    (h) => Object.keys(h).every((k) => k.toLowerCase() !== "authorization"),
+    {
+      message:
+        "headers must not contain 'Authorization' — credentials route through the channel's credentials_id (THREAT-MODEL §3.6 invariant 11)",
+    },
+  );
+
+const webhookRetryPolicySchema = z
+  .object({
+    maxAttempts: z.number().int().min(1).max(20).default(5),
+    baseDelayMs: z.number().int().min(0).default(500),
+  })
+  .strict();
+
+const webhookChannelConfigSchema = z
+  .object({
+    targetUrl: z
+      .string()
+      .url()
+      .describe("Full URL to POST signed payloads to."),
+    headers: webhookHeadersSchema
+      .optional()
+      .describe(
+        "Optional operator-supplied HTTP headers. Authorization is forbidden — credentials route through the channel's signing secret.",
+      ),
+    retryPolicy: webhookRetryPolicySchema
+      .optional()
+      .describe(
+        "Optional retry-policy override. Defaults: 5 attempts, 500ms base delay (exponential backoff).",
+      ),
+  })
+  .strict();
+
+/** UI-renderable JSON-Schema-shape for the operator's "+ New webhook
+ *  channel" form. Mirrors the Zod schema above; the Outputs UI
+ *  renders this verbatim.
+ *
+ *  PR-W3 Copilot triage — the Zod schema accepts `targetUrl` plus
+ *  optional `headers` + `retryPolicy`; the UI form needs to expose
+ *  all three so operators can override defaults without dropping to
+ *  a config file. THREAT-MODEL §3.6 invariant 11 forbids
+ *  `Authorization` in `headers` (credentials route through the
+ *  channel's `credentials_id`) — the description carries that
+ *  guidance; the Zod refine + adapter factory both enforce it at
+ *  runtime. */
+const WEBHOOK_CHANNEL_CONFIG_JSON_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    targetUrl: {
+      type: "string" as const,
+      description:
+        "Full URL to POST signed payloads to (e.g. an n8n webhook trigger URL).",
+    },
+    headers: {
+      type: "object" as const,
+      additionalProperties: { type: "string" as const },
+      description:
+        "Optional operator-supplied HTTP headers. The 'Authorization' header is forbidden — credentials route through the channel's signing secret (THREAT-MODEL §3.6 invariant 11).",
+    },
+    retryPolicy: {
+      type: "object" as const,
+      properties: {
+        maxAttempts: {
+          type: "integer" as const,
+          minimum: 1,
+          maximum: 10,
+          description:
+            "Maximum delivery attempts before the payload is recorded as failed in output_deliveries. Default 5.",
+        },
+        baseDelayMs: {
+          type: "integer" as const,
+          minimum: 100,
+          maximum: 30000,
+          description:
+            "Base delay in milliseconds for exponential backoff between retries. Default 500.",
+        },
+      },
+      description:
+        "Optional retry-policy override. Defaults: 5 attempts, 500ms base delay (exponential backoff).",
+    },
+  },
+  required: ["targetUrl"] as const,
+};
+
+/** Build the per-channel webhook adapter wrapper. The wrapper does
+ *  the channel-row lookup itself + constructs a per-delivery
+ *  `WebhookOutputAdapter` so each channel row can carry its own
+ *  `targetUrl` + retry policy + headers. The wrapper structurally
+ *  matches the engine's `OutputChannelAdapter` port (see
+ *  `engine-self-operating/src/output-channels/interface.ts`). */
+function buildWebhookChannelAdapter(args: {
+  readonly mod: typeof import("@opencoo/output-webhook");
+  readonly lookupChannel: LookupOutputChannel;
+  readonly credentialStore: DrizzleCredentialStore;
+}): import("@opencoo/engine-self-operating").OutputChannelAdapter {
+  const { mod, lookupChannel, credentialStore } = args;
+  const adapterSlug = mod.WEBHOOK_OUTPUT_ADAPTER_SLUG;
+  return {
+    adapterSlug,
+    async deliver(deliverArgs): Promise<void> {
+      // PR-W3 Copilot triage — every failure mode below is a config
+      // problem, not a transient one. The agent harness classifies
+      // non-OpencooError throws as `transient` (= retries until DLQ),
+      // which is the wrong behaviour for validation failures the
+      // operator must fix. Route through the existing
+      // OutputChannel* taxonomy (`errorClass: 'validation'`) so the
+      // harness DLQs immediately.
+      const channelId = deliverArgs.config["channel_id"];
+      if (typeof channelId !== "string" || channelId.length === 0) {
+        throw new OutputChannelMissingChannelIdError(adapterSlug);
+      }
+      const record = await lookupChannel(channelId);
+      if (record === null) {
+        throw new OutputChannelLookupError(adapterSlug, channelId);
+      }
+      if (!record.enabled) {
+        throw new OutputChannelDisabledError(adapterSlug, channelId);
+      }
+      // PR-W3 Copilot triage — `webhookChannelConfigSchema.parse(...)`
+      // throws ZodError, which the harness's classifyError treats as
+      // `transient`. But invalid channel config is a validation
+      // problem (the Outputs UI POST route should have rejected it on
+      // creation); surface as ValidationError so the run DLQs.
+      const parseResult = webhookChannelConfigSchema.safeParse(record.config);
+      if (!parseResult.success) {
+        throw new ValidationError(
+          `output-webhook: channel '${channelId}' has invalid config — ${JSON.stringify(parseResult.error.issues)}`,
+          { cause: parseResult.error },
+        );
+      }
+      const parsedConfig = parseResult.data;
+      // Build a per-delivery webhook adapter. `signingSecretCredentialId`
+      // is the channel row's `credentials_id` (the bridge resolves the
+      // raw bytes inside the adapter's write() via the credentialStore).
+      const webhookAdapter = mod.createWebhookOutputAdapter({
+        config: {
+          targetUrl: parsedConfig.targetUrl,
+          signingSecretCredentialId: record.credentialsId as string,
+          ...(parsedConfig.headers !== undefined
+            ? { headers: parsedConfig.headers }
+            : {}),
+          ...(parsedConfig.retryPolicy !== undefined
+            ? { retryPolicy: parsedConfig.retryPolicy }
+            : {}),
+        },
+      });
+      // Run the per-(agent, adapter) transformer to produce the
+      // adapter payload — the webhook transformers (heartbeatToWebhook
+      // / lintToWebhook / surfacerToWebhook) pass through the agent's
+      // verbatim output under `{event, data}`. Unknown agents fall
+      // back to `mergeWebhookPayloadGeneric`.
+      //
+      // PR-W3 Copilot triage — pass `parsedConfig` (the Zod-validated,
+      // defaulted shape) rather than the raw `record.config` so the
+      // transformer sees the same view of the channel config as the
+      // adapter does (with `retryPolicy` defaults applied).
+      const payload = mergePayloadFor({
+        agentSlug: deliverArgs.agentSlug ?? "",
+        adapterSlug: "webhook",
+        agentOutput: deliverArgs.payload,
+        channelConfig: parsedConfig,
+      }) as import("@opencoo/output-webhook").WebhookPayload;
+      await webhookAdapter.write({
+        credentialStore,
+        credentialId: record.credentialsId,
+        payload,
+      });
+    },
+  };
 }
 
 /** PR-Z4 — Asana payload merge.

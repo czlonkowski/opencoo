@@ -28,7 +28,10 @@ import {
   type ForgetJobQueue,
 } from "@opencoo/shared/forget";
 import { ConsoleLogger } from "@opencoo/shared/logger";
-import { OutputChannelRegistry } from "@opencoo/engine-self-operating";
+import {
+  OutputChannelRegistry,
+  getOutputAdapterListEntries,
+} from "@opencoo/engine-self-operating";
 import type pg from "pg";
 import type { Redis } from "ioredis";
 
@@ -230,4 +233,112 @@ describe("composeProductionFromEnv — PR-Z4 output-channels wiring", () => {
       .catch(() => undefined);
     void WIKI_DELETE_QUEUE_SLUG; // referenced for the queue-factory branch
   });
+
+  // PR-W3 (phase-a appendix #13 G3) — the webhook output adapter
+  // joins the registry alongside asana. The composition lazy-imports
+  // `@opencoo/output-webhook` and registers a per-channel adapter
+  // wrapper that constructs a `WebhookOutputAdapter` from each
+  // channel row's `config` (`targetUrl` + optional headers + optional
+  // retry policy) and `credentials_id` (the HMAC signing secret).
+  it(
+    "registers both asana and webhook adapters; descriptors surface via " +
+      "getOutputAdapterListEntries (powers /api/admin/adapters)",
+    async () => {
+      const f = fixture!;
+      const result = await composeProductionFromEnv({
+        env: f.env,
+        logger: silentLogger(),
+        pgPoolFactory: () =>
+          new PglitePoolAdapter(f.pglite) as unknown as pg.Pool,
+        redisFactory: () => f.redis,
+        forgetQueueFactory: (name) =>
+          name === WIKI_RECOMPILE_QUEUE_SLUG
+            ? f.recompileQueue
+            : f.deleteQueue,
+        registerScannerCronFn: async () => undefined,
+        // PR-W1 (phase-a appendix #13) — bypass BullMQ Queue / cron
+        // construction in the worldview bundle (analogous to the
+        // existing registerScannerCronFn seam). Without these the test
+        // hangs constructing a real Queue against the stub Redis.
+        worldviewQueueFactory: () =>
+          ({
+            add: async () => undefined,
+            close: async () => undefined,
+          }) as unknown as ReturnType<typeof Object>,
+        registerWorldviewSafetyNetCronFn: async () => undefined,
+      });
+
+      // 1. Registry has BOTH adapters.
+      expect(result.outputChannels.get("asana")).toBeDefined();
+      expect(result.outputChannels.get("webhook")).toBeDefined();
+
+      // 2. Descriptor map carries BOTH.
+      expect(result.outputChannelDescriptors.asana).toBeDefined();
+      expect(result.outputChannelDescriptors.webhook).toBeDefined();
+
+      // 3. Webhook descriptor shape — channel config requires
+      //    `targetUrl`; credentials require `signingSecret`.
+      const webhookDesc = result.outputChannelDescriptors.webhook;
+      expect(webhookDesc.channelConfigJsonSchema.required).toContain(
+        "targetUrl",
+      );
+      expect(webhookDesc.credentialJsonSchema.required).toContain(
+        "signingSecret",
+      );
+      expect(
+        webhookDesc.credentialJsonSchema.properties["signingSecret"]?.secret,
+      ).toBe(true);
+
+      // 4. Channel-config validator rejects a body that's missing
+      //    targetUrl. (Defense-in-depth — the admin-API route validates
+      //    BEFORE writing the credential or row.)
+      const missingUrl = webhookDesc.validateConfig({});
+      expect(missingUrl.ok).toBe(false);
+      // 5. Channel-config validator accepts a minimal valid body.
+      const okConfig = webhookDesc.validateConfig({
+        targetUrl: "https://n8n.example.com/webhook/abc-123",
+      });
+      expect(okConfig.ok).toBe(true);
+      // 6. THREAT-MODEL §3.6 invariant 11: Authorization header is
+      //    forbidden in operator-supplied headers.
+      const authBlocked = webhookDesc.validateConfig({
+        targetUrl: "https://n8n.example.com/webhook/abc-123",
+        headers: { Authorization: "Bearer token-from-prompt-injection" },
+      });
+      expect(authBlocked.ok).toBe(false);
+
+      // 7. Credential validator rejects a body missing signingSecret.
+      const missingSecret = webhookDesc.validateCredentials({});
+      expect(missingSecret.ok).toBe(false);
+      // 8. Credential validator accepts the standard shape.
+      const okCreds = webhookDesc.validateCredentials({
+        signingSecret: "a".repeat(64),
+      });
+      expect(okCreds.ok).toBe(true);
+
+      // 9. `/api/admin/adapters` surfaces BOTH outputAdapters — this
+      //    is the helper the route calls; asserting it here pins the
+      //    UI's Output-channel-picker behaviour without spinning up
+      //    the full admin-API plugin from this package.
+      const listed = getOutputAdapterListEntries(
+        result.outputChannelDescriptors,
+      );
+      const surfaced = listed.map((e) => e.slug).sort();
+      expect(surfaced).toEqual(["asana", "webhook"]);
+      const webhookEntry = listed.find((e) => e.slug === "webhook");
+      expect(webhookEntry?.channelConfigSchema.required).toContain(
+        "targetUrl",
+      );
+      expect(webhookEntry?.credentialSchema.required).toContain(
+        "signingSecret",
+      );
+
+      await result.workerContext.closeProducers().catch(() => undefined);
+      await result.closeForgetQueues();
+      await result.pgPool.end().catch(() => undefined);
+      await (result.redis as unknown as { quit?: () => Promise<unknown> })
+        .quit?.()
+        .catch(() => undefined);
+    },
+  );
 });
