@@ -86,6 +86,23 @@ export function createAsanaFetchApi(
       // exactly ONE of `notes` / `htmlNotes` is set; we mirror that
       // discriminator here so the Asana REST payload carries either
       // `notes` or `html_notes` but never both (Asana 400s on both).
+      //
+      // PR-W5 (phase-a appendix #14) — when `sectionGid` is set we
+      // send `memberships: [{ project, section }]` instead of the
+      // bare `projects: [...]` field so the task lands in a specific
+      // Asana section. Asana resolves the workspace from the
+      // project so no workspace arg is required.
+      const projectMembership =
+        callArgs.sectionGid !== undefined
+          ? {
+              memberships: [
+                {
+                  project: callArgs.projectGid,
+                  section: callArgs.sectionGid,
+                },
+              ],
+            }
+          : { projects: [callArgs.projectGid] };
       const body: Record<string, unknown> = {
         data: {
           name: callArgs.title,
@@ -93,7 +110,7 @@ export function createAsanaFetchApi(
           ...(callArgs.htmlNotes !== undefined
             ? { html_notes: callArgs.htmlNotes }
             : {}),
-          projects: [callArgs.projectGid],
+          ...projectMembership,
           ...(callArgs.dueOn !== undefined ? { due_on: callArgs.dueOn } : {}),
           ...(callArgs.assigneeGid !== undefined
             ? { assignee: callArgs.assigneeGid }

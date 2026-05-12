@@ -26,10 +26,20 @@ export const asanaTaskPayloadSchema = z
      *  (Asana's hard ceiling is 65,535). */
     notes: z.string().max(32_768).optional(),
     /** Restricted-HTML body (Asana's `html_notes` field). Asana
-     *  parses this as XML and supports a small whitelist:
-     *  `<body>`, `<h1>`, `<h2>`, `<p>`, `<ul>/<ol>/<li>`,
-     *  `<a>`, `<b>/<strong>`, `<i>/<em>`, `<u>`, `<s>`,
-     *  `<code>`, `<pre>`. Any agent-supplied text MUST be
+     *  parses this as XML — the empirically-verified supported
+     *  tag subset is:
+     *    - Root: `<body>` (required wrapper).
+     *    - Inline marks: `<strong>`, `<em>`, `<u>`, `<s>`, `<code>`.
+     *    - Lists: `<ol>`, `<ul>`, `<li>`.
+     *    - Blocks: `<a>`, `<blockquote>`, `<pre>`, `<h1>`, `<h2>`.
+     *    - Self-closing (XML requires the trailing `/`): `<hr/>`,
+     *      `<img/>`.
+     *    - Tables: `<table>`, `<tr>`, `<td>`.
+     *  Only `<a>` accepts attributes in valid Asana html_notes XML.
+     *  **`<p>` is NOT supported** despite Asana's general HTML
+     *  docs claiming otherwise — empirically rejected by the
+     *  html_notes parser (xml_parsing_error), see PR-Y5 (#124).
+     *  `<br/>` is also rejected. Any agent-supplied text MUST be
      *  HTML-entity-escaped by the caller (the per-(agent,
      *  adapter) transformer in cli/output-transformers does
      *  this). 32 KB cap mirrors `notes`. */
@@ -44,6 +54,13 @@ export const asanaTaskPayloadSchema = z
       .optional(),
     /** Optional Asana user gid for assignment. */
     assigneeGid: z.string().min(1).optional(),
+    /** PR-W5 (phase-a appendix #14) — optional Asana section gid.
+     *  When set, the underlying API call sends
+     *  `memberships: [{ project, section }]` instead of the bare
+     *  `projects: [...]` field so the task lands in a specific
+     *  Asana section. Channel-config-controlled — the transformer
+     *  populates it from `channelConfig.section_gid`. */
+    sectionGid: z.string().min(1).optional(),
   })
   .strict()
   .refine(

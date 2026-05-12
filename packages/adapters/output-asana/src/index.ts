@@ -20,6 +20,7 @@ export {
 } from "./payload-schema.js";
 
 export {
+  ASANA_CHANNEL_CONFIG_DEFAULTS,
   asanaChannelConfigJsonSchema,
   asanaChannelConfigSchema,
   type AsanaChannelConfig,

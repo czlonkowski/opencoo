@@ -149,6 +149,14 @@ export function createAsanaOutputAdapter(
         ...(payload.assigneeGid !== undefined
           ? { assigneeGid: payload.assigneeGid }
           : {}),
+        // PR-W5 (phase-a appendix #14) — forward `sectionGid` from
+        // the channel-config-driven payload so the underlying API
+        // call places the task in the operator-selected Asana
+        // section. The fetch-api translates this to a `memberships`
+        // field on the POST body.
+        ...(payload.sectionGid !== undefined
+          ? { sectionGid: payload.sectionGid }
+          : {}),
       };
 
       try {

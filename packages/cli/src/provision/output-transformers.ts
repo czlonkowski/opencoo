@@ -54,7 +54,10 @@
  * structurally enforces this by calling the transformer BEFORE
  * the CredentialStore is touched.
  */
-import type { AsanaTaskPayload } from "@opencoo/output-asana";
+import {
+  ASANA_CHANNEL_CONFIG_DEFAULTS,
+  type AsanaTaskPayload,
+} from "@opencoo/output-asana";
 
 // ── Public types ──────────────────────────────────────────────────────────
 
@@ -73,6 +76,11 @@ export type OutputChannelConfig = Readonly<Record<string, unknown>>;
 export interface OutputTransformerArgs {
   readonly agentOutput: unknown;
   readonly channelConfig: OutputChannelConfig;
+  /** PR-W5 (phase-a appendix #14) — test seam for the clock.
+   *  Production callers omit this; tests inject a fixed `Date`
+   *  so title-date / due-date assertions are deterministic.
+   *  Defaults to `new Date()` when omitted. */
+  readonly now?: Date;
 }
 
 /** Per-(agent, adapter) transformer closure. */
@@ -88,6 +96,10 @@ export interface MergePayloadForArgs {
   readonly adapterSlug: string;
   readonly agentOutput: unknown;
   readonly channelConfig: OutputChannelConfig;
+  /** PR-W5 (phase-a appendix #14) — test seam for the clock,
+   *  propagated to per-(agent, adapter) transformers. Production
+   *  callers omit it; tests inject a fixed `Date`. */
+  readonly now?: Date;
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────
@@ -213,6 +225,41 @@ function assigneeGidFromConfig(cfg: OutputChannelConfig): string | undefined {
   return undefined;
 }
 
+/** Optional section gid lookup. Returns undefined when absent
+ *  OR when the value is an empty string. */
+function sectionGidFromConfig(cfg: OutputChannelConfig): string | undefined {
+  const v = cfg["section_gid"];
+  if (typeof v === "string" && v.length > 0) return v;
+  return undefined;
+}
+
+/** Read the title_prefix from channel config; falls back to the
+ *  n8n-baseline `"[COO] Raport -- "` — sourced from
+ *  `ASANA_CHANNEL_CONFIG_DEFAULTS` in `@opencoo/output-asana` to
+ *  keep this module in lockstep with the adapter's Zod default
+ *  (Copilot PR-W5 review — single source of truth). An empty
+ *  string is preserved (it has a distinct meaning — caller falls
+ *  back to the `<date> — <summary>` shape). */
+function titlePrefixFromConfig(cfg: OutputChannelConfig): string {
+  const v = cfg["title_prefix"];
+  if (typeof v === "string") return v;
+  return ASANA_CHANNEL_CONFIG_DEFAULTS.title_prefix;
+}
+
+/** Read the due_date_policy from channel config; falls back to
+ *  the adapter's `ASANA_CHANNEL_CONFIG_DEFAULTS.due_date_policy`
+ *  (single source of truth — Copilot PR-W5 review). Unknown
+ *  values fall through to the default — the channel-config Zod
+ *  schema rejects bad values at write-time, but legacy /
+ *  hand-crafted rows shouldn't crash the transformer at run-time. */
+function dueDatePolicyFromConfig(
+  cfg: OutputChannelConfig,
+): "today" | "none" {
+  const v = cfg["due_date_policy"];
+  if (v === "today" || v === "none") return v;
+  return ASANA_CHANNEL_CONFIG_DEFAULTS.due_date_policy;
+}
+
 /** Coerce arbitrary value → trimmed string for use as a title
  *  / alert title / etc. Caps at 500 chars to match the Asana
  *  task-title max. Returns null when the value is not a
@@ -224,11 +271,12 @@ function asTitleString(value: unknown, max = 500): string | null {
   return trimmed.slice(0, max);
 }
 
-/** Today's UTC date in ISO-yyyy-mm-dd form — used as the
- *  fallback suffix when the agent didn't return a usable
- *  `summary` field. */
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+/** Today's UTC date in ISO-yyyy-mm-dd form. Accepts an optional
+ *  `now` test seam — production callers omit it, tests pass a
+ *  fixed `Date` so date-based assertions (title prefix, dueOn)
+ *  are deterministic. Defaults to `new Date()`. */
+function todayIso(now?: Date): string {
+  return (now ?? new Date()).toISOString().slice(0, 10);
 }
 
 /** Heartbeat alert shape — mirrors `HeartbeatOutput.alerts[*]`
@@ -288,8 +336,16 @@ interface HeartbeatOutputLike {
 
 /** Heartbeat → Asana html_notes. Each alert becomes one
  *  `<h2>` (title) + bare-text (body) + `<ul>` (citations) triple
- *  at the body level; the agent's `summary` field becomes the
- *  task title.
+ *  at the body level; the agent's `summary` is the body LEAD as
+ *  `<h1>summary</h1>` (PR-W5, phase-a appendix #14) — the title
+ *  is now date-templated rather than the raw summary.
+ *
+ *  Title shape (PR-W5):
+ *   - `${title_prefix}${today}` — defaults to `"[COO] Raport -- "`
+ *     so the operator's task list reads `[COO] Raport -- 2026-05-13`.
+ *   - Empty `title_prefix` → fall back to `${today} — ${summary[0..100]}`
+ *     so a custom-config operator who wanted "no prefix" still
+ *     gets a scannable date-led title.
  *
  *  Q10 binding enforcement happens inside the registry — this
  *  transformer doesn't validate the channel slug; that's the
@@ -299,10 +355,35 @@ export function heartbeatToAsana(args: OutputTransformerArgs): AsanaTaskPayload 
   const out =
     (args.agentOutput as HeartbeatOutputLike | null | undefined) ?? {};
   const summary = asTitleString(out.summary, 500);
-  const title = summary ?? `opencoo heartbeat — ${todayIso()}`;
+  const summaryForBody = summary ?? "";
+  const today = todayIso(args.now);
+
+  // PR-W5 (phase-a appendix #14) — title shape is now date-templated.
+  // Empty title_prefix falls back to `${date} — ${summary[0..100]}`
+  // so a "no prefix" config still produces a scannable title.
+  const titlePrefix = titlePrefixFromConfig(args.channelConfig);
+  let title: string;
+  if (titlePrefix.length === 0) {
+    const shortSummary = summaryForBody.slice(0, 100);
+    title =
+      shortSummary.length > 0
+        ? `${today} — ${shortSummary}`
+        : today;
+  } else {
+    title = `${titlePrefix}${today}`;
+  }
+  // Asana caps task names at ~1024 chars; our 500-char ceiling
+  // (matching the payload schema's `.max(500)`) is well under.
+  title = title.slice(0, 500);
+
   const alerts = Array.isArray(out.alerts) ? out.alerts : [];
 
+  // PR-W5: prepend the agent's summary as the body lead (`<h1>`)
+  // since it's no longer the title. Empty summary skips the lead.
   const siblings: string[] = [];
+  if (summaryForBody.length > 0) {
+    siblings.push(`<h1>${escapeHtml(summaryForBody)}</h1>`);
+  }
   for (const a of alerts) {
     for (const block of renderHeartbeatAlertHtml(a)) {
       siblings.push(block);
@@ -316,11 +397,17 @@ export function heartbeatToAsana(args: OutputTransformerArgs): AsanaTaskPayload 
   const htmlNotes = wrapBodyWithCap(siblings);
 
   const assigneeGid = assigneeGidFromConfig(args.channelConfig);
+  const sectionGid = sectionGidFromConfig(args.channelConfig);
+  const dueDatePolicy = dueDatePolicyFromConfig(args.channelConfig);
+  const dueOn = dueDatePolicy === "today" ? today : undefined;
+
   return {
     projectGid,
     title,
     htmlNotes,
     ...(assigneeGid !== undefined ? { assigneeGid } : {}),
+    ...(sectionGid !== undefined ? { sectionGid } : {}),
+    ...(dueOn !== undefined ? { dueOn } : {}),
   };
 }
 
@@ -345,7 +432,7 @@ export function lintToAsana(args: OutputTransformerArgs): AsanaTaskPayload {
     (args.agentOutput as LintOutputLike | null | undefined) ?? {};
   const findings = Array.isArray(out.findings) ? out.findings : [];
 
-  const title = `Wiki lint findings — ${todayIso()}`;
+  const title = `Wiki lint findings — ${todayIso(args.now)}`;
 
   const siblings: string[] = [];
   for (const f of findings) {
@@ -405,7 +492,7 @@ export function surfacerToAsana(args: OutputTransformerArgs): AsanaTaskPayload {
     asTitleString(out.topic, 500) ??
     asTitleString(out.title, 500) ??
     asTitleString(out.summary, 500);
-  const title = titleCandidate ?? `opencoo surfacer — ${todayIso()}`;
+  const title = titleCandidate ?? `opencoo surfacer — ${todayIso(args.now)}`;
 
   const siblings: string[] = [];
   const rationale = typeof out.rationale === "string" ? out.rationale : "";
@@ -560,6 +647,7 @@ export function mergePayloadFor(args: MergePayloadForArgs): unknown {
     return specific({
       agentOutput: args.agentOutput,
       channelConfig: args.channelConfig,
+      ...(args.now !== undefined ? { now: args.now } : {}),
     });
   }
   const generic = GENERIC_TRANSFORMERS[args.adapterSlug];
@@ -567,6 +655,7 @@ export function mergePayloadFor(args: MergePayloadForArgs): unknown {
     return generic({
       agentOutput: args.agentOutput,
       channelConfig: args.channelConfig,
+      ...(args.now !== undefined ? { now: args.now } : {}),
     });
   }
   throw new OutputTransformerNotFoundError(args.agentSlug, args.adapterSlug);
