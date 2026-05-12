@@ -61,7 +61,7 @@ export function extractAsanaPatFromCredentialBlob(plaintext: Buffer): Buffer {
   const pat = (parsed as { asanaPersonalAccessToken?: unknown })
     .asanaPersonalAccessToken;
   if (typeof pat !== "string" || pat.length === 0) {
-    throw new Error(
+    throw new OutputAdapterValidationError(
       "output-asana: credential plaintext is missing `asanaPersonalAccessToken` (string)",
     );
   }
