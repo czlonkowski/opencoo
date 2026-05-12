@@ -24,6 +24,7 @@ import {
   asanaOutputCredentialSchema,
   asanaTaskPayloadSchema,
   createAsanaOutputAdapter,
+  extractAsanaPatFromCredentialBlob,
   type AsanaTaskPayload,
 } from "../src/index.js";
 import {
@@ -260,6 +261,65 @@ describe("output-asana — adapter wiring", () => {
     expect(state.calls[0]?.projectGid).toBe(VALID_PAYLOAD.projectGid);
     expect(state.calls[0]?.notes).toBe(VALID_PAYLOAD.notes);
     expect(state.calls[0]?.htmlNotes).toBeUndefined();
+  });
+
+  // ── PR-Y4 (phase-a follow-up) — credential wrapper unwrap ─────────────
+
+  it("extractAsanaPatFromCredentialBlob: unwraps {asanaPersonalAccessToken: ...} JSON blob", () => {
+    const wrapper = JSON.stringify({
+      asanaPersonalAccessToken: "2/1209301951170368/1214641966717990:abcdef",
+    });
+    const out = extractAsanaPatFromCredentialBlob(Buffer.from(wrapper, "utf8"));
+    expect(out.toString("utf8")).toBe(
+      "2/1209301951170368/1214641966717990:abcdef",
+    );
+  });
+
+  it("extractAsanaPatFromCredentialBlob: passes through bare PAT (not JSON)", () => {
+    const bare = "asana_test_pat_12345";
+    const out = extractAsanaPatFromCredentialBlob(Buffer.from(bare, "utf8"));
+    expect(out.toString("utf8")).toBe(bare);
+  });
+
+  it("extractAsanaPatFromCredentialBlob: rejects wrapper missing the PAT field", () => {
+    const wrapper = JSON.stringify({ otherField: "abc" });
+    expect(() =>
+      extractAsanaPatFromCredentialBlob(Buffer.from(wrapper, "utf8")),
+    ).toThrow(/missing `asanaPersonalAccessToken`/);
+  });
+
+  it("extractAsanaPatFromCredentialBlob: rejects wrapper with empty-string PAT", () => {
+    const wrapper = JSON.stringify({ asanaPersonalAccessToken: "" });
+    expect(() =>
+      extractAsanaPatFromCredentialBlob(Buffer.from(wrapper, "utf8")),
+    ).toThrow(/missing `asanaPersonalAccessToken`/);
+  });
+
+  it("write() unwraps a wrapper-JSON plaintext + sends BARE PAT to the API (PR-Y4 regression)", async () => {
+    // Simulate production: CredentialStore stored the schema-shaped
+    // wrapper `{asanaPersonalAccessToken: "..."}` not a bare PAT.
+    const store = new InMemoryCredentialStore({ logger: silentLogger() });
+    const PAT = "2/1209301951170368/1214641966717990:realbearer";
+    const credentialId = await store.write({
+      name: "asana-wrapped",
+      schemaRef: "asana-pat/v1",
+      plaintext: Buffer.from(
+        JSON.stringify({ asanaPersonalAccessToken: PAT }),
+        "utf8",
+      ),
+    });
+    const state = createMockAsanaApiState();
+    const adapter = createAsanaOutputAdapter({
+      makeApi: () => makeMockAsanaApi(state),
+    });
+    await adapter.write({
+      credentialStore: store,
+      credentialId,
+      payload: VALID_PAYLOAD,
+    });
+    expect(state.calls).toHaveLength(1);
+    // The BARE PAT (not the JSON wrapper) must reach the API.
+    expect(state.calls[0]?.accessToken.toString("utf8")).toBe(PAT);
   });
 
   // ── PR-W2 (phase-a appendix #13) — html_notes round-trip ──────────────

@@ -9,6 +9,7 @@ export {
   ASANA_OUTPUT_ADAPTER_SLUG,
   asanaOutputCredentialSchema,
   createAsanaOutputAdapter,
+  extractAsanaPatFromCredentialBlob,
   type CreateAsanaOutputAdapterArgs,
   type MakeAsanaApi,
 } from "./adapter.js";
