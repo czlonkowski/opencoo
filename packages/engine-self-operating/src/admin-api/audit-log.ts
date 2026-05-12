@@ -81,6 +81,20 @@ export const AUDIT_LOG_ACTIONS = [
   // (THREAT-MODEL §3.13). Audit row is written BEFORE the BullMQ
   // enqueue so a partial enqueue still leaves a forensic trail.
   "source_binding.scan_now",
+  // Phase-a appendix #14 (PR-W1) — `allowed_paths` operator-side
+  // edit. The runtime classifier guard (`assertBindingNotWildcardOnly`)
+  // rejects empty/wildcard-only arrays; this PATCH branch lets the
+  // operator fix an existing binding via the UI instead of dropping
+  // to SQL. Metadata captures binding_id + caller_username + the
+  // prev_allowed_paths and new_allowed_paths arrays so the audit
+  // trail records exactly which subtree-globs were swapped (these
+  // are operator-controlled config, not credentials — recording
+  // them is operationally useful and never leaks secrets). The
+  // audit row is written AFTER the UPDATE because the route uses
+  // pg's `RETURNING` to confirm the row existed; a non-existent
+  // binding fails BEFORE the audit row and BEFORE any side effect,
+  // matching the source_binding.config_update / set_enabled pattern.
+  "source_binding.set_allowed_paths",
   // Phase-a appendix #10 (PR-R1) — Domains tab drill-down
   // actions. `update` covers PATCH (display_name / locale /
   // is_aggregator); `disable` covers DELETE (soft-delete);

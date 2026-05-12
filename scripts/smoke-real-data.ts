@@ -357,8 +357,8 @@ async function provisionScaffolding(
       const { rows: bindingRows } = await client.query<{ id: string }>(
         `INSERT INTO sources_bindings
            (domain_id, adapter_slug, credentials_id, webhook_secret_credentials_id,
-            config, enabled, review_mode)
-         VALUES ($1, 'webhook', $2, $2, $3::jsonb, true, 'auto')
+            config, enabled, review_mode, allowed_paths)
+         VALUES ($1, 'webhook', $2, $2, $3::jsonb, true, 'auto', $4::text[])
          RETURNING id`,
         [
           domainId,
@@ -366,6 +366,13 @@ async function provisionScaffolding(
           JSON.stringify({
             pathSegment: `smoke-${stamp}`,
           }),
+          // PR-W1 (phase-a appendix #14): the runtime classifier guard
+          // rejects empty `allowed_paths`; the smoke scaffolding now
+          // seeds the generic-webhook adapter's `defaultAllowedPaths`
+          // so the binding compiles end-to-end. Mirrors the value the
+          // shared `SOURCE_ADAPTER_DEFAULT_ALLOWED_PATHS` registry
+          // surfaces via `GET /api/admin/adapters`.
+          ["webhook/**"],
         ],
       );
       bindingId = bindingRows[0]!.id;

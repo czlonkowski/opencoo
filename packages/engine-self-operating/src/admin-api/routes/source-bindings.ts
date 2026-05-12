@@ -41,6 +41,10 @@ import { z } from "zod";
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
 import type { DomainSlug } from "@opencoo/shared/db";
+import {
+  assertBindingNotWildcardOnly,
+  BindingConfigError,
+} from "@opencoo/shared/source-adapter";
 import { planForget } from "@opencoo/shared/forget";
 import { safeErrorMessage } from "@opencoo/shared/scrub";
 import {
@@ -68,10 +72,15 @@ const reviewModeUpdateSchema = z
 /** PR-Q10 — `PATCH /api/admin/source-bindings/:id` body.
  *
  *  PR-R2 (phase-a appendix #10) widens the body to a discriminated
- *  union — exactly ONE of three intents per request:
- *    • `{enabled}`     — Q10 disable/enable toggle (unchanged)
- *    • `{config}`      — operational settings update
- *    • `{credentials}` — in-place credential rotation
+ *  union — exactly ONE of four intents per request:
+ *    • `{enabled}`        — Q10 disable/enable toggle (unchanged)
+ *    • `{config}`         — operational settings update
+ *    • `{credentials}`    — in-place credential rotation
+ *    • `{allowed_paths}`  — PR-W1 (phase-a appendix #14)
+ *                           subtree-glob list edit (lets the
+ *                           operator fix the field via UI instead
+ *                           of SQL when the runtime classifier
+ *                           guard is rejecting an existing binding)
  *
  *  Mixed bodies (e.g. `{enabled, config}`) are rejected with 422 so
  *  the audit trail records exactly one verb per action. Each branch
@@ -99,10 +108,23 @@ const bindingCredentialsPatchSchema = z
       .strict(),
   })
   .strict();
+/** PR-W1 (phase-a appendix #14) — `allowed_paths` body shape.
+ *  `.min(1)` rejects an empty array at Zod parse time, before the
+ *  runtime guard runs — same effect (422 with structured issues)
+ *  but a more useful diagnostic. The `assertBindingNotWildcardOnly`
+ *  call in `handleAllowedPathsPatch` is the canonical wildcard-shape
+ *  rejection — Zod only ensures non-empty strings + non-empty array;
+ *  the guard catches "**", "**\/foo", etc. */
+const bindingAllowedPathsPatchSchema = z
+  .object({
+    allowed_paths: z.array(z.string().min(1)).min(1),
+  })
+  .strict();
 const bindingPatchSchema = z.union([
   bindingEnabledPatchSchema,
   bindingConfigPatchSchema,
   bindingCredentialsPatchSchema,
+  bindingAllowedPathsPatchSchema,
 ]);
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
@@ -147,6 +169,10 @@ interface BindingRow {
    *  values may include operator-internal IDs but never secret bytes
    *  (credentials live in `credentials_id`, never config). */
   readonly config: Record<string, unknown>;
+  /** PR-W1 (phase-a appendix #14) — subtree-glob list the classifier
+   *  may write into. Sources row drill-down renders this as a chip
+   *  list; an Edit button dispatches `PATCH {allowed_paths}`. */
+  readonly allowedPaths: readonly string[];
 }
 
 /** Coerce pg's timestamp result (Date when node-postgres parsed it,
@@ -165,6 +191,34 @@ export function toIso(value: Date | string | null): string | null {
 }
 
 const REVIEW_MODES = ["auto", "approve", "review"] as const;
+
+/** PR-W1 (phase-a appendix #14): build a Postgres `text[]` array
+ *  literal from a JS string array.
+ *
+ *  Returns the UNQUOTED braces form (e.g. `{"meetings/**","docs/**"}`)
+ *  — NOT a single-quoted SQL literal. The caller passes the result as
+ *  a parameter slot in the `sql` template and casts it server-side
+ *  with `::text[]`, e.g.
+ *  `sql\`... allowed_paths = ${toPgTextArrayLiteral(arr)}::text[] ...\``.
+ *  Postgres parses the braces form as `text[]` at parameter-bind time.
+ *
+ *  Driver-agnostic on purpose: Drizzle's `sql` template binds a JS
+ *  array via `$N::text[]` inconsistently across drivers (pglite vs.
+ *  node-postgres), so we serialise to this string form and let the
+ *  server cast handle it the same way on both.
+ *
+ *  Escapes both `\` and `"` inside each element so the helper is safe
+ *  against any string the caller passes, even though the upstream
+ *  guard (`assertBindingNotWildcardOnly`) plus the wizard's chip
+ *  input restrict the practical accept-set to bounded subtree globs.
+ *  The belt-and-suspenders escaping keeps a future caller that passes
+ *  e.g. `"foo\"bar"` from corrupting the literal. */
+export function toPgTextArrayLiteral(values: readonly string[]): string {
+  const inner = values
+    .map((v) => `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`)
+    .join(",");
+  return `{${inner}}`;
+}
 
 const createBindingSchema = z
   .object({
@@ -186,6 +240,21 @@ const createBindingSchema = z
      * adapter-specific required-set.
      */
     config: z.record(z.string(), z.unknown()).optional(),
+    /**
+     * PR-W1 (phase-a appendix #14): subtree-glob list defining
+     * which wiki paths this binding's classifier output is allowed
+     * to write into. The runtime classifier guard
+     * (`assertBindingNotWildcardOnly`, `@opencoo/shared/source-adapter`)
+     * is the security boundary — it rejects empty/wildcard-only
+     * arrays at scan time. This Zod-level `.min(1)` is UX (the
+     * operator sees a 422 before the row is INSERTed and an
+     * `assertBindingNotWildcardOnly` call below catches
+     * wildcard-shaped patterns with the same error wording the
+     * runtime would emit). Per-adapter suggestions surfaced via
+     * `GET /api/admin/adapters` (see `defaultAllowedPaths` per
+     * descriptor).
+     */
+    allowed_paths: z.array(z.string().min(1)).min(1),
   })
   .strict();
 
@@ -266,6 +335,7 @@ export function registerSourceBindingsRoutes(
              b.last_scanned_at,
              b.notes,
              b.config,
+             b.allowed_paths,
              COALESCE(b.notes, b.adapter_slug || ' → ' || d.slug) AS name,
              (
                SELECT w.received_at
@@ -310,6 +380,7 @@ export function registerSourceBindingsRoutes(
         last_scanned_at: Date | string | null;
         notes: string | null;
         config: Record<string, unknown> | null;
+        allowed_paths: string[] | null;
         name: string;
         last_event_at: Date | string | null;
         sig_fail_count_24h: number;
@@ -351,6 +422,11 @@ export function registerSourceBindingsRoutes(
         pendingEventsCount: r.pending_events_count,
         sigFailCount24h: r.sig_fail_count_24h,
         config: r.config ?? {},
+        // PR-W1 (phase-a appendix #14): pg's text[] codec returns
+        // either an array or null (column has a default '{}' so in
+        // practice always non-null, but the safe fallback keeps the
+        // type stable).
+        allowedPaths: r.allowed_paths ?? [],
       };
     });
     return { rows };
@@ -371,6 +447,28 @@ export function registerSourceBindingsRoutes(
       }
       const { adapter_slug, target_domain_slug, credentials } = parsed.data;
       const submittedConfig = parsed.data.config ?? {};
+      const submittedAllowedPaths = parsed.data.allowed_paths;
+
+      // PR-W1 (phase-a appendix #14): re-run the runtime guard at
+      // the API boundary. Zod already rejected the empty array
+      // (`.min(1)`) so this catches wildcard-shape patterns (`**`,
+      // `**/foo`). Identical wording to the runtime classifier
+      // failure operators see when an under-the-UI write smuggles
+      // a bad shape into the row — same string in both places means
+      // less guesswork. The runtime guard remains in place
+      // (defense-in-depth, THREAT-MODEL §3.4 invariant 2).
+      try {
+        assertBindingNotWildcardOnly(submittedAllowedPaths);
+      } catch (err) {
+        if (err instanceof BindingConfigError) {
+          return reply.code(422).send({
+            error: "binding_allowed_paths_invalid",
+            message: err.message,
+            allowed_paths: err.allowedPaths,
+          });
+        }
+        throw err;
+      }
 
       const descriptor = getSourceAdapterDescriptor(adapter_slug);
       if (descriptor === undefined) {
@@ -497,16 +595,29 @@ export function registerSourceBindingsRoutes(
         // serialize objects for jsonb columns). The empty-object
         // default mirrors the column's DDL DEFAULT '{}'::jsonb.
         const configJson = JSON.stringify(submittedConfig);
+        // PR-W1 (phase-a appendix #14): Drizzle's `sql` template
+        // doesn't reliably bind a JS array as Postgres `text[]` via
+        // `::text[]` cast (pglite + node-postgres differ here). We
+        // hand-build the array literal so both drivers see a
+        // server-cast `text[]` regardless. The guard above already
+        // validated shape; the column DDL is `text[] NOT NULL`.
+        // Each pattern is escaped to be safe against `"` and `\`
+        // characters even though `assertBindingNotWildcardOnly`
+        // already restricts the accept-set.
+        const allowedPathsLiteral = toPgTextArrayLiteral(
+          submittedAllowedPaths,
+        );
         const inserted = (await args.db.execute(sql`
           INSERT INTO sources_bindings
-            (domain_id, adapter_slug, review_mode, credentials_id, webhook_secret_credentials_id, config)
+            (domain_id, adapter_slug, review_mode, credentials_id, webhook_secret_credentials_id, config, allowed_paths)
           VALUES (
             ${domain.id}::uuid,
             ${adapter_slug},
             ${sql.raw(`'${effectiveReviewMode}'`)}::review_mode,
             ${credentialsId}::uuid,
             ${webhookSecretSql},
-            ${configJson}::jsonb
+            ${configJson}::jsonb,
+            ${allowedPathsLiteral}::text[]
           )
           RETURNING id::text AS id
         `)) as unknown as { rows: Array<{ id: string }> };
@@ -885,6 +996,21 @@ export function registerSourceBindingsRoutes(
           reply,
           id,
           submittedConfig: parsed.data.config,
+          ctx,
+        });
+      }
+
+      // PR-W1 (phase-a appendix #14) — `allowed_paths` branch.
+      // Lets the operator fix an existing binding via UI rather
+      // than dropping to SQL when the runtime classifier guard is
+      // refusing to compile.
+      if ("allowed_paths" in parsed.data) {
+        return handleAllowedPathsPatch({
+          db: args.db,
+          req,
+          reply,
+          id,
+          submittedAllowedPaths: parsed.data.allowed_paths,
           ctx,
         });
       }
@@ -1339,6 +1465,98 @@ async function handleConfigPatch(
   });
 
   return args.reply.code(200).send({ id: row.id });
+}
+
+// ─── PR-W1 (phase-a appendix #14): allowed_paths patch handler ──────────────
+
+interface AllowedPathsPatchArgs {
+  readonly db: Db;
+  readonly req: FastifyRequest;
+  readonly reply: FastifyReply;
+  readonly id: string;
+  readonly submittedAllowedPaths: readonly string[];
+  readonly ctx: AdminContext;
+}
+
+/** PR-W1 `allowed_paths`-only path. Lets an operator fix an
+ *  existing binding's wildcard-list via the UI (rather than dropping
+ *  to SQL) when the runtime classifier guard is rejecting compile
+ *  jobs. Re-runs the same `assertBindingNotWildcardOnly` check the
+ *  POST path uses + the runtime classifier uses, so all three
+ *  surface the same error wording.
+ *
+ *  Audit metadata captures binding_id + caller_username + the
+ *  prev_allowed_paths and new_allowed_paths arrays. These are
+ *  operator-controlled config (not credentials, not user-derived,
+ *  not content-derived) so recording them is operationally useful
+ *  and never leaks secrets. The audit row is written AFTER the
+ *  UPDATE returns a row — a non-existent binding fails BEFORE any
+ *  side effect or audit emission, matching the
+ *  `source_binding.config_update` / `set_enabled` pattern. */
+async function handleAllowedPathsPatch(
+  args: AllowedPathsPatchArgs,
+): Promise<FastifyReply> {
+  // Wildcard-shape rejection (Zod already rejected an empty array
+  // upstream). Same error wording as the runtime classifier guard
+  // so an operator triaging a `BindingConfigError` in the logs and
+  // a 422 from the UI sees identical text.
+  try {
+    assertBindingNotWildcardOnly(args.submittedAllowedPaths);
+  } catch (err) {
+    if (err instanceof BindingConfigError) {
+      return args.reply.code(422).send({
+        error: "binding_allowed_paths_invalid",
+        message: err.message,
+        allowed_paths: err.allowedPaths,
+      });
+    }
+    throw err;
+  }
+
+  // Read the current row for existence check + audit prev value.
+  const existing = (await args.db.execute(sql`
+    SELECT allowed_paths
+    FROM sources_bindings
+    WHERE id = ${args.id}::uuid
+    LIMIT 1
+  `)) as unknown as { rows: Array<{ allowed_paths: string[] | null }> };
+  const prev = existing.rows[0];
+  if (prev === undefined) {
+    return args.reply.code(404).send({ error: "not_found", id: args.id });
+  }
+
+  const newAllowedPaths: string[] = [...args.submittedAllowedPaths];
+  // PR-W1: hand-build the Postgres array literal — see the POST
+  // path for rationale (drift between Drizzle drivers).
+  const allowedPathsLiteral = toPgTextArrayLiteral(newAllowedPaths);
+  const updated = (await args.db.execute(sql`
+    UPDATE sources_bindings
+    SET allowed_paths = ${allowedPathsLiteral}::text[],
+        updated_at = NOW()
+    WHERE id = ${args.id}::uuid
+    RETURNING id::text AS id
+  `)) as unknown as { rows: Array<{ id: string }> };
+  const row = updated.rows[0];
+  if (row === undefined) {
+    return args.reply.code(500).send({ error: "update_returned_no_row" });
+  }
+
+  await writeAuditLog(args.db, {
+    action: "source_binding.set_allowed_paths",
+    userId: args.ctx.userId,
+    metadata: {
+      binding_id: args.id,
+      prev_allowed_paths: prev.allowed_paths ?? [],
+      new_allowed_paths: newAllowedPaths,
+      caller_username: args.ctx.username,
+    },
+    sourceIp: args.req.ip,
+    userAgent: args.req.headers["user-agent"],
+  });
+
+  return args.reply
+    .code(200)
+    .send({ id: row.id, allowed_paths: newAllowedPaths });
 }
 
 interface CredentialsPatchArgs {

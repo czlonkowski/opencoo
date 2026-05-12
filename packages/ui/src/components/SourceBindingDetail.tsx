@@ -40,7 +40,14 @@
  * The webhook URL itself is the binding's UUID — operators sharing
  * it externally is by design (it is the public webhook target).
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { useTranslation } from "react-i18next";
 
 import { Btn } from "./Btn.js";
@@ -1283,6 +1290,18 @@ export function SourceBindingDetail(
           </span>
         </div>
 
+        {/* PR-W1 (phase-a appendix #14) — allowed_paths chip list +
+         *  Edit affordance. Hidden when the binding's allowed_paths
+         *  field is undefined on older fixtures; otherwise renders
+         *  the chips (empty array surfaces an empty chip row plus
+         *  the Edit button so the operator can fix it without
+         *  dropping to SQL). */}
+        <AllowedPathsPanel
+          binding={props.binding}
+          onChanged={props.onChanged}
+          fetchImpl={props.fetchImpl}
+        />
+
         {actionError !== null ? (
           <p style={ERROR_TEXT_STYLE} role="alert">
             {actionError}
@@ -1497,5 +1516,253 @@ function renderCredentialFields(
       {renderGroup(webhook.properties.auth, "auth.")}
       {renderGroup(webhook.properties.webhook_secret, "webhook_secret.")}
     </>
+  );
+}
+
+// ─── PR-W1 (phase-a appendix #14): AllowedPathsPanel ───────────────────────
+
+interface AllowedPathsPanelProps {
+  readonly binding: SourceBinding;
+  readonly onChanged: () => void;
+  /** Optional fetch test seam. Carries `undefined` when callers
+   *  omit the prop (exactOptionalPropertyTypes). */
+  readonly fetchImpl?: typeof fetch | undefined;
+}
+
+const ALLOWED_CHIP_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "var(--space-2)",
+  padding: "var(--space-1) var(--space-3)",
+  border: "1px solid var(--rule)",
+  borderRadius: "var(--radius-s)",
+  fontFamily: "var(--font-mono)",
+  fontSize: "var(--fs-micro)",
+  letterSpacing: "0.02em",
+  background: "var(--paper)",
+  color: "var(--ink-1)",
+};
+
+const ALLOWED_CHIP_ROW_STYLE: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "var(--space-2)",
+};
+
+const ALLOWED_PANEL_STYLE: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "var(--space-3)",
+};
+
+const ALLOWED_REMOVE_BTN_STYLE: CSSProperties = {
+  background: "transparent",
+  border: "none",
+  color: "var(--ink-3)",
+  cursor: "pointer",
+  fontSize: "var(--fs-micro)",
+  padding: 0,
+  margin: 0,
+  fontFamily: "var(--font-mono)",
+};
+
+/** Sources row drill-down panel — renders the binding's
+ *  `allowed_paths` as a chip list with an Edit affordance. The Edit
+ *  mode flips the chips to mutable + adds a custom-input row; Save
+ *  dispatches `PATCH /api/admin/source-bindings/:id` with
+ *  `{allowed_paths}`. Cancel restores the binding's persisted list. */
+function AllowedPathsPanel(props: AllowedPathsPanelProps): JSX.Element | null {
+  const { t } = useTranslation();
+  const persisted = useMemo<readonly string[]>(
+    () => props.binding.allowedPaths ?? [],
+    [props.binding.allowedPaths],
+  );
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<readonly string[]>(persisted);
+  const [customInput, setCustomInput] = useState<string>("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Hide the panel entirely when the backend doesn't surface
+  // `allowedPaths` (pre-W1 fixtures). Once the server is upgraded
+  // every response carries the field, even if it's an empty array.
+  if (props.binding.allowedPaths === undefined) {
+    return null;
+  }
+
+  const openEdit = (): void => {
+    setEditing(true);
+    setDraft(persisted);
+    setError(null);
+  };
+  const cancel = (): void => {
+    setEditing(false);
+    setDraft(persisted);
+    setCustomInput("");
+    setError(null);
+  };
+  const add = (raw: string): void => {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return;
+    setDraft((cur) => (cur.includes(trimmed) ? cur : [...cur, trimmed]));
+    setCustomInput("");
+    setError(null);
+  };
+  const remove = (pattern: string): void => {
+    setDraft((cur) => cur.filter((v) => v !== pattern));
+  };
+  const onInputKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      add(customInput);
+    }
+  };
+  const save = async (): Promise<void> => {
+    // Client-side gate mirroring `assertBindingNotWildcardOnly`.
+    if (draft.length === 0) {
+      setError(t("sources.allowedPaths.empty"));
+      return;
+    }
+    for (const pattern of draft) {
+      if (pattern === "**" || pattern.startsWith("**/")) {
+        setError(t("sources.allowedPaths.invalidPattern"));
+        return;
+      }
+    }
+    setSubmitting(true);
+    try {
+      await fetchAdmin<{ id: string; allowed_paths: readonly string[] }>(
+        `/api/admin/source-bindings/${props.binding.id}`,
+        {
+          method: "PATCH",
+          body: { allowed_paths: draft },
+          ...fetchOptsFor(props.fetchImpl),
+        },
+      );
+      setEditing(false);
+      setCustomInput("");
+      props.onChanged();
+    } catch (err) {
+      // Map structured errors → i18n; default to "save failed".
+      if (err instanceof ApiAuthError) {
+        setError(t("sources.detail.errors.auth"));
+      } else if (err instanceof ApiTransientError) {
+        setError(t("sources.detail.errors.transient"));
+      } else {
+        setError(t("sourceBindingDetail.allowedPaths.saveFailed"));
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div style={ALLOWED_PANEL_STYLE} data-testid="allowed-paths-panel">
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-3)",
+        }}
+      >
+        <span style={LABEL_STYLE}>
+          {t("sourceBindingDetail.allowedPaths.title")}
+        </span>
+        {!editing ? (
+          <Btn variant="subtle" onClick={openEdit}>
+            {t("sourceBindingDetail.allowedPaths.editOpen")}
+          </Btn>
+        ) : null}
+      </div>
+      <div style={ALLOWED_CHIP_ROW_STYLE} data-testid="allowed-paths-list">
+        {(editing ? draft : persisted).length === 0 ? (
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "var(--fs-micro)",
+              color: "var(--ink-3)",
+            }}
+          >
+            {t("sources.allowedPaths.empty")}
+          </span>
+        ) : (
+          (editing ? draft : persisted).map((path) => (
+            <span
+              key={path}
+              style={ALLOWED_CHIP_STYLE}
+              data-testid={`allowed-paths-chip-${path}`}
+            >
+              <code>{path}</code>
+              {editing ? (
+                <button
+                  type="button"
+                  aria-label={`remove ${path}`}
+                  onClick={(): void => remove(path)}
+                  style={ALLOWED_REMOVE_BTN_STYLE}
+                >
+                  ×
+                </button>
+              ) : null}
+            </span>
+          ))
+        )}
+      </div>
+      {editing ? (
+        <>
+          <div style={{ display: "flex", gap: "var(--space-2)" }}>
+            <input
+              name="allowed_paths_edit_input"
+              data-testid="allowed-paths-edit-input"
+              value={customInput}
+              onChange={(e): void => setCustomInput(e.target.value)}
+              onKeyDown={onInputKeyDown}
+              placeholder={t("sources.allowedPaths.placeholder")}
+              style={{
+                flex: "1 1 auto",
+                background: "var(--paper)",
+                border: "1px solid var(--rule)",
+                borderRadius: "var(--radius-m)",
+                padding: "var(--space-2) var(--space-3)",
+                fontFamily: "var(--font-mono)",
+                fontSize: "var(--fs-mono)",
+                color: "var(--ink-1)",
+              }}
+            />
+            <Btn variant="ghost" onClick={(): void => add(customInput)}>
+              {t("sources.allowedPaths.addCustom")}
+            </Btn>
+          </div>
+          {error !== null ? (
+            <p
+              role="alert"
+              style={{
+                fontFamily: "var(--font-sans)",
+                fontSize: "var(--fs-small)",
+                color: "var(--alert)",
+                margin: 0,
+              }}
+            >
+              {error}
+            </p>
+          ) : null}
+          <div style={{ display: "flex", gap: "var(--space-3)" }}>
+            <Btn variant="ghost" onClick={cancel} disabled={submitting}>
+              {t("sourceBindingDetail.edit.cancel")}
+            </Btn>
+            <Btn
+              variant="primary"
+              onClick={(): void => {
+                void save();
+              }}
+              disabled={submitting}
+            >
+              {submitting
+                ? t("sourceBindingDetail.edit.saving")
+                : t("sourceBindingDetail.edit.save")}
+            </Btn>
+          </div>
+        </>
+      ) : null}
+    </div>
   );
 }

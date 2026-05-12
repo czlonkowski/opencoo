@@ -454,6 +454,7 @@ describe("admin-api POST /api/admin/source-bindings — post-create initial scan
           root_folder_id: "1ABC",
         },
         config: { folderId: "1ABC" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(201);
@@ -492,6 +493,7 @@ describe("admin-api POST /api/admin/source-bindings — post-create initial scan
           root_folder_id: "1XYZ",
         },
         config: { folderId: "1XYZ" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     // The binding row still creates — the missing queue silently
@@ -534,6 +536,7 @@ describe("admin-api POST /api/admin/source-bindings — post-create initial scan
           root_folder_id: "1FOO",
         },
         config: { folderId: "1FOO" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(201);
@@ -572,6 +575,7 @@ describe("admin-api POST /api/admin/source-bindings — post-create initial scan
         target_domain_slug: "wiki-create-bad-body",
         credentials: {}, // Missing required fields → 422.
         config: {},
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(422);

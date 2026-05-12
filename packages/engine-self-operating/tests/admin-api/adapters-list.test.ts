@@ -177,6 +177,47 @@ describe("admin-api adapters route (phase-a appendix #2)", () => {
     expect(auth?.properties?.["personal_access_token"]?.secret).toBe(true);
   });
 
+  it("descriptors surface `defaultAllowedPaths` (PR-W1 — chip suggestions)", async () => {
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    const res = await f.app.inject({
+      method: "GET",
+      url: "/api/admin/adapters",
+      headers: { authorization: "Bearer admin-pat" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as {
+      adapters: Array<{
+        slug: string;
+        defaultAllowedPaths?: readonly string[];
+      }>;
+    };
+    for (const a of body.adapters) {
+      // Field is required for every adapter in v0.1.
+      expect(
+        a.defaultAllowedPaths,
+        `slug=${a.slug}`,
+      ).toBeDefined();
+      expect(
+        a.defaultAllowedPaths!.length,
+        `slug=${a.slug}`,
+      ).toBeGreaterThan(0);
+    }
+    const drive = body.adapters.find((a) => a.slug === "drive");
+    expect(drive?.defaultAllowedPaths).toEqual([
+      "meetings/**",
+      "transcripts/**",
+      "docs/**",
+    ]);
+    const asana = body.adapters.find((a) => a.slug === "asana");
+    expect(asana?.defaultAllowedPaths).toEqual(["projects/**", "tasks/**"]);
+    const fireflies = body.adapters.find((a) => a.slug === "fireflies");
+    expect(fireflies?.defaultAllowedPaths).toEqual(["meetings/**"]);
+    const n8n = body.adapters.find((a) => a.slug === "n8n");
+    expect(n8n?.defaultAllowedPaths).toEqual(["workflows/**"]);
+  });
+
   it("requires verifyAdmin (401 without Authorization header)", async () => {
     const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
     cleanup = f.close;

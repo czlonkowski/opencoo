@@ -84,6 +84,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           root_folder_id: "1XYZ",
         },
         config: { folderId: "1XYZ" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(201);
@@ -131,6 +132,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           root_folder_id: "1XYZ",
         },
         config: { folderId: "1XYZ" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.body).not.toContain(SECRET_TOKEN);
@@ -158,6 +160,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           auth: { api_key: SECRET_API_KEY },
           webhook_secret: { signing_secret: SECRET_WEBHOOK },
         },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(201);
@@ -201,6 +204,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           auth: { api_key: SECRET_API_KEY },
           webhook_secret: { signing_secret: SECRET_WEBHOOK },
         },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.body).not.toContain(SECRET_WEBHOOK);
@@ -235,6 +239,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
         target_domain_slug: "wiki-main",
         // missing root_folder_id
         credentials: { service_account_json: SECRET_TOKEN },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(422);
@@ -259,6 +264,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
         adapter_slug: "nonexistent",
         target_domain_slug: "wiki-main",
         credentials: {},
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(422);
@@ -287,6 +293,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           service_account_json: SECRET_TOKEN,
           root_folder_id: "1XYZ",
         },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(422);
@@ -317,6 +324,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           auth: { api_key: SECRET_API_KEY },
           webhook_secret: { signing_secret: SECRET_WEBHOOK },
         },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(201);
@@ -352,6 +360,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           root_folder_id: "1XYZ",
         },
         config: { folderId: "1XYZ" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(201);
@@ -379,6 +388,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           root_folder_id: "1XYZ",
         },
         config: { folderId: "1XYZ" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(401);
@@ -401,6 +411,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           root_folder_id: "1XYZ",
         },
         config: { folderId: "1XYZ" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(403);
@@ -434,6 +445,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           webhook_secret: { x_hook_secret: "hook-secret-aaa" },
         },
         config: { projectGid: "12345678" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(201);
@@ -472,6 +484,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
         },
         // missing projectGid
         config: {},
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(422);
@@ -513,7 +526,8 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           },
           webhook_secret: { x_hook_secret: "hook-secret-aaa" },
         },
-        // no config key at all
+        // no config key at all,
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(422);
@@ -541,6 +555,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           auth: { api_key: SECRET_API_KEY },
           webhook_secret: { signing_secret: SECRET_WEBHOOK },
         },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(201);
@@ -592,6 +607,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
             root_folder_id: "1XYZ",
           },
           config,
+          allowed_paths: ["meetings/**", "docs/**"],
         },
       });
       expect(
@@ -624,6 +640,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           root_folder_id: "1XYZ",
         },
         config: { folderId: "1XYZ" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     const audit = await f.raw.query<{ metadata: Record<string, unknown> }>(

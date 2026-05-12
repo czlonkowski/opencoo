@@ -32,7 +32,13 @@
  *     not encrypted).
  *   - submit body never re-echoes an unknown adapter slug.
  */
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { useTranslation } from "react-i18next";
 
 import { Btn } from "./Btn.js";
@@ -116,6 +122,13 @@ interface AdapterDescriptor {
    *  Create button stays in the same place), but renders no inputs
    *  and the operator just clicks Create. */
   readonly bindingConfigSchema?: BindingConfigSchema;
+  /** PR-W1 (phase-a appendix #14) — per-adapter `allowed_paths`
+   *  suggestions surfaced as click-to-add chips in the 4th wizard
+   *  step. Optional on the wire so older test fixtures stay
+   *  compatible; absent → no suggestion chips (operator types from
+   *  scratch). The server-side runtime guard
+   *  (`assertBindingNotWildcardOnly`) is unchanged either way. */
+  readonly defaultAllowedPaths?: readonly string[];
 }
 
 interface DomainRow {
@@ -157,9 +170,9 @@ export function NewSourceBindingModal(
   props: NewSourceBindingModalProps,
 ): JSX.Element {
   const { t } = useTranslation();
-  const [step, setStep] = useState<"picker" | "credentials" | "config">(
-    "picker",
-  );
+  const [step, setStep] = useState<
+    "picker" | "credentials" | "config" | "allowedPaths"
+  >("picker");
   const [adapters, setAdapters] = useState<readonly AdapterDescriptor[]>([]);
   const [domains, setDomains] = useState<readonly DomainRow[]>([]);
   const [adapterSlug, setAdapterSlug] = useState<string>("");
@@ -173,6 +186,20 @@ export function NewSourceBindingModal(
    *  the schema-declared shape (boolean / array / number) in the
    *  submit step. */
   const [configValues, setConfigValues] = useState<Record<string, string>>({});
+  /** PR-W1 (phase-a appendix #14): the 4th step's chip list. Stored
+   *  as a sorted-stable array of subtree-globs (e.g. `meetings/\*\*`);
+   *  the API contract is `allowed_paths: string[]`. */
+  const [allowedPaths, setAllowedPaths] = useState<readonly string[]>([]);
+  const [allowedPathInput, setAllowedPathInput] = useState<string>("");
+  /** PR-W1 (Copilot triage #1): tracks whether the operator has
+   *  manually edited the chip list (added or removed at least one
+   *  entry). The wizard pre-populates the chip list from the
+   *  adapter's `defaultAllowedPaths` on first entry into the 4th
+   *  step so the binding is "compileable by default" — but only
+   *  when the operator hasn't already curated the list (covers the
+   *  "operator navigated back, then forward again" case). Toggled
+   *  in onAdd / onRemove handlers. */
+  const [allowedPathsTouched, setAllowedPathsTouched] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
 
@@ -342,9 +369,33 @@ export function NewSourceBindingModal(
     return out;
   };
 
+  /** PR-W1 (phase-a appendix #14): mirror the server's
+   *  `assertBindingNotWildcardOnly` rules client-side so the
+   *  operator sees inline feedback before the POST round-trip.
+   *  Same accept-set as the runtime guard: non-empty list, no
+   *  pattern equal to `**`, no pattern beginning with `**\/`. */
+  const validateAllowedPaths = (): boolean => {
+    const next: Record<string, string> = {};
+    if (allowedPaths.length === 0) {
+      next["allowed_paths"] = t(
+        "sources.allowedPaths.empty",
+      );
+    } else {
+      for (const pattern of allowedPaths) {
+        if (pattern === "**" || pattern.startsWith("**/")) {
+          next["allowed_paths"] = t("sources.allowedPaths.invalidPattern");
+          break;
+        }
+      }
+    }
+    setErrors(next);
+    return Object.keys(next).length === 0;
+  };
+
   const submit = async (): Promise<void> => {
     if (currentAdapter === undefined) return;
     if (!validateConfig()) return;
+    if (!validateAllowedPaths()) return;
     setSubmitting(true);
     try {
       let credentials: Record<string, unknown>;
@@ -376,6 +427,12 @@ export function NewSourceBindingModal(
             review_mode: reviewMode,
             credentials,
             config,
+            // PR-W1 (phase-a appendix #14): server-side Zod
+            // `.min(1)` rejects an empty list before the runtime
+            // guard runs; the wizard's `validateAllowedPaths()`
+            // gates the same way client-side so the operator sees
+            // an inline error instead of a 422 toast.
+            allowed_paths: allowedPaths,
           },
           ...fetchOpts,
         },
@@ -475,11 +532,17 @@ export function NewSourceBindingModal(
             }
           }}
         />
-      ) : (
+      ) : step === "config" ? (
         <ConfigStep
           adapter={currentAdapter}
           values={configValues}
           errors={errors}
+          // PR-W1 Copilot triage #2: propagate the real `submitting`
+          // flag so the Next CTA is disabled while a POST is in
+          // flight. Prior to this fix the literal `false` allowed a
+          // double-submit if the operator navigated back to the
+          // config step mid-request (the AllowedPathsStep already
+          // honors `submitting` for the same reason).
           submitting={submitting}
           onValueChange={(key, v): void => {
             setConfigValues((cur) => ({ ...cur, [key]: v }));
@@ -492,6 +555,73 @@ export function NewSourceBindingModal(
             }
           }}
           onBack={(): void => setStep("credentials")}
+          onSubmit={(): void => {
+            if (validateConfig()) {
+              // PR-W1 (phase-a appendix #14): the config step now
+              // advances to the 4th "Allowed wiki paths" step
+              // rather than submitting. Submit happens at the
+              // allowed-paths step's Create button.
+              //
+              // PR-W1 Copilot triage #1: pre-populate the chip list
+              // from the adapter's `defaultAllowedPaths` when the
+              // operator hasn't curated the list yet. This makes
+              // "fresh binding compiles by default" the wizard's
+              // out-of-the-box behavior — the partner-cutover
+              // failure that triggered wave-14 was 260 bindings
+              // landing on `allowed_paths='{}'`; pre-fill closes
+              // that gap. The `!allowedPathsTouched` guard keeps a
+              // back-then-forward navigation from clobbering an
+              // operator's edits.
+              if (
+                !allowedPathsTouched &&
+                allowedPaths.length === 0 &&
+                currentAdapter?.defaultAllowedPaths !== undefined &&
+                currentAdapter.defaultAllowedPaths.length > 0
+              ) {
+                setAllowedPaths([...currentAdapter.defaultAllowedPaths]);
+              }
+              setStep("allowedPaths");
+            }
+          }}
+        />
+      ) : (
+        <AllowedPathsStep
+          adapter={currentAdapter}
+          selected={allowedPaths}
+          customInput={allowedPathInput}
+          errors={errors}
+          submitting={submitting}
+          onAdd={(p): void => {
+            // Dedupe + trim. Empty entries fall out so the operator
+            // can press Enter on an empty input without polluting
+            // the chip list.
+            const trimmed = p.trim();
+            if (trimmed.length === 0) return;
+            setAllowedPaths((cur) =>
+              cur.includes(trimmed) ? cur : [...cur, trimmed],
+            );
+            setAllowedPathInput("");
+            // PR-W1 Copilot triage #1: operator interaction — disable
+            // adapter-default pre-fill on subsequent step entries so
+            // back-then-forward navigation doesn't clobber edits.
+            setAllowedPathsTouched(true);
+            if (errors["allowed_paths"] !== undefined) {
+              setErrors((prev) => {
+                const next = { ...prev };
+                delete next["allowed_paths"];
+                return next;
+              });
+            }
+          }}
+          onRemove={(p): void => {
+            setAllowedPaths((cur) => cur.filter((v) => v !== p));
+            // PR-W1 Copilot triage #1: explicit removal counts as
+            // operator curation — preserve the empty / pruned list
+            // on a re-entry rather than re-pre-filling.
+            setAllowedPathsTouched(true);
+          }}
+          onCustomInputChange={setAllowedPathInput}
+          onBack={(): void => setStep("config")}
           onSubmit={(): void => {
             void submit();
           }}
@@ -628,14 +758,15 @@ function ConfigStep(props: ConfigStepProps): JSX.Element {
         <Btn variant="ghost" onClick={props.onBack}>
           {t("sources.create.back")}
         </Btn>
+        {/* PR-W1 (phase-a appendix #14): the config step is no
+            longer the terminal step — clicking Next advances to
+            the allowed_paths chip-list. Submit happens there. */}
         <Btn
           variant="primary"
           disabled={props.submitting}
           onClick={props.onSubmit}
         >
-          {props.submitting
-            ? t("sources.create.submitting")
-            : t("sources.create.submit")}
+          {t("sources.create.next")}
         </Btn>
       </div>
     </div>
@@ -790,5 +921,219 @@ function SchemaFields(props: SchemaFieldsProps): JSX.Element {
         );
       })}
     </>
+  );
+}
+
+// ─── PR-W1 (phase-a appendix #14): allowed_paths step ──────────────────────
+
+interface AllowedPathsStepProps {
+  readonly adapter: AdapterDescriptor | undefined;
+  readonly selected: readonly string[];
+  readonly customInput: string;
+  readonly errors: Record<string, string>;
+  readonly submitting: boolean;
+  readonly onAdd: (pattern: string) => void;
+  readonly onRemove: (pattern: string) => void;
+  readonly onCustomInputChange: (value: string) => void;
+  readonly onBack: () => void;
+  readonly onSubmit: () => void;
+}
+
+const CHIP_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "var(--space-2)",
+  padding: "var(--space-1) var(--space-3)",
+  border: "1px solid var(--rule)",
+  borderRadius: "var(--radius-s)",
+  fontFamily: "var(--font-mono)",
+  fontSize: "var(--fs-micro)",
+  letterSpacing: "0.02em",
+  background: "var(--paper)",
+  color: "var(--ink-1)",
+  cursor: "default",
+};
+
+const CHIP_SUGGESTION_STYLE: CSSProperties = {
+  ...CHIP_STYLE,
+  cursor: "pointer",
+  // Slight ink-3 to indicate "not yet selected".
+  color: "var(--ink-3)",
+  background: "var(--paper-2)",
+};
+
+const CHIP_ROW_STYLE: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "var(--space-2)",
+};
+
+const CHIP_REMOVE_BTN_STYLE: CSSProperties = {
+  background: "transparent",
+  border: "none",
+  color: "var(--ink-3)",
+  cursor: "pointer",
+  fontSize: "var(--fs-micro)",
+  padding: 0,
+  margin: 0,
+  fontFamily: "var(--font-mono)",
+};
+
+/** 4th wizard step — "Allowed wiki paths". Operator picks subtree
+ *  globs the classifier may write into. Renders the adapter's
+ *  `defaultAllowedPaths` as click-to-add suggestion chips (when
+ *  surfaced) AND a custom-input row for operator-supplied patterns.
+ *  The submit gate (`validateAllowedPaths`) enforces the same
+ *  non-empty + no-wildcard-shape rules the server's
+ *  `assertBindingNotWildcardOnly` enforces. */
+function AllowedPathsStep(props: AllowedPathsStepProps): JSX.Element {
+  const { t } = useTranslation();
+  if (props.adapter === undefined) {
+    return <div>{t("common.loading")}</div>;
+  }
+  const suggestions = (props.adapter.defaultAllowedPaths ?? []).filter(
+    (s) => !props.selected.includes(s),
+  );
+  const onInputKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      props.onAdd(props.customInput);
+    }
+  };
+  return (
+    <div style={FIELDS_STYLE}>
+      <p
+        style={{
+          fontFamily: "var(--font-sans)",
+          fontSize: "var(--fs-small)",
+          color: "var(--ink-3)",
+          margin: 0,
+        }}
+      >
+        {t("sources.allowedPaths.subtitle")}
+      </p>
+      {/* Selected chips — current state. Empty list shows the empty
+          copy so the operator knows they need to add at least one. */}
+      <h3 style={SECTION_HEADER_STYLE}>{t("sources.allowedPaths.title")}</h3>
+      <div
+        data-testid="allowed-paths-selected"
+        style={CHIP_ROW_STYLE}
+      >
+        {props.selected.length === 0 ? (
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "var(--fs-micro)",
+              color: "var(--ink-3)",
+            }}
+          >
+            {t("sources.allowedPaths.empty")}
+          </span>
+        ) : (
+          props.selected.map((path) => (
+            <span key={path} style={CHIP_STYLE} data-testid={`allowed-path-chip-${path}`}>
+              <code>{path}</code>
+              <button
+                type="button"
+                aria-label={`remove ${path}`}
+                onClick={(): void => props.onRemove(path)}
+                style={CHIP_REMOVE_BTN_STYLE}
+              >
+                ×
+              </button>
+            </span>
+          ))
+        )}
+      </div>
+      {/* Suggestions — adapter's `defaultAllowedPaths`. Click adds. */}
+      {suggestions.length > 0 ? (
+        <>
+          <h3 style={SECTION_HEADER_STYLE}>
+            {t("sources.allowedPaths.suggestions")}
+          </h3>
+          <div data-testid="allowed-paths-suggestions" style={CHIP_ROW_STYLE}>
+            {suggestions.map((path) => (
+              <button
+                type="button"
+                key={path}
+                onClick={(): void => props.onAdd(path)}
+                style={CHIP_SUGGESTION_STYLE}
+                data-testid={`allowed-path-suggestion-${path}`}
+              >
+                <code>+ {path}</code>
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
+      {/* Custom-input row. Press Enter or click "Add" to push the
+          pattern onto the chip list. */}
+      <div style={{ display: "flex", gap: "var(--space-2)" }}>
+        <input
+          name="allowed_paths_custom"
+          data-testid="allowed-paths-custom-input"
+          value={props.customInput}
+          onChange={(e): void => props.onCustomInputChange(e.target.value)}
+          onKeyDown={onInputKeyDown}
+          placeholder={t("sources.allowedPaths.placeholder")}
+          style={{
+            flex: "1 1 auto",
+            background: "var(--paper)",
+            border: "1px solid var(--rule)",
+            borderRadius: "var(--radius-m)",
+            padding: "var(--space-2) var(--space-3)",
+            fontFamily: "var(--font-mono)",
+            fontSize: "var(--fs-mono)",
+            color: "var(--ink-1)",
+          }}
+        />
+        <Btn
+          variant="ghost"
+          onClick={(): void => props.onAdd(props.customInput)}
+        >
+          {t("sources.allowedPaths.addCustom")}
+        </Btn>
+      </div>
+      {props.errors["allowed_paths"] !== undefined ? (
+        <p
+          role="alert"
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: "var(--fs-micro)",
+            color: "var(--alert)",
+            margin: 0,
+          }}
+        >
+          {props.errors["allowed_paths"]}
+        </p>
+      ) : null}
+      {props.errors["form"] !== undefined ? (
+        <p
+          role="alert"
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: "var(--fs-micro)",
+            color: "var(--alert)",
+            margin: 0,
+          }}
+        >
+          {props.errors["form"]}
+        </p>
+      ) : null}
+      <div style={FOOTER_STYLE}>
+        <Btn variant="ghost" onClick={props.onBack}>
+          {t("sources.create.back")}
+        </Btn>
+        <Btn
+          variant="primary"
+          disabled={props.submitting}
+          onClick={props.onSubmit}
+        >
+          {props.submitting
+            ? t("sources.create.submitting")
+            : t("sources.create.submit")}
+        </Btn>
+      </div>
+    </div>
   );
 }
