@@ -78,6 +78,7 @@ import {
   OutputChannelRegistry,
   SURFACER_DEFINITION,
   buildOutputAdapterValidator,
+  composeWorldviewBundle,
   outputAdapterToChannelAdapter,
   type AgentRunnerRegistry,
   type LookupOutputChannel,
@@ -85,6 +86,7 @@ import {
   type OutputAdapterDescriptor,
   type OutputAdapterSlug,
   type OutputChannelRecord,
+  type WorldviewBundle,
 } from "@opencoo/engine-self-operating";
 import type { CredentialId } from "@opencoo/shared/db";
 import { z } from "zod";
@@ -162,6 +164,12 @@ export interface ProductionCompositionResult {
       opts?: unknown,
     ) => Promise<unknown>;
   };
+  /** PR-W1 (phase-a appendix #13) — worldview compiler bundle.
+   *  Carries the producer Queue (admin-API `recompile-worldview`
+   *  route enqueues against it) + the consumer Worker + the safety-
+   *  net cron repeat job. The orchestrator threads `bundle.queue`
+   *  into `engine-self-operating.start({ worldviewQueue })`. */
+  readonly worldviewBundle: WorldviewBundle;
 }
 
 /** Narrow shape of the run-event emitter the WorkerContext consumes.
@@ -223,6 +231,26 @@ export interface ComposeProductionArgs {
     readonly repeatKey: string;
     readonly pattern: string;
   }) => Promise<void>;
+  /** @internal Test seam (PR-W1, phase-a appendix #13) — passes
+   *  through to `composeWorldviewBundle({registerWorldviewSafetyNetCronFn})`
+   *  so tests can record the safety-net cron registration without
+   *  hitting BullMQ's Lua-scripted repeat path. */
+  readonly registerWorldviewSafetyNetCronFn?: (args: {
+    readonly repeatKey: string;
+    readonly pattern: string;
+  }) => Promise<void>;
+  /** @internal Test seam (PR-W1, phase-a appendix #13) — substitute
+   *  the BullMQ Queue factory used by the worldview-compile bundle.
+   *  Tests pass a stub returning a recording queue so the composition
+   *  can be exercised against PGlite + ioredis-mock without a real
+   *  BullMQ connection. Production passes `undefined`. */
+  readonly worldviewQueueFactory?: (
+    name: string,
+    connection: ConnectionOptions,
+  ) => {
+    add(name: string, data: unknown, opts?: unknown): Promise<unknown>;
+    close?(): Promise<void>;
+  };
 }
 
 /** Construct the production WorkerContext + the underlying pg.Pool
@@ -505,6 +533,56 @@ export async function composeProductionFromEnv(
     );
   }
 
+  // PR-W1 (phase-a appendix #13) — worldview compiler bundle.
+  // Constructs the producer queue (admin-API recompile-worldview
+  // route + the in-progress trigger pipeline enqueue against it),
+  // starts the consumer worker, and registers the 24h safety-net
+  // cron repeat job. The orchestrator threads `bundle.queue` into
+  // `engine-self-operating.start({ worldviewQueue })`.
+  //
+  // The bundle owns the worker's lifecycle — `bundle.close()` is
+  // wired into the orchestrator's SIGTERM teardown so the worker
+  // drains before pg.Pool / Redis close.
+  const worldviewSafetyNetCronPattern = readWithFile(
+    args.env,
+    "OPENCOO_WORLDVIEW_SAFETY_NET_CRON",
+  );
+  const worldviewBundle = await composeWorldviewBundle({
+    db: db as unknown as Parameters<typeof composeWorldviewBundle>[0]["db"],
+    logger,
+    redisConnection,
+    router,
+    wikiAdapter,
+    wikiDeps: workerContext.wikiDeps,
+    author: {
+      name: `opencoo-${instanceId}`,
+      email: `${instanceId}@opencoo.local`,
+    },
+    ...(worldviewSafetyNetCronPattern !== undefined
+      ? { safetyNetCronPattern: worldviewSafetyNetCronPattern }
+      : {}),
+    ...(args.registerWorldviewSafetyNetCronFn !== undefined
+      ? {
+          registerWorldviewSafetyNetCronFn:
+            args.registerWorldviewSafetyNetCronFn,
+        }
+      : {}),
+    ...(args.worldviewQueueFactory !== undefined
+      ? {
+          queueFactory: args.worldviewQueueFactory as NonNullable<
+            Parameters<typeof composeWorldviewBundle>[0]["queueFactory"]
+          >,
+          // When the test supplies a queue factory, also skip the
+          // real BullMQ Worker construction — the test fixture's
+          // queue + ioredis-mock setup can't service a real Worker.
+          // Tests that DO want to exercise the worker handler call
+          // `runWorldviewCompile` / `buildWorldviewCompileHandler`
+          // directly (per the worker test).
+          startWorkerFn: null as null,
+        }
+      : {}),
+  });
+
   return {
     workerContext,
     redisConnection,
@@ -516,6 +594,7 @@ export async function composeProductionFromEnv(
     outputChannels,
     outputChannelDescriptors,
     scannerQueue: scannerQueueHandle,
+    worldviewBundle,
   };
 }
 

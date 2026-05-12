@@ -37,10 +37,14 @@
  *   — soft-delete is a one-way valve in this release; the
  *   operator creates a fresh domain to recover.
  */
+import { randomBytes } from "node:crypto";
+
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+
+import { safeErrorMessage } from "@opencoo/shared/scrub";
 
 import { writeAuditLog } from "../audit-log.js";
 import { requireAdminContext } from "../auth.js";
@@ -120,6 +124,14 @@ export interface PingWikiMcpRefreshFn {
   }>): Promise<void>;
 }
 
+/** PR-W1 (phase-a appendix #13) — narrow BullMQ Queue surface for
+ *  the recompile-worldview endpoint. Pinned to `add` to keep the
+ *  type independent of the bullmq import in route consumers (tests
+ *  + admin-api index wiring). */
+export interface WorldviewCompileQueueLike {
+  add(name: string, data: unknown, opts?: unknown): Promise<unknown>;
+}
+
 export interface RegisterDomainsRoutesArgs {
   readonly app: FastifyInstance;
   readonly db: Db;
@@ -136,6 +148,11 @@ export interface RegisterDomainsRoutesArgs {
    *  the real helper when `GITEA_WIKI_MCP_URL` + `MCP_BEARER_TOKEN`
    *  are both set. */
   readonly pingWikiMcpRefresh?: PingWikiMcpRefreshFn;
+  /** PR-W1 (phase-a appendix #13) — BullMQ producer-side handle for
+   *  the worldview-compile queue. Optional: when undefined the
+   *  recompile-worldview endpoint returns 503 (composition incomplete),
+   *  matching the rest of the admin-API's boot-tolerance pattern. */
+  readonly worldviewQueue?: WorldviewCompileQueueLike;
 }
 
 export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
@@ -823,6 +840,142 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
         userAgent: req.headers["user-agent"],
       });
       return reply.code(204).send();
+    },
+  );
+
+  // PR-W1 (phase-a appendix #13) — on-demand worldview recompile.
+  // Closes G1 by giving operators a one-click "rebuild worldview.md
+  // now" affordance from the Domains drill-down (matching the PR-Z3
+  // Scan-now pattern on the Sources tab). The trailer-driven trigger
+  // + 24h safety net cover the auto path; this endpoint is the
+  // human-in-the-loop escape hatch.
+  //
+  // Pattern mirrors `:id/scan-now`: CSRF + admin-team gated,
+  // audit-row-before-enqueue, 503 on missing composition, 500 on
+  // queue.add throw with the audit row still in place for forensics.
+  // The Y1 hotfix lesson is preserved — we hold the Queue REFERENCE
+  // and call `queue.add(...)` as a method (BullMQ reads `this.trace`
+  // internally; a detached `const add = queue.add` would lose the
+  // receiver and throw).
+  const SLUG_PARAM_REGEX = /^[a-z][a-z0-9-]{1,62}$/;
+  const recompileBodySchema = z
+    .object({
+      triggerType: z.enum(["manual"]).optional(),
+    })
+    .strict()
+    .optional();
+
+  args.app.post(
+    "/api/admin/domains/:slug/recompile-worldview",
+    { preHandler: requireCsrf },
+    async (req, reply) => {
+      const ctx = requireAdminContext(req);
+      const slug = (req.params as { slug: string }).slug;
+      if (!SLUG_PARAM_REGEX.test(slug)) {
+        return reply.code(400).send({ error: "invalid_slug" });
+      }
+      const parsed = recompileBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return reply.code(422).send({
+          error: "validation_failed",
+          issues: parsed.error.issues,
+        });
+      }
+      // Body is OPTIONAL — defaults to manual. Even when the operator
+      // POSTs `{ triggerType: 'manual' }` the result is the same; we
+      // refuse anything else to keep the audit shape clean.
+      const triggerType = "manual" as const;
+
+      // Composition gate — see source-bindings.ts /scan-now for the
+      // load-bearing comment on the receiver-binding lesson. We pin
+      // the queue reference and call `add(...)` as a method.
+      const queue = args.worldviewQueue;
+      if (queue === undefined || typeof queue.add !== "function") {
+        return reply.code(503).send({
+          error: "worldview_queue_unavailable",
+          reason:
+            "Composition did not register a writable worldview queue — check engine logs for `production_context` failures",
+        });
+      }
+
+      // Resolve domain id. 404 fires here for an unknown slug; the
+      // audit row is NOT written when the domain doesn't exist (no
+      // mutation attempted).
+      const domainResult = (await args.db.execute(sql`
+        SELECT id::text AS id, slug, disabled_at
+        FROM domains
+        WHERE slug = ${slug}
+        LIMIT 1
+      `)) as unknown as {
+        rows: Array<{
+          id: string;
+          slug: string;
+          disabled_at: Date | string | null;
+        }>;
+      };
+      const domain = domainResult.rows[0];
+      if (domain === undefined) {
+        return reply.code(404).send({ error: "not_found", slug });
+      }
+      if (domain.disabled_at !== null) {
+        // Disabled domain — no recompile makes sense; the wiki repo
+        // is hidden from listings and ingestion has stopped.
+        return reply.code(409).send({
+          error: "domain_disabled",
+          slug,
+        });
+      }
+
+      // jobId pattern: collision-free under burst clicks (Date.now()
+      // alone is ms-precision; the random suffix hardens against a
+      // programmatic burst inside the same ms).
+      const jobId = `recompile-worldview-${domain.id}-${Date.now()}-${randomBytes(3).toString("hex")}`;
+
+      // Audit BEFORE enqueue (audit-before-side-effect invariant —
+      // a partial enqueue still leaves a forensic trail). Metadata
+      // captures slug + domain_id + trigger_type + caller_username
+      // ONLY. NEVER any operator-supplied freeform text
+      // (THREAT-MODEL §3.13).
+      await writeAuditLog(args.db, {
+        action: "domain.recompile_worldview",
+        userId: ctx.userId,
+        metadata: {
+          domain_id: domain.id,
+          slug: domain.slug,
+          trigger_type: triggerType,
+          caller_username: ctx.username,
+        },
+        sourceIp: req.ip,
+        userAgent: req.headers["user-agent"],
+      });
+
+      try {
+        await queue.add(
+          "worldview.compile",
+          {
+            domainId: domain.id,
+            domainSlug: domain.slug,
+            triggerType,
+          },
+          {
+            jobId,
+            removeOnComplete: 100,
+            removeOnFail: 1000,
+          },
+        );
+      } catch (err) {
+        req.log?.warn({
+          msg: "domain_recompile_worldview.enqueue_failed",
+          domain_id: domain.id,
+          err: safeErrorMessage(err),
+        });
+        return reply.code(500).send({
+          error: "enqueue_failed",
+          reason: safeErrorMessage(err),
+        });
+      }
+
+      return reply.code(202).send({ enqueued: true, jobId });
     },
   );
 }

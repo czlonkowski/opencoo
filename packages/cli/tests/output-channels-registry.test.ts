@@ -203,6 +203,13 @@ describe("composeProductionFromEnv — PR-Z4 output-channels wiring", () => {
       // `webhookScannerQueue.add(repeat=...)` to hang BullMQ's Lua
       // script.
       registerScannerCronFn: async () => undefined,
+      // PR-W1 (phase-a appendix #13) — bypass the BullMQ worldview-
+      // compile Queue + safety-net cron registration.
+      worldviewQueueFactory: () => ({
+        add: async () => ({ id: "stub" }),
+        close: async () => undefined,
+      }),
+      registerWorldviewSafetyNetCronFn: async () => undefined,
     });
 
     expect(result.outputChannels).toBeInstanceOf(OutputChannelRegistry);

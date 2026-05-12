@@ -12,5 +12,6 @@ export {
   type CommitFilesArgs,
   type CommitFilesResult,
   type CommitInspection,
+  type CommitListEntry,
   type GiteaRestClientOptions,
 } from "./client.js";

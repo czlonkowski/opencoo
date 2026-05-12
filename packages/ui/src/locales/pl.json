@@ -95,6 +95,7 @@
         "cancel": "Cancel",
         "disable": "Disable",
         "delete": "Delete permanently",
+        "recompileWorldview": "Recompile worldview",
         "confirmDisableTitle": "Disable this domain?",
         "confirmDisableBody": "Soft-disables the domain. The Gitea repo is kept, but the domain is hidden from listings and ingestion stops dispatching to it. Re-enable is not in v0.1 — to recover you create a fresh domain.",
         "confirmDisable": "Confirm disable",
@@ -104,12 +105,16 @@
         "confirmDeleteCheckbox": "I understand this is permanent and the Gitea repo is not removed.",
         "deleteBlocked": "Disable bindings first — see Sources tab. ({{n}} binding(s) reference this domain.)"
       },
+      "recompileWorldview": {
+        "success": "Worldview recompile enqueued"
+      },
       "errors": {
         "saveFailed": "Could not save changes. Try again or check the audit log.",
         "aggregatorAlreadySet": "Another active domain is already the aggregator. Disable that one first.",
         "disableFailed": "Could not disable domain (server rejected the request).",
         "deleteFailed": "Could not delete domain (server rejected the request).",
         "deleteFkRestricted": "This domain has source bindings. Migrate or delete those first.",
+        "recompileWorldviewFailed": "Could not queue a worldview recompile. Try again or check the audit log.",
         "auth": "Sign-in expired or insufficient permissions — re-paste your PAT.",
         "transient": "Server is unreachable or returned an error. Try again."
       }

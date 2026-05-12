@@ -19,6 +19,7 @@ import type {
   CommitFilesArgs,
   CommitFilesResult,
   CommitInspection,
+  CommitListEntry,
   GiteaClient,
   GiteaFileChange,
   GiteaFileContent,
@@ -31,6 +32,11 @@ interface RepoState {
    *  commit-log + the live tree. */
   files: Map<string, string>;
   commits: Map<string, CommitInspection>;
+  /** PR-W1 (phase-a appendix #13) — append-only commit log,
+   *  newest last, so `listRecentCommits` can serve a reversed
+   *  window. The mock doesn't model branches, so the same log
+   *  serves any branch query. */
+  commitLog: CommitListEntry[];
 }
 
 const INITIAL_HEAD = "0000000000000000000000000000000000000000";
@@ -72,6 +78,7 @@ export class MockGiteaClient implements GiteaClient {
         head: INITIAL_HEAD,
         files: new Map(),
         commits: new Map(),
+        commitLog: [],
       });
     }
   }
@@ -101,6 +108,11 @@ export class MockGiteaClient implements GiteaClient {
       message: `[concurrent] ${path}`,
       authorName: "external",
       authorEmail: "external@opencoo.test",
+    });
+    state.commitLog.push({
+      sha: newHead,
+      message: `[concurrent] ${path}`,
+      authoredAt: new Date().toISOString(),
     });
     return newHead;
   }
@@ -151,6 +163,11 @@ export class MockGiteaClient implements GiteaClient {
       authorName: args.authorName,
       authorEmail: args.authorEmail,
     });
+    state.commitLog.push({
+      sha: newHead,
+      message: args.message,
+      authoredAt: new Date().toISOString(),
+    });
     return { status: "ok", commitSha: newHead };
   }
 
@@ -178,6 +195,19 @@ export class MockGiteaClient implements GiteaClient {
     return [...state.files.keys()];
   }
 
+  async listRecentCommits(
+    repo: GiteaRepoLocator,
+    branch: string,
+    limit: number,
+  ): Promise<readonly CommitListEntry[]> {
+    void branch; // mock has no branch concept, only one branch per repo
+    const state = this.repos.get(repoKey(repo));
+    if (state === undefined) return [];
+    const cappedLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+    // commitLog is append-newest-last; the API returns newest-first.
+    return [...state.commitLog].reverse().slice(0, cappedLimit);
+  }
+
   private stateOf(repo: GiteaRepoLocator): RepoState {
     const key = repoKey(repo);
     let state = this.repos.get(key);
@@ -186,6 +216,7 @@ export class MockGiteaClient implements GiteaClient {
         head: INITIAL_HEAD,
         files: new Map(),
         commits: new Map(),
+        commitLog: [],
       };
       this.repos.set(key, state);
     }

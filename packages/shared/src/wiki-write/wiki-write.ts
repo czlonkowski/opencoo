@@ -52,8 +52,17 @@ function buildCommitMessage(
       trailerLines.push(`Worldview-Impact: ${impact}`);
     }
   }
+  // PR-W1 (phase-a appendix #13) — `Worldview-Recompile` trailer
+  // emitted ONLY by the worldview-compiler-worker (architecture §9.4).
+  // Carries the trigger type that fired this recompile so audit /
+  // lint tooling can distinguish event-driven from cron-driven
+  // refreshes without re-parsing the commit description.
+  if (input.worldviewRecompile !== undefined) {
+    trailerLines.push(`Worldview-Recompile: ${input.worldviewRecompile}`);
+  }
   // `Opencoo-Instance` trailer always last so consumers find it at a
-  // stable position regardless of coAuthor / worldviewImpact count.
+  // stable position regardless of coAuthor / worldviewImpact /
+  // worldviewRecompile count.
   trailerLines.push(`Opencoo-Instance: ${instanceId}`);
 
   const parts = [firstLine];

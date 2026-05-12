@@ -122,23 +122,72 @@ export {
   DEBOUNCE_DELAY_4_PLUS_EVENTS_MS,
   SOVEREIGN_AGGREGATOR_INPUT_PATH,
   SovereigntySpyWikiAdapter,
+  TRIGGER_HIGH_DEBOUNCE_MS,
+  TRIGGER_LOG_WINDOW,
+  TRIGGER_MEDIUM_COUNT_THRESHOLD,
+  TRIGGER_MEDIUM_MAX_AGE_MS,
   WORLDVIEW_BODY_MAX_BYTES,
+  WORLDVIEW_COMPILE_JOB_NAME,
+  WORLDVIEW_COMPILE_QUEUE_SLUG,
   WORLDVIEW_OUTPUT_SCHEMA,
   WorldviewOverflowError,
   WorldviewSovereigntyError,
   compileCompanyWorldview,
   compileDomainWorldview,
   decideWorldviewDebounce,
+  freshDomainTriggerState,
+  mintTriggerJobId,
+  parseWorldviewImpactLines,
+  runWorldviewTrigger,
   utf8ByteLength,
   type CompileCompanyArgs,
   type CompileCompanyResult,
   type CompileDomainArgs,
   type CompileDomainResult,
+  type DomainCommitsReader,
+  type DomainTriggerState,
+  type RunWorldviewTriggerArgs,
+  type RunWorldviewTriggerResult,
   type SovereigntySpyOptions,
+  type TriggerCommit,
+  type TriggerDomain,
+  type TriggerEnqueueRecord,
+  type WorldviewCompileQueue,
   type WorldviewDebounceArgs,
   type WorldviewDebounceDecision,
+  type WorldviewImpactLevel,
   type WorldviewOutput,
 } from "./pipelines/worldview/index.js";
+
+// PR-W1 (phase-a appendix #13) — worldview compiler worker. Closes
+// G1 (compileDomainWorldview had no production caller). The CLI's
+// production composition wires this into the worker pool.
+export {
+  SAFETY_NET_FANOUT_SENTINEL,
+  buildWorldviewCompileHandler,
+  runWorldviewCompile,
+  startWorldviewCompileWorker,
+  type RunWorldviewCompileArgs,
+  type SafetyNetFanoutDomain,
+  type StartWorldviewCompileWorkerArgs,
+  type WorldviewCompileHandlerDeps,
+  type WorldviewCompileJob,
+  type WorldviewCompileResult,
+  type WorldviewCompileTriggerType,
+} from "./workers/worldview-compiler-worker.js";
+
+// PR-W1 (phase-a appendix #13) — worldview composition bundle. The
+// CLI orchestrator (`packages/cli/src/provision/production-composition.ts`)
+// invokes `composeWorldviewBundle` once at engine boot to construct
+// the queue + worker + safety-net cron in one shot, then threads
+// `bundle.queue` into `start({ worldviewQueue })`.
+export {
+  WORLDVIEW_SAFETY_NET_CRON_DEFAULT,
+  WORLDVIEW_SAFETY_NET_REPEAT_KEY,
+  composeWorldviewBundle,
+  type ComposeWorldviewBundleArgs,
+  type WorldviewBundle,
+} from "./composition/worldview-bundle.js";
 
 export {
   AUTOMATION_DRIFT_WINDOW_DAYS,

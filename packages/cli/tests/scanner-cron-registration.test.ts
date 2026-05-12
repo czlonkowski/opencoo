@@ -205,6 +205,13 @@ describe("composeProductionFromEnv — PR-Z3 scanner cron registration (closes G
       registerScannerCronFn: async ({ repeatKey, pattern }) => {
         registerCalls.push({ repeatKey, pattern });
       },
+      // PR-W1 (phase-a appendix #13) — bypass worldview-compile queue
+      // + cron path (same reason as the scanner cron stub).
+      worldviewQueueFactory: () => ({
+        add: async () => ({ id: "stub" }),
+        close: async () => undefined,
+      }),
+      registerWorldviewSafetyNetCronFn: async () => undefined,
     });
 
     // EXACTLY one cron registration: SCANNER_REPEAT_KEY +
@@ -241,6 +248,13 @@ describe("composeProductionFromEnv — PR-Z3 scanner cron registration (closes G
       registerScannerCronFn: async ({ repeatKey, pattern }) => {
         registerCalls.push({ repeatKey, pattern });
       },
+      // PR-W1 (phase-a appendix #13) — bypass worldview-compile queue
+      // + cron path (same reason as the scanner cron stub).
+      worldviewQueueFactory: () => ({
+        add: async () => ({ id: "stub" }),
+        close: async () => undefined,
+      }),
+      registerWorldviewSafetyNetCronFn: async () => undefined,
     });
 
     expect(registerCalls).toEqual([
@@ -265,6 +279,13 @@ describe("composeProductionFromEnv — PR-Z3 scanner cron registration (closes G
       forgetQueueFactory: (name) =>
         name === WIKI_RECOMPILE_QUEUE_SLUG ? f.recompileQueue : f.deleteQueue,
       registerScannerCronFn: async () => undefined,
+      // PR-W1 (phase-a appendix #13) — bypass worldview-compile queue
+      // + cron path (same reason as the scanner cron stub).
+      worldviewQueueFactory: () => ({
+        add: async () => ({ id: "stub" }),
+        close: async () => undefined,
+      }),
+      registerWorldviewSafetyNetCronFn: async () => undefined,
     });
 
     // Closes G6 + G8 — the orchestrator threads this into self-op's
@@ -306,6 +327,13 @@ describe("composeProductionFromEnv — PR-Z3 scanner cron registration (closes G
       registerScannerCronFn: async () => {
         throw new Error("simulated redis outage during cron registration");
       },
+      // PR-W1 (phase-a appendix #13) — bypass worldview-compile queue
+      // + cron path (same reason as the scanner cron stub).
+      worldviewQueueFactory: () => ({
+        add: async () => ({ id: "stub" }),
+        close: async () => undefined,
+      }),
+      registerWorldviewSafetyNetCronFn: async () => undefined,
     });
 
     // Composition still produces a usable result.

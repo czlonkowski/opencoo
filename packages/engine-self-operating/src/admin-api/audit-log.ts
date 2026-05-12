@@ -92,6 +92,14 @@ export const AUDIT_LOG_ACTIONS = [
   "domain.update",
   "domain.disable",
   "domain.delete",
+  // PR-W1 (phase-a appendix #13) — on-demand worldview recompile
+  // (POST /api/admin/domains/:slug/recompile-worldview). Metadata
+  // captures domain_id + slug + trigger_type (`manual`) +
+  // caller_username ONLY. NEVER any operator-supplied freeform text;
+  // audit row is written BEFORE the BullMQ enqueue (audit-before-
+  // side-effect invariant — a partial enqueue still leaves a
+  // forensic trail).
+  "domain.recompile_worldview",
   // Phase-a appendix #10 (PR-R3) — on-demand agent dispatch from
   // the management UI. Metadata captures agent_slug + domain_slug +
   // instance_slug + instance_id + dry_run + caller_username.

@@ -48,6 +48,7 @@ import {
   registerDomainsRoutes,
   type PingWikiMcpRefreshFn,
   type ProvisionDomainRepoFn,
+  type WorldviewCompileQueueLike,
 } from "./routes/domains.js";
 import { registerEventsRoute } from "./routes/events.js";
 import { registerHeartbeatRoutes } from "./routes/heartbeat.js";
@@ -182,6 +183,13 @@ export interface RegisterAdminApiArgs {
   readonly outputChannelRegistry?: Readonly<
     Record<OutputAdapterSlug, OutputAdapterDescriptor>
   >;
+  /** PR-W1 (phase-a appendix #13) — worldview-compile queue handle
+   *  for the `POST /api/admin/domains/:slug/recompile-worldview`
+   *  endpoint. Production composition builds this via the CLI's
+   *  `serve` flow and threads it down. When undefined the route
+   *  returns 503 (composition incomplete) — same boot-tolerance
+   *  pattern as the other admin-API queues. */
+  readonly worldviewQueue?: WorldviewCompileQueueLike;
 }
 
 export async function registerAdminApi(
@@ -286,6 +294,9 @@ export async function registerAdminApi(
       : {}),
     ...(args.pingWikiMcpRefresh !== undefined
       ? { pingWikiMcpRefresh: args.pingWikiMcpRefresh }
+      : {}),
+    ...(args.worldviewQueue !== undefined
+      ? { worldviewQueue: args.worldviewQueue }
       : {}),
   });
   registerPromptsRoutes({ app: guardedApp });

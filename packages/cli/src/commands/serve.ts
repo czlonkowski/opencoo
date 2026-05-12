@@ -165,6 +165,12 @@ export type ServeStartFactory = (opts: {
    *  no-cross-engine-import side; the engine narrows back at
    *  consumption. */
   readonly scannerQueue?: unknown;
+  /** PR-W1 (phase-a appendix #13) — composition-built worldview-
+   *  compile queue handle. Threaded into self-op so the admin-API
+   *  `POST /api/admin/domains/:slug/recompile-worldview` route can
+   *  enqueue against the SAME backlog the worldview-compile worker
+   *  reads. Typed `unknown` for the no-cross-engine-import boundary. */
+  readonly worldviewQueue?: unknown;
 }) => Promise<ServeStartedEngine>;
 
 /** Matches `start({env})` from `@opencoo/engine-ingestion`. The
@@ -265,6 +271,18 @@ export interface ServeIngestionPreflightResult {
    *  route can enqueue scans on the SAME queue the workers
    *  dequeue from. */
   readonly scannerQueue?: unknown;
+  /** PR-W1 (phase-a appendix #13) — composition-built worldview-
+   *  compile bundle. Carries the producer queue + worker + safety-net
+   *  cron. The orchestrator threads `bundle.queue` into self-op via
+   *  `start({worldviewQueue})` and awaits `bundle.close()` on SIGTERM
+   *  AFTER the engine's own close runs. Optional for backward-compat
+   *  with test factories that don't synthesise the bundle. */
+  readonly worldviewBundle?: {
+    readonly queue: {
+      add(name: string, data: unknown, opts?: unknown): Promise<unknown>;
+    };
+    close(): Promise<void>;
+  };
 }
 
 export type ServeIngestionPreflightFactory = (opts: {
@@ -357,6 +375,11 @@ type EngineStartFn = (opts: {
    *  POST source-bindings handler + `:id/scan-now` route can enqueue
    *  scans against the workers' queue. */
   readonly ingestionQueue?: unknown;
+  /** PR-W1 (phase-a appendix #13) — passed verbatim into
+   *  `engine-self-operating.start({worldviewQueue})` so the admin-API
+   *  recompile-worldview route can enqueue against the same backlog
+   *  the worker reads. */
+  readonly worldviewQueue?: unknown;
 }) => Promise<ServeStartedEngine>;
 
 interface ComposeStartedEngineArgs {
@@ -385,6 +408,10 @@ interface ComposeStartedEngineArgs {
    *  admin-API source-bindings POST + `:id/scan-now` routes can
    *  enqueue against the workers' queue. */
   readonly scannerQueue?: unknown;
+  /** PR-W1 (phase-a appendix #13) — forwarded verbatim into
+   *  `engine-self-operating.start({worldviewQueue})` so the
+   *  admin-API recompile-worldview route stops returning 503. */
+  readonly worldviewQueue?: unknown;
   /** Logger for the round-2 fix #3 boot-failure-close-failed
    *  warn line. */
   readonly logger: {
@@ -476,6 +503,13 @@ export async function composeStartedEngineWithBundle(
       ...(args.scannerQueue !== undefined
         ? { ingestionQueue: args.scannerQueue }
         : {}),
+      // PR-W1 (phase-a appendix #13) — wire the worldview-compile
+      // queue handle. When preflight returned null, the bundle is
+      // undefined and the admin-API recompile-worldview route
+      // returns 503 (boot-tolerance).
+      ...(args.worldviewQueue !== undefined
+        ? { worldviewQueue: args.worldviewQueue }
+        : {}),
     });
   } catch (err) {
     if (bundle !== null) {
@@ -523,6 +557,9 @@ async function defaultStartFactory(opts: {
    *  through to self-op for the source-bindings POST + scan-now
    *  routes. */
   readonly scannerQueue?: unknown;
+  /** PR-W1 (phase-a appendix #13) — worldview-compile queue handle
+   *  threaded through to self-op for the recompile-worldview route. */
+  readonly worldviewQueue?: unknown;
 }): Promise<ServeStartedEngine> {
   const mod = await import("@opencoo/engine-self-operating");
   const composition = await import(
@@ -573,6 +610,13 @@ async function defaultStartFactory(opts: {
     // against the SAME queue the workers dequeue from.
     ...(opts.scannerQueue !== undefined
       ? { scannerQueue: opts.scannerQueue }
+      : {}),
+    // PR-W1 (phase-a appendix #13) — forward the preflight-built
+    // worldview-compile queue handle into the engine so the admin-API
+    // recompile-worldview route can enqueue against the SAME queue
+    // the worldview worker reads.
+    ...(opts.worldviewQueue !== undefined
+      ? { worldviewQueue: opts.worldviewQueue }
       : {}),
   });
 }
@@ -660,6 +704,14 @@ async function defaultIngestionPreflightFactory(opts: {
     // enqueue silently no-ops (binding still creates, just no
     // immediate scan) and `:id/scan-now` returns 503.
     scannerQueue: composed.scannerQueue as unknown,
+    // PR-W1 (phase-a appendix #13) — surface the composition's
+    // worldview compile bundle (producer queue + worker + safety-net
+    // cron) so the orchestrator can forward `bundle.queue` into
+    // self-op's `start({worldviewQueue})` AND drain the worker on
+    // SIGTERM. Without this the admin-API recompile-worldview
+    // endpoint returns 503 + the daily safety-net cron never
+    // registers.
+    worldviewBundle: composed.worldviewBundle,
   };
 }
 
@@ -756,9 +808,11 @@ async function drainComposedResources(
   composed: IngestionComposedResult,
 ): Promise<void> {
   // closeProducers releases the ingestion.scanner.classify Queue
-  // handle; closeForgetQueues releases wiki.recompile + wiki.delete.
+  // handle; closeForgetQueues releases wiki.recompile + wiki.delete;
+  // worldviewBundle.close releases the worldview worker + queue.
   await composed.workerContext.closeProducers().catch(() => undefined);
   await composed.closeForgetQueues().catch(() => undefined);
+  await composed.worldviewBundle.close().catch(() => undefined);
   await Promise.all([
     composed.pgPool.end().catch(() => undefined),
     composed.redis
@@ -902,6 +956,13 @@ export async function runServe(args: ServeArgs): Promise<void> {
       // omitted and the route surfaces 503 (composition-incomplete).
       ...(preflight?.scannerQueue !== undefined
         ? { scannerQueue: preflight.scannerQueue }
+        : {}),
+      // PR-W1 (phase-a appendix #13) — forward the preflight's
+      // worldview-compile queue handle so the admin-API
+      // recompile-worldview route can enqueue. Mirrors the
+      // scannerQueue pattern above.
+      ...(preflight?.worldviewBundle !== undefined
+        ? { worldviewQueue: preflight.worldviewBundle.queue }
         : {}),
     });
   } catch (err) {

@@ -16,6 +16,12 @@ export const WikiWriteTagSchema = z.enum([
   "[catalog-unarchive]",
   "[skill-supersede]",
   "[index-rebuild]",
+  // PR-W1 (phase-a appendix #13) — worldview-compile commits.
+  // Emitted by the worldview-compiler-worker when it writes
+  // `worldview.md` (architecture §9.4). Distinct from `[compiler]`
+  // (page-level ingest) so audit greps can separate ingestion churn
+  // from worldview refresh churn.
+  "[worldview]",
 ]);
 export type WikiWriteTag = z.infer<typeof WikiWriteTagSchema>;
 
@@ -62,8 +68,8 @@ const singleLineString = z
 
 // Trailer-shaped line detector. Case-insensitive match on the
 // trailer prefixes opencoo emits (`Co-authored-by:`,
-// `Opencoo-Instance:`, `Worldview-Impact:`). Body prose
-// legitimately spans multiple lines and blank-line paragraph
+// `Opencoo-Instance:`, `Worldview-Impact:`, `Worldview-Recompile:`).
+// Body prose legitimately spans multiple lines and blank-line paragraph
 // breaks, so we don't ban `\n`; we only ban lines that look like
 // trailers a downstream audit grep would mistake for ours.
 //
@@ -71,8 +77,12 @@ const singleLineString = z
 // end-of-line — audit greppers treat both as trailer-shaped
 // (copilot #18). The previous `:\s` form let `Co-authored-by:`
 // (no trailing space) slip through.
+//
+// `Worldview-Recompile` added in PR-W1 (phase-a appendix #13) for the
+// worldview-compiler-worker — distinguishes a worldview recompile
+// commit from an ingest commit's `Worldview-Impact` bullets.
 const TRAILER_LINE =
-  /^(Co-authored-by|Opencoo-Instance|Worldview-Impact):(?:\s|$)/i;
+  /^(Co-authored-by|Opencoo-Instance|Worldview-Impact|Worldview-Recompile):(?:\s|$)/i;
 
 export const WikiAuthorSchema = z.object({
   name: singleLineString,
@@ -112,6 +122,13 @@ export const WikiWriteInputSchema = z
       .array(singleLineString.max(200))
       .max(20)
       .optional(),
+    // PR-W1 (phase-a appendix #13) — single `Worldview-Recompile`
+    // trailer emitted ONLY by the worldview-compiler-worker. Carries
+    // the trigger that fired this recompile (`trailer-high`,
+    // `trailer-medium`, `safety-net`, `manual`) so audit / lint
+    // tooling can distinguish event-driven from cron-driven refreshes
+    // without re-parsing the description.
+    worldviewRecompile: singleLineString.max(64).optional(),
   })
   .superRefine((value, ctx) => {
     const seen = new Set<string>();

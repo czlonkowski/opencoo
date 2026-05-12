@@ -30,6 +30,7 @@ import type {
 
 import type {
   CommitInspection,
+  CommitListEntry,
   GiteaClient,
   GiteaFileChange,
   GiteaRepoLocator,
@@ -50,6 +51,14 @@ export interface GiteaWikiAdapterDeps {
 /** Surface re-exported from index.ts for the gated contract test. */
 export interface GiteaWikiAdapter extends WikiAdapter {
   inspectCommit(sha: string, domainSlug: DomainSlug): Promise<CommitInspection>;
+  /** PR-W1 (phase-a appendix #13) — list the most recent commits on
+   *  the domain's repo branch, newest first. The worldview-trigger
+   *  pipeline consumes this to parse `Worldview-Impact:` trailers on
+   *  ingest commits and decide whether to enqueue a recompile. */
+  listRecentCommits(
+    domainSlug: DomainSlug,
+    limit: number,
+  ): Promise<readonly CommitListEntry[]>;
 }
 
 class GiteaWikiAdapterImpl implements GiteaWikiAdapter {
@@ -110,6 +119,17 @@ class GiteaWikiAdapterImpl implements GiteaWikiAdapter {
     domainSlug: DomainSlug,
   ): Promise<CommitInspection> {
     return this.deps.client.inspectCommit(this.repoFor(domainSlug), sha);
+  }
+
+  async listRecentCommits(
+    domainSlug: DomainSlug,
+    limit: number,
+  ): Promise<readonly CommitListEntry[]> {
+    return this.deps.client.listRecentCommits(
+      this.repoFor(domainSlug),
+      this.deps.branch,
+      limit,
+    );
   }
 
   async listMarkdown(
