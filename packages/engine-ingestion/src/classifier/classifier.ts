@@ -65,7 +65,31 @@ export async function classify(args: ClassifyArgs): Promise<ClassifierOutput> {
   });
 
   const prompt = loadPrompt({ name: "classifier", locale: args.locale });
-  const fullPrompt = `${prompt.body}\n\n${envelope}`;
+
+  // Inject the binding's allowed_domains and allowed_paths as a
+  // runtime-constructed constraints block BETWEEN the prompt body
+  // (which references "the binding's allowed_domains/allowed_paths"
+  // in the abstract) and the spotlight envelope (the untrusted
+  // source content). Without this, the LLM has no per-run list of
+  // valid slugs/paths and hallucinates them from the document
+  // body — every emission then fails Layer 4 below, DLQ'ing the
+  // run. Each value is `JSON.stringify`'d so glob characters,
+  // unicode, and embedded quotes round-trip unambiguously.
+  const bindingConstraints = [
+    "# Binding constraints (this run only)",
+    "",
+    "These are the ONLY values you may emit:",
+    "",
+    `- allowed_domains (you MUST pick one of these for every \`target_domains[].domain_slug\`):`,
+    ...args.allowedDomains.map((d) => `    - ${JSON.stringify(d)}`),
+    "",
+    `- allowed_paths (every \`target_domains[].page_paths[*]\` must match one of these globs):`,
+    ...args.allowedPaths.map((p) => `    - ${JSON.stringify(p)}`),
+    "",
+    "Any other value is rejected and the run is DLQ'd. If the document spans multiple of these allowed paths, list them in `page_paths`; do NOT invent new ones.",
+  ].join("\n");
+
+  const fullPrompt = `${prompt.body}\n\n${bindingConstraints}\n\n${envelope}`;
 
   // Layer 3 — LLM call + strict-Zod parse. `generateObject` wraps
   // any Zod failure in `LlmProviderError` (errorClass:'validation')
