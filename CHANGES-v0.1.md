@@ -1284,6 +1284,61 @@ _Drafted from `IMPLEMENTATION-PLAN.md` §1.2.1–§1.2.21 + per-PR `gh pr view` 
 
 ---
 
+## Wave-14 closeout — meaningful heartbeat (phase-a appendix #14)
+
+Seven PRs (W0–W6) shipped 2026-05-12 → 2026-05-13 closing the three-layer cascade gap surfaced when the first autonomous heartbeat → Asana task landed during wave-13 verification: the chain worked end-to-end (worldview compiled, agent ran, transformer rendered `html_notes`, Asana adapter `POST /tasks` returned 201) but the **content was materially worse than the n8n baseline it replaces** — title was the agent's `summary` verbatim with no `[COO] Raport -- YYYY-MM-DD` shape, no assignee, no due-date, and the body was a regurgitated worldview placeholder because ~260 `ingestion_intake` rows had been silently failing at the classifier guard for 20+ hours (`BindingConfigError: binding.allowed_paths is empty`) with no UI surface to see why. Wave-14 closes pipeline blockage (Sub-wave A, W1+W2), failure observability (Sub-wave B, W3+W4), and heartbeat content shape (Sub-wave C, W5+W6) so the daily report is useful on populated AND empty wikis and any future misconfigured binding lights up in the UI within minutes instead of hiding for hours. Full scoping in `docs/plan-appendix/phase-a-14-meaningful-heartbeat.md`. Main closes at `9f9cb33`.
+
+### Per-PR summary
+
+- **W0 scoping doc** (`8232b47` / #125) — `docs/plan-appendix/phase-a-14-meaningful-heartbeat.md` lands the three-layer gap inventory + W1–W7 roster + per-PR scope/threat-model/test/reuse bullets + the operational backfill recipe + the wave-end verification gate. Full detail there; closeout entries below are pointers, not duplicates. See appendix §"Context" and §"Wave roster".
+
+- **W1 — `allowed_paths` as a first-class binding property** (`43b028b` / #129). Closes Sub-wave A's create-time gap (appendix §W1). `POST /api/admin/source-bindings` Zod-requires `allowed_paths` and pre-validates against the runtime `assertBindingNotWildcardOnly` guard so API and runtime emit the same `BindingConfigError` wording at 422; `PATCH /api/admin/source-bindings/:id` adds a new branch in the discriminated body union with audit verb `source_binding.set_allowed_paths` so operators fix existing bindings via UI rather than SQL; `SourceAdapter` descriptors gain optional `defaultAllowedPaths` (drive → `meetings/**` + `transcripts/**` + `docs/**`; asana → `projects/**` + `tasks/**`; fireflies → `meetings/**`; n8n → `workflows/**`) rendered as click-to-add chips in a new 4th `NewSourceBindingModal` step; `SourceBindingDetail` shows the current `allowed_paths` chip list with an Edit affordance. The runtime guard stays — defense-in-depth per `architecture.md` §3.5 invariant 2.
+
+- **W2 — re-enqueue & retry surface for failed compile jobs** (`c65963a` / #131). Closes Sub-wave A's "I fixed `allowed_paths` but the existing failed jobs are stuck" gap (appendix §W2). New `POST /api/admin/source-bindings/:id/retry-failed` (with optional `?intakeId=...` query param for single-job scope) enumerates `ingestion.scanner.classify` failed-set jobs filtered by `payload.bindingId`, re-enqueues each as a fresh job, returns `{ retriedCount }`. CSRF + admin-team gated + audit-before-side-effect; 503 boot-tolerance when the classify queue handle isn't wired. New `enumerateFailedJobsByBindingId(queue, bindingId, intakeId?)` helper in `@opencoo/engine-ingestion` over `Queue.getFailed` — pure read-side. UI button "Retry failed jobs (N)" lands next to "Scan now" on `SourceBindingDetail` mirroring the wave-12 Z3 cooldown + toast pattern; disabled when N=0.
+
+- **W3 — `intake_status='failed'` + compile-worker error capture** (`64e4de4` / #127). Closes Sub-wave B at the data layer (appendix §W3). Migration 0013 `ALTER TYPE intake_status ADD VALUE IF NOT EXISTS 'failed'`; the Drizzle enum gains a fourth literal. `runCompilationWorker` now wraps its body in `try/catch` that maps `OpencooError.errorClass` to `intake.error_class` (validation / transient / upstream-quota), falls back to `'transient'` for unknown errors, truncates `error_text` at write-time, then re-throws so BullMQ still moves the job to its `failed` set. The admin source-bindings GET response's `lastError` field — shape was wired in earlier waves, just never populated — now carries real data on the very next failed intake.
+
+- **W4 — failed-intake UI surfaces + SSE event** (`9f9cb33` / #130). Closes Sub-wave B's operator-facing gap (appendix §W4). `GET /api/admin/source-bindings` now includes per-binding `intakeCounts` (pending / classified / skipped / failed) and up to 3 most-recent failed rows under `recentFailedIntake` with a 200-char-capped scrubbed `errorTextSnippet`. The compile-worker catch path publishes a new `pipeline.intake_failed` SSE event on the existing bus (best-effort — emit-throws are swallowed-and-logged so BullMQ still sees the original failure) carrying `{ bindingId, intakeId, errorClass, errorTextSnippet, occurredAt }`. `SourceBindingDetail` renders an "Intake state" panel (4-count grid + recent-failed list) below the existing field grid; each failed row carries a Retry button parked disabled with a tooltip pointing at W2 (per-row retry wiring is a follow-up — see Deferred below).
+
+- **W5 — heartbeatToAsana title + `due_on` + assignee + section channel-config knobs** (`4cdc4e4` / #126). Closes Sub-wave C's title/assignee/due-date gap (appendix §W5). `asanaChannelConfigSchema` gains optional `assignee_gid`, `section_gid` (when set, the task lands in that Asana section via `memberships: [{ project, section }]` instead of the bare `projects: [...]` field), `due_date_policy: "today" | "none"` (defaults to `"today"`), and `title_prefix` (defaults to `[COO] Raport -- `; empty string falls back to date-then-summary so a "no prefix" choice still scans). The `heartbeatToAsana` transformer rewrites title to `${title_prefix}${todayIso()}`, sets `dueOn` per the policy, threads `assigneeGid` through when configured, and prepends `<h1>${escapeHtml(summary)}</h1>` so the agent's executive summary leads the body before the per-alert `<h2>` sections continue per the wave-13 restricted-HTML-tag whitelist. The Asana adapter `createTask` learns to pass `memberships` on the POST body. UI changes are schema-driven only — `NewOutputChannelModal` re-reads the widened `channelConfigJsonSchema` with no code changes.
+
+- **W6 — heartbeat system-health context + empty-wiki prompt branch** (`c06323d` / #128). Closes Sub-wave C's "no system-health awareness" gap (appendix §W6) — the meat of the wave. New `gatherSystemHealth` (`packages/engine-self-operating/src/agents/heartbeat/system-health.ts`) is a scope-anchored read-side aggregator pre-fetched at run-start returning intake counts, top-3 recent failures (with binding name + error class + 200-char-truncated text snippet), per-binding scan lag (hours since last scan), last-24h agent-run rollups per agent slug, and wiki stats (page count excluding placeholders, worldview byte length, worldview `last_compiled_at`). All queries filter by `binding_id IN (SELECT id FROM sources_bindings WHERE domain_id IN ($scope))` or equivalent; `intake_status='failed'` is matched via `status::text = 'failed'` so the SQL is enum-tolerant across W3's `ALTER TYPE`. `runHeartbeat` spotlights the payload as a `system-health://<domainSlug>` envelope before the LLM call (per `architecture.md` §3.4 spotlight shape). The heartbeat prompt (en + pl) gains an empty-wiki branch directing the LLM to surface up to 5 operational-health alerts (intake backlog, failed compile jobs with binding + error class, source-binding scan lag > 24h, recent agent-run failures, worldview staleness) when page count < 5 — and to explicitly NOT regurgitate worldview placeholder text. The worldview prompt's empty-wiki branch tightens to a single sentence so noise is minimal and the system-health context dominates.
+
+### Operational backfill (post-deploy)
+
+Per appendix §"Operational backfill" — runbook operations on a running deployment after `0.1.0-a.9` is pulled, NOT code changes. Either click through the new Edit affordance in `SourceBindingDetail` for each binding, or run the one-shot SQL via the deployment runbook; scope by domain explicitly so multi-domain deployments don't over-update (substitute `<slug>` for the target domain, e.g. `wiki-<domain>`):
+
+```sql
+-- substitute <slug> for the target domain (e.g. wiki-<domain>)
+UPDATE sources_bindings b SET allowed_paths = ARRAY['meetings/**','transcripts/**','docs/**']
+  FROM domains d
+  WHERE b.domain_id = d.id
+    AND d.slug = '<slug>'
+    AND b.adapter_slug = 'drive'
+    AND b.allowed_paths = '{}';
+
+UPDATE sources_bindings b SET allowed_paths = ARRAY['projects/**','tasks/**']
+  FROM domains d
+  WHERE b.domain_id = d.id
+    AND d.slug = '<slug>'
+    AND b.adapter_slug = 'asana'
+    AND b.allowed_paths = '{}';
+
+-- repeat per binding adapter present (fireflies → ['meetings/**'],
+-- n8n → ['workflows/**']) using the per-adapter defaults
+```
+
+Then in sequence: (1) re-enqueue the failed jobs via the new "Retry failed jobs (N)" button on each binding's detail page (W2), or via `POST /api/admin/source-bindings/:id/retry-failed`; (2) wait for the compile pipeline to drain — monitor `ingestion_intake` rows moving `pending → classified` (~5–30 min for a few hundred docs through Worker classify + Thinker compile); (3) trigger worldview recompile via `POST /api/admin/domains/wiki-<domain>/recompile-worldview` (the wave-13 W1 endpoint) and verify `worldview.md` body grows from the placeholder to a multi-KB synthesis; (4) re-fire the heartbeat via Activity → Pipelines → Run now and verify the resulting Asana task has title shape `[COO] Raport -- YYYY-MM-DD`, due-date today, assignee per channel config if set, and body lead `<h1>summary</h1>` followed by per-alert `<h2>` sections drawn from real wiki content + system-health context. See appendix §"Verification" for the wave-end gate steps + the empty-domain regression check that proves W6's empty-wiki branch works.
+
+### Deferred to v0.2
+
+- **Per-row Retry button wiring on `SourceBindingDetail`.** W4 ships the recent-failed-rows list with a Retry button parked disabled + tooltip pointing at W2; W2's endpoint accepts the `?intakeId=...` single-job scope. The remaining gap is the SPA caller wire-up + the small UX of disabling-then-re-enabling per row during the request — small follow-up; the backend is ready.
+- **`e2e` ship-gate fix** (pre-existing task #90). Outstanding before tag-cut, not in wave-14 scope.
+- **`_FILE` env-var indirection on `OPENROUTER_API_KEY`.** Z8 added `_FILE` support for `GITEA_TOKEN` + `MCP_BEARER`; the same pattern is the right move for the LLM provider key but is deferred until an operator with a secrets-manager workflow asks. Pinned in the runbook.
+- **Reports tab crash on stale `output.alerts`.** A pre-wave-14 heartbeat run with the old `alerts` shape lingers in the DB; the Reports tab renderer assumes the wave-13 schema and throws on those rows. v0.2 — add a schema-version guard in the renderer + a one-shot migration to upgrade older rows. Workaround: filter the Reports tab to runs newer than `0.1.0-a.9`.
+- **`AgentInstanceDetail` modal lacking Run-now button.** The Agents tab drill-down ships enable/disable + output-channel binding + schedule editor (wave-13 W2); the Run-now action is on the Pipelines tab. v0.2 — add a Run-now button on the drill-down so the operator doesn't have to context-switch.
+- **Domain-create slug validation.** Slugs that collide with existing Gitea repos or use reserved patterns fail at the `wiki-gitea` provision step rather than client-side. v0.2 — surface the validation at the UI step with a live preview of the resulting repo name.
+
 ## Wave-13 closeout — agent-output pipeline (phase-a appendix #13)
 
 Four PRs (W0–W3) shipped 2026-05-12 closing the next layer of partner-cutover gaps surfaced during wave-12 verification: worldview compiler had zero production callers, no UI/admin-API to bind output channels to agent_instances, output-webhook adapter not registered in composition. After wave-13, opencoo can autonomously produce + deliver a useful daily report. Full scoping in `docs/plan-appendix/phase-a-13-agent-output-pipeline.md`. Main closes at `7662ce0`.
