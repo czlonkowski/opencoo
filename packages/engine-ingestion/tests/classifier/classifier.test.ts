@@ -343,7 +343,12 @@ describe("classify — binding constraints injection (PR-Y9)", () => {
       allowedDomains: ["wiki-pilot-alpha"],
     });
     const captured = getPrompt();
-    expect(captured).toContain("Binding constraints");
+    // The prompt body references the block by name ("Binding
+    // constraints (this run only)"), so anchor on a phrase that
+    // only the injected block contains — "These are the ONLY
+    // values you may emit:" proves the block was actually
+    // assembled into the prompt rather than merely referenced.
+    expect(captured).toContain("These are the ONLY values you may emit:");
     // JSON-stringified, including the surrounding quotes — this is
     // the exact byte sequence the LLM sees on the line.
     expect(captured).toContain('"wiki-pilot-alpha"');
@@ -388,7 +393,15 @@ describe("classify — binding constraints injection (PR-Y9)", () => {
     });
     const captured = getPrompt();
     const promptBodyAnchor = captured.indexOf("opencoo Classifier");
-    const constraintsAnchor = captured.indexOf("Binding constraints");
+    // The prompt body now references the constraints block by
+    // name ("Binding constraints (this run only)" block), so a
+    // bare "Binding constraints" substring is not unique. Anchor
+    // on a phrase that only the injected block contains —
+    // "These are the ONLY values you may emit:" is in the
+    // assembled constraints block and nowhere in the prompt body.
+    const constraintsAnchor = captured.indexOf(
+      "These are the ONLY values you may emit:",
+    );
     // The prompt body itself mentions <source_content> in the
     // Spotlighting section, so anchor on the actual envelope
     // opening (with the `source=` attribute), which only appears
