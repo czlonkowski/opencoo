@@ -8,6 +8,7 @@ export {
 export {
   InMemoryDeleteCap,
   type DeleteCap,
+  type DeleteCapState,
   type InMemoryDeleteCapOptions,
 } from "./daily-cap.js";
 export {

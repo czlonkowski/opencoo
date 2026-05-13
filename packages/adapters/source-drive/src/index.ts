@@ -16,10 +16,26 @@ export {
 export {
   type DriveChangeEntry,
   type DriveExportArgs,
+  type DriveFileEntry,
   type DriveLikeApi,
   type DriveListChangesArgs,
   type DriveListChangesResult,
+  type DriveListFilesArgs,
+  type DriveListFilesResult,
 } from "./drive-api.js";
+
+/**
+ * `seed()` primitive helpers (PR-Z2). The adapter wires
+ * `runDriveSeed` into the returned `SourceAdapter.seed`
+ * automatically; this export lets the engine-ingestion
+ * scanner-seed integration test exercise the walker in
+ * isolation.
+ */
+export {
+  partitionSeedListing,
+  runDriveSeed,
+  type RunDriveSeedArgs,
+} from "./seed.js";
 
 export {
   DRIVE_ADAPTER_SLUG,
@@ -27,3 +43,26 @@ export {
   type CreateDriveAdapterArgs,
   type MakeDrive,
 } from "./adapter.js";
+
+/**
+ * PR-W1 (phase-a appendix #14) — per-adapter `allowed_paths`
+ * suggestions surfaced as click-to-add chips in the Management
+ * UI's `+ New binding` wizard. Drift-checked against the
+ * authoritative registry in `@opencoo/shared/source-adapter`.
+ */
+export const DEFAULT_ALLOWED_PATHS = [
+  "meetings/**",
+  "transcripts/**",
+  "docs/**",
+] as const satisfies readonly string[];
+
+/**
+ * Real `googleapis@^144` Drive client (PR-Z1, phase-a appendix #12).
+ * Exposed from the package root so the production composition
+ * root can construct `MakeDrive` without a deep subpath import.
+ */
+export {
+  createGoogleDriveApi,
+  parseServiceAccountJson,
+  type ServiceAccountKey,
+} from "./google-drive-api.js";

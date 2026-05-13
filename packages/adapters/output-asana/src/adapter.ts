@@ -35,6 +35,39 @@ import {
 
 export const ASANA_OUTPUT_ADAPTER_SLUG = "asana" as const;
 
+/** PR-Y4 (phase-a follow-up) — production CredentialStore.read returns
+ *  the credential plaintext as a JSON blob matching the adapter's
+ *  `credentialSchema`:
+ *      `{ asanaPersonalAccessToken: "<PAT>" }`
+ *  The Asana API expects `Authorization: Bearer <bare-PAT>`. Without
+ *  this unwrap the adapter sent the entire wrapper JSON as the bearer
+ *  token and Asana returned 401 — observed live on partner cutover.
+ *
+ *  Defensive: if the plaintext is already a bare PAT string (e.g.
+ *  in-memory test fixtures that bypass CredentialStore), pass it
+ *  through unchanged. */
+export function extractAsanaPatFromCredentialBlob(plaintext: Buffer): Buffer {
+  const text = plaintext.toString("utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // Not JSON — treat as bare PAT (test fixtures, legacy callers).
+    return plaintext;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return plaintext;
+  }
+  const pat = (parsed as { asanaPersonalAccessToken?: unknown })
+    .asanaPersonalAccessToken;
+  if (typeof pat !== "string" || pat.length === 0) {
+    throw new OutputAdapterValidationError(
+      "output-asana: credential plaintext is missing `asanaPersonalAccessToken` (string)",
+    );
+  }
+  return Buffer.from(pat, "utf8");
+}
+
 /** JSON-Schema-shaped credential descriptor the Management UI
  *  renders. The Asana token field is `secret: true` so the UI
  *  masks input + persists via CredentialStore. */
@@ -96,14 +129,33 @@ export function createAsanaOutputAdapter(
       );
 
       const api = args.makeApi();
+      // PR-W2 (phase-a appendix #13) — branch on which body field
+      // the per-agent transformer supplied. The Zod schema's `.refine()`
+      // already enforced "exactly one of notes | htmlNotes"; we replay
+      // the discriminator here verbatim so the underlying Asana API
+      // receives exactly one of `notes` / `html_notes` per call.
       const callArgs: AsanaCreateTaskArgs = {
-        accessToken: record.plaintext,
+        // PR-Y4: unwrap the credential blob → bare PAT before the
+        // API call. The wrapper JSON shape is what CredentialStore
+        // persisted; the Asana API needs the inner string.
+        accessToken: extractAsanaPatFromCredentialBlob(record.plaintext),
         projectGid: payload.projectGid,
         title: payload.title,
-        notes: payload.notes,
+        ...(payload.notes !== undefined ? { notes: payload.notes } : {}),
+        ...(payload.htmlNotes !== undefined
+          ? { htmlNotes: payload.htmlNotes }
+          : {}),
         ...(payload.dueOn !== undefined ? { dueOn: payload.dueOn } : {}),
         ...(payload.assigneeGid !== undefined
           ? { assigneeGid: payload.assigneeGid }
+          : {}),
+        // PR-W5 (phase-a appendix #14) — forward `sectionGid` from
+        // the channel-config-driven payload so the underlying API
+        // call places the task in the operator-selected Asana
+        // section. The fetch-api translates this to a `memberships`
+        // field on the POST body.
+        ...(payload.sectionGid !== undefined
+          ? { sectionGid: payload.sectionGid }
           : {}),
       };
 

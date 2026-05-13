@@ -15,10 +15,16 @@
  *     the byte ranges, never the source bytes. §3.3.
  *   - Read-only tab: append-only invariant §2 invariant 8.
  */
-import { useEffect, useState, useCallback, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
-import { fetchAdmin } from "../lib/api.js";
+import { AgentsRunNowButton } from "../components/AgentsRunNowButton.js";
+import {
+  createAgentRunsSubscription,
+  type SubscribeToAgentRuns,
+} from "../lib/agent-runs-subscription.js";
+import { fetchAdmin, fetchOptsFor } from "../lib/api.js";
+import { extractDomainSlugFromPath } from "../lib/wiki-path.js";
 import type { HeartbeatReport, RedactionEvent } from "../types.js";
 
 // ─── Sub-tab type ─────────────────────────────────────────────────────────────
@@ -30,16 +36,16 @@ type ReportsTab = "heartbeat" | "redaction";
 export interface ReportsProps {
   /** @internal Test seam — defaults to globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
+  /** @internal Test seam — per-listener subscribe callable for
+   *  the per-card "Refresh now" buttons. When omitted, the route
+   *  builds ONE shared subscription via
+   *  `createAgentRunsSubscription` per mount and hands its
+   *  `subscribe` down. Tests inject a stub directly so SSE wiring
+   *  is bypassed. */
+  readonly subscribeToAgentRuns?: SubscribeToAgentRuns;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Build fetchAdmin's options object only when an override is provided. */
-function fetchOptsFor(
-  fetchImpl: typeof fetch | undefined,
-): { fetchImpl?: typeof fetch } {
-  return fetchImpl !== undefined ? { fetchImpl } : {};
-}
 
 /** Single-line status / empty / error row. */
 function NoticeRow(props: {
@@ -66,7 +72,28 @@ interface HeartbeatResponse {
   readonly reports: readonly HeartbeatReport[];
 }
 
-function HeartbeatView(props: { fetchImpl?: typeof fetch }): JSX.Element {
+/** PR-R3 — extract a domain slug from the first valid citation in
+ *  a heartbeat report. Returns null when the report has no
+ *  citations or none yield a kebab-case slug; the caller
+ *  suppresses the "Refresh now" button rather than dispatching
+ *  against a guessed domain. */
+function extractDomainSlugFromHeartbeat(
+  report: HeartbeatReport,
+): string | null {
+  for (const alert of report.output.alerts) {
+    for (const citation of alert.citations) {
+      const slug = extractDomainSlugFromPath(citation);
+      if (slug !== null) return slug;
+    }
+  }
+  return null;
+}
+
+function HeartbeatView(props: {
+  fetchImpl?: typeof fetch;
+  /** @internal Test seam — see LintFindings for the same pattern. */
+  subscribeToAgentRuns?: SubscribeToAgentRuns;
+}): JSX.Element {
   const { t } = useTranslation();
   const [reports, setReports] = useState<readonly HeartbeatReport[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -85,6 +112,31 @@ function HeartbeatView(props: { fetchImpl?: typeof fetch }): JSX.Element {
     })();
   }, []);
 
+  // Stable SSE subscription — ONE underlying client per
+  // HeartbeatView mount; each "Refresh now" button calls
+  // `subscription.subscribe(handler)` to add a listener without
+  // re-opening the SSE pipe. Tests inject a stub `subscribe`
+  // callable directly via the `subscribeToAgentRuns` prop and
+  // skip the subscription object entirely (no SSE client
+  // constructed in that case — `injectedSubscribe` is non-null
+  // exactly when `subscription` is null).
+  const injectedSubscribe = props.subscribeToAgentRuns;
+  const subscription = useMemo(
+    () =>
+      injectedSubscribe !== undefined
+        ? null
+        : createAgentRunsSubscription(),
+    [injectedSubscribe],
+  );
+  useEffect(
+    () => (): void => {
+      subscription?.close();
+    },
+    [subscription],
+  );
+  const subscribeToAgentRuns: SubscribeToAgentRuns =
+    injectedSubscribe ?? subscription!.subscribe;
+
   if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
   if (reports === null) return <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>;
   if (reports.length === 0) {
@@ -101,7 +153,12 @@ function HeartbeatView(props: { fetchImpl?: typeof fetch }): JSX.Element {
       }}
     >
       {reports.map((report) => (
-        <HeartbeatCard key={report.runId} report={report} />
+        <HeartbeatCard
+          key={report.runId}
+          report={report}
+          subscribeToAgentRuns={subscribeToAgentRuns}
+          {...(props.fetchImpl !== undefined ? { fetchImpl: props.fetchImpl } : {})}
+        />
       ))}
     </div>
   );
@@ -136,11 +193,20 @@ function CopyButton(props: { value: string; label: string }): JSX.Element {
   );
 }
 
-function HeartbeatCard(props: { report: HeartbeatReport }): JSX.Element {
+function HeartbeatCard(props: {
+  report: HeartbeatReport;
+  /** PR-R3 — SSE subscription factory shared across cards on
+   *  the page. Required by the inline "Refresh now" button. */
+  subscribeToAgentRuns: SubscribeToAgentRuns;
+  fetchImpl?: typeof fetch;
+}): JSX.Element {
   const { t } = useTranslation();
   const { report } = props;
   const instanceLabel = report.instanceName ?? t("reports.heartbeat.noInstance");
   const runIdShort = report.runId.slice(0, 8);
+  // Resolve the dispatch domain from any citation in the report.
+  // When citations are absent/malformed, suppress the button.
+  const dispatchDomain = extractDomainSlugFromHeartbeat(report);
 
   return (
     <div
@@ -176,8 +242,27 @@ function HeartbeatCard(props: { report: HeartbeatReport }): JSX.Element {
             color: "var(--ink-3)",
             display: "flex",
             gap: 12,
+            alignItems: "center",
           }}
         >
+          {/* PR-R3 — "Refresh now" CTA per heartbeat card. Suppressed
+              when no domain can be inferred from the report's
+              citations. */}
+          {dispatchDomain !== null && (
+            <AgentsRunNowButton
+              agentSlug="heartbeat"
+              domainSlug={dispatchDomain}
+              {...(report.instanceName !== null
+                ? { instanceSlug: report.instanceName }
+                : {})}
+              idleLabel={t("agentsRunNow.labels.refreshNow")}
+              queuedLabelFormat={t("agentsRunNow.labels.queued")}
+              runningLabelFormat={t("agentsRunNow.labels.running")}
+              rateLimitedTooltipFormat={t("agentsRunNow.tooltips.rateLimited")}
+              subscribeToAgentRuns={props.subscribeToAgentRuns}
+              {...(props.fetchImpl !== undefined ? { fetchImpl: props.fetchImpl } : {})}
+            />
+          )}
           {/* Copy the full run UUID to clipboard (Activity runs route is a PR-B addition). */}
           <CopyButton value={report.runId} label={runIdShort} />
           {report.startedAt !== null && (
@@ -465,9 +550,12 @@ export function Reports(props: ReportsProps = {}): JSX.Element {
       {/* Active sub-view */}
       <div style={{ flex: 1, overflowY: "auto" }}>
         {activeTab === "heartbeat" && (
-          props.fetchImpl !== undefined
-            ? <HeartbeatView fetchImpl={props.fetchImpl} />
-            : <HeartbeatView />
+          <HeartbeatView
+            {...(props.fetchImpl !== undefined ? { fetchImpl: props.fetchImpl } : {})}
+            {...(props.subscribeToAgentRuns !== undefined
+              ? { subscribeToAgentRuns: props.subscribeToAgentRuns }
+              : {})}
+          />
         )}
         {activeTab === "redaction" && (
           props.fetchImpl !== undefined

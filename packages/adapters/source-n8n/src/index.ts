@@ -29,3 +29,13 @@ export {
   type N8nListingApi,
   type N8nWorkflowSummary,
 } from "./n8n-listing-api.js";
+
+/**
+ * PR-W1 (phase-a appendix #14) — per-adapter `allowed_paths`
+ * suggestions surfaced as click-to-add chips in the Management
+ * UI's `+ New binding` wizard. Drift-checked against the
+ * authoritative registry in `@opencoo/shared/source-adapter`.
+ */
+export const DEFAULT_ALLOWED_PATHS = [
+  "workflows/**",
+] as const satisfies readonly string[];

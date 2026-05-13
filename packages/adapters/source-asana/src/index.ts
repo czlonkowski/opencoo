@@ -46,3 +46,20 @@ export {
   type LightSummaryRouter,
   type SummarizeAsanaEventArgs,
 } from "./light-summary.js";
+
+export {
+  ASANA_SEED_CURSOR_PREFIX,
+  runAsanaSeed,
+  type RunAsanaSeedArgs,
+} from "./seed.js";
+
+/**
+ * PR-W1 (phase-a appendix #14) — per-adapter `allowed_paths`
+ * suggestions surfaced as click-to-add chips in the Management
+ * UI's `+ New binding` wizard. Drift-checked against the
+ * authoritative registry in `@opencoo/shared/source-adapter`.
+ */
+export const DEFAULT_ALLOWED_PATHS = [
+  "projects/**",
+  "tasks/**",
+] as const satisfies readonly string[];

@@ -20,3 +20,13 @@ export {
   type CreateFirefliesSourceAdapterArgs,
   type FirefliesBindingConfig,
 } from "./adapter.js";
+
+/**
+ * PR-W1 (phase-a appendix #14) — per-adapter `allowed_paths`
+ * suggestions surfaced as click-to-add chips in the Management
+ * UI's `+ New binding` wizard. Drift-checked against the
+ * authoritative registry in `@opencoo/shared/source-adapter`.
+ */
+export const DEFAULT_ALLOWED_PATHS = [
+  "meetings/**",
+] as const satisfies readonly string[];

@@ -32,16 +32,29 @@ import {
   type StartServer,
 } from "@opencoo/shared/engine-scaffold";
 import type { Logger } from "@opencoo/shared/logger";
+import type { DeleteCap } from "@opencoo/shared/wiki-write";
 
 import { registerAdminApi } from "../admin-api/index.js";
 import type { GiteaClient } from "../admin-api/auth.js";
+import type {
+  OutputAdapterDescriptor,
+  OutputAdapterSlug,
+} from "../admin-api/routes/output-channels.js";
+import type {
+  ForgetJobEnqueueArgs,
+  RetryableFailedJob,
+} from "../admin-api/routes/source-bindings.js";
 import { createSseBus, type SseBus } from "../admin-api/sse-bus.js";
-import type { SchedulerSource } from "../admin-api/routes/scheduler.js";
+import type {
+  SchedulerSource,
+  SchedulerUpdate,
+} from "../admin-api/routes/scheduler.js";
 import type { EngineConfig } from "../config.js";
 import { registerStaticUi } from "../static-ui.js";
 
 import type { AdminApiCompositionEnv } from "./env.js";
 import { provisionDomainRepo } from "./gitea-provisioning.js";
+import { pingRefreshAll } from "./wiki-mcp-refresh.js";
 
 export interface ProductionServerFactoryArgs {
   readonly probes: ProbeMap;
@@ -62,8 +75,22 @@ export interface ProductionServerFactoryArgs {
   /** Phase-a appendix #4 PR-B — optional BullMQ queue handle for the
    *  ingestion-scanner queue. When provided, GET /api/admin/pipelines
    *  returns live depth + failed counts instead of zeroed stats.
-   *  Read-only — no jobs are added from this side. */
-  readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>>; name?: string };
+   *
+   *  PR-Z3 (phase-a appendix #12) widens the shape with optional
+   *  `add` so the orchestrator can thread the SAME `ingestion.scanner`
+   *  Queue handle the workers consume — supporting the source-bindings
+   *  route's post-create initial scan (closes G6) AND the
+   *  `:id/scan-now` route (closes G8). `add === undefined` keeps the
+   *  pre-Z3 read-only behaviour. */
+  readonly ingestionQueue?: {
+    getJobCounts: (...states: string[]) => Promise<Record<string, number>>;
+    add?: (
+      name: string,
+      data: unknown,
+      opts?: unknown,
+    ) => Promise<unknown>;
+    name?: string;
+  };
   /** Phase-a appendix #4 PR-B — SSE bus for the Activity feed.
    *  When undefined, `productionServerFactory` creates a fresh bus.
    *  Exposed on the returned object so `start.ts` can thread it to
@@ -76,6 +103,75 @@ export interface ProductionServerFactoryArgs {
    *  may have failed to compose, but the operator should still be
    *  able to inspect what's wired). */
   readonly schedulerSource?: SchedulerSource;
+  /** Phase-a appendix #10 PR-R3 — on-demand agent dispatch
+   *  enqueue. Production passes the dispatcher's `enqueueOneShot`
+   *  bound method; when undefined the route registers but returns
+   *  503 (composition incomplete). */
+  readonly dispatchAgentJob?: import("../admin-api/routes/agents-dispatch.js").AgentDispatchEnqueue;
+  /** Phase-a appendix #10 PR-R6 — cadence-editor update callable.
+   *  Production passes the dispatcher's `updateSchedule` bound
+   *  method; when undefined the `PUT /api/admin/scheduler/:agent`
+   *  route returns 503 (composition incomplete). */
+  readonly updateSchedule?: SchedulerUpdate;
+  /** PR-W1 (phase-a appendix #11) — delete-cap probe + reserve for
+   *  the source-forget impact preview (PR-R7). Production passes the
+   *  ingestion engine's `wikiDeps.deleteCap` instance so the route
+   *  reads the SAME budget the compiler workers reserve against.
+   *  When undefined the forget endpoint returns 503. */
+  readonly deleteCap?: DeleteCap;
+  /** PR-W1 (phase-a appendix #11) — composition-supplied enqueuer
+   *  for the actual forget action (PR-R7). When undefined the
+   *  forget endpoint returns 503. */
+  readonly forgetJobEnqueuer?: (args: ForgetJobEnqueueArgs) => Promise<void>;
+  /** PR-W2 / PR-Y8 (phase-a appendix #14) — read-only enumerator
+   *  over the `ingestion.scanner.classify` BullMQ failed-set,
+   *  filtered by payload `bindingId` (+ optionally `intakeId`).
+   *  Production composition builds this via
+   *  `enumerateFailedJobsByBindingId(queue, ...)` in
+   *  `@opencoo/engine-ingestion` over the SAME producer-side Queue
+   *  handle the classifier worker writes onto. Threaded straight
+   *  through to `registerAdminApi` so the retry-failed route can
+   *  re-drive failed classify jobs. When undefined the route
+   *  returns 503 (composition incomplete) — same boot-tolerance
+   *  pattern as `forgetJobEnqueuer`.
+   *
+   *  PR-Y8 closeout: this field was missing in W2's wiring (the
+   *  callable existed in production-composition.ts and serve.ts
+   *  threaded it into start(), but neither this type nor the
+   *  forwarding inside `productionServerFactory` declared it, so
+   *  the route always 503'd in production). The forwarding pattern
+   *  mirrors `forgetJobEnqueuer` line-for-line. */
+  readonly failedClassifyJobsEnumerator?: (
+    bindingId: string,
+    intakeId?: string,
+  ) => Promise<readonly RetryableFailedJob[]>;
+  /** PR-W2 / PR-Y8 (phase-a appendix #14) — composition-supplied
+   *  enqueuer for the re-enqueue side of the retry-failed route.
+   *  Production wiring binds this to the classify queue's `add`
+   *  method. When undefined the route returns 503. Mirrors the
+   *  `forgetJobEnqueuer` boot-tolerance pattern. */
+  readonly classifyJobEnqueuer?: (
+    name: string,
+    data: unknown,
+    opts?: unknown,
+  ) => Promise<unknown>;
+  /** PR-Z4 (phase-a appendix #12 G5) — per-adapter descriptor map
+   *  the admin-API Outputs-tab CRUD consumes. Composition root
+   *  builds one entry per shipped OutputAdapter; when undefined the
+   *  routes register but return 500
+   *  `output_channels_registry_unavailable`. */
+  readonly outputChannelDescriptors?: Readonly<
+    Record<OutputAdapterSlug, OutputAdapterDescriptor>
+  >;
+  /** PR-W1 (phase-a appendix #13) — worldview-compile queue handle.
+   *  Production passes the orchestrator's `new Queue(...)` so the
+   *  admin-API `POST /api/admin/domains/:slug/recompile-worldview`
+   *  route can enqueue against the SAME backlog the worldview-compile
+   *  worker reads. When undefined the route returns 503
+   *  (composition incomplete). */
+  readonly worldviewQueue?: {
+    add(name: string, data: unknown, opts?: unknown): Promise<unknown>;
+  };
   /** PR-Q6 (phase-a appendix #9) fix-up — Fastify request body
    *  limit. The orchestrator sets this to `WEBHOOK_BODY_LIMIT_BYTES`
    *  (5 MB) when co-booting engine-ingestion in workers mode so a
@@ -134,6 +230,35 @@ export async function productionServerFactory(
     ...(args.schedulerSource !== undefined
       ? { schedulerSource: args.schedulerSource }
       : {}),
+    ...(args.dispatchAgentJob !== undefined
+      ? { dispatchAgentJob: args.dispatchAgentJob }
+      : {}),
+    ...(args.updateSchedule !== undefined
+      ? { updateSchedule: args.updateSchedule }
+      : {}),
+    ...(args.deleteCap !== undefined ? { deleteCap: args.deleteCap } : {}),
+    ...(args.forgetJobEnqueuer !== undefined
+      ? { forgetJobEnqueuer: args.forgetJobEnqueuer }
+      : {}),
+    // PR-W2 / PR-Y8 (phase-a appendix #14) — forward the retry-failed
+    // callables verbatim so the admin-API route at
+    // `source-bindings.ts:1137` reaches `args.failedClassifyJobs-
+    // Enumerator !== undefined` and `args.classifyJobEnqueuer !==
+    // undefined` and drops out of the 503 boot-tolerance branch.
+    // Mirrors the `forgetJobEnqueuer` line above; the W2 wiring
+    // gap that PR-Y8 closes was the absence of these two spreads.
+    ...(args.failedClassifyJobsEnumerator !== undefined
+      ? { failedClassifyJobsEnumerator: args.failedClassifyJobsEnumerator }
+      : {}),
+    ...(args.classifyJobEnqueuer !== undefined
+      ? { classifyJobEnqueuer: args.classifyJobEnqueuer }
+      : {}),
+    ...(args.outputChannelDescriptors !== undefined
+      ? { outputChannelRegistry: args.outputChannelDescriptors }
+      : {}),
+    ...(args.worldviewQueue !== undefined
+      ? { worldviewQueue: args.worldviewQueue }
+      : {}),
     provisionOrg: args.compositionEnv.giteaProvisionOrg,
     provisionDomainRepo: async (a) => {
       // The composition root holds the Gitea base URL; the
@@ -147,6 +272,31 @@ export async function productionServerFactory(
         defaultLocale: a.defaultLocale,
       });
     },
+    // Phase-a appendix #12 PR-Z8 (G10) — wire /refresh-all only
+    // when BOTH URL + bearer are configured. Partial config falls
+    // through to undefined, which the route reads as "skip ping".
+    ...(args.compositionEnv.giteaWikiMcpUrl !== undefined &&
+    args.compositionEnv.mcpBearerToken !== undefined
+      ? {
+          pingWikiMcpRefresh: async (
+            repos: ReadonlyArray<{
+              readonly slug: string;
+              readonly owner: string;
+              readonly name?: string;
+              readonly default?: boolean;
+              readonly aggregator?: boolean;
+            }>,
+          ): Promise<void> =>
+            pingRefreshAll(
+              {
+                baseUrl: args.compositionEnv.giteaWikiMcpUrl!,
+                bearerToken: args.compositionEnv.mcpBearerToken!,
+              },
+              repos,
+              args.logger,
+            ),
+        }
+      : {}),
   });
 
   // 2. Static-UI LAST — its setNotFoundHandler catches unknown

@@ -24,9 +24,17 @@ import type { McpToolClient } from "../../mcp-tool-client/index.js";
 import { assertDomainSlugInScope } from "../scope-check.js";
 import {
   indexSearch,
+  wikiReadPage,
   worldviewRead,
 } from "../tools/index.js";
 
+import { selectDrilldownPages } from "./page-drilldown.js";
+import {
+  gatherSystemHealth as defaultGatherSystemHealth,
+  type GatherSystemHealthArgs,
+  type SystemHealth,
+  type WikiReader,
+} from "./system-health.js";
 import {
   HEARTBEAT_OUTPUT_SCHEMA,
   type HeartbeatOutput,
@@ -45,8 +53,30 @@ export interface RunHeartbeatArgs {
    *  scopeDomainIds before doing any further work — a slug
    *  outside scope throws DomainScopeMismatchError (DLQ). */
   readonly domainSlug: string;
+  /** Optional WikiAdapter handle threaded through to the
+   *  system-health gatherer. When omitted the gatherer
+   *  gracefully degrades to `page_count: 0` + `worldview_bytes:
+   *  0` rather than throwing — useful for legacy test paths
+   *  that don't construct an adapter. Production composition
+   *  (`cli/src/provision/agent-runners.ts`) MUST pass the real
+   *  Gitea-backed adapter so the heartbeat's empty-wiki branch
+   *  reads true page counts. */
+  readonly wikiAdapter?: WikiReader;
   /** Optional clock for deterministic test fetched-at metadata. */
   readonly now?: () => Date;
+  /** Test seam — swap in a fake gatherer so the runHeartbeat
+   *  body can be asserted without standing up the full SQL
+   *  fixture. Production callers leave this undefined and the
+   *  module-local `gatherSystemHealth` runs. */
+  readonly gatherSystemHealth?: (
+    args: GatherSystemHealthArgs,
+  ) => Promise<SystemHealth>;
+  /** Optional cap on how many worldview-referenced wiki pages
+   *  to drill into via `wiki.read_page` and spotlight into the
+   *  prompt. Defaults to HEARTBEAT_DRILLDOWN_DEFAULT (3); the
+   *  hard ceiling is HEARTBEAT_DRILLDOWN_HARD_CEILING (5). Pass
+   *  0 to disable drill-down entirely (legacy/test parity). */
+  readonly maxDrilldownPages?: number;
 }
 
 export async function runHeartbeat(
@@ -82,12 +112,67 @@ export async function runHeartbeat(
     worldviewRead(args.mcp, { domainSlug: args.domainSlug }),
   );
 
-  // Tool call 2: enumerate the domain's page index. Heartbeat
-  // doesn't read every page — the LLM uses the path list to
-  // pick what to mention; PR 20.5 Chat agent reads on demand.
+  // Tool call 2: enumerate the domain's page index. The
+  // heartbeat doesn't blanket-read every page; it uses the
+  // index to (a) hand the LLM a list of cite-able paths and
+  // (b) verify which worldview-referenced paths actually exist
+  // before drilling into them in the next step.
   const pagePaths = await ctx.callTool("index.search", () =>
     indexSearch(args.mcp, { domainSlug: args.domainSlug }),
   );
+
+  // Tool call 3..N: drill into up to `maxDrilldownPages`
+  // worldview-referenced pages (PR-Y10). The selector parses
+  // wiki-path tokens from the worldview body and intersects
+  // with the page index — so the heartbeat only fetches pages
+  // that (a) the worldview referred to AND (b) exist in this
+  // domain's scope (the index is itself domain-scoped by the
+  // wiki adapter, and the domain was already cross-checked
+  // against `ctx.instance.scopeDomainIds` at the top of this
+  // function). Reading off-scope is structurally impossible
+  // here.
+  const drilldownPaths = selectDrilldownPages({
+    worldviewBody,
+    pageIndex: pagePaths,
+    ...(args.maxDrilldownPages !== undefined
+      ? { maxPages: args.maxDrilldownPages }
+      : {}),
+  });
+  const drilldownBodies: ReadonlyArray<{
+    readonly path: string;
+    readonly body: string;
+  }> = await Promise.all(
+    drilldownPaths.map(async (path) => {
+      const body = await ctx.callTool("wiki.read_page", () =>
+        wikiReadPage(args.mcp, { domainSlug: args.domainSlug, path }),
+      );
+      return { path, body };
+    }),
+  );
+
+  // PR-W6 (phase-a appendix #14) — pre-fetch operational-
+  // health context so the LLM has real signals to draw on
+  // when the wiki is sparsely populated. The gatherer reads
+  // ONLY from the heartbeat's scope (scope-anchored joins via
+  // `sources_bindings.domain_id` / `agent_instances.scope_
+  // domain_ids`); the prompt's empty-wiki branch directs the
+  // model to surface up to 5 operational-health alerts
+  // (intake backlog, source-binding lag, agent-run failures,
+  // worldview staleness) rather than regurgitating the
+  // worldview placeholder. The function is a pure read-side
+  // aggregate and not routed through `ctx.callTool` — it has
+  // no caller-supplied params (scope + slug come from the
+  // run's pre-validated args) and no external side effects.
+  const gatherer = args.gatherSystemHealth ?? defaultGatherSystemHealth;
+  const systemHealth = await gatherer({
+    db: args.db,
+    scopeDomainIds: scope,
+    domainSlug: args.domainSlug,
+    ...(args.wikiAdapter !== undefined
+      ? { wikiAdapter: args.wikiAdapter }
+      : {}),
+    now,
+  });
 
   const prompt = loadPrompt({ name: "heartbeat", locale: ctx.instance.locale });
 
@@ -106,13 +191,55 @@ export async function runHeartbeat(
     source: `index://${args.domainSlug}`,
     fetchedAt,
   });
+  const systemHealthEnvelope = spotlight({
+    // JSON-encode the snapshot so the LLM sees a structured
+    // payload it can lift fields from (`wiki_stats.page_count`,
+    // `intake_counts.failed`).
+    //
+    // Defense-in-depth chain for fields containing operator-
+    // visible strings (error_text_snippet, last_failure_message,
+    // binding_name):
+    //   (1) gatherSystemHealth applies `safeErrorMessage` —
+    //       scrubs credential-shaped substrings (postgres://,
+    //       sk-…, env-var-style tokens) AND caps to 200 chars.
+    //       This is the load-bearing layer for "no credentials
+    //       in the LLM prompt" (THREAT-MODEL §2 invariant 11).
+    //   (2) spotlight() — XML sentinel guard ONLY. It escapes
+    //       `<system>` / `</source_content>` tag-shaped bytes
+    //       so they cannot terminate the envelope or forge a
+    //       chat-format role marker. spotlight() is NOT a
+    //       secret-scrubber; a credential that survived (1)
+    //       would be XML-escaped here but still reach the model.
+    //   See `@opencoo/shared/spotlight` header for the
+    //   amp → sentinel → xmlbody escape order.
+    content: JSON.stringify(systemHealth, null, 2),
+    source: `system-health://${args.domainSlug}`,
+    fetchedAt,
+  });
 
   const memoryBlock =
     ctx.spotlightedMemory.length === 0
       ? ""
       : `\n\n# Prior briefings (your memory)\n${ctx.spotlightedMemory.join("\n\n")}`;
 
-  const fullPrompt = `${prompt.body}\n\n# Domain worldview\n${worldviewEnvelope}\n\n# Available wiki pages\n${indexEnvelope}${memoryBlock}`;
+  // Drilled pages — each wrapped in its own spotlight envelope
+  // so the per-page `<source_content source="wiki://..">` shape
+  // gives the LLM a clear handle for citing the path.
+  const drilldownBlock =
+    drilldownBodies.length === 0
+      ? ""
+      : "\n\n# Drilled wiki pages\n" +
+        drilldownBodies
+          .map(({ path, body }) =>
+            spotlight({
+              content: body,
+              source: `wiki://${args.domainSlug}/${path}`,
+              fetchedAt,
+            }),
+          )
+          .join("\n\n");
+
+  const fullPrompt = `${prompt.body}\n\n# Domain worldview\n${worldviewEnvelope}\n\n# Available wiki pages\n${indexEnvelope}${drilldownBlock}\n\n# Operational system health\n${systemHealthEnvelope}${memoryBlock}`;
 
   const result = await ctx.router.generateObject({
     domainId,

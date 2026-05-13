@@ -18,9 +18,25 @@ export interface AsanaCreateTaskArgs {
   readonly accessToken: Buffer;
   readonly projectGid: string;
   readonly title: string;
-  readonly notes: string;
+  /** Plain-text body. Mutually exclusive with `htmlNotes`.
+   *  PR-W2: at least one of the two MUST be present; the
+   *  adapter's payload schema enforces the invariant before
+   *  the API call. */
+  readonly notes?: string;
+  /** Restricted-HTML body (Asana's `html_notes` field).
+   *  Mutually exclusive with `notes`. The caller is
+   *  responsible for HTML-entity-escaping any agent-supplied
+   *  text — Asana parses html_notes as XML and rejects
+   *  malformed bodies with 400. */
+  readonly htmlNotes?: string;
   readonly dueOn?: string;
   readonly assigneeGid?: string;
+  /** PR-W5 (phase-a appendix #14) — optional Asana section gid.
+   *  When set, the task is placed in that section by sending
+   *  `memberships: [{ project: projectGid, section: sectionGid }]`
+   *  instead of the bare `projects: [...]` field. Asana resolves
+   *  the workspace from the project so no workspace arg is needed. */
+  readonly sectionGid?: string;
 }
 
 export interface AsanaCreateTaskResult {

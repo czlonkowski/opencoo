@@ -79,6 +79,20 @@ export interface CommitInspection {
   readonly authorEmail: string;
 }
 
+/** Recent-commit row returned by `listRecentCommits`. Carries the
+ *  raw commit message so the worldview-trigger pipeline can parse
+ *  `Worldview-Impact:` trailers without a per-commit `inspectCommit`
+ *  round-trip. PR-W1 (phase-a appendix #13). */
+export interface CommitListEntry {
+  readonly sha: string;
+  readonly message: string;
+  /** Commit author timestamp (Gitea's nested `commit.author.date`).
+   *  Returned as the raw string Gitea emitted (ISO-8601) so callers
+   *  pick their own parse semantics — the trigger pipeline uses
+   *  `new Date()` for debounce window comparison. */
+  readonly authoredAt: string;
+}
+
 export interface GiteaClient {
   /** Returns the HEAD commit sha of the branch. */
   getBranchSha(repo: GiteaRepoLocator, branch: string): Promise<string>;
@@ -103,6 +117,19 @@ export interface GiteaClient {
    *  other extensions. (PR 17 / plan #77, for the Index Rebuilder
    *  pipeline.) */
   listTreePaths(repo: GiteaRepoLocator, branch: string): Promise<readonly string[]>;
+  /** PR-W1 (phase-a appendix #13) — list the most recent `limit`
+   *  commits on `branch`, newest first. Each entry carries the
+   *  full commit message so the worldview-trigger pipeline can
+   *  parse `Worldview-Impact:` trailers without per-commit
+   *  round-trips. `limit` is capped to 50 — the trigger debounces
+   *  on commits since the last recompile (at most a few per cycle
+   *  per architecture §9.4); a larger window degrades to "scan more
+   *  than necessary" rather than missed commits. */
+  listRecentCommits(
+    repo: GiteaRepoLocator,
+    branch: string,
+    limit: number,
+  ): Promise<readonly CommitListEntry[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +428,55 @@ export class GiteaRestClient implements GiteaClient {
       ) {
         out.push(entry.path);
       }
+    }
+    return out;
+  }
+
+  async listRecentCommits(
+    repo: GiteaRepoLocator,
+    branch: string,
+    limit: number,
+  ): Promise<readonly CommitListEntry[]> {
+    // Cap at 50 — see interface docstring. Per-page is also capped
+    // by Gitea (default 50, max varies by version); 50 is safely
+    // within both limits.
+    const cappedLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+    const path = `/api/v1/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/commits?sha=${encodeURIComponent(branch)}&limit=${cappedLimit}&page=1&stat=false&verification=false&files=false`;
+    const response = await this.request("GET", path);
+    if (response.status === 404) {
+      // Empty repo (no commits yet) or unknown branch — return [] so
+      // the trigger pipeline treats it as "nothing to debounce on".
+      return [];
+    }
+    if (!response.ok) {
+      throw new Error(
+        `Gitea listRecentCommits ${repo.owner}/${repo.name}@${branch} → HTTP ${response.status}`,
+      );
+    }
+    const body: unknown = await response.json();
+    if (!Array.isArray(body)) {
+      throw new Error(
+        `Gitea listRecentCommits returned non-array for ${repo.owner}/${repo.name}@${branch}`,
+      );
+    }
+    const out: CommitListEntry[] = [];
+    for (const entry of body) {
+      if (!isObject(entry)) continue;
+      const sha = (entry as { sha?: unknown }).sha;
+      if (typeof sha !== "string") continue;
+      const nested = (entry as { commit?: unknown }).commit;
+      let message = "";
+      let authoredAt = "";
+      if (isObject(nested)) {
+        const m = (nested as { message?: unknown }).message;
+        if (typeof m === "string") message = m;
+        const author = (nested as { author?: unknown }).author;
+        if (isObject(author)) {
+          const d = (author as { date?: unknown }).date;
+          if (typeof d === "string") authoredAt = d;
+        }
+      }
+      out.push({ sha, message, authoredAt });
     }
     return out;
   }

@@ -58,6 +58,149 @@ export const AUDIT_LOG_ACTIONS = [
   // + caller_username + (for update) the prev/new enabled flag.
   "source_binding.update",
   "source_binding.delete",
+  // Phase-a appendix #10 (PR-R2) — Sources binding edit:
+  // operational-config update + in-place credential rotation.
+  // Metadata captures binding_id + caller_username + KEY LISTS
+  // for `config_update` (never values), and binding_id +
+  // credentials_id + caller_username for `credentials_rotate`
+  // (NEVER plaintext or parsed credential fields).
+  "source_binding.config_update",
+  "source_binding.credentials_rotate",
+  // Phase-a appendix #10 (PR-R7) — Sources `forget` impact-preview-
+  // gated forget. Metadata captures binding_id + slug +
+  // {pages_recompiled, pages_deleted, citations_removed} as COUNTS
+  // (never path lists — paths can leak operator-internal naming),
+  // plus the cap state before/after the action and caller_username.
+  // Only the actual-forget path (`?dryRun=0`) writes audit; the
+  // dry-run preview is read-only and writes nothing.
+  "source_binding.forget",
+  // Phase-a appendix #12 (PR-Z3) — Sources `Scan now` on-demand
+  // scanner dispatch. Metadata captures binding_id + caller_username
+  // ONLY (no payload — the URL param is the binding UUID + the body
+  // is empty). NEVER any operator-supplied freeform text
+  // (THREAT-MODEL §3.13). Audit row is written BEFORE the BullMQ
+  // enqueue so a partial enqueue still leaves a forensic trail.
+  "source_binding.scan_now",
+  // Phase-a appendix #14 (PR-W2) — Re-enqueue failed compile-classify
+  // jobs for a binding. After W1 lands and the operator backfills
+  // `allowed_paths`, the BullMQ jobs in the `ingestion.scanner.classify`
+  // failed-set are stale (they failed against the old config). This
+  // route enumerates those failed jobs (filtered by payload bindingId
+  // and optionally intakeId) and re-enqueues each as a fresh job.
+  // Metadata captures binding_id + target_count + caller_username +
+  // (when scoped) intake_id. NEVER any operator-supplied freeform
+  // text — the URL params are bounded (UUID + optional UUID-like
+  // intakeId from the W4 panel) and the body is empty. Audit row is
+  // written BEFORE the re-enqueue calls so a partial enqueue still
+  // leaves a forensic trail (mirrors PR-Z3 scan_now invariant).
+  // `target_count` (NOT `retried_count`) names the field accurately:
+  // the value is captured BEFORE the enqueue loop runs so it reflects
+  // operator INTENT — how many failed jobs were enumerated and planned
+  // for re-enqueue. On a partial transport failure mid-loop the HTTP
+  // response's `retriedCount` reports the actual completed count;
+  // operators cross-referencing the audit log against BullMQ state
+  // should expect `target_count >= actual retried`. Copilot review
+  // #131 (id 3230502111).
+  "source_binding.retry_failed",
+  // Phase-a appendix #14 (PR-W1) — `allowed_paths` operator-side
+  // edit. The runtime classifier guard (`assertBindingNotWildcardOnly`)
+  // rejects empty/wildcard-only arrays; this PATCH branch lets the
+  // operator fix an existing binding via the UI instead of dropping
+  // to SQL. Metadata captures binding_id + caller_username + the
+  // prev_allowed_paths and new_allowed_paths arrays so the audit
+  // trail records exactly which subtree-globs were swapped (these
+  // are operator-controlled config, not credentials — recording
+  // them is operationally useful and never leaks secrets). The
+  // audit row is written AFTER the UPDATE because the route uses
+  // pg's `RETURNING` to confirm the row existed; a non-existent
+  // binding fails BEFORE the audit row and BEFORE any side effect,
+  // matching the source_binding.config_update / set_enabled pattern.
+  "source_binding.set_allowed_paths",
+  // Phase-a appendix #10 (PR-R1) — Domains tab drill-down
+  // actions. `update` covers PATCH (display_name / locale /
+  // is_aggregator); `disable` covers DELETE (soft-delete);
+  // `delete` covers DELETE `?hard=1` (hard-delete). Metadata
+  // captures id + slug + caller_username + (for update) the
+  // changed field NAMES (never values), and for delete the
+  // `binding_count` so the audit trail reflects whether bindings
+  // blocked the action.
+  "domain.update",
+  "domain.disable",
+  "domain.delete",
+  // PR-W1 (phase-a appendix #13) — on-demand worldview recompile
+  // (POST /api/admin/domains/:slug/recompile-worldview). Metadata
+  // captures domain_id + slug + trigger_type (`manual`) +
+  // caller_username ONLY. NEVER any operator-supplied freeform text;
+  // audit row is written BEFORE the BullMQ enqueue (audit-before-
+  // side-effect invariant — a partial enqueue still leaves a
+  // forensic trail).
+  "domain.recompile_worldview",
+  // Phase-a appendix #10 (PR-R3) — on-demand agent dispatch from
+  // the management UI. Metadata captures agent_slug + domain_slug +
+  // instance_slug + instance_id + dry_run + caller_username.
+  // `job_id` is NOT recorded because the audit row is written BEFORE
+  // the BullMQ enqueue (audit-before-enqueue invariant — the jobId
+  // doesn't exist yet at write time). Operators correlate via
+  // (caller_username, instance_id, created_at). NEVER any operator-
+  // supplied freeform text (THREAT-MODEL §3.13).
+  "agent.dispatch_now",
+  // Phase-a appendix #10 (PR-R6) — scheduler / cadence editor.
+  // PUT /api/admin/scheduler/:agent flips the cron pattern for every
+  // instance scoped to the agent slug; the audit row captures
+  // agent_slug + old_crons + new_cron + instance_count +
+  // caller_username so an operator can replay the cadence-change
+  // history without joining against agent_instances. `old_crons`
+  // is an array (length === instance_count) of the cron string each
+  // instance carried prior to the change, indexed by the same row
+  // ordering the dispatcher's swap walked — a per-instance prior
+  // value matters when instances of the same agent had drifted
+  // cadences (e.g. two heartbeat instances with different schedules
+  // before the operator pulled them back into lockstep). NEVER any
+  // operator-supplied freeform text — both old + new cron strings
+  // are server-validated via cron-parser BEFORE any side effect.
+  // The audit row is written INSIDE the same db.transaction as the
+  // schedule_cron UPDATE and the dispatcher's BullMQ swap; a throw
+  // at the dispatcher step rolls EVERYTHING back, audit row
+  // included — the operator never sees a "changed schedule" record
+  // for an action that didn't actually change anything. The trail
+  // matches the actual on-disk state (mirrors PR-Q10b's
+  // source-binding delete pattern).
+  "scheduler.update",
+  // Phase-a appendix #12 PR-Z4 — Outputs tab CRUD. The
+  // `output_channels` table backs operator-managed delivery
+  // channels the AgentDispatcher reads from at post-run delivery.
+  // Metadata captures channel_id + adapter_slug + name +
+  // caller_username (for create / delete) and additionally the
+  // changed_field NAMES + (for `enabled`) the new boolean for
+  // update. Credentials NEVER appear in audit metadata — the
+  // `credentials_rotate` row references the credential id, never
+  // the plaintext.
+  "output_channel.create",
+  "output_channel.update",
+  "output_channel.credentials_rotate",
+  "output_channel.delete",
+  // Phase-a appendix #13 PR-W2 — Agent-instance admin actions.
+  // The new `/api/admin/agent-instances/:id` PATCH surface
+  // splits into three intents; each emits ONE audit verb so the
+  // operator's history reflects exactly which lever they pulled.
+  //
+  // `bind_outputs`  — replaces `agent_instances.output_channel_ids[]`.
+  //                   Metadata: instance_id (binding_id),
+  //                   output_channel_ids (UUID list only,
+  //                   NEVER credential bytes or channel config),
+  //                   caller_username.
+  // `set_enabled`   — toggles `agent_instances.enabled`.
+  //                   Metadata: instance_id (binding_id), the
+  //                   new boolean, caller_username.
+  // `set_schedule`  — sets `agent_instances.schedule_cron`. The
+  //                   route validates via cron-parser BEFORE the
+  //                   audit row so a garbage value can't leave
+  //                   a misleading audit trail. Metadata:
+  //                   instance_id (binding_id), the cron
+  //                   string, caller_username.
+  "agent_instance.bind_outputs",
+  "agent_instance.set_enabled",
+  "agent_instance.set_schedule",
   // Logout — records the operator-initiated session-end so an
   // audit-log read can correlate an action burst with the
   // operator's session window.

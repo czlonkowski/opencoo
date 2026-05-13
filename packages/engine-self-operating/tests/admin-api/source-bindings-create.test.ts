@@ -83,6 +83,8 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           service_account_json: SECRET_TOKEN,
           root_folder_id: "1XYZ",
         },
+        config: { folderId: "1XYZ" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(201);
@@ -129,6 +131,8 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           service_account_json: SECRET_TOKEN,
           root_folder_id: "1XYZ",
         },
+        config: { folderId: "1XYZ" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.body).not.toContain(SECRET_TOKEN);
@@ -156,6 +160,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           auth: { api_key: SECRET_API_KEY },
           webhook_secret: { signing_secret: SECRET_WEBHOOK },
         },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(201);
@@ -199,6 +204,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           auth: { api_key: SECRET_API_KEY },
           webhook_secret: { signing_secret: SECRET_WEBHOOK },
         },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.body).not.toContain(SECRET_WEBHOOK);
@@ -233,6 +239,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
         target_domain_slug: "wiki-main",
         // missing root_folder_id
         credentials: { service_account_json: SECRET_TOKEN },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(422);
@@ -257,6 +264,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
         adapter_slug: "nonexistent",
         target_domain_slug: "wiki-main",
         credentials: {},
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(422);
@@ -285,6 +293,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           service_account_json: SECRET_TOKEN,
           root_folder_id: "1XYZ",
         },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(422);
@@ -315,6 +324,7 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           auth: { api_key: SECRET_API_KEY },
           webhook_secret: { signing_secret: SECRET_WEBHOOK },
         },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(201);
@@ -349,6 +359,8 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           service_account_json: SECRET_TOKEN,
           root_folder_id: "1XYZ",
         },
+        config: { folderId: "1XYZ" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(201);
@@ -375,6 +387,8 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           service_account_json: SECRET_TOKEN,
           root_folder_id: "1XYZ",
         },
+        config: { folderId: "1XYZ" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(401);
@@ -396,9 +410,211 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           service_account_json: SECRET_TOKEN,
           root_folder_id: "1XYZ",
         },
+        config: { folderId: "1XYZ" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     expect(res.statusCode).toBe(403);
+  });
+
+  // ─── Phase-a appendix #9 PR-Q9: config jsonb wiring ──────────────────────
+
+  it("PR-Q9: persists the submitted `config` into sources_bindings.config", async () => {
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    await seedDomain(f.raw, "wiki-meet");
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+    const res = await f.app.inject({
+      method: "POST",
+      url: "/api/admin/source-bindings",
+      headers: {
+        authorization: `Bearer ${ADMIN_PAT}`,
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: {
+        adapter_slug: "asana",
+        target_domain_slug: "wiki-meet",
+        credentials: {
+          auth: {
+            personal_access_token: "asana-pat-zzz",
+            workspace_gid: "ws-12345",
+          },
+          webhook_secret: { x_hook_secret: "hook-secret-aaa" },
+        },
+        config: { projectGid: "12345678" },
+        allowed_paths: ["meetings/**", "docs/**"],
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: string };
+    const row = await f.raw.query<{ config: Record<string, unknown> }>(
+      `SELECT config FROM sources_bindings WHERE id = $1::uuid`,
+      [body.id],
+    );
+    expect(row.rows[0]!.config).toMatchObject({ projectGid: "12345678" });
+  });
+
+  it("PR-Q9: 422 when the adapter's required config field is missing (asana → projectGid)", async () => {
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    await seedDomain(f.raw, "wiki-meet");
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+    const res = await f.app.inject({
+      method: "POST",
+      url: "/api/admin/source-bindings",
+      headers: {
+        authorization: `Bearer ${ADMIN_PAT}`,
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: {
+        adapter_slug: "asana",
+        target_domain_slug: "wiki-meet",
+        credentials: {
+          auth: {
+            personal_access_token: "asana-pat-zzz",
+            workspace_gid: "ws-12345",
+          },
+          webhook_secret: { x_hook_secret: "hook-secret-aaa" },
+        },
+        // missing projectGid
+        config: {},
+        allowed_paths: ["meetings/**", "docs/**"],
+      },
+    });
+    expect(res.statusCode).toBe(422);
+    const errBody = JSON.parse(res.body) as {
+      error: string;
+      missing?: string[];
+    };
+    expect(errBody.error).toMatch(/binding_config|config_schema/);
+    expect(errBody.missing).toContain("projectGid");
+    // The binding row was NOT inserted.
+    const rows = await f.raw.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM sources_bindings`,
+    );
+    expect(rows.rows[0]!.count).toBe("0");
+  });
+
+  it("PR-Q9: 422 when `config` is missing entirely for an adapter with required config", async () => {
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    await seedDomain(f.raw, "wiki-meet");
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+    const res = await f.app.inject({
+      method: "POST",
+      url: "/api/admin/source-bindings",
+      headers: {
+        authorization: `Bearer ${ADMIN_PAT}`,
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: {
+        adapter_slug: "asana",
+        target_domain_slug: "wiki-meet",
+        credentials: {
+          auth: {
+            personal_access_token: "asana-pat-zzz",
+            workspace_gid: "ws-12345",
+          },
+          webhook_secret: { x_hook_secret: "hook-secret-aaa" },
+        },
+        // no config key at all,
+        allowed_paths: ["meetings/**", "docs/**"],
+      },
+    });
+    expect(res.statusCode).toBe(422);
+  });
+
+  it("PR-Q9: omitting `config` is OK for an adapter without required config (fireflies)", async () => {
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    await seedDomain(f.raw, "wiki-meet");
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+    const res = await f.app.inject({
+      method: "POST",
+      url: "/api/admin/source-bindings",
+      headers: {
+        authorization: `Bearer ${ADMIN_PAT}`,
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: {
+        adapter_slug: "fireflies",
+        target_domain_slug: "wiki-meet",
+        credentials: {
+          auth: { api_key: SECRET_API_KEY },
+          webhook_secret: { signing_secret: SECRET_WEBHOOK },
+        },
+        allowed_paths: ["meetings/**", "docs/**"],
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: string };
+    const row = await f.raw.query<{ config: Record<string, unknown> }>(
+      `SELECT config FROM sources_bindings WHERE id = $1::uuid`,
+      [body.id],
+    );
+    // Default `{}` jsonb value preserved.
+    expect(row.rows[0]!.config).toEqual({});
+  });
+
+  it("PR-Q9: rejects non-object `config` payloads with 422", async () => {
+    // Three non-object shapes a buggy client could send: a bare
+    // string, an array (Zod's `z.record` rejects), and `null`.
+    // All three round-trip through one fixture — the validator
+    // rejects before any credential/binding write so the DB
+    // stays clean across iterations. Reviewer triage on PR-Q9
+    // round-2 caught that the original test only exercised the
+    // string case despite naming all three.
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    await seedDomain(f.raw, "wiki-main");
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+    const cases: ReadonlyArray<{
+      readonly label: string;
+      readonly config: unknown;
+    }> = [
+      { label: "string", config: "not-an-object" },
+      { label: "array", config: ["nope"] },
+      { label: "null", config: null },
+    ];
+    for (const { label, config } of cases) {
+      const res = await f.app.inject({
+        method: "POST",
+        url: "/api/admin/source-bindings",
+        headers: {
+          authorization: `Bearer ${ADMIN_PAT}`,
+          "x-csrf-token": csrfToken,
+          cookie: `opencoo_csrf=${cookie}`,
+          "content-type": "application/json",
+        },
+        payload: {
+          adapter_slug: "drive",
+          target_domain_slug: "wiki-main",
+          credentials: {
+            service_account_json: SECRET_TOKEN,
+            root_folder_id: "1XYZ",
+          },
+          config,
+          allowed_paths: ["meetings/**", "docs/**"],
+        },
+      });
+      expect(
+        res.statusCode,
+        `case "${label}" should 422, got ${res.statusCode}`,
+      ).toBe(422);
+    }
   });
 
   it("audit-log 'source_binding.create' written with adapter+domain metadata", async () => {
@@ -423,6 +639,8 @@ describe("admin-api POST /api/admin/source-bindings (phase-a appendix #2)", () =
           service_account_json: SECRET_TOKEN,
           root_folder_id: "1XYZ",
         },
+        config: { folderId: "1XYZ" },
+        allowed_paths: ["meetings/**", "docs/**"],
       },
     });
     const audit = await f.raw.query<{ metadata: Record<string, unknown> }>(

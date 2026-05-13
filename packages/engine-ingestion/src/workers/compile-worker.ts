@@ -41,14 +41,34 @@ export interface CompileWorkerDeps {
   readonly wikiDeps: RunCompilationWorkerArgs["wikiDeps"];
   readonly author: RunCompilationWorkerArgs["author"];
   readonly guardAdapter: RunCompilationWorkerArgs["guardAdapter"];
+  /** PR-W4 — optional SSE event emitter threaded from WorkerContext.
+   *  The compile-worker handler forwards it to `runCompilationWorker`
+   *  so failure events surface on the Activity feed live. Optional
+   *  for composition-incomplete shapes (test fixtures + headless
+   *  runs); production wires the self-op SseBus through here. */
+  readonly sseBus?: RunCompilationWorkerArgs["sseBus"];
 }
 
 /** Pure handler factory. Threads the stable deps from the
- *  WorkerContext + the per-job ScannerClassifyJob payload. */
+ *  WorkerContext + the per-job ScannerClassifyJob payload.
+ *
+ *  PR-W4 — `sseBus` is forwarded conditionally so an unset (undefined)
+ *  property doesn't trip `exactOptionalPropertyTypes` at the
+ *  RunCompilationWorkerArgs seam. */
 export function buildCompilationHandler(
   deps: CompileWorkerDeps,
 ): (job: Job<ScannerClassifyJob>) => Promise<CompilationWorkerResult> {
-  return async (job) => runCompilationWorker({ ...deps, job: job.data });
+  return async (job) =>
+    runCompilationWorker({
+      db: deps.db,
+      logger: deps.logger,
+      router: deps.router,
+      wikiDeps: deps.wikiDeps,
+      author: deps.author,
+      guardAdapter: deps.guardAdapter,
+      ...(deps.sseBus !== undefined ? { sseBus: deps.sseBus } : {}),
+      job: job.data,
+    });
 }
 
 export interface StartCompileWorkerArgs extends CompileWorkerDeps {

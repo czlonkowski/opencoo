@@ -75,6 +75,24 @@ export interface ServeSseBus {
     readonly endedAt?: string;
     readonly errorMessage?: string;
   }): void;
+  /** PR-W4 (phase-a appendix #14) — `pipeline.intake_failed` event
+   *  emitted by the ingestion engine's Compilation Worker when a
+   *  intake row flips to `status='failed'`. The self-op SseBus
+   *  fans this out to the SSE route; engine-ingestion's
+   *  `IngestionRunEventEmitter.emitIntakeFailed?` declares the same
+   *  shape so the structural seam still holds.
+   *
+   *  Optional in the cross-engine seam shape so a composition that
+   *  has not yet wired this method (older callers / test fixtures)
+   *  still satisfies the type — engine-ingestion null-guards on
+   *  every call. */
+  emitIntakeFailed?(event: {
+    readonly bindingId: string;
+    readonly intakeId: string;
+    readonly errorClass: string;
+    readonly errorTextSnippet: string;
+    readonly occurredAt: string;
+  }): void;
 }
 
 /** Minimal `StartedEngine` shape consumed by `runServe`.
@@ -120,13 +138,57 @@ export interface ServeStartedEngine {
  *  `app.listen()` (Fastify rejects `addContentTypeParser` once
  *  ready). `bodyLimit` is `WEBHOOK_BODY_LIMIT_BYTES` (5 MB) so 5-MB
  *  webhook deliveries don't 413 on Fastify's default 1-MB cap.
- *  Test mocks ignore both fields. */
+ *  Test mocks ignore both fields.
+ *
+ *  PR-W1 (phase-a appendix #11): adds optional `deleteCap` +
+ *  `forgetJobEnqueuer` so the source-forget admin route stops
+ *  returning 503 in production. Both originate from the ingestion
+ *  preflight composition (so the cap instance is shared with the
+ *  compiler workers — single-process v0.1 shape). Test mocks
+ *  ignore both fields. */
 export type ServeStartFactory = (opts: {
   readonly env: Record<string, string | undefined>;
   readonly preListenHooks?: ReadonlyArray<
     (app: unknown) => void | Promise<void>
   >;
   readonly bodyLimit?: number;
+  /** PR-W1 (phase-a appendix #11) — `deleteCap` instance from the
+   *  ingestion preflight, threaded into self-op so the admin-API
+   *  forget route reads the SAME budget the compiler workers
+   *  reserve against. Typed `unknown` so the orchestrator stays on
+   *  the no-cross-engine-import side; the default factory narrows
+   *  back to `DeleteCap` at the engine boundary. */
+  readonly deleteCap?: unknown;
+  /** PR-W1 (phase-a appendix #11) — composition-built forget
+   *  enqueuer from the ingestion preflight. Same typed-unknown
+   *  treatment as `deleteCap`. */
+  readonly forgetJobEnqueuer?: unknown;
+  /** PR-Z4 (phase-a appendix #12 G5) — output-channel registry
+   *  from the ingestion preflight. Same typed-unknown treatment
+   *  as `deleteCap` — orchestrator stays on the
+   *  no-cross-engine-import side; the default factory narrows
+   *  back to `OutputChannelRegistry` at the engine boundary. */
+  readonly outputChannels?: unknown;
+  /** PR-Z4 — output-adapter descriptor map. Threaded into the
+   *  admin-API Outputs-tab CRUD routes so the schema-driven form
+   *  rendering works. Same typed-unknown treatment as
+   *  `outputChannels`. */
+  readonly outputChannelDescriptors?: unknown;
+  /** PR-Z3 (phase-a appendix #12) — composition-built scanner Queue
+   *  handle (the SAME `ingestion.scanner` Queue the workers consume).
+   *  Threaded into self-op so the admin-API source-bindings POST
+   *  handler can enqueue a post-create initial scan (closes G6) AND
+   *  the `:id/scan-now` route can enqueue an on-demand scan
+   *  (closes G8). Typed `unknown` to keep this layer on the
+   *  no-cross-engine-import side; the engine narrows back at
+   *  consumption. */
+  readonly scannerQueue?: unknown;
+  /** PR-W1 (phase-a appendix #13) — composition-built worldview-
+   *  compile queue handle. Threaded into self-op so the admin-API
+   *  `POST /api/admin/domains/:slug/recompile-worldview` route can
+   *  enqueue against the SAME backlog the worldview-compile worker
+   *  reads. Typed `unknown` for the no-cross-engine-import boundary. */
+  readonly worldviewQueue?: unknown;
 }) => Promise<ServeStartedEngine>;
 
 /** Matches `start({env})` from `@opencoo/engine-ingestion`. The
@@ -193,6 +255,67 @@ export interface ServeIngestionPreflightResult {
    *  `/webhooks/:bindingId` + the raw-buffer parser on the supplied
    *  Fastify. Caller MUST run this before `app.listen()`. */
   readonly mountHook: (app: unknown) => void | Promise<void>;
+  /** PR-W1 (phase-a appendix #11) — the composition-built
+   *  `InMemoryDeleteCap` instance the workers reserve against. The
+   *  orchestrator forwards this verbatim into self-op's `start()`
+   *  so the admin-API forget route reads the SAME budget. Typed
+   *  `unknown` to keep this layer on the no-cross-engine-import
+   *  side; the engine narrows back to `DeleteCap` at consumption.
+   *  Optional for backward-compat with test factories that don't
+   *  bother synthesising a cap (the orchestrator omits the field
+   *  on the start call when undefined). */
+  readonly deleteCap?: unknown;
+  /** PR-W1 (phase-a appendix #11) — composition-built forget
+   *  enqueuer. Same typed-unknown treatment as `deleteCap`. */
+  readonly forgetJobEnqueuer?: unknown;
+  /** PR-Z4 (phase-a appendix #12 G5) — composition-built
+   *  OutputChannelRegistry the orchestrator forwards verbatim into
+   *  self-op's `start({outputChannels})`. Typed `unknown` so the
+   *  engine-self-operating surface doesn't bleed across the
+   *  no-cross-engine-import boundary; the engine narrows back to
+   *  `OutputChannelRegistry` at consumption. Optional for
+   *  backward-compat with test factories that don't synthesise
+   *  one. */
+  readonly outputChannels?: unknown;
+  /** PR-Z4 — composition-built descriptor map. Threaded into the
+   *  admin-API Outputs-tab CRUD routes so the schema-driven form
+   *  rendering works. Same typed-unknown treatment as
+   *  `outputChannels`. */
+  readonly outputChannelDescriptors?: unknown;
+  /** PR-Z3 (phase-a appendix #12) — composition-built scanner Queue
+   *  handle (BullMQ Queue on `ingestion.scanner`). The orchestrator
+   *  threads this through to self-op via `start({scannerQueue})` so
+   *  the admin-API source-bindings POST handler + `:id/scan-now`
+   *  route can enqueue scans on the SAME queue the workers
+   *  dequeue from. */
+  readonly scannerQueue?: unknown;
+  /** PR-W2 (phase-a appendix #14) — composition-built read-only
+   *  enumerator over the `ingestion.scanner.classify` failed-set,
+   *  filtered by payload bindingId (+ optional intakeId). Threaded
+   *  into self-op via `start({failedClassifyJobsEnumerator})` so the
+   *  `POST /api/admin/source-bindings/:id/retry-failed` route can
+   *  list failed jobs without learning about BullMQ.
+   *
+   *  Typed `unknown` to keep this layer on the no-cross-engine-import
+   *  side; the engine narrows back at consumption. Optional for
+   *  backward-compat with test factories that don't synthesise it. */
+  readonly failedClassifyJobsEnumerator?: unknown;
+  /** PR-W2 (phase-a appendix #14) — companion enqueuer the retry
+   *  route hands the original payloads to. Threaded into self-op via
+   *  `start({classifyJobEnqueuer})`. Same typed-unknown treatment. */
+  readonly classifyJobEnqueuer?: unknown;
+  /** PR-W1 (phase-a appendix #13) — composition-built worldview-
+   *  compile bundle. Carries the producer queue + worker + safety-net
+   *  cron. The orchestrator threads `bundle.queue` into self-op via
+   *  `start({worldviewQueue})` and awaits `bundle.close()` on SIGTERM
+   *  AFTER the engine's own close runs. Optional for backward-compat
+   *  with test factories that don't synthesise the bundle. */
+  readonly worldviewBundle?: {
+    readonly queue: {
+      add(name: string, data: unknown, opts?: unknown): Promise<unknown>;
+    };
+    close(): Promise<void>;
+  };
 }
 
 export type ServeIngestionPreflightFactory = (opts: {
@@ -273,6 +396,28 @@ type EngineStartFn = (opts: {
     (app: unknown) => void | Promise<void>
   >;
   readonly bodyLimit?: number;
+  /** PR-W1 (phase-a appendix #11) — passed verbatim into
+   *  `engine-self-operating.start({deleteCap})`. Typed `unknown`
+   *  to keep this layer on the no-cross-engine-import side. */
+  readonly deleteCap?: unknown;
+  readonly forgetJobEnqueuer?: unknown;
+  readonly outputChannels?: unknown;
+  readonly outputChannelDescriptors?: unknown;
+  /** PR-Z3 (phase-a appendix #12) — passed verbatim into
+   *  `engine-self-operating.start({ingestionQueue})` so the admin-API
+   *  POST source-bindings handler + `:id/scan-now` route can enqueue
+   *  scans against the workers' queue. */
+  readonly ingestionQueue?: unknown;
+  /** PR-W2 (phase-a appendix #14) — passed verbatim into self-op so
+   *  the retry-failed admin-API route can enumerate failed classify
+   *  jobs and re-enqueue them. */
+  readonly failedClassifyJobsEnumerator?: unknown;
+  readonly classifyJobEnqueuer?: unknown;
+  /** PR-W1 (phase-a appendix #13) — passed verbatim into
+   *  `engine-self-operating.start({worldviewQueue})` so the admin-API
+   *  recompile-worldview route can enqueue against the same backlog
+   *  the worker reads. */
+  readonly worldviewQueue?: unknown;
 }) => Promise<ServeStartedEngine>;
 
 interface ComposeStartedEngineArgs {
@@ -283,6 +428,33 @@ interface ComposeStartedEngineArgs {
     (app: unknown) => void | Promise<void>
   >;
   readonly bodyLimit?: number;
+  /** PR-W1 (phase-a appendix #11) — forwarded verbatim into
+   *  `engine-self-operating.start({deleteCap, forgetJobEnqueuer})`
+   *  so the source-forget admin route stops 503'ing in production. */
+  readonly deleteCap?: unknown;
+  readonly forgetJobEnqueuer?: unknown;
+  /** PR-Z4 (phase-a appendix #12 G5) — forwarded verbatim into
+   *  `engine-self-operating.start({outputChannels})` so the
+   *  AgentDispatcher's post-run delivery hook reaches the
+   *  operator-bound channels. */
+  readonly outputChannels?: unknown;
+  /** PR-Z4 — descriptor map for the admin-API Outputs-tab CRUD
+   *  routes. */
+  readonly outputChannelDescriptors?: unknown;
+  /** PR-Z3 (phase-a appendix #12) — forwarded verbatim into
+   *  `engine-self-operating.start({ingestionQueue})` so the
+   *  admin-API source-bindings POST + `:id/scan-now` routes can
+   *  enqueue against the workers' queue. */
+  readonly scannerQueue?: unknown;
+  /** PR-W2 (phase-a appendix #14) — forwarded verbatim into self-op
+   *  so the retry-failed admin-API route stops returning 503.
+   *  Same typed-unknown pattern as the other queue handles. */
+  readonly failedClassifyJobsEnumerator?: unknown;
+  readonly classifyJobEnqueuer?: unknown;
+  /** PR-W1 (phase-a appendix #13) — forwarded verbatim into
+   *  `engine-self-operating.start({worldviewQueue})` so the
+   *  admin-API recompile-worldview route stops returning 503. */
+  readonly worldviewQueue?: unknown;
   /** Logger for the round-2 fix #3 boot-failure-close-failed
    *  warn line. */
   readonly logger: {
@@ -340,6 +512,59 @@ export async function composeStartedEngineWithBundle(
         ? { preListenHooks: args.preListenHooks }
         : {}),
       ...(args.bodyLimit !== undefined ? { bodyLimit: args.bodyLimit } : {}),
+      // PR-W1 (phase-a appendix #11) — wire the source-forget
+      // admin-route deps. When the orchestrator pre-composed an
+      // ingestion preflight, `args.deleteCap` is the SAME instance
+      // the workers' `wikiWrite` reservations target (single-process
+      // v0.1) and `args.forgetJobEnqueuer` is the BullMQ-backed
+      // callable that turns the route's plan into recompile + delete
+      // jobs. When preflight returned null, both are undefined and
+      // the route returns 503 — same boot-tolerance pattern as the
+      // rest of the admin API.
+      ...(args.deleteCap !== undefined ? { deleteCap: args.deleteCap } : {}),
+      ...(args.forgetJobEnqueuer !== undefined
+        ? { forgetJobEnqueuer: args.forgetJobEnqueuer }
+        : {}),
+      // PR-Z4 (phase-a appendix #12 G5) — forward the composition's
+      // OutputChannelRegistry. When preflight returned null,
+      // `args.outputChannels` is undefined and the dispatcher's
+      // post-run delivery hook is a no-op (boot-tolerance).
+      ...(args.outputChannels !== undefined
+        ? { outputChannels: args.outputChannels }
+        : {}),
+      ...(args.outputChannelDescriptors !== undefined
+        ? { outputChannelDescriptors: args.outputChannelDescriptors }
+        : {}),
+      // PR-Z3 (phase-a appendix #12) — wire the writable
+      // `ingestion.scanner` queue handle from the preflight into
+      // self-op. The admin-API's source-bindings POST handler uses
+      // it to fire an initial scan immediately after a binding is
+      // created (closes G6); the new `:id/scan-now` endpoint uses
+      // it to fire on-demand scans (closes G8). When preflight
+      // returned null, `args.scannerQueue` is undefined and both
+      // surfaces no-op (POST returns 201 normally; scan-now → 503).
+      ...(args.scannerQueue !== undefined
+        ? { ingestionQueue: args.scannerQueue }
+        : {}),
+      // PR-W2 (phase-a appendix #14) — wire the retry-failed
+      // surface. Both callables close over the SAME
+      // `ingestion.scanner.classify` Queue the worker context's
+      // `enqueue` writes onto. When preflight returned null, both
+      // are undefined and `POST /api/admin/source-bindings/:id/retry-failed`
+      // returns 503 (boot-tolerance).
+      ...(args.failedClassifyJobsEnumerator !== undefined
+        ? { failedClassifyJobsEnumerator: args.failedClassifyJobsEnumerator }
+        : {}),
+      ...(args.classifyJobEnqueuer !== undefined
+        ? { classifyJobEnqueuer: args.classifyJobEnqueuer }
+        : {}),
+      // PR-W1 (phase-a appendix #13) — wire the worldview-compile
+      // queue handle. When preflight returned null, the bundle is
+      // undefined and the admin-API recompile-worldview route
+      // returns 503 (boot-tolerance).
+      ...(args.worldviewQueue !== undefined
+        ? { worldviewQueue: args.worldviewQueue }
+        : {}),
     });
   } catch (err) {
     if (bundle !== null) {
@@ -379,6 +604,21 @@ async function defaultStartFactory(opts: {
     (app: unknown) => void | Promise<void>
   >;
   readonly bodyLimit?: number;
+  readonly deleteCap?: unknown;
+  readonly forgetJobEnqueuer?: unknown;
+  readonly outputChannels?: unknown;
+  readonly outputChannelDescriptors?: unknown;
+  /** PR-Z3 (phase-a appendix #12) — scanner Queue handle threaded
+   *  through to self-op for the source-bindings POST + scan-now
+   *  routes. */
+  readonly scannerQueue?: unknown;
+  /** PR-W2 (phase-a appendix #14) — retry-failed callables threaded
+   *  through to self-op for the retry-failed admin route. */
+  readonly failedClassifyJobsEnumerator?: unknown;
+  readonly classifyJobEnqueuer?: unknown;
+  /** PR-W1 (phase-a appendix #13) — worldview-compile queue handle
+   *  threaded through to self-op for the recompile-worldview route. */
+  readonly worldviewQueue?: unknown;
 }): Promise<ServeStartedEngine> {
   const mod = await import("@opencoo/engine-self-operating");
   const composition = await import(
@@ -407,6 +647,46 @@ async function defaultStartFactory(opts: {
       ? { preListenHooks: opts.preListenHooks }
       : {}),
     ...(opts.bodyLimit !== undefined ? { bodyLimit: opts.bodyLimit } : {}),
+    // PR-W1 (phase-a appendix #11) — forward the preflight-built
+    // deleteCap + forgetJobEnqueuer into the engine so the admin
+    // API's source-forget route stops 503'ing.
+    ...(opts.deleteCap !== undefined ? { deleteCap: opts.deleteCap } : {}),
+    ...(opts.forgetJobEnqueuer !== undefined
+      ? { forgetJobEnqueuer: opts.forgetJobEnqueuer }
+      : {}),
+    // PR-Z4 (phase-a appendix #12 G5) — forward the preflight-built
+    // OutputChannelRegistry into the engine so post-run delivery
+    // reaches operator-bound channels (heartbeat → Asana, etc.).
+    ...(opts.outputChannels !== undefined
+      ? { outputChannels: opts.outputChannels }
+      : {}),
+    ...(opts.outputChannelDescriptors !== undefined
+      ? { outputChannelDescriptors: opts.outputChannelDescriptors }
+      : {}),
+    // PR-Z3 (phase-a appendix #12) — forward the preflight-built
+    // scanner queue handle into the engine so the admin-API
+    // source-bindings POST + `:id/scan-now` routes can enqueue
+    // against the SAME queue the workers dequeue from.
+    ...(opts.scannerQueue !== undefined
+      ? { scannerQueue: opts.scannerQueue }
+      : {}),
+    // PR-W2 (phase-a appendix #14) — forward the preflight-built
+    // retry-failed callables into the engine so the admin-API
+    // retry-failed route can enumerate + re-enqueue failed classify
+    // jobs.
+    ...(opts.failedClassifyJobsEnumerator !== undefined
+      ? { failedClassifyJobsEnumerator: opts.failedClassifyJobsEnumerator }
+      : {}),
+    ...(opts.classifyJobEnqueuer !== undefined
+      ? { classifyJobEnqueuer: opts.classifyJobEnqueuer }
+      : {}),
+    // PR-W1 (phase-a appendix #13) — forward the preflight-built
+    // worldview-compile queue handle into the engine so the admin-API
+    // recompile-worldview route can enqueue against the SAME queue
+    // the worldview worker reads.
+    ...(opts.worldviewQueue !== undefined
+      ? { worldviewQueue: opts.worldviewQueue }
+      : {}),
   });
 }
 
@@ -469,6 +749,46 @@ async function defaultIngestionPreflightFactory(opts: {
   return {
     preflight: { composed: composed as unknown },
     mountHook,
+    // PR-W1 (phase-a appendix #11) — surface the composition's
+    // `deleteCap` + `forgetJobEnqueuer` so the orchestrator can
+    // forward them into self-op's `start({})`. Without these, the
+    // admin-API source-forget route returns 503 in production
+    // (the bug the wave-end Chrome QA caught: clicking "Forget
+    // source" → "Nie udało się załadować wpływu").
+    deleteCap: composed.deleteCap as unknown,
+    forgetJobEnqueuer: composed.forgetJobEnqueuer as unknown,
+    // PR-Z4 (phase-a appendix #12 G5) — surface the composition's
+    // OutputChannelRegistry so the orchestrator can forward it
+    // into self-op's `start({outputChannels})`. Without this thread,
+    // post-run delivery is a no-op even though the registry,
+    // `output-asana`, and the channel CRUD all exist (the bug G5
+    // captures: the daily-report-to-Asana path is 90% built but
+    // not wired).
+    outputChannels: composed.outputChannels as unknown,
+    outputChannelDescriptors: composed.outputChannelDescriptors as unknown,
+    // PR-Z3 (phase-a appendix #12) — surface the composition's
+    // `ingestion.scanner` Queue handle so the orchestrator can
+    // forward it into self-op's `start({scannerQueue})`. Without
+    // this, the source-bindings POST handler's initial-scan
+    // enqueue silently no-ops (binding still creates, just no
+    // immediate scan) and `:id/scan-now` returns 503.
+    scannerQueue: composed.scannerQueue as unknown,
+    // PR-W2 (phase-a appendix #14) — surface the composition's
+    // retry-failed callables so the orchestrator can forward them
+    // into self-op's `start({failedClassifyJobsEnumerator,
+    // classifyJobEnqueuer})`. Without these the admin-API
+    // retry-failed route returns 503.
+    failedClassifyJobsEnumerator:
+      composed.failedClassifyJobsEnumerator as unknown,
+    classifyJobEnqueuer: composed.classifyJobEnqueuer as unknown,
+    // PR-W1 (phase-a appendix #13) — surface the composition's
+    // worldview compile bundle (producer queue + worker + safety-net
+    // cron) so the orchestrator can forward `bundle.queue` into
+    // self-op's `start({worldviewQueue})` AND drain the worker on
+    // SIGTERM. Without this the admin-API recompile-worldview
+    // endpoint returns 503 + the daily safety-net cron never
+    // registers.
+    worldviewBundle: composed.worldviewBundle,
   };
 }
 
@@ -536,23 +856,47 @@ async function defaultIngestionStartFactory(opts: {
   return {
     async close(): Promise<void> {
       await baseClose();
-      // closeProducers releases the producer-side
-      // ingestion.scanner.classify Queue handle the composition
-      // opened. Best-effort.
-      await composed.workerContext.closeProducers().catch(() => undefined);
-      await Promise.all([
-        composed.pgPool.end().catch(() => undefined),
-        composed.redis
-          .quit()
-          .then(() => undefined)
-          .catch(() => undefined),
-      ]);
+      // Drain producer-side queues + pg.Pool + Redis the
+      // composition opened. The engine's own close() already
+      // ran workers.closeAll(); we only layer composition-owned
+      // handles on top.
+      await drainComposedResources(composed);
     },
   };
 }
 
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** @internal Drain every resource the ingestion preflight composition
+ *  owns, in shutdown order: producer-side queues first (so in-flight
+ *  enqueues complete), then pg.Pool + Redis in parallel. Best-effort
+ *  on every step — a single close failure must not prevent the
+ *  remaining handles from draining. Used by every cleanup site
+ *  in this file (engine close wrap, startFactory failure, ingestion
+ *  factory failure) so the orchestration of "what does the
+ *  composition own" lives in one place.
+ *
+ *  PR-W1 (phase-a appendix #11) added `closeForgetQueues` to the
+ *  composition; centralising avoids fan-out across cleanup sites
+ *  whenever the composition grows another producer-side handle. */
+async function drainComposedResources(
+  composed: IngestionComposedResult,
+): Promise<void> {
+  // closeProducers releases the ingestion.scanner.classify Queue
+  // handle; closeForgetQueues releases wiki.recompile + wiki.delete;
+  // worldviewBundle.close releases the worldview worker + queue.
+  await composed.workerContext.closeProducers().catch(() => undefined);
+  await composed.closeForgetQueues().catch(() => undefined);
+  await composed.worldviewBundle.close().catch(() => undefined);
+  await Promise.all([
+    composed.pgPool.end().catch(() => undefined),
+    composed.redis
+      .quit()
+      .then(() => undefined)
+      .catch(() => undefined),
+  ]);
 }
 
 /** Boot the engines and block until SIGTERM/SIGINT.
@@ -656,6 +1000,58 @@ export async function runServe(args: ServeArgs): Promise<void> {
             bodyLimit: SHARED_WEBHOOK_BODY_LIMIT,
           }
         : {}),
+      // PR-W1 (phase-a appendix #11) — forward the preflight's
+      // forget deps (deleteCap + enqueuer) so the source-forget
+      // admin route stops 503'ing in production. When preflight
+      // returned null, both fields stay omitted and the route's
+      // composition-incomplete branch surfaces (matching the rest
+      // of the admin API's boot-tolerance pattern). Conditional
+      // spread keeps undefined fields out of the call site to
+      // satisfy `exactOptionalPropertyTypes`.
+      ...(preflight?.deleteCap !== undefined
+        ? { deleteCap: preflight.deleteCap }
+        : {}),
+      ...(preflight?.forgetJobEnqueuer !== undefined
+        ? { forgetJobEnqueuer: preflight.forgetJobEnqueuer }
+        : {}),
+      // PR-Z4 (phase-a appendix #12 G5) — forward the preflight's
+      // OutputChannelRegistry so the AgentDispatcher's post-run
+      // delivery hook reaches operator-bound channels. Mirrors the
+      // deleteCap / forgetJobEnqueuer pattern above: when preflight
+      // returned null, the field stays omitted and the dispatcher's
+      // delivery hook is a no-op (boot-tolerance).
+      ...(preflight?.outputChannels !== undefined
+        ? { outputChannels: preflight.outputChannels }
+        : {}),
+      ...(preflight?.outputChannelDescriptors !== undefined
+        ? { outputChannelDescriptors: preflight.outputChannelDescriptors }
+        : {}),
+      // PR-Z3 (phase-a appendix #12) — forward the preflight's
+      // scanner Queue handle so the source-bindings POST + scan-now
+      // routes can enqueue against the SAME queue the workers
+      // dequeue from. When preflight returned null, the field stays
+      // omitted and the route surfaces 503 (composition-incomplete).
+      ...(preflight?.scannerQueue !== undefined
+        ? { scannerQueue: preflight.scannerQueue }
+        : {}),
+      // PR-W2 (phase-a appendix #14) — forward the preflight's
+      // retry-failed callables so the admin-API retry-failed route
+      // can enumerate + re-enqueue failed classify jobs. Same
+      // boot-tolerance pattern: when preflight returned null, both
+      // fields stay omitted and the route returns 503.
+      ...(preflight?.failedClassifyJobsEnumerator !== undefined
+        ? { failedClassifyJobsEnumerator: preflight.failedClassifyJobsEnumerator }
+        : {}),
+      ...(preflight?.classifyJobEnqueuer !== undefined
+        ? { classifyJobEnqueuer: preflight.classifyJobEnqueuer }
+        : {}),
+      // PR-W1 (phase-a appendix #13) — forward the preflight's
+      // worldview-compile queue handle so the admin-API
+      // recompile-worldview route can enqueue. Mirrors the
+      // scannerQueue pattern above.
+      ...(preflight?.worldviewBundle !== undefined
+        ? { worldviewQueue: preflight.worldviewBundle.queue }
+        : {}),
     });
   } catch (err) {
     if (isExitSentinel(err)) throw err;
@@ -665,15 +1061,9 @@ export async function runServe(args: ServeArgs): Promise<void> {
     // Drain the preflight's pg.Pool / Redis / queue handles — the
     // engine never booted so nothing else owns them.
     if (preflight !== null) {
-      const composed = preflight.preflight.composed as IngestionComposedResult;
-      await composed.workerContext.closeProducers().catch(() => undefined);
-      await Promise.all([
-        composed.pgPool.end().catch(() => undefined),
-        composed.redis
-          .quit()
-          .then(() => undefined)
-          .catch(() => undefined),
-      ]);
+      await drainComposedResources(
+        preflight.preflight.composed as IngestionComposedResult,
+      );
     }
     return exit(2);
   }
@@ -724,15 +1114,9 @@ export async function runServe(args: ServeArgs): Promise<void> {
     // resources, the resources are now orphaned. Drain them best-
     // effort so the process can exit cleanly on later SIGTERM.
     if (preflight !== null) {
-      const composed = preflight.preflight.composed as IngestionComposedResult;
-      await composed.workerContext.closeProducers().catch(() => undefined);
-      await Promise.all([
-        composed.pgPool.end().catch(() => undefined),
-        composed.redis
-          .quit()
-          .then(() => undefined)
-          .catch(() => undefined),
-      ]);
+      await drainComposedResources(
+        preflight.preflight.composed as IngestionComposedResult,
+      );
     }
     ingestionEngine = undefined;
   }

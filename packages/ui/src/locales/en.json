@@ -7,12 +7,16 @@
   "nav": {
     "domains": "domains",
     "sources": "sources",
+    "agents": "agents",
+    "outputs": "outputs",
     "llmPolicy": "llm policy",
     "prompts": "prompts",
     "activity": "activity",
     "review": "review",
     "reports": "reports",
-    "logout": "log out"
+    "logout": "log out",
+    "audit": "audit",
+    "cost": "cost"
   },
   "auth": {
     "modalTitle": "opencoo",
@@ -41,7 +45,10 @@
       "locale": "locale",
       "aggregator": "aggregator"
     },
+    "showDisabled": "Show disabled",
+    "disabledBadge": "disabled",
     "newDomain": "+ New domain",
+    "openDetail": "open detail for {{slug}}",
     "create": {
       "title": "New domain",
       "subtitle": "Provisions a Gitea repo and seeds index/log/schema.",
@@ -61,6 +68,55 @@
         "slugTaken": "That slug is already taken.",
         "displayNameRequired": "Display name is required.",
         "generic": "Could not create domain. Try again or check the audit log."
+      }
+    },
+    "detail": {
+      "title": "Domain",
+      "subtitle": "Edit metadata, retire, or hard-delete this domain.",
+      "labels": {
+        "slug": "slug",
+        "domainId": "domain id",
+        "class": "class",
+        "displayName": "display name",
+        "locale": "locale",
+        "aggregator": "aggregator",
+        "bindings": "source bindings",
+        "disabledAt": "disabled at"
+      },
+      "fields": {
+        "displayName": "display name",
+        "locale": "locale",
+        "aggregator": "aggregator"
+      },
+      "actions": {
+        "save": "Save changes",
+        "saving": "saving…",
+        "close": "Close",
+        "cancel": "Cancel",
+        "disable": "Disable",
+        "delete": "Delete permanently",
+        "recompileWorldview": "Recompile worldview",
+        "confirmDisableTitle": "Disable this domain?",
+        "confirmDisableBody": "Soft-disables the domain. The Gitea repo is kept, but the domain is hidden from listings and ingestion stops dispatching to it. Re-enable is not in v0.1 — to recover you create a fresh domain.",
+        "confirmDisable": "Confirm disable",
+        "confirmDeleteTitle": "Permanently delete this domain?",
+        "confirmDeleteBody": "Removes the domain row from opencoo's database. The Gitea repo is NOT deleted — remove it separately if no longer needed. Append-only audit (page citations, redaction events) referencing this domain stays in place.",
+        "confirmDelete": "Confirm hard delete",
+        "confirmDeleteCheckbox": "I understand this is permanent and the Gitea repo is not removed.",
+        "deleteBlocked": "Disable bindings first — see Sources tab. ({{n}} binding(s) reference this domain.)"
+      },
+      "recompileWorldview": {
+        "success": "Worldview recompile enqueued"
+      },
+      "errors": {
+        "saveFailed": "Could not save changes. Try again or check the audit log.",
+        "aggregatorAlreadySet": "Another active domain is already the aggregator. Disable that one first.",
+        "disableFailed": "Could not disable domain (server rejected the request).",
+        "deleteFailed": "Could not delete domain (server rejected the request).",
+        "deleteFkRestricted": "This domain has source bindings. Migrate or delete those first.",
+        "recompileWorldviewFailed": "Could not queue a worldview recompile. Try again or check the audit log.",
+        "auth": "Sign-in expired or insufficient permissions — re-paste your PAT.",
+        "transient": "Server is unreachable or returned an error. Try again."
       }
     }
   },
@@ -110,6 +166,15 @@
         "generic": "Could not create binding. Try again or check the audit log."
       }
     },
+    "allowedPaths": {
+      "title": "Allowed wiki paths",
+      "subtitle": "Subtree globs the classifier may write into. Empty or wildcard-only lists are rejected — pick at least one bounded subtree.",
+      "suggestions": "Suggested for this adapter:",
+      "addCustom": "Add custom",
+      "placeholder": "e.g. meetings/**",
+      "empty": "No paths yet. Add a chip from the suggestions or type your own.",
+      "invalidPattern": "Wildcard-only patterns are not allowed."
+    },
     "detail": {
       "title": "Source binding",
       "subtitle": "Webhook URL, recent activity, and lifecycle actions.",
@@ -135,6 +200,9 @@
         "disable": "Disable",
         "enable": "Enable",
         "delete": "Delete",
+        "forget": "Forget source",
+        "scanNow": "Scan now",
+        "retryFailed": "Retry failed jobs",
         "close": "Close",
         "confirmDisableTitle": "Disable this binding?",
         "confirmDisableBody": "Inbound webhook events will still be accepted (HMAC verified, audit row written) but the scanner queue will not dispatch them, so no compile fires.",
@@ -147,15 +215,68 @@
         "confirmDelete": "Confirm delete",
         "cancel": "Cancel"
       },
+      "scanNow": {
+        "success": "Scan queued — see the Activity tab.",
+        "disabled": "Enable the binding before queuing a scan."
+      },
+      "retryFailed": {
+        "success": "Re-enqueued {{count}} failed job(s) — see the Activity tab."
+      },
+      "intakeState": {
+        "title": "intake state",
+        "pending": "pending",
+        "classified": "classified",
+        "skipped": "skipped",
+        "failed": "failed",
+        "retry": "Retry",
+        "retryDisabledTooltip": "Per-job retry ships in PR-W2."
+      },
       "errors": {
         "patchFailed": "Could not update the binding. Try again or check the audit log.",
         "disableFailed": "Could not disable binding (server rejected the request).",
         "enableFailed": "Could not enable binding (server rejected the request).",
         "deleteFailed": "Could not delete binding (server rejected the request).",
         "deleteFkRestricted": "This binding has audit history that prevents deletion. Disable it instead.",
+        "scanNowFailed": "Could not queue a scan. Try again or check the audit log.",
+        "scanNowUnavailable": "Scanner queue is not wired in this deployment — check engine logs.",
+        "retryFailedFailed": "Could not re-enqueue failed jobs. Try again or check the audit log.",
+        "retryFailedUnavailable": "Classify-retry surface is not wired in this deployment — check engine logs.",
         "auth": "Sign-in expired or insufficient permissions — re-paste your PAT.",
         "transient": "Server is unreachable or returned an error. Try again."
       }
+    }
+  },
+  "sourceBindingDetail": {
+    "edit": {
+      "open": "Edit",
+      "title": "Edit binding",
+      "subtitle": "Operational settings and credential rotation. Both apply to the next scheduled tick or webhook event.",
+      "save": "Save",
+      "saving": "Saving",
+      "cancel": "Cancel",
+      "config": {
+        "title": "Operational settings",
+        "subtitle": "Adapter-specific config persisted on the binding row."
+      },
+      "credentials": {
+        "title": "Rotate credentials",
+        "subtitle": "Saving requires every field — rotation replaces the credential atomically.",
+        "banner": "Rotating credentials does not pause the binding — in-flight events finish on the old key, new events use the new key."
+      },
+      "errors": {
+        "configFailed": "Could not save operational settings. Check the field errors below.",
+        "credentialsFailed": "Could not rotate credentials. Check the field errors below.",
+        "credentialsEmpty": "Type at least one credential field before saving.",
+        "webhookSecretNotSupported": "This adapter has no webhook secret to rotate.",
+        "auth": "Sign-in expired or insufficient permissions — re-paste your PAT.",
+        "transient": "Server is unreachable or returned an error. Try again."
+      }
+    },
+    "allowedPaths": {
+      "title": "Allowed wiki paths",
+      "subtitle": "Subtree globs the classifier may write into. The runtime guard rejects empty or wildcard-only lists.",
+      "editOpen": "Edit",
+      "saveFailed": "Could not save allowed paths. Try again or check the audit log."
     }
   },
   "llmPolicy": {
@@ -176,7 +297,21 @@
     "diffExpired": "Token expired. Re-preview to continue.",
     "tokenMismatch": "The proposed policy changed since preview. Re-preview to continue.",
     "invalidJson": "Proposed policy is not valid JSON.",
-    "applied": "Applied. New policy is active for new pipeline runs."
+    "applied": "Applied. New policy is active for new pipeline runs.",
+    "editor": {
+      "captionProvider": "provider",
+      "captionModel": "model",
+      "pickModel": "pick a model",
+      "advancedToggle": "Advanced (raw JSON)",
+      "localOnly": "local-only — reject any cloud-provider call for this domain",
+      "ollamaPlaceholder": "e.g. llama3.2:8b (operator-pulled)",
+      "openrouterPlaceholder": "e.g. owner/model-id",
+      "customPlaceholder": "paste model id",
+      "otherModel": "Other model…",
+      "unknownSuffix": "(unknown)",
+      "catalogUnavailable": "catalog unavailable — paste the model id directly",
+      "incomplete": "policy incomplete — pick a model for every tier"
+    }
   },
   "prompts": {
     "title": "Prompts",
@@ -219,10 +354,20 @@
     "feed": {
       "connecting": "connecting…",
       "live": "live",
+      "authExpired": "auth expired",
       "empty": "No events yet.",
       "dlq": "delivery failed",
       "dlqAlert": "output delivery DLQ —",
-      "dlqDeliveryId": "delivery-id"
+      "dlqDeliveryId": "delivery-id",
+      "intakeFailed": "intake failed",
+      "intakeFailedRow": "binding",
+      "intakeFailedClass": "class",
+      "intakeFailedRecentCount": "similar (1h)",
+      "authFailed": {
+        "title": "Sign-in expired",
+        "body": "Re-paste your PAT to reconnect to the activity feed.",
+        "action": "Re-paste PAT"
+      }
     },
     "runs": {
       "empty": "No runs yet."
@@ -295,5 +440,260 @@
   },
   "debug": {
     "bannerLabel": "LLM_DEBUG_LOG=1 · prompts and responses are mirroring to llm_usage_debug"
+  },
+  "agentsRunNow": {
+    "labels": {
+      "runNow": "Run now",
+      "refreshNow": "Refresh now",
+      "rerunLint": "Re-run lint",
+      "queued": "Queued · {sec}s",
+      "running": "Running · {sec}s"
+    },
+    "tooltips": {
+      "rateLimited": "Rate limited — try again in {sec}s",
+      "dispatcherUnavailable": "Agent dispatcher offline. Check engine logs."
+    },
+    "errors": {
+      "dispatchFailed": "Could not start the agent. Try again or check the audit log.",
+      "auth": "Sign-in expired or insufficient permissions — re-paste your PAT."
+    },
+    "heartbeatRefresh": {
+      "subtitle": "Trigger a fresh heartbeat compile for this domain."
+    },
+    "lintRerun": {
+      "subtitle": "Re-run lint on the current findings' domain."
+    },
+    "activityCard": {
+      "title": "Scheduled agents",
+      "subtitle": "Per-instance recurring jobs. Use Run now to fire on demand.",
+      "empty": "No scheduled agents wired.",
+      "columns": {
+        "agent": "agent",
+        "instance": "instance",
+        "schedule": "schedule",
+        "lastFire": "last fired",
+        "actions": "actions"
+      }
+    }
+  },
+  "forgetImpact": {
+    "title": "Forget source",
+    "lead": "This will permanently remove this source's contributions from the wiki.",
+    "loading": "Computing impact…",
+    "summary": "Impact: {{recompile}} pages re-compile, {{deletes}} pages delete entirely, {{citations}} citations removed.",
+    "capUsed": "Daily delete cap: {{used}}/{{cap}} used today",
+    "capExceeded": "Cannot forget — would exceed today's delete cap ({{cap}}/day). Wait for the cap to reset.",
+    "acknowledge": "I understand {{recompile}} pages will recompile and {{deletes}} will delete permanently",
+    "cancel": "Cancel",
+    "confirm": "Forget source",
+    "confirming": "Forgetting…",
+    "errors": {
+      "loadFailed": "Could not load forget impact. Try again.",
+      "confirmFailed": "Could not forget source. Try again or check the audit log.",
+      "capExceeded": "Daily delete cap reached. Try again after midnight UTC.",
+      "auth": "Sign-in expired or insufficient permissions — re-paste your PAT.",
+      "transient": "Server is unreachable or returned an error. Try again."
+    }
+  },
+  "schedulerEditor": {
+    "edit": "Edit schedule",
+    "cancel": "Cancel",
+    "save": "Save",
+    "saving": "Saving…",
+    "applied": "Schedule updated",
+    "presetLabel": "Cadence",
+    "timeLabel": "Time",
+    "cronLabel": "Cron",
+    "nextFires": "Next 5 fires",
+    "currentSchedule": "Current cron",
+    "presets": {
+      "weekday": "Every weekday",
+      "sunday": "Every Sunday",
+      "firstOfMonth": "First of month",
+      "biweeklyFirstSunday": "Bi-weekly · first Sunday",
+      "custom": "Custom cron"
+    },
+    "errors": {
+      "cronInvalid": "Cron pattern not parseable.",
+      "cronInvalidWithReason": "Cron pattern not parseable: {{reason}}",
+      "saveFailed": "Could not save the schedule. Try again.",
+      "schedulerUnavailable": "Scheduler is offline. Check engine logs.",
+      "auth": "Sign-in expired or insufficient permissions — re-paste your PAT."
+    }
+  },
+  "audit": {
+    "title": "Audit log",
+    "subtitle": "Append-only record of every state-changing admin action.",
+    "scopeAside": "Records who changed what, when. Reads are also recorded so the trail can't be mined silently. Metadata is sanitised at write time — secret bytes never reach this view.",
+    "filters": {
+      "action": "action",
+      "actorPlaceholder": "username substring or user UUID",
+      "resourcePlaceholder": "slug, binding id, or domain id",
+      "from": "from",
+      "to": "to",
+      "actionAll": "any action",
+      "actionSelected_one": "{{n}} action",
+      "actionSelected_other": "{{n}} actions",
+      "clear": "Clear filters"
+    },
+    "columns": {
+      "time": "time",
+      "action": "action",
+      "actor": "actor",
+      "resource": "resource"
+    },
+    "empty": "No audit-log rows match the current filters.",
+    "loadError": "Could not load audit log. Try again.",
+    "row": {
+      "expand": "Show details",
+      "collapse": "Hide details",
+      "metadata": "metadata",
+      "copy": "Copy JSON",
+      "copied": "copied",
+      "copyFailed": "Copy failed",
+      "showFull": "Show full payload",
+      "showLess": "Truncate",
+      "truncatedNote": "Payload truncated at {{kb}} KB."
+    },
+    "pagination": {
+      "prev": "Prev",
+      "next": "Next",
+      "page": "Page {{page}}"
+    }
+  },
+  "cost": {
+    "title": "Cost",
+    "subtitle": "Per-domain spend, projected month-end, tier split.",
+    "loadError": "Could not load cost summary. Try again.",
+    "loading": "Loading cost data…",
+    "empty": "No usage recorded yet.",
+    "header": {
+      "thisMonth": "this month",
+      "projectedEom": "projected month-end",
+      "vsCap": "vs cap",
+      "noCap": "no cap set",
+      "live": "live spending"
+    },
+    "burndown": {
+      "title": "Burn-down per domain",
+      "subtitle": "Month-to-date usage against the per-domain monthly cap.",
+      "noCap": "no cap",
+      "paused": "paused"
+    },
+    "tierSplit": {
+      "title": "Spend by tier",
+      "subtitle": "Three-tier split for the selected period.",
+      "thinker": "thinker",
+      "worker": "worker",
+      "light": "light"
+    },
+    "table": {
+      "title": "Top buckets",
+      "key": "key",
+      "totalUsd": "cost",
+      "tokensIn": "tokens in",
+      "tokensOut": "tokens out",
+      "runs": "runs",
+      "truncated": "showing top {{n}}"
+    },
+    "selectors": {
+      "period": "period",
+      "groupBy": "group by",
+      "day": "day",
+      "week": "week",
+      "month": "month",
+      "domain": "domain",
+      "model": "model",
+      "tier": "tier",
+      "agent": "agent"
+    }
+  },
+  "agents": {
+    "title": "Agents",
+    "subtitle": "Schedule cadence, enable/disable, and bind output channels per agent instance.",
+    "empty": "No agent instances yet — seed via the opencoo CLI.",
+    "newInstanceStub": "+ New agent instance (CLI)",
+    "openAriaLabel": "Open agent instance {{name}}",
+    "columns": {
+      "name": "name",
+      "definitionSlug": "agent",
+      "schedule": "schedule",
+      "enabled": "enabled",
+      "boundChannels": "bound channels",
+      "lastRun": "last run"
+    }
+  },
+  "agentInstance": {
+    "detail": {
+      "title": "Agent instance",
+      "close": "Close",
+      "enable": "Enable",
+      "disable": "Disable",
+      "labels": {
+        "definitionSlug": "agent",
+        "name": "name",
+        "lastRun": "last run",
+        "boundChannels": "bound channels"
+      },
+      "outputChannels": "Output channels",
+      "outputChannelsEmpty": "No output channels available — add one in the Outputs tab first.",
+      "saveOutputChannels": "Save channels",
+      "enabled": "Enabled",
+      "scheduleCron": "Schedule (cron)",
+      "scheduleCronHint": "5-field UTC cron pattern. Example: 0 6 * * 1-5 (every weekday 06:00 UTC).",
+      "saveSchedule": "Save schedule",
+      "bindOutputs": {
+        "success": "Output channels saved."
+      },
+      "enabledToggled": {
+        "on": "Instance enabled.",
+        "off": "Instance disabled."
+      },
+      "scheduleSaved": "Schedule saved."
+    }
+  },
+  "errors": {
+    "bindOutputsFailed": "Could not save changes. Try again or check the audit log.",
+    "transient": "Transient error. Try again in a moment."
+  },
+  "outputs": {
+    "title": "Outputs",
+    "subtitle": "Delivery channels agents send their JSON output to.",
+    "empty": "No output channels yet — add one to enable agent deliveries.",
+    "newChannel": "+ New output channel",
+    "columns": {
+      "name": "name",
+      "adapter": "adapter",
+      "enabled": "enabled",
+      "createdAt": "created"
+    },
+    "enabledYes": "enabled",
+    "enabledNo": "disabled",
+    "create": {
+      "title": "New output channel",
+      "adapter": "adapter",
+      "name": "name",
+      "namePlaceholder": "daily-report",
+      "submit": "Create channel",
+      "cancel": "Cancel",
+      "saving": "saving…",
+      "credSection": "credentials",
+      "configSection": "operational settings"
+    },
+    "detail": {
+      "title": "Output channel",
+      "close": "Close",
+      "disable": "Disable",
+      "enable": "Enable",
+      "delete": "Delete",
+      "deleteConfirm": "Delete this channel? Bindings on agent instances become dangling.",
+      "deleting": "deleting…",
+      "openAriaLabel": "Open output channel {{name}}",
+      "labels": {
+        "name": "name",
+        "adapter": "adapter",
+        "state": "state"
+      }
+    }
   }
 }

@@ -1,0 +1,212 @@
+name: release (GHCR docker images)
+
+# PR-X2 (phase-a follow-up). Pushes container images to GitHub
+# Container Registry (ghcr.io) on:
+#   - tags `v*`        — final-release tags (also pushes `:latest`)
+#   - tags `0.1.0-*`   — phase rollups (`0.1.0-a.1`, `0.1.0-b.1`, ...)
+#   - push to `main`   — pushes `:edge`
+#   - workflow_dispatch — operator-driven re-run after an infra fix
+#
+# Two parallel jobs, one per image:
+#   - engine-image        → ghcr.io/czlonkowski/opencoo
+#   - mcp-server-image    → ghcr.io/czlonkowski/opencoo-gitea-wiki-mcp-server
+#
+# This workflow is INDEPENDENT of `release.yml` (the phase-a e2e
+# ship-gate). The two run on the same triggers but their failure
+# modes are unrelated — a flaky e2e doesn't block image distribution
+# and an image-build regression doesn't block tag promotion.
+#
+# Multi-arch readiness: setup-buildx-action is wired so adding
+# `linux/arm64` to the `platforms` input is a one-line v0.2 change.
+# Today we ship `linux/amd64` only.
+#
+# Image signing (cosign / GPG) and SBOM publication are deferred to
+# PR-X3 — tracked in CHANGES-v0.1.md X2 section + IMPLEMENTATION-PLAN
+# §1.2.20.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+      - "0.1.0-*"
+  workflow_dispatch:
+
+# `cancel-in-progress: false` because a failed image-publish run is
+# easier to diagnose with all in-flight runs preserved than with the
+# noise of partially-overwritten cache entries.
+concurrency:
+  group: release-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  engine-image:
+    name: engine image (ghcr.io/czlonkowski/opencoo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # docker/metadata-action computes the tag set per trigger.
+      # Tag policy (verbatim from the workflow header above):
+      #   - On `v*` tag       → `:<tag>` + `:latest` (e.g. `:v0.1.0` + `:latest`)
+      #   - On `0.1.0-*` tag  → `:<tag>` only      (e.g. `:0.1.0-a.1`)
+      #   - On `main` push    → `:edge` only
+      #   - On workflow_dispatch from main → `:edge` only
+      #
+      # We deliberately AVOID:
+      #   - `type=ref,event=branch` un-gated — would emit `:main` on
+      #     main pushes; `:edge` is the only moving tag for main.
+      #   - `type=semver,pattern={{major}}.{{minor}}` — would emit `:0.1`
+      #     on `0.1.0-a.1`, claiming a "0.1" lineage before there's a
+      #     stable `v0.1.0` to back it.
+      #   - `type=semver,pattern={{version}}` — would normalise prerelease
+      #     tags into bare versions (`0.1.0-a.1` → `0.1.0`), colliding
+      #     with what the eventual `v0.1.0` should publish.
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/czlonkowski/opencoo
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+            type=raw,value=edge,enable=${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref_name == 'main' }}
+
+      - name: Build + push (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=engine
+          cache-to: type=gha,mode=max,scope=engine
+          provenance: false
+
+      # Inspect the manifest for the FIRST tag in the metadata output —
+      # confirms the push landed cleanly. Multi-tag pushes go through
+      # the same upload, so verifying one is sufficient.
+      - name: Smoke — inspect pushed manifest
+        run: |
+          set -euo pipefail
+          tag="$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
+          echo "Inspecting: $tag"
+          docker buildx imagetools inspect "$tag"
+
+  mcp-server-image:
+    name: gitea-wiki-mcp-server image (ghcr.io/czlonkowski/opencoo-gitea-wiki-mcp-server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tag policy mirrors the engine job above (verbatim from the
+      # workflow header):
+      #   - On `v*` tag       → `:<tag>` + `:latest`
+      #   - On `0.1.0-*` tag  → `:<tag>` only
+      #   - On `main` push    → `:edge` only
+      #   - On workflow_dispatch from main → `:edge` only
+      # See the engine job for the rationale on what we deliberately
+      # do NOT emit (`:main`, `:0.1`, `:0.1.0` from prereleases).
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/czlonkowski/opencoo-gitea-wiki-mcp-server
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+            type=raw,value=edge,enable=${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref_name == 'main' }}
+
+      - name: Build + push (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: packages/gitea-wiki-mcp-server
+          file: packages/gitea-wiki-mcp-server/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=mcp-server
+          cache-to: type=gha,mode=max,scope=mcp-server
+          provenance: false
+
+      - name: Smoke — inspect pushed manifest
+        run: |
+          set -euo pipefail
+          tag="$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
+          echo "Inspecting: $tag"
+          docker buildx imagetools inspect "$tag"
+
+  # PR-Z8 (phase-a appendix #12, G11) — Copilot triage follow-up. Flip
+  # both GHCR image packages to public AFTER both build jobs have
+  # pushed. Previously this step lived inside `engine-image` and
+  # patched both packages, which raced `mcp-server-image` and 404'd
+  # when the mcp-server package hadn't yet been pushed for the first
+  # time. Splitting into a dedicated job that `needs:` both build jobs
+  # eliminates the race entirely.
+  #
+  # The default `GITHUB_TOKEN` has `packages:write` (granted at the
+  # job level below) but NOT `admin:packages`, which is what the
+  # `PATCH /user/packages/container/<pkg>` endpoint requires. We
+  # swallow the failure with a clear warning so the operator learns
+  # once via the job log that a one-shot manual flip (or a PAT with
+  # `admin:packages` exported as `GH_PAT_PACKAGES`) is needed.
+  # Subsequent tag pushes will reuse the now-public state.
+  # Documented in `docs/pilot-runbook.md` §11.3.
+  make-public:
+    name: flip GHCR images to public (best-effort)
+    needs: [engine-image, mcp-server-image]
+    if: success() && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Make GHCR images public
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_PACKAGES || secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          for pkg in opencoo opencoo-gitea-wiki-mcp-server; do
+            gh api -X PATCH "/user/packages/container/$pkg" --field visibility=public
+            if [ $? -ne 0 ]; then
+              echo "warn: could not flip visibility for $pkg — set GH_PAT_PACKAGES (a PAT with admin:packages scope) on the repo OR flip visibility once via gh CLI: gh api -X PATCH /user/packages/container/$pkg --field visibility=public"
+            else
+              echo "ok: $pkg is now public"
+            fi
+          done
+          exit 0

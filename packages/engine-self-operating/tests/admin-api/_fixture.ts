@@ -59,9 +59,16 @@ const TABLES_DDL = `
     retention_days integer,
     worldview_enabled boolean DEFAULT true NOT NULL,
     is_aggregator boolean DEFAULT false NOT NULL,
+    disabled_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
   );
+  -- Partial UNIQUE INDEX from migration 0005 — at most one
+  -- aggregator at a time. The PR-R1 soft-delete handler clears
+  -- is_aggregator on disable so the operator can promote a
+  -- successor without tripping this constraint; pin that
+  -- behavior by mirroring the production index here.
+  CREATE UNIQUE INDEX "domains_is_aggregator_singleton" ON domains (is_aggregator) WHERE is_aggregator = true;
 
   CREATE TABLE users (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
@@ -145,6 +152,22 @@ const TABLES_DDL = `
     updated_at timestamp with time zone DEFAULT now() NOT NULL
   );
 
+  -- PR-Z4 (phase-a appendix #12 G5): output-channels CRUD surface.
+  -- Mirror of the production migration 0012; FK to credentials omitted
+  -- because the InMemoryCredentialStore tests use doesn't persist
+  -- credential rows.
+  CREATE TABLE IF NOT EXISTS output_channels (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    adapter_slug text NOT NULL,
+    name text NOT NULL,
+    config jsonb NOT NULL DEFAULT '{}'::jsonb,
+    credentials_id uuid,
+    enabled boolean NOT NULL DEFAULT true,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT output_channels_adapter_slug_name_unique UNIQUE (adapter_slug, name)
+  );
+
   CREATE TABLE marketplace_updates (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
     marketplace_source text NOT NULL,
@@ -225,6 +248,95 @@ const TABLES_DDL = `
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
   );
+
+  -- PR-R1 follow-up: catalog_candidate + miner_suppressions FK
+  -- domains via ON DELETE RESTRICT, so domain hard-delete must
+  -- pre-check them. The fixture mirrors the production FK shape
+  -- (only the columns load-bearing for the pre-check + tests).
+  -- miner_runs is FK'd by catalog_candidate so it ships too.
+  CREATE TABLE IF NOT EXISTS miner_runs (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    miner_binding_id uuid NOT NULL REFERENCES sources_bindings(id) ON DELETE RESTRICT,
+    class catalog_class NOT NULL,
+    window_start timestamp with time zone NOT NULL,
+    window_end timestamp with time zone NOT NULL,
+    candidate_count integer NOT NULL DEFAULT 0,
+    suppressed_count integer NOT NULL DEFAULT 0,
+    tokens_total integer NOT NULL DEFAULT 0,
+    cost_usd numeric(10, 6) NOT NULL DEFAULT '0',
+    latency_ms integer NOT NULL DEFAULT 0,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS catalog_candidate (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    miner_run_id uuid NOT NULL REFERENCES miner_runs(id) ON DELETE RESTRICT,
+    catalog_domain_id uuid NOT NULL REFERENCES domains(id) ON DELETE RESTRICT,
+    class catalog_class NOT NULL,
+    status catalog_candidate_status NOT NULL DEFAULT 'detected',
+    pattern_fingerprint text NOT NULL,
+    evidence_refs jsonb NOT NULL,
+    draft_payload jsonb NOT NULL,
+    reviewed_by uuid REFERENCES users(id) ON DELETE RESTRICT,
+    reviewed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS miner_suppressions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    catalog_domain_id uuid NOT NULL REFERENCES domains(id) ON DELETE RESTRICT,
+    pattern_fingerprint text NOT NULL,
+    reviewer_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    reason text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+  );
+
+  -- PR-R7 (phase-a appendix #10): page_citations underlies the
+  -- forget-impact-preview planner. Append-only per THREAT-MODEL §2
+  -- invariant 8 — the planner never writes here; it aggregates per
+  -- (domain_slug, page_path) to determine which pages would
+  -- recompile vs delete on source forget.
+  CREATE TABLE IF NOT EXISTS page_citations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    domain_slug text NOT NULL,
+    page_path text NOT NULL,
+    source_binding_id uuid NOT NULL REFERENCES sources_bindings(id) ON DELETE RESTRICT,
+    source_ref text NOT NULL,
+    compiled_by_run_id uuid REFERENCES agent_runs(id) ON DELETE SET NULL,
+    prompt_version text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS page_citations_domain_slug_page_path_idx
+    ON page_citations (domain_slug, page_path);
+  CREATE INDEX IF NOT EXISTS page_citations_source_binding_id_idx
+    ON page_citations (source_binding_id);
+
+  -- Phase-a appendix #10 PR-R5: cost analytics dashboard reads
+  -- llm_usage to surface per-domain × agent × tier spend. The
+  -- schema mirrors packages/shared/src/db/schema/llm-usage.ts.
+  -- Ships in the base fixture so cost-summary tests work without
+  -- per-test table creation.
+  CREATE TABLE IF NOT EXISTS llm_usage (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    "timestamp" timestamp with time zone DEFAULT now() NOT NULL,
+    engine llm_engine NOT NULL,
+    tier llm_tier NOT NULL,
+    model text NOT NULL,
+    pipeline_or_agent text NOT NULL,
+    document_id text,
+    run_id uuid REFERENCES agent_runs(id) ON DELETE SET NULL,
+    domain_id uuid REFERENCES domains(id) ON DELETE SET NULL,
+    tokens_in integer NOT NULL,
+    tokens_out integer NOT NULL,
+    cost_usd numeric(10, 6) NOT NULL,
+    latency_ms integer NOT NULL,
+    prompt_version text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS llm_usage_timestamp_idx ON llm_usage ("timestamp");
+  CREATE INDEX IF NOT EXISTS llm_usage_pipeline_or_agent_timestamp_idx
+    ON llm_usage (pipeline_or_agent, "timestamp");
 `;
 
 export class MockGiteaClient implements GiteaClient {
@@ -278,12 +390,49 @@ export class MockProvisioner {
   }
 }
 
+/** Stub /refresh-all ping callable (phase-a appendix #12 PR-Z8 G10).
+ *  Records every dispatch and (by default) resolves cleanly so the
+ *  domain-create handler never observes a failure mode through this
+ *  seam. Tests that want to assert fire-and-forget semantics can set
+ *  `nextError` to verify the route still returns 201. */
+export class MockWikiMcpRefresh {
+  readonly calls: ReadonlyArray<{
+    readonly slug: string;
+    readonly owner: string;
+    readonly name?: string;
+    readonly default?: boolean;
+    readonly aggregator?: boolean;
+  }>[] = [];
+  /** When set, the next ping rejects with this error. The
+   *  domain-create handler must STILL return 201 — the helper
+   *  is fire-and-forget. */
+  nextError: Error | null = null;
+
+  async ping(
+    repos: ReadonlyArray<{
+      readonly slug: string;
+      readonly owner: string;
+      readonly name?: string;
+      readonly default?: boolean;
+      readonly aggregator?: boolean;
+    }>,
+  ): Promise<void> {
+    (this.calls as Array<typeof repos>).push(repos);
+    if (this.nextError !== null) {
+      const err = this.nextError;
+      this.nextError = null;
+      throw err;
+    }
+  }
+}
+
 export interface AdminFixture {
   readonly app: FastifyInstance;
   readonly db: AdminTestDb;
   readonly raw: PGlite;
   readonly gitea: MockGiteaClient;
   readonly provisioner: MockProvisioner;
+  readonly wikiMcpRefresh: MockWikiMcpRefresh;
   readonly credentialStore: InMemoryCredentialStore;
   readonly close: () => Promise<void>;
 }
@@ -292,9 +441,56 @@ export interface AdminFixtureOptions {
   readonly adminTeamSlug?: string;
   readonly llmDebugLog?: boolean;
   /** Phase-a appendix #4 PR-B — injected queue for pipelines-list tests. */
-  readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>>; name?: string };
+  readonly ingestionQueue?: {
+    getJobCounts: (...states: string[]) => Promise<Record<string, number>>;
+    name?: string;
+    add?: (jobName: string, payload: unknown, opts?: unknown) => Promise<{ id?: string | null }>;
+  };
   /** Phase-a appendix #4 PR-B — injected SSE bus for heartbeat / run-lifecycle tests. */
   readonly sseBus?: SseBus;
+  /** PR-R7 (phase-a appendix #10) — read-only delete-cap state injection
+   *  for forget-impact-preview tests. The route reads `peek` to surface
+   *  today's cap budget and `reserve` to commit when the operator
+   *  confirms. Tests inject a fresh `InMemoryDeleteCap` (or a stub) so
+   *  the cap state is deterministic. */
+  readonly deleteCap?: import("@opencoo/shared/wiki-write").DeleteCap;
+  /** PR-R7 — enqueue callable for the actual-forget action. Tests inject
+   *  a `vi.fn()` to assert the route DID call it on `?dryRun=0` and did
+   *  NOT call it on `?dryRun=1`. */
+  readonly forgetJobEnqueuer?: (args: import("../../src/admin-api/routes/source-bindings.js").ForgetJobEnqueueArgs) => Promise<void>;
+  /** PR-Z4 — output-adapter descriptor map. Tests inject a stub
+   *  registry so the routes exercise the descriptor lookups without
+   *  the `@opencoo/output-asana` import surface. */
+  readonly outputChannelRegistry?: Readonly<
+    Record<
+      import("../../src/admin-api/routes/output-channels.js").OutputAdapterSlug,
+      import("../../src/admin-api/routes/output-channels.js").OutputAdapterDescriptor
+    >
+  >;
+  /** PR-W1 (phase-a appendix #13) — worldview-compile queue handle
+   *  for the `POST /api/admin/domains/:slug/recompile-worldview`
+   *  endpoint. Tests inject a stub queue (or a `QueueWithThis`
+   *  receiver-binding regression class) to assert the route enqueues
+   *  + handles the failure surfaces. */
+  readonly worldviewQueue?: {
+    add(name: string, data: unknown, opts?: unknown): Promise<unknown>;
+  };
+  /** PR-W2 (phase-a appendix #14) — failed-classify-jobs enumerator
+   *  for the `POST /api/admin/source-bindings/:id/retry-failed` route.
+   *  Tests inject a stub that closes over a simulated failed set. */
+  readonly failedClassifyJobsEnumerator?: (
+    bindingId: string,
+    intakeId?: string,
+  ) => Promise<readonly import("../../src/admin-api/routes/source-bindings.js").RetryableFailedJob[]>;
+  /** PR-W2 — companion enqueuer that the retry-failed route hands
+   *  the original payloads to. Tests inject a stub that records
+   *  every call so the audit-before-enqueue invariant and the
+   *  payload-round-trip can be asserted. */
+  readonly classifyJobEnqueuer?: (
+    name: string,
+    data: unknown,
+    opts?: unknown,
+  ) => Promise<unknown>;
 }
 
 function silentLogger(): ConsoleLogger {
@@ -313,6 +509,7 @@ export async function makeAdminFixture(
 
   const gitea = new MockGiteaClient();
   const provisioner = new MockProvisioner();
+  const wikiMcpRefresh = new MockWikiMcpRefresh();
   const credentialStore = new InMemoryCredentialStore({
     logger: silentLogger(),
   });
@@ -333,12 +530,32 @@ export async function makeAdminFixture(
         pat: a.pat,
       }),
     provisionOrg: "opencoo",
+    pingWikiMcpRefresh: (repos) => wikiMcpRefresh.ping(repos),
     credentialStore,
     ...(opts.ingestionQueue !== undefined
       ? { ingestionQueue: opts.ingestionQueue }
       : {}),
     ...(opts.sseBus !== undefined
       ? { sseBus: opts.sseBus }
+      : {}),
+    ...(opts.deleteCap !== undefined
+      ? { deleteCap: opts.deleteCap }
+      : {}),
+    ...(opts.forgetJobEnqueuer !== undefined
+      ? { forgetJobEnqueuer: opts.forgetJobEnqueuer }
+      : {}),
+    ...(opts.outputChannelRegistry !== undefined
+      ? { outputChannelRegistry: opts.outputChannelRegistry }
+      : {}),
+    ...(opts.worldviewQueue !== undefined
+      ? { worldviewQueue: opts.worldviewQueue }
+      : {}),
+    // PR-W2 (phase-a appendix #14)
+    ...(opts.failedClassifyJobsEnumerator !== undefined
+      ? { failedClassifyJobsEnumerator: opts.failedClassifyJobsEnumerator }
+      : {}),
+    ...(opts.classifyJobEnqueuer !== undefined
+      ? { classifyJobEnqueuer: opts.classifyJobEnqueuer }
       : {}),
   });
 
@@ -348,6 +565,7 @@ export async function makeAdminFixture(
     raw: pg,
     gitea,
     provisioner,
+    wikiMcpRefresh,
     credentialStore,
     close: async () => {
       await app.close();

@@ -24,6 +24,7 @@ import {
   asanaOutputCredentialSchema,
   asanaTaskPayloadSchema,
   createAsanaOutputAdapter,
+  extractAsanaPatFromCredentialBlob,
   type AsanaTaskPayload,
 } from "../src/index.js";
 import {
@@ -178,6 +179,47 @@ describe("output-asana — payload schema", () => {
     };
     expect(() => asanaTaskPayloadSchema.parse(tooLong)).toThrow();
   });
+
+  // ── PR-W2 (phase-a appendix #13) — html_notes payload path ────────────
+
+  it("accepts htmlNotes alone (no notes)", () => {
+    const html = "<body><h2>Heartbeat</h2><p>Body</p></body>";
+    const parsed = asanaTaskPayloadSchema.parse({
+      title: "t",
+      htmlNotes: html,
+      projectGid: "p",
+    });
+    expect(parsed.htmlNotes).toBe(html);
+    expect(parsed.notes).toBeUndefined();
+  });
+
+  it("rejects payloads carrying BOTH notes and htmlNotes (Asana 400s on both)", () => {
+    expect(() =>
+      asanaTaskPayloadSchema.parse({
+        ...VALID_PAYLOAD,
+        htmlNotes: "<body><p>nope</p></body>",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects payloads with neither notes nor htmlNotes (task body required)", () => {
+    expect(() =>
+      asanaTaskPayloadSchema.parse({
+        title: "t",
+        projectGid: "p",
+      }),
+    ).toThrow();
+  });
+
+  it("caps htmlNotes at 32 KB", () => {
+    expect(() =>
+      asanaTaskPayloadSchema.parse({
+        title: "t",
+        htmlNotes: "x".repeat(32_769),
+        projectGid: "p",
+      }),
+    ).toThrow();
+  });
 });
 
 describe("output-asana — credential schema", () => {
@@ -217,6 +259,109 @@ describe("output-asana — adapter wiring", () => {
     );
     expect(state.calls[0]?.title).toBe(VALID_PAYLOAD.title);
     expect(state.calls[0]?.projectGid).toBe(VALID_PAYLOAD.projectGid);
+    expect(state.calls[0]?.notes).toBe(VALID_PAYLOAD.notes);
+    expect(state.calls[0]?.htmlNotes).toBeUndefined();
+  });
+
+  // ── PR-Y4 (phase-a follow-up) — credential wrapper unwrap ─────────────
+
+  it("extractAsanaPatFromCredentialBlob: unwraps {asanaPersonalAccessToken: ...} JSON blob", () => {
+    const wrapper = JSON.stringify({
+      asanaPersonalAccessToken: "2/1209301951170368/1214641966717990:abcdef",
+    });
+    const out = extractAsanaPatFromCredentialBlob(Buffer.from(wrapper, "utf8"));
+    expect(out.toString("utf8")).toBe(
+      "2/1209301951170368/1214641966717990:abcdef",
+    );
+  });
+
+  it("extractAsanaPatFromCredentialBlob: passes through bare PAT (not JSON)", () => {
+    const bare = "asana_test_pat_12345";
+    const out = extractAsanaPatFromCredentialBlob(Buffer.from(bare, "utf8"));
+    expect(out.toString("utf8")).toBe(bare);
+  });
+
+  it("extractAsanaPatFromCredentialBlob: rejects wrapper missing the PAT field", () => {
+    const wrapper = JSON.stringify({ otherField: "abc" });
+    expect(() =>
+      extractAsanaPatFromCredentialBlob(Buffer.from(wrapper, "utf8")),
+    ).toThrow(/missing `asanaPersonalAccessToken`/);
+  });
+
+  it("extractAsanaPatFromCredentialBlob: rejects wrapper with empty-string PAT", () => {
+    const wrapper = JSON.stringify({ asanaPersonalAccessToken: "" });
+    expect(() =>
+      extractAsanaPatFromCredentialBlob(Buffer.from(wrapper, "utf8")),
+    ).toThrow(/missing `asanaPersonalAccessToken`/);
+  });
+
+  it("write() unwraps a wrapper-JSON plaintext + sends BARE PAT to the API (PR-Y4 regression)", async () => {
+    // Simulate production: CredentialStore stored the schema-shaped
+    // wrapper `{asanaPersonalAccessToken: "..."}` not a bare PAT.
+    const store = new InMemoryCredentialStore({ logger: silentLogger() });
+    const PAT = "2/1209301951170368/1214641966717990:realbearer";
+    const credentialId = await store.write({
+      name: "asana-wrapped",
+      schemaRef: "asana-pat/v1",
+      plaintext: Buffer.from(
+        JSON.stringify({ asanaPersonalAccessToken: PAT }),
+        "utf8",
+      ),
+    });
+    const state = createMockAsanaApiState();
+    const adapter = createAsanaOutputAdapter({
+      makeApi: () => makeMockAsanaApi(state),
+    });
+    await adapter.write({
+      credentialStore: store,
+      credentialId,
+      payload: VALID_PAYLOAD,
+    });
+    expect(state.calls).toHaveLength(1);
+    // The BARE PAT (not the JSON wrapper) must reach the API.
+    expect(state.calls[0]?.accessToken.toString("utf8")).toBe(PAT);
+  });
+
+  // ── PR-W2 (phase-a appendix #13) — html_notes round-trip ──────────────
+
+  it("write() forwards htmlNotes-only payloads to the API as htmlNotes (NOT notes)", async () => {
+    const { adapter, store, credentialId, state } = await makeFixture();
+    const html =
+      "<body><h2>opencoo heartbeat</h2><p>One alert today.</p></body>";
+    const result = await adapter.write({
+      credentialStore: store,
+      credentialId,
+      payload: {
+        title: "Heartbeat",
+        htmlNotes: html,
+        projectGid: VALID_PAYLOAD.projectGid,
+      },
+    });
+    expect(result.externalId).toMatch(/^asana-task-\d+$/);
+    expect(state.calls).toHaveLength(1);
+    expect(state.calls[0]?.htmlNotes).toBe(html);
+    expect(state.calls[0]?.notes).toBeUndefined();
+  });
+
+  it("write() rejects payloads that carry BOTH notes and htmlNotes (validation, no API call)", async () => {
+    const { adapter, store, credentialId, state } = await makeFixture();
+    await expect(
+      adapter.write({
+        credentialStore: store,
+        credentialId,
+        payload: {
+          title: "t",
+          notes: "plain",
+          // @ts-expect-error — schema rejects both; runtime asserts the error path.
+          htmlNotes: "<body><p>html</p></body>",
+          projectGid: VALID_PAYLOAD.projectGid,
+        },
+      }),
+    ).rejects.toThrow();
+    // The mock state must show ZERO upstream calls — Zod-rejected
+    // payloads do not reach the API. Mirrors assertion 8 of the
+    // output-adapter contract.
+    expect(state.calls).toHaveLength(0);
   });
 
   it("classifies HTTP 429 as upstream-quota with retryAfterSeconds", async () => {

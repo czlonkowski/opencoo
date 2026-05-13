@@ -73,9 +73,7 @@ async function fetchAdminInternal(
   // a caller passing `"post"` would otherwise bypass CSRF header
   // injection AND the auto-retry path. Cheap defensive check.
   const method = (opts.method ?? "GET").toUpperCase();
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-  };
+  const headers: Record<string, string> = {};
   const pat = getPat();
   if (pat !== null) {
     headers["authorization"] = `Bearer ${pat}`;
@@ -91,7 +89,14 @@ async function fetchAdminInternal(
     headers,
     credentials: "include",
   };
+  // Only attach a JSON body + content-type when the caller supplied a
+  // body. Setting `content-type: application/json` on a body-less POST
+  // makes Fastify's JSON parser reject the request with
+  // FST_ERR_CTP_EMPTY_JSON_BODY (HTTP 400) — the failure mode that
+  // surfaced as "Could not load impact" in the R7 forget dialog where
+  // both the dry-run and the confirm POST go out without a body.
   if (opts.body !== undefined) {
+    headers["content-type"] = "application/json";
     init.body = JSON.stringify(opts.body);
   }
   const res = await fetchFn(path, init);

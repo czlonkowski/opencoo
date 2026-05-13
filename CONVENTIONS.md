@@ -106,6 +106,7 @@ Rules:
 - **Adapter contract tests** are the same test suite for every adapter of a given port (e.g. `sourceAdapterContract(drive)`, `sourceAdapterContract(asana)`). If a new adapter adds its own test outside the shared suite, that's a smell — either the suite needs an expansion, or the adapter is doing something off-contract.
 - **e2e tests** are slow; keep them small (~6 total across the whole repo, one per PRD §5 criterion). Don't reach for e2e to test what a use-case test would cover.
 - **LLM assertions:** never assert exact prose. Assert structure (Zod parse succeeds), presence of required fields, cost/tokens > 0, and (for safety-sensitive outputs) negative assertions (e.g. "output does not contain `HR wiki`").
+- **Shell-script tests** for anything under `bin/` (host bootstrap, Gitea bootstrap, future operator scripts) live under `bin/tests/test-*.sh` and are gated behind `RUN_SHELL_TESTS=1`. They need Docker + 60–120s to run, so the default vitest matrix skips them and CI does not currently invoke them — they are an opt-in local check before merging changes to `bin/` (run via `RUN_SHELL_TESTS=1 bash bin/tests/test-*.sh`). The first invocation of each test must assert the script's first-run effect; a second invocation must assert idempotency (every step reports `skipped` / `exists` / `configured`, never `created` / `installed`). A dedicated `shell-tests` CI job is a deferred follow-up.
 
 ### 3.1 Fixtures
 

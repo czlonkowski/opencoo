@@ -35,9 +35,14 @@ import {
   DrizzleCredentialStore,
   loadEncryptionKey,
 } from "@opencoo/shared/credential-store";
+import {
+  applyMigrationsWithLock,
+  resolveSharedMigrationsDir,
+} from "@opencoo/shared/db";
 import { ConsoleLogger, type Logger } from "@opencoo/shared/logger";
 import type { LlmRouter } from "@opencoo/shared/llm-router";
 import { safeErrorMessage } from "@opencoo/shared/scrub";
+import type { DeleteCap } from "@opencoo/shared/wiki-write";
 import { drizzle } from "drizzle-orm/node-postgres";
 import {
   PipelineRegistry,
@@ -53,11 +58,20 @@ import {
 } from "@opencoo/shared/engine-scaffold";
 
 import type { GiteaClient } from "./admin-api/auth.js";
+import type {
+  ForgetJobEnqueueArgs,
+  RetryableFailedJob,
+} from "./admin-api/routes/source-bindings.js";
 import {
   createSseBus,
   type SseBus,
 } from "./admin-api/sse-bus.js";
+import type {
+  OutputAdapterDescriptor,
+  OutputAdapterSlug,
+} from "./admin-api/routes/output-channels.js";
 import { AgentDefinitionRegistry } from "./agent-harness/index.js";
+import type { OutputChannelRegistry } from "./output-channels/index.js";
 import {
   AgentDispatcher,
   type AgentRunnerRegistry,
@@ -134,9 +148,16 @@ export interface StartOptions
    *  the env-var dance. */
   readonly giteaClientFactory?: (baseUrl: string) => GiteaClient;
   /**
-   * v0.1 NO-OP forward-compat flag (PR 30 / plan #135 decision Q4).
-   * Engines do NOT auto-migrate at boot — the operator runs
-   * `opencoo migrate` explicitly. Reserved for v0.2.
+   * When true, the engine skips the auto-migrate step at boot.
+   * Default: false (auto-migrates). Tests typically set this to
+   * true. Operators can also set `OPENCOO_AUTO_MIGRATE=0` in env.
+   *
+   * (PR-X1, phase-a follow-up — was a v0.1 no-op forward-compat
+   * flag at PR 30 / plan #135 decision Q4; now load-bearing.
+   * The auto-migrate path runs `applyMigrationsWithLock` from
+   * `@opencoo/shared/db` against the same pool the engine uses
+   * for its admin-API connections, BEFORE the Fastify listener
+   * binds.)
    */
   readonly skipMigrate?: boolean;
   /** Optional SSE bus override (PR-M1, phase-a appendix #5). When
@@ -211,10 +232,130 @@ export interface StartOptions
    *  doesn't hit Fastify's default 1-MB cap and 413 before the
    *  receiver's own size guard runs. */
   readonly bodyLimit?: number;
+  /** PR-W1 (phase-a appendix #11) — delete-cap probe + reserve for
+   *  the source-forget impact preview (PR-R7).
+   *
+   *  Threaded through `productionServerFactory` →
+   *  `registerAdminApi` so the
+   *  `POST /api/admin/source-bindings/:id/forget` route reads the
+   *  SAME `InMemoryDeleteCap` instance the ingestion compiler workers
+   *  reserve against. The orchestrator constructs the cap once at
+   *  composition root (`cli/provision/production-composition.ts`)
+   *  and threads it both here AND into the ingestion preflight's
+   *  `composeProductionWorkerContext` — single-process v0.1 shape
+   *  per architecture §16.
+   *
+   *  When undefined the route returns 503 (composition-incomplete);
+   *  the rest of the admin API is unaffected. */
+  readonly deleteCap?: DeleteCap;
+  /** PR-W1 (phase-a appendix #11) — composition-supplied enqueuer
+   *  for the actual source-forget action (PR-R7). The route plans
+   *  the impact + reserves the cap; this callable turns the plan
+   *  into BullMQ recompile + delete jobs (built via
+   *  `createForgetJobEnqueuer` from `@opencoo/shared/forget`).
+   *
+   *  When undefined the route returns 503. */
+  readonly forgetJobEnqueuer?: (args: ForgetJobEnqueueArgs) => Promise<void>;
+  /** PR-W2 / PR-Y8 (phase-a appendix #14) — read-only enumerator
+   *  over the `ingestion.scanner.classify` BullMQ failed-set,
+   *  filtered by payload `bindingId` (+ optionally `intakeId`).
+   *  Production composition (`cli/provision/production-composition.ts`)
+   *  builds this via `enumerateFailedJobsByBindingId(queue, ...)` in
+   *  `@opencoo/engine-ingestion` and threads it through
+   *  `serve.ts` → `start({ failedClassifyJobsEnumerator })` →
+   *  `productionServerFactory({ ... })` → `registerAdminApi({ ... })`
+   *  → the route handler.
+   *
+   *  When undefined the
+   *  `POST /api/admin/source-bindings/:id/retry-failed` route
+   *  returns 503 (composition incomplete) — same boot-tolerance
+   *  pattern as `forgetJobEnqueuer`.
+   *
+   *  PR-Y8 closeout: W2 (#131) shipped the route and the per-
+   *  route declaration, and added the field to the composition
+   *  result + `serve.ts` forwarding bundles, but DID NOT add the
+   *  field to `StartOptions` or `ProductionServerFactoryArgs`.
+   *  Result: the orchestrator-provided callable was silently
+   *  dropped at the start() boundary, the route saw undefined,
+   *  and every operator retry-click 503'd in production. This
+   *  field + the parallel forward at line ~629 close that gap. */
+  readonly failedClassifyJobsEnumerator?: (
+    bindingId: string,
+    intakeId?: string,
+  ) => Promise<readonly RetryableFailedJob[]>;
+  /** PR-W2 / PR-Y8 (phase-a appendix #14) — composition-supplied
+   *  enqueuer for the re-enqueue side of the retry-failed route.
+   *  Production wiring binds this to the classify queue's `add`
+   *  method. When undefined the route returns 503. Same wiring-
+   *  gap closure as `failedClassifyJobsEnumerator` above. */
+  readonly classifyJobEnqueuer?: (
+    name: string,
+    data: unknown,
+    opts?: unknown,
+  ) => Promise<unknown>;
+  /** PR-Z4 (phase-a appendix #12 G5) — output-channel registry.
+   *  When present, the AgentDispatcher invokes the post-run delivery
+   *  hook after each successful agent run, routing the JSON output
+   *  through every binding in `agent_instances.output_channel_ids[]`.
+   *  Q10 binding enforcement (THREAT-MODEL §3.5) is enforced INSIDE
+   *  `OutputChannelRegistry.deliver`; the dispatcher just supplies
+   *  the binding set + payload.
+   *
+   *  When undefined (boot-tolerance — e.g. no OutputAdapter packages
+   *  available, or all of them failed to load at composition), the
+   *  dispatcher still runs every scheduled agent; deliveries are
+   *  a no-op until the registry is wired. */
+  readonly outputChannels?: OutputChannelRegistry;
+  /** PR-Z4 (phase-a appendix #12 G5) — per-adapter descriptor map
+   *  the admin-API Outputs-tab CRUD routes consume. The composition
+   *  root constructs one entry per shipped OutputAdapter package
+   *  (today: `asana`); the route then renders the credential +
+   *  channel-config forms dynamically per architecture §10. When
+   *  undefined, the routes still register but return 500
+   *  `output_channels_registry_unavailable` so the operator sees a
+   *  clean error surface. */
+  readonly outputChannelDescriptors?: Readonly<
+    Record<OutputAdapterSlug, OutputAdapterDescriptor>
+  >;
+  /** PR-W1 (phase-a appendix #13) — worldview-compile queue handle.
+   *  Threaded into `productionServerFactory` → `registerAdminApi` so
+   *  the `POST /api/admin/domains/:slug/recompile-worldview` route
+   *  can enqueue against the SAME backlog the worldview-compile
+   *  worker reads. Boot tolerance: when undefined the route returns
+   *  503 (composition incomplete). */
+  readonly worldviewQueue?: {
+    add(name: string, data: unknown, opts?: unknown): Promise<unknown>;
+  };
 }
 
 function defaultDbFactory(config: EngineConfig): StartDb {
   return new pg.Pool({ connectionString: config.databaseUrl });
+}
+
+/** PR-X1 (phase-a follow-up) — does the engine skip the
+ *  boot-time auto-migrate? Three independent gates, all OR-ed:
+ *
+ *    1. The caller passed `options.skipMigrate === true` (test
+ *       seam + scripted-deploy override),
+ *    2. The operator set `OPENCOO_AUTO_MIGRATE` to a falsy
+ *       string ("0" / "false" / "no", case-insensitive) — the
+ *       documented opt-out for the legacy manual-migrate flow,
+ *    3. `pgPool === null` — the caller injected a custom
+ *       `dbFactory` so we don't have a real `pg.Pool` to acquire
+ *       a client + advisory lock from. This is the existing test
+ *       seam (`start.test.ts` uses it); skipping auto-migrate
+ *       there matches the prior boot semantics exactly. */
+function shouldSkipAutoMigrate(
+  env: Record<string, string | undefined>,
+  optionSkip: boolean | undefined,
+  pgPool: pg.Pool | null,
+): boolean {
+  if (optionSkip === true) return true;
+  if (pgPool === null) return true;
+  const raw = env["OPENCOO_AUTO_MIGRATE"];
+  if (raw === undefined) return false;
+  const normalised = raw.trim().toLowerCase();
+  return normalised === "0" || normalised === "false" || normalised === "no";
 }
 
 function defaultRedisFactory(config: EngineConfig): StartRedis {
@@ -347,6 +488,46 @@ export async function start(
   const dbFactory: (c: EngineConfig) => StartDb =
     dbFactoryFromOptions ?? ((): StartDb => pgPool as unknown as StartDb);
 
+  // PR-X1 (phase-a follow-up) — auto-apply Drizzle migrations
+  // BEFORE any DB-reading code (admin-API env load, dispatcher
+  // composition, server factory). Skipped when:
+  //   - the operator opted out via `OPENCOO_AUTO_MIGRATE` ∈
+  //     {"0", "false", "no"} (case-insensitive), or
+  //   - the caller set `options.skipMigrate === true` (test
+  //     seam + scripted-deploy override), or
+  //   - `pgPool === null` (the test injected its own dbFactory
+  //     and we have no real Pool to lock against).
+  // Failure throws → start() throws → engine does not boot.
+  // Drizzle's migrator is idempotent (journal-tracked), and
+  // `applyMigrationsWithLock` serialises concurrent invocations
+  // via `pg_advisory_xact_lock`, so a second engine starting
+  // immediately after the first becomes a fast no-op.
+  if (!shouldSkipAutoMigrate(env, options.skipMigrate, pgPool)) {
+    try {
+      await applyMigrationsWithLock({
+        pool: pgPool as pg.Pool,
+        migrationsFolder: resolveSharedMigrationsDir(),
+        logger,
+      });
+    } catch (err) {
+      // Critical (PR-X1 review C1): the engine-scaffold's
+      // resource-safety teardown only fires on errors INSIDE its
+      // try block — `startEngine` is never called on this path,
+      // so the pool we allocated above leaks unless we drain it
+      // here. On a supervisor restart loop (which is now the
+      // relied-on behavior — "engine refuses to bind until
+      // migrations succeed"), repeated migration failures would
+      // otherwise leak file descriptors. Same `.catch(() =>
+      // undefined)` swallow pattern the engine-scaffold uses for
+      // teardown drains: lose a teardown error to surface the
+      // migrate error instead.
+      if (pgPool !== null) {
+        await pgPool.end().catch(() => undefined);
+      }
+      throw err;
+    }
+  }
+
   const compositionEnv = tryLoadAdminApiEnv(env, logger);
   const giteaClientFactory =
     options.giteaClientFactory ??
@@ -397,6 +578,12 @@ export async function start(
         // exactOptionalPropertyTypes doesn't flag undefined.
         ...(options.agentRouter !== undefined
           ? { router: options.agentRouter }
+          : {}),
+        // PR-Z4 (phase-a appendix #12 G5) — thread the
+        // OutputChannelRegistry so post-run delivery routes through
+        // the operator-bound channels.
+        ...(options.outputChannels !== undefined
+          ? { outputChannels: options.outputChannels }
           : {}),
       });
     } catch (err) {
@@ -456,6 +643,58 @@ export async function start(
       ...(credentialStore !== null ? { credentialStore } : {}),
       ...(ingestionQueue !== undefined ? { ingestionQueue } : {}),
       ...(dispatcher !== undefined ? { schedulerSource: dispatcher } : {}),
+      // PR-R3 (phase-a appendix #10) — on-demand dispatch enqueue.
+      // Bind to the dispatcher instance so the admin-API route can
+      // call `enqueueOneShot({ instanceId, dryRun })` against the
+      // SAME BullMQ queue the cron path uses.
+      ...(dispatcher !== undefined
+        ? { dispatchAgentJob: dispatcher.enqueueOneShot.bind(dispatcher) }
+        : {}),
+      // PR-R6 (phase-a appendix #10) — cadence-editor BullMQ swap.
+      // Bind to the same dispatcher instance so a UI cadence
+      // change flips the SAME repeatable index `start()` populated
+      // at boot.
+      ...(dispatcher !== undefined
+        ? { updateSchedule: dispatcher.updateSchedule.bind(dispatcher) }
+        : {}),
+      // PR-W1 (phase-a appendix #11) — wire the forget route's
+      // composition deps. The orchestrator (CLI serve.ts) builds
+      // both at composition root and threads them through
+      // `StartOptions`; productionServerFactory hands them to
+      // `registerAdminApi` so the `POST .../forget` route stops
+      // returning 503.
+      ...(options.deleteCap !== undefined
+        ? { deleteCap: options.deleteCap }
+        : {}),
+      ...(options.forgetJobEnqueuer !== undefined
+        ? { forgetJobEnqueuer: options.forgetJobEnqueuer }
+        : {}),
+      // PR-W2 / PR-Y8 (phase-a appendix #14) — forward the retry-
+      // failed callables verbatim into productionServerFactory.
+      // The orchestrator (cli/serve.ts) gets them from the
+      // ingestion preflight (production-composition.ts builds
+      // them over the SAME classify queue the workers consume) and
+      // threads them here so the admin-API retry-failed route
+      // reaches its non-503 branch. Mirrors the `forgetJobEnqueuer`
+      // forward two lines above.
+      ...(options.failedClassifyJobsEnumerator !== undefined
+        ? { failedClassifyJobsEnumerator: options.failedClassifyJobsEnumerator }
+        : {}),
+      ...(options.classifyJobEnqueuer !== undefined
+        ? { classifyJobEnqueuer: options.classifyJobEnqueuer }
+        : {}),
+      // PR-Z4 (phase-a appendix #12 G5) — thread the descriptor map
+      // through to the admin-API Outputs-tab CRUD routes.
+      ...(options.outputChannelDescriptors !== undefined
+        ? { outputChannelDescriptors: options.outputChannelDescriptors }
+        : {}),
+      // PR-W1 (phase-a appendix #13) — worldview-compile queue.
+      // The orchestrator constructs the queue at composition root
+      // and threads it through here; the admin-API recompile
+      // endpoint enqueues against it.
+      ...(options.worldviewQueue !== undefined
+        ? { worldviewQueue: options.worldviewQueue }
+        : {}),
       ...(bodyLimit !== undefined ? { bodyLimit } : {}),
     });
   };

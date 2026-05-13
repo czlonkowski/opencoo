@@ -3,7 +3,115 @@
  */
 // Phase-a appendix #4: 'activity' = 5th tab (PR-B), 'review' = 6th (PR-C),
 // 'reports' = 7th (PR-D).
-export type Tab = "domains" | "sources" | "llmPolicy" | "prompts" | "activity" | "review" | "reports";
+// Phase-a appendix #10 PR-R4: 'audit' = 8th tab (audit-log viewer).
+// Phase-a appendix #10 PR-R5: 'cost' = 9th tab (cost analytics).
+// Phase-a appendix #13 PR-W2: 'agents' = sits between 'sources' and 'outputs'.
+export type Tab =
+  | "domains"
+  | "sources"
+  | "agents"
+  | "outputs"
+  | "llmPolicy"
+  | "prompts"
+  | "activity"
+  | "review"
+  | "reports"
+  | "audit"
+  | "cost";
+
+/** PR-W2 (phase-a appendix #13) — agent instance row shape.
+ *  Mirrors the GET `/api/admin/agent-instances` response. */
+export interface AgentInstance {
+  readonly id: string;
+  readonly definitionSlug: string;
+  readonly name: string;
+  readonly scheduleCron: string | null;
+  readonly enabled: boolean;
+  /** Count of channels currently bound to this instance.
+   *  Surfaced by the list endpoint; the drill-down also
+   *  receives the full binding array via `outputChannelIds`. */
+  readonly outputChannelCount: number;
+  /** Verbatim binding array — each entry is the
+   *  `{adapter_slug, config: {channel_id}}` shape the
+   *  dispatcher already consumes. The detail modal reads
+   *  `config.channel_id` to pre-check the multi-select. */
+  readonly outputChannelIds: ReadonlyArray<{
+    readonly adapter_slug: string;
+    readonly config: Record<string, unknown>;
+  }>;
+  readonly lastRunStartedAt: string | null;
+  readonly lastRunStatus: string | null;
+}
+
+/** PR-Z4 (phase-a appendix #12 G5) — output channel row shape. */
+export interface OutputChannel {
+  readonly id: string;
+  readonly adapterSlug: string;
+  readonly name: string;
+  readonly enabled: boolean;
+  readonly config: Record<string, unknown>;
+  readonly createdAt: string | null;
+  readonly updatedAt: string | null;
+}
+
+/** PR-Z4 — descriptor for one OutputAdapter the `+ New channel`
+ *  modal uses to render the form. Mirrors what `/api/admin/adapters`
+ *  returns under `outputAdapters[]`. */
+export interface OutputAdapterEntry {
+  readonly slug: string;
+  readonly credentialSchema: {
+    readonly type: "object";
+    readonly properties: Readonly<
+      Record<
+        string,
+        Readonly<{
+          readonly type: "string" | "boolean";
+          readonly description?: string;
+          readonly secret?: boolean;
+        }>
+      >
+    >;
+    readonly required: readonly string[];
+  };
+  readonly channelConfigSchema: {
+    readonly type: "object";
+    readonly properties: Readonly<
+      Record<
+        string,
+        // Mirror of `OutputAdapterDescriptorChannelConfigProperty` in
+        // `engine-self-operating`. Scalar entries are rendered as
+        // `<input>` widgets; `object`-typed entries are documentation
+        // only (the description is shown, but no nested widget is
+        // generated — server-side Zod still enforces the shape).
+        | Readonly<{
+            readonly type: "string" | "boolean" | "number" | "integer";
+            readonly description?: string;
+            readonly minimum?: number;
+            readonly maximum?: number;
+          }>
+        | Readonly<{
+            readonly type: "object";
+            readonly description?: string;
+            readonly additionalProperties?: Readonly<{
+              readonly type: "string" | "boolean" | "number" | "integer";
+            }>;
+            readonly properties?: Readonly<
+              Record<
+                string,
+                Readonly<{
+                  readonly type: "string" | "boolean" | "number" | "integer";
+                  readonly description?: string;
+                  readonly minimum?: number;
+                  readonly maximum?: number;
+                }>
+              >
+            >;
+          }>
+      >
+    >;
+    readonly required: readonly string[];
+  };
+}
 
 export interface Domain {
   readonly id: string;
@@ -12,6 +120,18 @@ export interface Domain {
   readonly class: string;
   readonly locale: string;
   readonly isAggregator: boolean;
+  /** ISO 8601 timestamp the domain was soft-disabled, or null
+   *  for active domains. Phase-a appendix #10 PR-R1 — present
+   *  only on rows from `GET /api/admin/domains` (the LLM-policy
+   *  picker uses `?include_disabled=0` by default, so its rows
+   *  always have `null`). Optional for backward-compat with
+   *  test fixtures that pre-date the column. */
+  readonly disabledAt?: string | null;
+  /** Count of `sources_bindings.domain_id` rows referencing this
+   *  domain. Surfaced by GET so the row-drill-down can disable
+   *  the Hard-delete button when bindings would block it.
+   *  Optional for backward-compat. */
+  readonly bindingCount?: number;
 }
 
 export interface SourceBinding {
@@ -42,6 +162,41 @@ export interface SourceBinding {
    *  can see HMAC failures without re-querying. Optional for backward-compat
    *  with older clients. */
   readonly sigFailCount24h?: number;
+  /** PR-R2 — operational config jsonb. The Sources row drill-down's
+   *  Edit panel pre-seeds the `bindingConfigSchema` form with this so
+   *  the operator gets a full-state edit surface. Plain object;
+   *  values may include operator-internal IDs but never secret bytes
+   *  (those live behind `credentials_id`, never in config). Optional
+   *  for backward-compat with older fixtures. */
+  readonly config?: Record<string, unknown>;
+  /** PR-W1 (phase-a appendix #14) — subtree-glob list the classifier
+   *  may write into. Sources row drill-down shows this as a chip list
+   *  with an Edit button that dispatches PATCH `{allowed_paths}`.
+   *  Optional for backward-compat with older fixtures; the server
+   *  surfaces an empty array `[]` for bindings still on the pre-W1
+   *  default. */
+  readonly allowedPaths?: readonly string[];
+  /** PR-W4 (phase-a appendix #14) — per-status `ingestion_intake`
+   *  counts. The SourceBindingDetail "Intake state" panel renders the
+   *  four numbers; the GET handler defaults each to 0 on bindings
+   *  with no intake history. Optional for back-compat with fixtures
+   *  predating W4. */
+  readonly intakeCounts?: {
+    readonly pending: number;
+    readonly classified: number;
+    readonly skipped: number;
+    readonly failed: number;
+  };
+  /** PR-W4 — top 3 most-recent `failed` intake rows (newest-first),
+   *  carrying the scrubbed + 200-char-capped `errorTextSnippet` and
+   *  the `error_class` chip. The SourceBindingDetail panel renders
+   *  one row per entry with a Retry button (currently disabled, ships
+   *  in PR-W2). */
+  readonly recentFailedIntake?: ReadonlyArray<{
+    readonly id: string;
+    readonly errorClass: string | null;
+    readonly errorTextSnippet: string | null;
+  }>;
 }
 
 export interface PromptManifestEntry {

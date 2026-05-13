@@ -14,8 +14,12 @@ import {
 } from "./lib/api.js";
 import { clearPat, getPat, setPat } from "./lib/pat-store.js";
 import { Activity } from "./routes/Activity.js";
+import { Agents } from "./routes/Agents.js";
+import { Audit } from "./routes/Audit.js";
+import { Cost } from "./routes/Cost.js";
 import { Domains } from "./routes/Domains.js";
 import { LlmPolicy } from "./routes/LlmPolicy.js";
+import { Outputs } from "./routes/Outputs.js";
 import { Prompts } from "./routes/Prompts.js";
 import { Reports } from "./routes/Reports.js";
 import { Review } from "./routes/Review.js";
@@ -82,6 +86,17 @@ export function App(): JSX.Element {
     setUsername(null);
   };
 
+  // PR-W3 — Activity feed signals a terminal SSE 401 (operator's PAT
+  // is durably stale). Re-uses the existing PAT clear + sign-out flow:
+  // dropping `authed` re-renders the gating PatEntryModal so the
+  // operator can paste a fresh token. NO new auth flow here.
+  const onSseAuthFailed = (): void => {
+    clearPat();
+    setAuthed(false);
+    setUsername(null);
+    setAuthError(t("auth.loginFailed"));
+  };
+
   if (!authed) {
     return (
       <PatEntryModal
@@ -94,21 +109,29 @@ export function App(): JSX.Element {
   const tabs: Record<Tab, JSX.Element> = {
     domains: <Domains />,
     sources: <Sources />,
+    agents: <Agents />,
+    outputs: <Outputs />,
     llmPolicy: <LlmPolicy />,
     prompts: <Prompts />,
-    activity: <Activity />,
+    activity: <Activity onAuthFailed={onSseAuthFailed} />,
     review: <Review />,
     reports: <Reports />,
+    audit: <Audit />,
+    cost: <Cost />,
   };
 
   const titles: Record<Tab, string> = {
     domains: t("domains.title"),
     sources: t("sources.title"),
+    agents: t("agents.title"),
+    outputs: t("outputs.title"),
     llmPolicy: t("llmPolicy.title"),
     prompts: t("prompts.title"),
     activity: t("activity.title"),
     review: t("review.title"),
     reports: t("reports.title"),
+    audit: t("audit.title"),
+    cost: t("cost.title"),
   };
 
   return (

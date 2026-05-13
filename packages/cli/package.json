@@ -27,6 +27,8 @@
     "@opencoo/engine-ingestion": "workspace:*",
     "@opencoo/engine-self-operating": "workspace:*",
     "@opencoo/guard-redaction-regex": "workspace:*",
+    "@opencoo/output-asana": "workspace:*",
+    "@opencoo/output-webhook": "workspace:*",
     "@opencoo/shared": "workspace:*",
     "@opencoo/source-asana": "workspace:*",
     "@opencoo/source-drive": "workspace:*",

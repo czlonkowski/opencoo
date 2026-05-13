@@ -16,7 +16,10 @@ export {
 } from "./interface.js";
 
 export {
+  OutputChannelDisabledError,
+  OutputChannelLookupError,
   OutputChannelMismatchError,
+  OutputChannelMissingChannelIdError,
   OutputChannelUnknownAdapterError,
 } from "./errors.js";
 
@@ -26,6 +29,14 @@ export {
   type OutputChannelDelivery,
   type OutputChannelDeliverInvocation,
 } from "./registry.js";
+
+export {
+  outputAdapterToChannelAdapter,
+  type LookupOutputChannel,
+  type MergePayload,
+  type OutputAdapterToChannelAdapterArgs,
+  type OutputChannelRecord,
+} from "./bridge.js";
 
 export {
   MockOutputChannelAdapter,

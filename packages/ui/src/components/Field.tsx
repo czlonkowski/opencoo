@@ -1,14 +1,28 @@
 /**
  * Form field — label + input wrapper. References design-system
  * vars exclusively (font scale, radii, border colors).
+ *
+ * Supports two mutually-exclusive input modes, enforced at the
+ * type level via a discriminated union (see `FieldProps`):
+ *   - Controlled: pass `value` + `onChange`. React owns the input
+ *     value across renders. Passing only one half is a TYPE
+ *     ERROR — there is no silent "half-controlled" mode.
+ *   - Uncontrolled: pass `inputRef` (+ optional `defaultValue`)
+ *     instead of `value`/`onChange`. The DOM owns the value;
+ *     the caller reads it on submit via `inputRef.current.value`.
+ *     This is the mode used by forms that need to survive
+ *     external value-setters (password-manager autofill,
+ *     1Password / Bitwarden, etc) — controlled inputs fight
+ *     reconciliation when an external script JS-sets the value
+ *     via the native value setter, and React swaps the field
+ *     state on the next render (PR-Z9 / G12).
  */
-import type { ChangeEventHandler, ReactNode } from "react";
+import type { ChangeEventHandler, Ref, ReactNode } from "react";
 
-export interface FieldProps {
+/** Props shared between controlled and uncontrolled modes. */
+interface FieldPropsBase {
   readonly label: ReactNode;
   readonly name: string;
-  readonly value: string;
-  readonly onChange: ChangeEventHandler<HTMLInputElement>;
   readonly placeholder?: string;
   readonly type?: "text" | "password" | "email";
   readonly required?: boolean;
@@ -20,8 +34,54 @@ export interface FieldProps {
   readonly secret?: boolean;
 }
 
+/**
+ * Controlled mode: React owns the value. Caller MUST pass both
+ * `value` AND `onChange` — passing only one half is a half-
+ * controlled input where the unpaired prop is silently ignored.
+ * The `inputRef`/`defaultValue` pair is forbidden in this mode.
+ */
+interface ControlledFieldProps extends FieldPropsBase {
+  readonly value: string;
+  readonly onChange: ChangeEventHandler<HTMLInputElement>;
+  readonly inputRef?: never;
+  readonly defaultValue?: never;
+}
+
+/**
+ * Uncontrolled mode: the DOM owns the value. Caller MUST pass an
+ * `inputRef` so it can read the live DOM value on submit. Pair
+ * with optional `defaultValue` for an initial value. The
+ * `value`/`onChange` pair is forbidden in this mode. See file
+ * header for the password-manager rationale.
+ */
+interface UncontrolledFieldProps extends FieldPropsBase {
+  readonly value?: never;
+  readonly onChange?: never;
+  /** Uncontrolled-mode escape hatch. The input is rendered without
+   *  a React-owned `value`, and the caller reads the live DOM
+   *  value via this ref. */
+  readonly inputRef: Ref<HTMLInputElement>;
+  readonly defaultValue?: string;
+}
+
+/**
+ * Discriminated union: `value`+`onChange` (controlled) and
+ * `inputRef`+`defaultValue` (uncontrolled) are paired — a caller
+ * cannot accidentally pass only `value` without `onChange` (or
+ * vice versa) and end up with an input that silently ignores the
+ * provided prop.
+ */
+export type FieldProps = ControlledFieldProps | UncontrolledFieldProps;
+
 export function Field(props: FieldProps): JSX.Element {
   const inputId = `field-${props.name}`;
+  // The discriminated union (see ControlledFieldProps /
+  // UncontrolledFieldProps above) guarantees a caller cannot
+  // half-pass — `value` and `onChange` are paired, as are
+  // `inputRef` and `defaultValue`. We still branch on the
+  // presence of `value` so React doesn't warn about an input
+  // flipping between controlled and uncontrolled at runtime.
+  const controlled = props.value !== undefined;
   return (
     <label
       htmlFor={inputId}
@@ -55,11 +115,16 @@ export function Field(props: FieldProps): JSX.Element {
         id={inputId}
         name={props.name}
         type={props.secret === true ? "password" : (props.type ?? "text")}
-        value={props.value}
-        onChange={props.onChange}
+        {...(controlled
+          ? { value: props.value, onChange: props.onChange }
+          : props.defaultValue !== undefined
+            ? { defaultValue: props.defaultValue }
+            : {})}
+        {...(props.inputRef !== undefined ? { ref: props.inputRef } : {})}
         placeholder={props.placeholder}
         required={props.required}
         autoComplete={props.secret === true ? "new-password" : "off"}
+        aria-invalid={props.error !== undefined ? true : undefined}
         data-secret={props.secret === true ? "true" : undefined}
         style={{
           fontFamily: props.mono === true ? "var(--font-mono)" : "var(--font-sans)",

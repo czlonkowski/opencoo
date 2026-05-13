@@ -9,6 +9,7 @@ export {
   ASANA_OUTPUT_ADAPTER_SLUG,
   asanaOutputCredentialSchema,
   createAsanaOutputAdapter,
+  extractAsanaPatFromCredentialBlob,
   type CreateAsanaOutputAdapterArgs,
   type MakeAsanaApi,
 } from "./adapter.js";
@@ -19,8 +20,20 @@ export {
 } from "./payload-schema.js";
 
 export {
+  ASANA_CHANNEL_CONFIG_DEFAULTS,
+  asanaChannelConfigJsonSchema,
+  asanaChannelConfigSchema,
+  type AsanaChannelConfig,
+} from "./channel-config.js";
+
+export {
   type AsanaApiError,
   type AsanaCreateTaskArgs,
   type AsanaCreateTaskResult,
   type AsanaLikeApi,
 } from "./asana-api.js";
+
+export {
+  createAsanaFetchApi,
+  type CreateAsanaFetchApiArgs,
+} from "./asana-fetch-api.js";

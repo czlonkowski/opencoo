@@ -28,33 +28,53 @@ import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { Logger } from "@opencoo/shared/logger";
+import type { DeleteCap } from "@opencoo/shared/wiki-write";
 
 import { buildVerifyAdmin, type GiteaClient } from "./auth.js";
 import { issueCsrfToken } from "./csrf.js";
 import { attachDebugBannerHook } from "./debug-banner.js";
 import { createSseBus, type SseBus } from "./sse-bus.js";
 import { registerAdaptersRoute } from "./routes/adapters.js";
+import { registerAgentInstancesRoutes } from "./routes/agent-instances.js";
 import { registerAgentRunsRoutes } from "./routes/agent-runs.js";
+import {
+  registerAgentsDispatchRoute,
+  type AgentDispatchEnqueue,
+} from "./routes/agents-dispatch.js";
 import { registerAuditLogReadRoutes } from "./routes/audit-log-read.js";
 import { registerAutomationCandidatesRoutes } from "./routes/automation-candidates.js";
+import { registerCostSummaryRoute } from "./routes/cost-summary.js";
 import { registerDomainsLlmPolicyRoutes } from "./routes/domains-llm-policy.js";
 import {
   registerDomainsRoutes,
+  type PingWikiMcpRefreshFn,
   type ProvisionDomainRepoFn,
+  type WorldviewCompileQueueLike,
 } from "./routes/domains.js";
 import { registerEventsRoute } from "./routes/events.js";
 import { registerHeartbeatRoutes } from "./routes/heartbeat.js";
 import { registerLintFindingsRoutes } from "./routes/lint-findings.js";
+import { registerLlmModelsRoute } from "./routes/llm-models.js";
 import { registerLogoutRoute } from "./routes/logout.js";
 import { registerMarketplaceUpdatesRoutes } from "./routes/marketplace-updates.js";
+import {
+  registerOutputChannelsRoutes,
+  type OutputAdapterDescriptor,
+  type OutputAdapterSlug,
+} from "./routes/output-channels.js";
 import { registerPipelinesRoutes } from "./routes/pipelines.js";
 import { registerPromptsRoutes } from "./routes/prompts.js";
 import { registerRedactionEventsRoutes } from "./routes/redaction-events.js";
 import {
   registerSchedulerRoute,
   type SchedulerSource,
+  type SchedulerUpdate,
 } from "./routes/scheduler.js";
-import { registerSourceBindingsRoutes } from "./routes/source-bindings.js";
+import {
+  registerSourceBindingsRoutes,
+  type ForgetJobEnqueueArgs,
+  type RetryableFailedJob,
+} from "./routes/source-bindings.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
@@ -78,6 +98,13 @@ export interface RegisterAdminApiArgs {
   /** Gitea organisation under which provisioned repos are
    *  created. Sourced from `GITEA_PROVISION_ORG`. */
   readonly provisionOrg?: string;
+  /** Phase-a appendix #12 PR-Z8 (G10) — fire-and-forget
+   *  `/refresh-all` ping the domain-create handler dispatches so
+   *  gitea-wiki-mcp-server learns about new repos. The composition
+   *  root wires this when both `GITEA_WIKI_MCP_URL` and
+   *  `MCP_BEARER_TOKEN` are set; otherwise the ping is skipped
+   *  (domain creation still succeeds; operator can curl manually). */
+  readonly pingWikiMcpRefresh?: PingWikiMcpRefreshFn;
   /** Phase-a appendix #2 — credential store for the binding
    *  create flow. Encrypts auth + webhook_secret halves before
    *  the binding row INSERT. When undefined, POST
@@ -93,8 +120,22 @@ export interface RegisterAdminApiArgs {
    *  `productionServerFactory` via `ProductionServerFactoryArgs.ingestionQueue`,
    *  which threads it through to `RegisterAdminApiArgs.ingestionQueue` and
    *  onwards to `registerSourceBindingsRoutes` + `registerPipelinesRoutes`.
-   *  The queue handle is read-only — no jobs are enqueued from this side. */
-  readonly ingestionQueue?: { getJobCounts: (...states: string[]) => Promise<Record<string, number>>; name?: string };
+   *
+   *  PR-Z3 (phase-a appendix #12) widens the shape with optional
+   *  `add` so the source-bindings route can enqueue a post-create
+   *  initial scan (closes G6) and the `:id/scan-now` route can
+   *  enqueue an on-demand scan (closes G8). Read paths
+   *  (`getJobCounts`) work even when `add` is undefined — same
+   *  boot-tolerance pattern. */
+  readonly ingestionQueue?: {
+    getJobCounts: (...states: string[]) => Promise<Record<string, number>>;
+    add?: (
+      name: string,
+      data: unknown,
+      opts?: unknown,
+    ) => Promise<unknown>;
+    name?: string;
+  };
   /** Phase-a appendix #4 PR-B — SSE bus for the Activity feed.
    *  When undefined a fresh bus is created internally (production path).
    *  Tests may inject a mock bus if they need to assert on bus interactions. */
@@ -111,6 +152,69 @@ export interface RegisterAdminApiArgs {
    *  an empty source (operator sees `{ schedules: [] }`) so the
    *  endpoint stays reachable even if the scheduler failed to boot. */
   readonly schedulerSource?: SchedulerSource;
+  /** Phase-a appendix #10 PR-R3 — on-demand agent dispatch enqueue.
+   *  Production passes the dispatcher's `enqueueOneShot` method;
+   *  when undefined the `POST /api/admin/agents/:slug/dispatch`
+   *  route registers but every call returns 503 (composition
+   *  incomplete — same boot-tolerance pattern as the rest of the
+   *  admin API). */
+  readonly dispatchAgentJob?: AgentDispatchEnqueue;
+  /** Phase-a appendix #10 PR-R6 — scheduler / cadence editor.
+   *  Production passes the dispatcher's `updateSchedule` method;
+   *  when undefined the `PUT /api/admin/scheduler/:agent` route
+   *  registers but every call returns 503 (composition incomplete).
+   *  Same boot-tolerance pattern as `dispatchAgentJob`. */
+  readonly updateSchedule?: SchedulerUpdate;
+  /** Phase-a appendix #10 PR-R7 — delete-cap probe + reserve for
+   *  the source-forget impact preview. Production passes the
+   *  ingestion engine's `wikiDeps.deleteCap` (single-process v0.1
+   *  shape: same instance the compiler workers reserve against).
+   *  When undefined the forget endpoint returns 503. */
+  readonly deleteCap?: DeleteCap;
+  /** Phase-a appendix #10 PR-R7 — composition-supplied enqueuer
+   *  for the actual forget action. The route plans the impact +
+   *  reserves the cap; this callable turns the plan into BullMQ
+   *  recompile + delete jobs. Tests inject a `vi.fn()`. When
+   *  undefined the forget endpoint returns 503. */
+  readonly forgetJobEnqueuer?: (args: ForgetJobEnqueueArgs) => Promise<void>;
+  /** PR-W2 (phase-a appendix #14) — read-only enumerator over the
+   *  `ingestion.scanner.classify` BullMQ failed-set, filtered by
+   *  payload `bindingId` (+ optionally `intakeId`). Powers the
+   *  `POST /api/admin/source-bindings/:id/retry-failed` route.
+   *  Production composition builds this via
+   *  `enumerateFailedJobsByBindingId(queue, ...)` in
+   *  `@opencoo/engine-ingestion` over the same producer-side Queue
+   *  handle the classifier worker writes onto. When undefined the
+   *  endpoint returns 503 — same boot-tolerance pattern. */
+  readonly failedClassifyJobsEnumerator?: (
+    bindingId: string,
+    intakeId?: string,
+  ) => Promise<readonly RetryableFailedJob[]>;
+  /** PR-W2 (phase-a appendix #14) — composition-supplied enqueuer
+   *  for the re-enqueue side of the retry-failed route. Production
+   *  wiring binds this to the classify queue's `add` method; tests
+   *  inject a `vi.fn()` to capture call shape. When undefined the
+   *  endpoint returns 503. */
+  readonly classifyJobEnqueuer?: (
+    name: string,
+    data: unknown,
+    opts?: unknown,
+  ) => Promise<unknown>;
+  /** PR-Z4 (phase-a appendix #12 G5) — test seam for the
+   *  `/api/admin/output-channels` CRUD routes. Production lets the
+   *  routes lazy-import `@opencoo/output-asana` to derive the
+   *  per-adapter descriptor; tests inject a stub so the admin-API
+   *  fixture doesn't need the cross-package import surface. */
+  readonly outputChannelRegistry?: Readonly<
+    Record<OutputAdapterSlug, OutputAdapterDescriptor>
+  >;
+  /** PR-W1 (phase-a appendix #13) — worldview-compile queue handle
+   *  for the `POST /api/admin/domains/:slug/recompile-worldview`
+   *  endpoint. Production composition builds this via the CLI's
+   *  `serve` flow and threads it down. When undefined the route
+   *  returns 503 (composition incomplete) — same boot-tolerance
+   *  pattern as the other admin-API queues. */
+  readonly worldviewQueue?: WorldviewCompileQueueLike;
 }
 
 export async function registerAdminApi(
@@ -156,7 +260,25 @@ export async function registerAdminApi(
 
   // Phase-a appendix #2 — adapter picker for the "+ New
   // binding" modal. Read-only; no body, no CSRF.
-  registerAdaptersRoute({ app: guardedApp });
+  registerAdaptersRoute({
+    app: guardedApp,
+    ...(args.outputChannelRegistry !== undefined
+      ? { outputAdapterRegistry: args.outputChannelRegistry }
+      : {}),
+  });
+  // PR-Z4 (phase-a appendix #12 G5) — Outputs tab CRUD. The
+  // route registrar is async because the production path lazy-
+  // imports `@opencoo/output-asana` for the per-adapter descriptor.
+  await registerOutputChannelsRoutes({
+    app: guardedApp,
+    db: args.db,
+    ...(args.credentialStore !== undefined
+      ? { credentialStore: args.credentialStore }
+      : {}),
+    ...(args.outputChannelRegistry !== undefined
+      ? { registry: args.outputChannelRegistry }
+      : {}),
+  });
   registerSourceBindingsRoutes({
     app: guardedApp,
     db: args.db,
@@ -166,11 +288,28 @@ export async function registerAdminApi(
     ...(args.ingestionQueue !== undefined
       ? { ingestionQueue: args.ingestionQueue }
       : {}),
+    ...(args.deleteCap !== undefined
+      ? { deleteCap: args.deleteCap }
+      : {}),
+    ...(args.forgetJobEnqueuer !== undefined
+      ? { forgetJobEnqueuer: args.forgetJobEnqueuer }
+      : {}),
+    // PR-W2 (phase-a appendix #14) — retry-failed surface.
+    ...(args.failedClassifyJobsEnumerator !== undefined
+      ? { failedClassifyJobsEnumerator: args.failedClassifyJobsEnumerator }
+      : {}),
+    ...(args.classifyJobEnqueuer !== undefined
+      ? { classifyJobEnqueuer: args.classifyJobEnqueuer }
+      : {}),
   });
   registerLintFindingsRoutes({ app: guardedApp, db: args.db });
   registerAutomationCandidatesRoutes({ app: guardedApp, db: args.db });
   registerMarketplaceUpdatesRoutes({ app: guardedApp, db: args.db });
   registerAuditLogReadRoutes({ app: guardedApp, db: args.db });
+  // Phase-a appendix #10 PR-R5 — cost analytics dashboard. Read-only
+  // aggregation over `llm_usage`; no new write surface, no new
+  // persistence table.
+  registerCostSummaryRoute({ app: guardedApp, db: args.db });
   // PR 29 read-only domains list + phase-a appendix #2 create
   // handler. Pass through the provisioning callable + org name
   // so the POST handler can seed Gitea. Read-only GET works
@@ -185,6 +324,12 @@ export async function registerAdminApi(
     ...(args.provisionOrg !== undefined
       ? { provisionOrg: args.provisionOrg }
       : {}),
+    ...(args.pingWikiMcpRefresh !== undefined
+      ? { pingWikiMcpRefresh: args.pingWikiMcpRefresh }
+      : {}),
+    ...(args.worldviewQueue !== undefined
+      ? { worldviewQueue: args.worldviewQueue }
+      : {}),
   });
   registerPromptsRoutes({ app: guardedApp });
   registerDomainsLlmPolicyRoutes({
@@ -192,6 +337,9 @@ export async function registerAdminApi(
     db: args.db,
     sessionHmacKey: args.sessionHmacKey,
   });
+  // PR-Q13 (phase-a appendix #9) — read-only model catalog
+  // for the per-tier model dropdown in the LLM-policy editor.
+  registerLlmModelsRoute({ app: guardedApp });
   registerLogoutRoute({ app: guardedApp, db: args.db });
 
   // Phase-a appendix #4 PR-B — Activity tab routes.
@@ -227,6 +375,34 @@ export async function registerAdminApi(
     app: guardedApp,
     db: args.db,
     source: args.schedulerSource ?? { listSchedules: () => [] },
+    ...(args.updateSchedule !== undefined
+      ? { updateSchedule: args.updateSchedule }
+      : {}),
+  });
+
+  // Phase-a appendix #10 PR-R3 — on-demand agent dispatch.
+  // The route registers regardless of whether the dispatcher
+  // composed at boot; when the enqueue callable is absent the
+  // route returns 503 so the operator sees a clean error surface
+  // instead of a 404. Same pattern as schedulerSource above.
+  registerAgentsDispatchRoute({
+    app: guardedApp,
+    db: args.db,
+    ...(args.dispatchAgentJob !== undefined
+      ? { dispatchAgentJob: args.dispatchAgentJob }
+      : {}),
+  });
+
+  // Phase-a appendix #13 PR-W2 — Agent-instance binding admin.
+  // GET lists every instance for the new Agents tab; PATCH
+  // dispatches on a discriminated body (output_channel_ids |
+  // enabled | schedule_cron) so the operator can bind delivery
+  // channels, pause an instance, or edit its cron without
+  // shell access. No new composition deps — the route uses the
+  // same `db` handle every other admin-api route consumes.
+  registerAgentInstancesRoutes({
+    app: guardedApp,
+    db: args.db,
   });
 
   // Debug banner: registered LAST so it sees every JSON
@@ -298,7 +474,24 @@ function makeGuardedApp(
 }
 
 export type { GiteaClient, GiteaWhoamiResult, AdminContext } from "./auth.js";
-export type { ProvisionDomainRepoFn } from "./routes/domains.js";
+export type {
+  PingWikiMcpRefreshFn,
+  ProvisionDomainRepoFn,
+} from "./routes/domains.js";
+export type { AgentDispatchEnqueue } from "./routes/agents-dispatch.js";
+export type {
+  ForgetJobEnqueueArgs,
+  RetryableFailedJob,
+} from "./routes/source-bindings.js";
+export type {
+  SchedulerSource,
+  SchedulerUpdate,
+} from "./routes/scheduler.js";
+export {
+  DISPATCHABLE_AGENT_SLUGS,
+  type DispatchableAgentSlug,
+  __resetAgentDispatchRateLimit,
+} from "./routes/agents-dispatch.js";
 export { AUDIT_LOG_ACTIONS, type AuditAction } from "./audit-log.js";
 export {
   computePayloadHash,

@@ -101,4 +101,24 @@ describe("assertBindingNotWildcardOnly", () => {
       expect(e.message.toLowerCase()).toMatch(/wildcard|allowed_paths|empty/);
     }
   });
+
+  // PR-W1 (phase-a appendix #14): the per-adapter `defaultAllowedPaths`
+  // suggestions surfaced by the Management UI become a click-to-add
+  // chip operators can save verbatim. The runtime guard MUST accept
+  // every suggestion — a chip the guard rejects is a footgun (the
+  // operator clicks it, saves, and the API 422s). This test cross-
+  // checks the shared registry against the live guard.
+  it("accepts every entry from SOURCE_ADAPTER_DEFAULT_ALLOWED_PATHS", async () => {
+    const { SOURCE_ADAPTER_DEFAULT_ALLOWED_PATHS } = await import(
+      "@opencoo/shared/source-adapter"
+    );
+    for (const [slug, paths] of Object.entries(
+      SOURCE_ADAPTER_DEFAULT_ALLOWED_PATHS,
+    )) {
+      expect(
+        () => assertBindingNotWildcardOnly([...paths]),
+        `slug=${slug}`,
+      ).not.toThrow();
+    }
+  });
 });

@@ -119,6 +119,21 @@ async function startDispatcher(args: {
    *  through. Tests pass a sentinel and assert the SAME instance
    *  reaches the runner closure via `ctx.router`. */
   readonly router?: ConstructorParameters<typeof AgentDispatcher>[0]["router"];
+  /** PR-Z6 — explicit per-test override. Tests that exercise the
+   *  refresh path pass `0` to disable the timer and drive
+   *  `refresh()` manually; the default below pins the same value so
+   *  no test accidentally arms a real 60-second timer that leaks
+   *  past `afterEach`. */
+  readonly refreshIntervalMs?: number;
+  /** PR-Z6 — optional override for the `removeRepeatable` test seam.
+   *  When omitted, the dispatcher uses `queue.removeRepeatable`
+   *  directly — note that ioredis-mock doesn't fully support
+   *  repeatables, so tests that touch the remove path (the
+   *  deregister test, updateSchedule tests, etc.) MUST explicitly
+   *  pass a stub here. Tests that never call `removeOne` (e.g.
+   *  pure-`start()` registration tests) can safely leave this
+   *  undefined. */
+  readonly removeScheduleFn?: (entry: RegisteredSchedule) => Promise<void>;
 }): Promise<DispatcherHarness> {
   const redis = new IORedisMock();
   const registry = args.registry ?? buildRegistryWith(TEST_DEFINITION);
@@ -154,7 +169,11 @@ async function startDispatcher(args: {
     logger,
     autorun: false,
     registerScheduleFn,
+    refreshIntervalMs: args.refreshIntervalMs ?? 0,
     ...(args.router !== undefined ? { router: args.router } : {}),
+    ...(args.removeScheduleFn !== undefined
+      ? { removeScheduleFn: args.removeScheduleFn }
+      : {}),
   });
 
   return {
@@ -479,6 +498,1075 @@ describe("AgentDispatcher — UTC timezone pin (round-3 fix #1)", () => {
       // wall-clock time than what BullMQ scheduled.
       expect(opts.repeat.tz).toBe("UTC");
       expect(opts.repeat.pattern).toBe("0 8 * * 1-5");
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+  });
+});
+
+describe("AgentDispatcher.enqueueOneShot — PR-R3 on-demand path", () => {
+  it("calls Queue.add with no repeat option and the manual triggeredBy flag", async () => {
+    const fixture = await freshAgentDb();
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+    });
+
+    const queue = dispatcher.queueForTest();
+    const addSpy = vi
+      .spyOn(queue, "add")
+      .mockResolvedValue({ id: "one-shot-job-1" } as never);
+
+    try {
+      const result = await dispatcher.enqueueOneShot({
+        instanceId: "11111111-2222-3333-4444-555555555555",
+        dryRun: true,
+      });
+      expect(result.jobId).toBe("one-shot-job-1");
+      expect(addSpy).toHaveBeenCalledTimes(1);
+      const callArgs = addSpy.mock.calls[0];
+      expect(callArgs).toBeDefined();
+      const [name, data, opts] = callArgs!;
+      expect(name).toBe("dispatch");
+      expect(data).toMatchObject({
+        instanceId: "11111111-2222-3333-4444-555555555555",
+        dryRun: true,
+        triggeredBy: "manual",
+      });
+      // No `repeat` opt — one-shot job, removed on complete.
+      const optsObj = opts as { repeat?: unknown };
+      expect(optsObj.repeat).toBeUndefined();
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+  });
+
+  it("rejects an empty instanceId without enqueueing", async () => {
+    const fixture = await freshAgentDb();
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+    });
+    const queue = dispatcher.queueForTest();
+    const addSpy = vi.spyOn(queue, "add");
+
+    try {
+      await expect(
+        dispatcher.enqueueOneShot({ instanceId: "" }),
+      ).rejects.toThrow(/instanceId/);
+      expect(addSpy).not.toHaveBeenCalled();
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+  });
+});
+
+describe("AgentDispatcher.updateSchedule — PR-R6 cadence editor", () => {
+  it("calls remove + add per entry and updates listSchedules() in place", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      name: "morning",
+      scheduleCron: "0 8 * * 1-5",
+    });
+
+    const removed: RegisteredSchedule[] = [];
+    const registered: RegisteredSchedule[] = [];
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+      registerScheduleFn: async (s) => {
+        registered.push(s);
+      },
+      removeScheduleFn: async (s) => {
+        removed.push(s);
+      },
+    });
+
+    try {
+      // Boot — registers the initial schedule.
+      await dispatcher.start();
+      expect(registered).toHaveLength(1);
+      expect(dispatcher.listSchedules()[0]?.scheduleCron).toBe("0 8 * * 1-5");
+
+      // Cadence change.
+      await dispatcher.updateSchedule({
+        entries: [
+          {
+            instanceId,
+            definitionSlug: TEST_DEFINITION.slug,
+            name: "morning",
+            oldCron: "0 8 * * 1-5",
+            newCron: "0 9 * * 1-5",
+          },
+        ],
+      });
+
+      // remove called with the OLD cron, add called with the NEW.
+      expect(removed).toHaveLength(1);
+      expect(removed[0]?.scheduleCron).toBe("0 8 * * 1-5");
+      expect(registered).toHaveLength(2);
+      expect(registered[1]?.scheduleCron).toBe("0 9 * * 1-5");
+
+      // listSchedules() reflects the new cron.
+      expect(dispatcher.listSchedules()[0]?.scheduleCron).toBe("0 9 * * 1-5");
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+  });
+
+  it("rolls forward to the OLD cron when the add step throws", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      name: "morning",
+      scheduleCron: "0 8 * * 1-5",
+    });
+
+    const removed: RegisteredSchedule[] = [];
+    const registerCalls: RegisteredSchedule[] = [];
+    let bootRegistered = false;
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+      registerScheduleFn: async (s) => {
+        registerCalls.push(s);
+        // Allow the boot register, then fail the FIRST update-time
+        // register (the new cron), then succeed for the rollback.
+        if (!bootRegistered) {
+          bootRegistered = true;
+          return;
+        }
+        if (s.scheduleCron === "0 9 * * 1-5") {
+          throw new Error("simulated bullmq add failure");
+        }
+      },
+      removeScheduleFn: async (s) => {
+        removed.push(s);
+      },
+    });
+
+    try {
+      await dispatcher.start();
+      expect(registerCalls).toHaveLength(1);
+
+      await expect(
+        dispatcher.updateSchedule({
+          entries: [
+            {
+              instanceId,
+              definitionSlug: TEST_DEFINITION.slug,
+              name: "morning",
+              oldCron: "0 8 * * 1-5",
+              newCron: "0 9 * * 1-5",
+            },
+          ],
+        }),
+      ).rejects.toThrow(/simulated bullmq add failure/);
+
+      // Removed once (the OLD cron); register attempted twice
+      // post-boot — once with the new cron (failed), once with the
+      // OLD cron rollback (succeeded).
+      expect(removed).toHaveLength(1);
+      expect(removed[0]?.scheduleCron).toBe("0 8 * * 1-5");
+      expect(registerCalls).toHaveLength(3); // boot + new (failed) + rollback
+      expect(registerCalls[2]?.scheduleCron).toBe("0 8 * * 1-5");
+
+      // The in-memory list still shows the OLD cron — the throw
+      // bubbled out before the list-mutation step. That mirrors
+      // the route's transaction-rollback contract: SQL UPDATE +
+      // dispatcher state both unwind together.
+      expect(dispatcher.listSchedules()[0]?.scheduleCron).toBe("0 8 * * 1-5");
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+  });
+
+  it("rolls EVERY previously-succeeded swap back to OLD cron when a later entry fails (PR-R6 round-2 multi-instance atomicity)", async () => {
+    // Three entries, the SECOND throws at registerOne. The first
+    // entry already swapped to NEW cron in BullMQ; without the
+    // multi-instance rollback fix BullMQ would be left at
+    // {entry1: NEW, entry2: OLD, entry3: untouched} while the
+    // route's DB tx unwinds back to {OLD, OLD, OLD} on every row
+    // — splitting the cluster's view of the schedule until the
+    // next engine boot. This test pins the rollback contract: the
+    // dispatcher walks the previously-succeeded set in reverse
+    // and rolls each back to OLD cron before re-throwing.
+    const fixture = await freshAgentDb();
+    // Three distinct instances, all on the same agent slug.
+    const seeded = await Promise.all([
+      seedScheduledInstance(fixture, {
+        name: "morning-a",
+        scheduleCron: "0 8 * * 1-5",
+      }),
+      seedScheduledInstance(fixture, {
+        name: "morning-b",
+        scheduleCron: "0 8 * * 1-5",
+      }),
+      seedScheduledInstance(fixture, {
+        name: "morning-c",
+        scheduleCron: "0 8 * * 1-5",
+      }),
+    ]);
+    const instanceIds = seeded.map((s) => s.instanceId);
+
+    interface Call {
+      readonly verb: "remove" | "register";
+      readonly instanceId: string;
+      readonly cron: string;
+    }
+    const calls: Call[] = [];
+    let bootRegistered = 0;
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+      registerScheduleFn: async (s) => {
+        // Allow the three boot registrations through silently;
+        // afterwards, fail the SECOND instance's NEW-cron register
+        // call. Every other post-boot register call (including
+        // the rollback path) succeeds.
+        if (bootRegistered < 3) {
+          bootRegistered += 1;
+          calls.push({
+            verb: "register",
+            instanceId: s.instanceId,
+            cron: s.scheduleCron,
+          });
+          return;
+        }
+        calls.push({
+          verb: "register",
+          instanceId: s.instanceId,
+          cron: s.scheduleCron,
+        });
+        if (
+          s.instanceId === instanceIds[1] &&
+          s.scheduleCron === "0 9 * * 1-5"
+        ) {
+          throw new Error("simulated bullmq add failure on entry 2");
+        }
+      },
+      removeScheduleFn: async (s) => {
+        calls.push({
+          verb: "remove",
+          instanceId: s.instanceId,
+          cron: s.scheduleCron,
+        });
+      },
+    });
+
+    try {
+      await dispatcher.start();
+      // Drop boot-time calls so the assertion window is just the
+      // updateSchedule swap + rollback sequence.
+      calls.length = 0;
+
+      const entries = instanceIds.map((id) => ({
+        instanceId: id,
+        definitionSlug: TEST_DEFINITION.slug,
+        name: "morning",
+        oldCron: "0 8 * * 1-5",
+        newCron: "0 9 * * 1-5",
+      }));
+
+      await expect(dispatcher.updateSchedule({ entries })).rejects.toThrow(
+        /simulated bullmq add failure on entry 2/,
+      );
+
+      // Entry 1 swapped successfully (remove old, register new) →
+      // entry 2 attempted (remove old, register new threw) →
+      // catch block runs.
+      // Multi-instance rollback for the SUCCEEDED set (entry 1):
+      //   - remove entry-1 NEW cron, register entry-1 OLD cron.
+      // Failing-entry rollback (entry 2 — removeOne already
+      // succeeded so we re-register the OLD cron):
+      //   - register entry-2 OLD cron.
+      // Entry 3's `addRepeatable` (registerOne with NEW cron) is
+      // NEVER called — the throw bubbled out before reaching it.
+
+      // Entry 3 NEVER touched.
+      const entry3Calls = calls.filter(
+        (c) => c.instanceId === instanceIds[2],
+      );
+      expect(entry3Calls).toEqual([]);
+
+      // Entry 1: remove(OLD) → register(NEW) → [throw on entry 2]
+      //          → rollback: remove(NEW) → register(OLD).
+      const entry1Calls = calls.filter(
+        (c) => c.instanceId === instanceIds[0],
+      );
+      expect(entry1Calls).toEqual([
+        { verb: "remove", instanceId: instanceIds[0], cron: "0 8 * * 1-5" },
+        { verb: "register", instanceId: instanceIds[0], cron: "0 9 * * 1-5" },
+        { verb: "remove", instanceId: instanceIds[0], cron: "0 9 * * 1-5" },
+        { verb: "register", instanceId: instanceIds[0], cron: "0 8 * * 1-5" },
+      ]);
+
+      // Entry 2: remove(OLD) → register(NEW) [threw]
+      //          → rollback: register(OLD).
+      const entry2Calls = calls.filter(
+        (c) => c.instanceId === instanceIds[1],
+      );
+      expect(entry2Calls).toEqual([
+        { verb: "remove", instanceId: instanceIds[1], cron: "0 8 * * 1-5" },
+        { verb: "register", instanceId: instanceIds[1], cron: "0 9 * * 1-5" },
+        { verb: "register", instanceId: instanceIds[1], cron: "0 8 * * 1-5" },
+      ]);
+
+      // The in-memory list reflects the pre-call cron on every
+      // instance — the post-loop mutation step never ran because
+      // the throw bubbled out first.
+      for (const s of dispatcher.listSchedules()) {
+        expect(s.scheduleCron).toBe("0 8 * * 1-5");
+      }
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+  });
+
+  it("skips the no-op case (oldCron === newCron) without touching BullMQ", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      name: "morning",
+      scheduleCron: "0 8 * * 1-5",
+    });
+
+    const removed: RegisteredSchedule[] = [];
+    const registerCalls: RegisteredSchedule[] = [];
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+      registerScheduleFn: async (s) => {
+        registerCalls.push(s);
+      },
+      removeScheduleFn: async (s) => {
+        removed.push(s);
+      },
+    });
+
+    try {
+      await dispatcher.start();
+      registerCalls.length = 0;
+
+      await dispatcher.updateSchedule({
+        entries: [
+          {
+            instanceId,
+            definitionSlug: TEST_DEFINITION.slug,
+            name: "morning",
+            oldCron: "0 8 * * 1-5",
+            newCron: "0 8 * * 1-5",
+          },
+        ],
+      });
+
+      expect(removed).toHaveLength(0);
+      expect(registerCalls).toHaveLength(0);
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────
+// PR-Z4 (phase-a appendix #12 G5) — post-run delivery hook.
+// ───────────────────────────────────────────────────────────────
+
+import {
+  MockOutputChannelAdapter,
+  OutputChannelRegistry,
+} from "../../src/output-channels/index.js";
+
+describe("AgentDispatcher — PR-Z4 post-run delivery hook", () => {
+  it("dispatches the run output through each binding's adapter", async () => {
+    const fixture = await freshAgentDb();
+    // Seed an instance with an output_channel_ids binding pointing
+    // at the `asana` adapter slug. The mock adapter captures the
+    // payload + config — we then assert both reached the adapter.
+    const result = await fixture.raw.query<{ id: string }>(
+      `INSERT INTO agent_instances
+         (definition_slug, name, scope_domain_ids, output_channel_ids,
+          memory, locale, enabled, schedule_cron)
+       VALUES ('heartbeat', 'with-asana-binding', $1::uuid[],
+               $2::jsonb,
+               '{"type":"none"}'::jsonb, 'en', true, '0 8 * * 1-5')
+       RETURNING id`,
+      [
+        [fixture.domainId],
+        JSON.stringify([
+          { adapter_slug: "asana", config: { channel_id: "abc-123" } },
+        ]),
+      ],
+    );
+    const instanceId = result.rows[0]!.id;
+
+    const mockAdapter = new MockOutputChannelAdapter("asana");
+    const outputChannels = new OutputChannelRegistry();
+    outputChannels.register(mockAdapter);
+
+    const invocations: string[] = [];
+    const runnerOutput = {
+      version: "v1",
+      summary: "today",
+      alerts: [],
+    };
+    const runners: AgentRunnerRegistry = {
+      get(slug: string) {
+        if (slug !== TEST_DEFINITION.slug) return undefined;
+        return async (ctx) => {
+          invocations.push(ctx.instance.id);
+          return runnerOutput;
+        };
+      },
+    };
+
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners,
+      logger: silentLogger(),
+      autorun: false,
+      outputChannels,
+    });
+
+    const handler = dispatcher.dispatchHandlerForTest();
+    const job = {
+      id: "job-delivery",
+      name: "dispatch",
+      data: { instanceId },
+      queueName: "selfop.dispatch",
+      attemptsMade: 0,
+      timestamp: Date.now(),
+    } as unknown as Job<{ instanceId: string }>;
+    try {
+      await handler(job);
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+
+    expect(invocations).toEqual([instanceId]);
+    expect(mockAdapter.deliveries).toHaveLength(1);
+    expect(mockAdapter.deliveries[0]?.payload).toEqual(runnerOutput);
+    expect(mockAdapter.deliveries[0]?.config).toEqual({
+      channel_id: "abc-123",
+    });
+  });
+
+  it("skips delivery when dryRun=true (operator-issued one-shot)", async () => {
+    const fixture = await freshAgentDb();
+    const result = await fixture.raw.query<{ id: string }>(
+      `INSERT INTO agent_instances
+         (definition_slug, name, scope_domain_ids, output_channel_ids,
+          memory, locale, enabled, schedule_cron)
+       VALUES ('heartbeat', 'dry-run', $1::uuid[],
+               $2::jsonb,
+               '{"type":"none"}'::jsonb, 'en', true, '0 8 * * 1-5')
+       RETURNING id`,
+      [
+        [fixture.domainId],
+        JSON.stringify([
+          { adapter_slug: "asana", config: { channel_id: "abc-123" } },
+        ]),
+      ],
+    );
+    const instanceId = result.rows[0]!.id;
+
+    const mock = new MockOutputChannelAdapter("asana");
+    const outputChannels = new OutputChannelRegistry();
+    outputChannels.register(mock);
+
+    const runners: AgentRunnerRegistry = {
+      get(slug: string) {
+        if (slug !== TEST_DEFINITION.slug) return undefined;
+        return async () => ({ ok: true });
+      },
+    };
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners,
+      logger: silentLogger(),
+      autorun: false,
+      outputChannels,
+    });
+
+    const handler = dispatcher.dispatchHandlerForTest();
+    const job = {
+      id: "job-dryrun",
+      name: "dispatch",
+      data: { instanceId, dryRun: true, triggeredBy: "manual" as const },
+      queueName: "selfop.dispatch",
+      attemptsMade: 0,
+      timestamp: Date.now(),
+    } as unknown as Job<{ instanceId: string; dryRun?: boolean }>;
+    try {
+      await handler(job);
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+    expect(mock.deliveries).toEqual([]);
+  });
+
+  it("does NOT throw when a single delivery fails — the next binding still tries", async () => {
+    const fixture = await freshAgentDb();
+    const result = await fixture.raw.query<{ id: string }>(
+      `INSERT INTO agent_instances
+         (definition_slug, name, scope_domain_ids, output_channel_ids,
+          memory, locale, enabled, schedule_cron)
+       VALUES ('heartbeat', 'two-deliveries', $1::uuid[],
+               $2::jsonb,
+               '{"type":"none"}'::jsonb, 'en', true, '0 8 * * 1-5')
+       RETURNING id`,
+      [
+        [fixture.domainId],
+        JSON.stringify([
+          { adapter_slug: "asana", config: { channel_id: "a" } },
+          { adapter_slug: "slack", config: { channel_id: "b" } },
+        ]),
+      ],
+    );
+    const instanceId = result.rows[0]!.id;
+
+    const outputChannels = new OutputChannelRegistry();
+    // 'asana' throws, 'slack' captures — pin that 'slack' still runs.
+    outputChannels.register({
+      adapterSlug: "asana",
+      async deliver() {
+        throw new Error("simulated asana outage");
+      },
+    });
+    const slackMock = new MockOutputChannelAdapter("slack");
+    outputChannels.register(slackMock);
+
+    const runners: AgentRunnerRegistry = {
+      get(slug: string) {
+        if (slug !== TEST_DEFINITION.slug) return undefined;
+        return async () => ({ version: "v1", summary: "s", alerts: [] });
+      },
+    };
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners,
+      logger: silentLogger(),
+      autorun: false,
+      outputChannels,
+    });
+
+    const handler = dispatcher.dispatchHandlerForTest();
+    const job = {
+      id: "job-2",
+      name: "dispatch",
+      data: { instanceId },
+      queueName: "selfop.dispatch",
+      attemptsMade: 0,
+      timestamp: Date.now(),
+    } as unknown as Job<{ instanceId: string }>;
+    try {
+      await expect(handler(job)).resolves.toBeDefined();
+    } finally {
+      await dispatcher.stop();
+      redis.disconnect();
+    }
+    expect(slackMock.deliveries).toHaveLength(1);
+  });
+});
+
+describe("AgentDispatcher.refresh — PR-Z6 post-boot re-enumeration (closes G7)", () => {
+  it("registers a post-boot seeded agent_instance on refresh tick", async () => {
+    // Reproduces the partner-deployment bug: `opencoo agents seed`
+    // runs AFTER the engine is up → the row exists in
+    // `agent_instances` but the dispatcher only enumerated at boot
+    // → operator had to `docker compose restart opencoo` to pick
+    // it up. The refresh tick closes that gap.
+    const fixture = await freshAgentDb();
+
+    const harness = await startDispatcher({ fixture });
+    activeHarness = harness;
+    await harness.dispatcher.start();
+    expect(harness.registered).toHaveLength(0);
+    expect(harness.dispatcher.listSchedules()).toHaveLength(0);
+
+    // Operator runs `opencoo agents seed` against the live engine
+    // — direct INSERT mirrors what the CLI command does.
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      name: "post-boot",
+      scheduleCron: "0 8 * * *",
+    });
+
+    // Manually drive the tick (the production 60-second interval
+    // is disabled in tests via `refreshIntervalMs: 0`).
+    await harness.dispatcher.refresh();
+
+    expect(harness.registered).toHaveLength(1);
+    expect(harness.registered[0]).toMatchObject({
+      instanceId,
+      definitionSlug: TEST_DEFINITION.slug,
+      name: "post-boot",
+      scheduleCron: "0 8 * * *",
+    });
+    expect(harness.dispatcher.listSchedules()).toHaveLength(1);
+    expect(harness.dispatcher.listSchedules()[0]?.instanceId).toBe(
+      instanceId,
+    );
+  });
+
+  it("deregisters a disabled agent_instance on refresh tick", async () => {
+    // Inverse of the above: the operator disables an instance
+    // post-boot (UI toggle, `agents disable` CLI, or direct DB
+    // edit) and the refresh tick should tear down the BullMQ
+    // repeatable so the disabled instance stops firing within a
+    // minute.
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      name: "to-disable",
+      scheduleCron: "0 8 * * *",
+    });
+
+    const removed: RegisteredSchedule[] = [];
+    const harness = await startDispatcher({
+      fixture,
+      removeScheduleFn: async (entry) => {
+        removed.push(entry);
+      },
+    });
+    activeHarness = harness;
+    await harness.dispatcher.start();
+    expect(harness.registered).toHaveLength(1);
+
+    // Flip the row to enabled=false (mirrors the UI toggle path).
+    await fixture.raw.query(
+      `UPDATE agent_instances SET enabled = false WHERE id = $1::uuid`,
+      [instanceId],
+    );
+
+    await harness.dispatcher.refresh();
+
+    expect(removed).toHaveLength(1);
+    expect(removed[0]).toMatchObject({
+      instanceId,
+      scheduleCron: "0 8 * * *",
+    });
+    expect(harness.dispatcher.listSchedules()).toHaveLength(0);
+  });
+
+  it("is idempotent — concurrent refresh calls don't double-register", async () => {
+    // Two refresh() calls fire back-to-back while the FIRST call's
+    // DB enumeration is still in flight (simulated by a pending
+    // promise we resolve manually). The single-flight mutex
+    // (`this.refreshing`) must cause the second call to no-op so
+    // the seam-supplied registration stub fires once, not twice.
+    // We seed AFTER `start()` so the initial enumeration finds
+    // nothing — the new row only becomes visible to the refresh
+    // path, isolating the assertion window to the two concurrent
+    // refresh ticks.
+    const fixture = await freshAgentDb();
+    const harness = await startDispatcher({ fixture });
+    activeHarness = harness;
+    await harness.dispatcher.start();
+    expect(harness.registered).toHaveLength(0);
+
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      name: "single-flight",
+      scheduleCron: "0 8 * * *",
+    });
+
+    // Block the dispatcher's `db.execute()` so the first refresh()
+    // hangs inside `fetchDesiredSchedules`. The second refresh()
+    // must observe `this.refreshing === true` and bail BEFORE it
+    // would otherwise call `db.execute()` a second time.
+    //
+    // Access `db` via `[...]` because it's a private field — the
+    // private modifier is a TypeScript compile-time fence; at
+    // runtime the property is reachable like any other. Tests need
+    // this seam to drive the mutex deterministically without
+    // racing the production timer.
+    interface DispatcherInternals {
+      readonly db: { execute: (query: unknown) => Promise<unknown> };
+    }
+    const internals = harness.dispatcher as unknown as DispatcherInternals;
+    const originalExecute = internals.db.execute.bind(internals.db);
+    let releaseFirst: (() => void) | undefined;
+    const firstQueryGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let callCount = 0;
+    const executeSpy = vi
+      .spyOn(internals.db, "execute")
+      .mockImplementation(async (query: unknown) => {
+        callCount += 1;
+        if (callCount === 1) {
+          await firstQueryGate;
+        }
+        return originalExecute(query);
+      });
+
+    try {
+      const first = harness.dispatcher.refresh();
+      // Second call MUST be invoked while the first is still
+      // pending — fire it synchronously without awaiting.
+      const second = harness.dispatcher.refresh();
+
+      // Release the first call's DB query.
+      releaseFirst!();
+
+      await Promise.all([first, second]);
+
+      // Single-flight contract: the DB `execute` ran exactly once
+      // — the second refresh() saw `refreshing === true` and
+      // returned without enumerating.
+      expect(executeSpy).toHaveBeenCalledTimes(1);
+      // And the registration side-effect fired exactly once.
+      expect(harness.registered).toHaveLength(1);
+      expect(harness.registered[0]?.instanceId).toBe(instanceId);
+    } finally {
+      executeSpy.mockRestore();
+    }
+  });
+
+  it("clears the refresh interval in stop() so the timer doesn't leak past shutdown", async () => {
+    // Belt-and-suspenders: hand the dispatcher a small (non-zero)
+    // interval so the timer arms, then assert `stop()` clears it.
+    // Without this, a long-running process that re-creates
+    // dispatchers (test runs, integration suites) leaks
+    // setInterval handles and node ends up holding the event loop
+    // open until process exit.
+    const fixture = await freshAgentDb();
+    const harness = await startDispatcher({
+      fixture,
+      refreshIntervalMs: 50,
+    });
+    activeHarness = null; // We tear down manually below.
+    await harness.dispatcher.start();
+
+    // The dispatcher armed the timer; spy on `clearInterval` so
+    // we can pin that stop() reaches it.
+    const clearSpy = vi.spyOn(globalThis, "clearInterval");
+    try {
+      await harness.dispatcher.stop();
+      expect(clearSpy).toHaveBeenCalled();
+    } finally {
+      clearSpy.mockRestore();
+      harness.redis.disconnect();
+    }
+  });
+});
+
+describe("AgentDispatcher start/stop race (PR-Z6 round-2 Copilot triage)", () => {
+  // Copilot triage: `start()` could arm `setInterval` AFTER `stop()`
+  // already ran its `clearInterval` branch — `stop()` cleared an
+  // undefined timer slot, then `start()` (still awaiting its
+  // `fetchDesiredSchedules`) resumed and called `setInterval`,
+  // leaving a stray timer running past shutdown. Fix: `stop()` sets
+  // `this.stopping` BEFORE clearing the timer; `start()` checks
+  // `this.stopping` BEFORE calling `setInterval`.
+  it("does not arm refreshTimer if stop() begins while start() is awaiting", async () => {
+    const fixture = await freshAgentDb();
+    await seedScheduledInstance(fixture, {
+      name: "race-target",
+      scheduleCron: "0 8 * * *",
+    });
+
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+      // Real, non-zero interval — would arm a setInterval if not
+      // for the stop-during-start race guard.
+      refreshIntervalMs: 50,
+      registerScheduleFn: async () => {
+        // Stall start()'s registration loop long enough for stop()
+        // to race in BEFORE setInterval is reached.
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      },
+    });
+
+    // Spy on setInterval to assert NO timer is armed during the race.
+    // Using a spy rather than reading `refreshTimer` directly avoids
+    // poking at a private field.
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    try {
+      // Kick off start(); don't await it yet. Then call stop()
+      // SYNCHRONOUSLY — start() is mid-await on registerScheduleFn.
+      const startPromise = dispatcher.start();
+      const stopPromise = dispatcher.stop();
+      await Promise.all([startPromise, stopPromise]);
+
+      // The race guard fired: start() observed `this.stopping`
+      // before arming the timer. setInterval was never called from
+      // start()'s code path. (BullMQ may install timers internally,
+      // but those don't filter our predicate below.)
+      const armedFromStart = setIntervalSpy.mock.calls.some((call) => {
+        const ms = call[1];
+        return typeof ms === "number" && ms === 50;
+      });
+      expect(armedFromStart).toBe(false);
+    } finally {
+      setIntervalSpy.mockRestore();
+      redis.disconnect();
+    }
+  });
+
+  it("stop() sets the shutdown flag before clearing the timer so a racing start() observes it", async () => {
+    // Direct pin on the ordering: arm the timer via a fast start(),
+    // then call stop() and assert that `this.stopping` (the
+    // shutdown signal) is set on the dispatcher BEFORE
+    // `clearInterval` runs — i.e. setting the flag is observable
+    // synchronously while the close work is still in-flight.
+    const fixture = await freshAgentDb();
+    const harness = await startDispatcher({
+      fixture,
+      refreshIntervalMs: 50,
+    });
+    activeHarness = null;
+    await harness.dispatcher.start();
+
+    // Pre-stop sanity: the dispatcher armed its timer (the existing
+    // PR-Z6 timer-leak test pins this; we re-pin via a private-
+    // field peek to keep the assertion local).
+    interface DispatcherInternals {
+      readonly refreshTimer?: ReturnType<typeof setInterval>;
+      readonly stopping?: unknown;
+    }
+    const internals = harness.dispatcher as unknown as DispatcherInternals;
+    expect(internals.refreshTimer).not.toBeUndefined();
+    expect(internals.stopping).toBeUndefined();
+
+    // Fire stop() without awaiting — the flag must be visible
+    // synchronously (between the `if (this.stopping !== undefined)`
+    // guard and the `clearInterval` call inside stop()).
+    const stopPromise = harness.dispatcher.stop();
+    expect(internals.stopping).not.toBeUndefined();
+
+    try {
+      await stopPromise;
+      // After stop() completes, the timer is cleared.
+      expect(internals.refreshTimer).toBeUndefined();
+    } finally {
+      harness.redis.disconnect();
+    }
+  });
+});
+
+describe("AgentDispatcher refresh/updateSchedule mutex (PR-Z6 round-2 Copilot triage)", () => {
+  // Copilot triage: refresh() and updateSchedule() both mutate
+  // `this.registered` + call BullMQ `add`/`removeRepeatable`.
+  // Without a shared mutex they can interleave (e.g. updateSchedule
+  // removes the OLD cron repeatable, refresh tick fires
+  // mid-flight, refresh observes the still-OLD DB row and
+  // re-registers the OLD repeatable, updateSchedule adds the NEW
+  // repeatable on top → cluster fires the agent on TWO crons).
+  // Fix: shared `mutationLock` chained FIFO.
+  it("serialises a concurrent refresh() behind an in-flight updateSchedule()", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedScheduledInstance(fixture, {
+      name: "lock-target",
+      scheduleCron: "0 8 * * 1-5",
+    });
+
+    // Track every register/remove call in order so we can pin the
+    // serialisation contract on the BullMQ side.
+    interface Call {
+      readonly verb: "register" | "remove";
+      readonly cron: string;
+    }
+    const calls: Call[] = [];
+    // Gate: hold updateSchedule's FIRST registerScheduleFn call
+    // until we've explicitly fired refresh(). Without the mutex,
+    // refresh()'s db enumeration would race ahead and mutate
+    // `this.registered` before updateSchedule finished.
+    let releaseUpdateRegister: (() => void) | undefined;
+    const updateRegisterGate = new Promise<void>((resolve) => {
+      releaseUpdateRegister = resolve;
+    });
+    let registerCallNumber = 0;
+
+    const redis = new IORedisMock();
+    const dispatcher = new AgentDispatcher({
+      db: fixture.db as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["db"],
+      connection: redis as unknown as ConstructorParameters<
+        typeof AgentDispatcher
+      >[0]["connection"],
+      definitions: buildRegistryWith(TEST_DEFINITION),
+      runners: { get: () => async () => ({ ok: true }) },
+      logger: silentLogger(),
+      autorun: false,
+      refreshIntervalMs: 0, // manual refresh only
+      registerScheduleFn: async (s) => {
+        registerCallNumber += 1;
+        // Boot register: pass through.
+        // 2nd register call = updateSchedule's new-cron register.
+        //   Block on the gate so the test can fire a concurrent
+        //   refresh() and verify it serialises behind us.
+        if (registerCallNumber === 2) {
+          await updateRegisterGate;
+        }
+        calls.push({ verb: "register", cron: s.scheduleCron });
+      },
+      removeScheduleFn: async (s) => {
+        calls.push({ verb: "remove", cron: s.scheduleCron });
+      },
+    });
+
+    try {
+      await dispatcher.start();
+      // Boot register was call #1; drop it from the assertion
+      // window so we only see updateSchedule + refresh activity.
+      calls.length = 0;
+
+      const updatePromise = dispatcher.updateSchedule({
+        entries: [
+          {
+            instanceId,
+            definitionSlug: TEST_DEFINITION.slug,
+            name: "lock-target",
+            oldCron: "0 8 * * 1-5",
+            newCron: "0 9 * * 1-5",
+          },
+        ],
+      });
+
+      // Yield once so updateSchedule reaches its inner register
+      // call and parks on the gate.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      // Now fire a refresh while updateSchedule is held mid-swap.
+      // Without the mutex, this would race ahead, fetch the DB
+      // (still-OLD-cron row, because the route's DB tx hasn't
+      // committed in this test harness), and re-register an OLD
+      // repeatable on top.
+      const refreshPromise = dispatcher.refresh();
+
+      // Give refresh a tick to either start (no-mutex bug) or park
+      // behind the lock (fixed behavior).
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      // Pin: at this point, updateSchedule's swap loop has
+      // recorded its remove(OLD) call, but the register(NEW) is
+      // BLOCKED on the gate. If the mutex is missing, refresh
+      // would have ALREADY emitted its own register/remove pair —
+      // the only call in `calls` would be more than just the
+      // `remove(OLD)` from updateSchedule.
+      expect(calls).toEqual([{ verb: "remove", cron: "0 8 * * 1-5" }]);
+
+      // Release updateSchedule; refresh then proceeds.
+      releaseUpdateRegister!();
+      await Promise.all([updatePromise, refreshPromise]);
+
+      // Final state — updateSchedule's swap committed first
+      // (register NEW), then refresh ran on the up-to-date list
+      // and saw no diff (in-memory now reflects NEW cron,
+      // matches the DB enumeration's NEW row).
+      //
+      // Strict ordering check: remove(OLD) → register(NEW) from
+      // updateSchedule MUST appear before any refresh-driven
+      // mutation. Refresh sees the in-memory `registered` list
+      // (already updated to NEW cron) AND the DB row (still OLD
+      // because our test harness doesn't run the route's tx) —
+      // so refresh treats the cron as CHANGED and remove/re-adds.
+      // The load-bearing assertion is that updateSchedule's pair
+      // happened ATOMICALLY (no interleaved refresh call).
+      const removeOldIdx = calls.findIndex(
+        (c) => c.verb === "remove" && c.cron === "0 8 * * 1-5",
+      );
+      const registerNewIdx = calls.findIndex(
+        (c) => c.verb === "register" && c.cron === "0 9 * * 1-5",
+      );
+      expect(removeOldIdx).toBe(0);
+      expect(registerNewIdx).toBe(1);
+      // No `register` call between updateSchedule's two operations.
+      const between = calls.slice(removeOldIdx + 1, registerNewIdx);
+      expect(between).toEqual([]);
     } finally {
       await dispatcher.stop();
       redis.disconnect();

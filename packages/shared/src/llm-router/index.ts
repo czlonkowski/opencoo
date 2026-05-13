@@ -12,6 +12,11 @@ export {
   type ProviderName,
   type Tier,
 } from "./llm-policy.js";
+// PR-Q13 / phase-a appendix #9 — static model catalog seeded
+// into the LLM-policy editor's per-tier model dropdown. Lives
+// in shared so the admin-API endpoint AND the editor consume
+// the same source of truth.
+export { MODEL_CATALOG } from "./model-catalog.js";
 export {
   InMemoryQueuePauser,
   type QueuePauser,

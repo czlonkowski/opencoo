@@ -17,11 +17,18 @@
  *   - Run list does NOT include `output` — only the detail view does.
  *   - StatusPill (PR-E) is used for run status indicators.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
+import { AgentsRunNowButton } from "../components/AgentsRunNowButton.js";
+import { SchedulerEditor } from "../components/SchedulerEditor.js";
 import { StatusPill, type StatusTone } from "../components/StatusPill.js";
-import { fetchAdmin } from "../lib/api.js";
+import {
+  createAgentRunsSubscription,
+  type SubscribeToAgentRuns,
+} from "../lib/agent-runs-subscription.js";
+import { fetchAdmin, fetchOptsFor } from "../lib/api.js";
+import { clearPat } from "../lib/pat-store.js";
 import { openSseClient } from "../lib/sse.js";
 import type { AgentRun, Pipeline } from "../types.js";
 
@@ -38,6 +45,61 @@ interface FeedEntry {
   /** Full delivery UUID for DLQ entries — shown truncated in the feed but
    *  available as a tooltip and `data-delivery-id` attr for audit lookup. */
   readonly deliveryId?: string;
+  /** PR-W4 — `pipeline.intake_failed` event payload threaded onto the
+   *  feed entry so the renderer can show binding-id + errorClass chip
+   *  + snippet + similar-failure count without re-parsing `text`. */
+  readonly intakeFailed?: {
+    readonly bindingId: string;
+    readonly errorClass: string;
+    readonly errorTextSnippet: string;
+    readonly intakeId: string;
+    /** Count of `pipeline.intake_failed` events that have arrived for
+     *  the same `(bindingId, errorClass)` pair within the rolling
+     *  1-hour window ending at the time the entry was created. The
+     *  renderer surfaces the count so the operator can tell whether
+     *  a failure is a one-off or systemic. */
+    readonly recentCount: number;
+  };
+}
+
+/** PR-W4 — bookkeeping for the "similar failures in the last hour"
+ *  count rendered on `pipeline.intake_failed` feed entries. The map
+ *  is keyed by `JSON.stringify([bindingId, errorClass])` and stores
+ *  the rolling 1-hour window of timestamps so we drop entries older
+ *  than the window cheaply.
+ *
+ *  Implementation note — the map lives in the SSE-subscriber
+ *  effect closure (NOT React state); each event arrival snapshots
+ *  the freshly-computed count INTO the rendered entry, so each
+ *  row's count is stable across re-renders of the entry it was
+ *  attached to. This avoids a per-event re-render of every prior
+ *  entry just because their rolling-window counters slid forward.
+ *
+ *  The window helper is pure; the structure is small enough
+ *  (per-binding+class entries × ≤a few hundred events/hour) that
+ *  we don't need a more complex data-structure here. */
+const INTAKE_FAILED_WINDOW_MS = 60 * 60 * 1000;
+
+function bumpIntakeFailedCount(
+  prev: ReadonlyMap<string, readonly number[]>,
+  bindingId: string,
+  errorClass: string,
+  occurredAtMs: number,
+): { readonly map: ReadonlyMap<string, readonly number[]>; readonly count: number } {
+  // PR-W4 Copilot triage — key uses JSON.stringify so the
+  // composite (bindingId, errorClass) key has no invisible-
+  // delimiter bytes (a prior revision used a literal SOH char
+  // which was easy to miss in review and could be mangled by
+  // editors / formatters / greps). JSON.stringify on a 2-tuple
+  // is unambiguous, printable, and survives every transport.
+  const key = JSON.stringify([bindingId, errorClass]);
+  const cutoff = occurredAtMs - INTAKE_FAILED_WINDOW_MS;
+  const prior = prev.get(key) ?? [];
+  // Drop entries older than the 1-hour window; append the new one.
+  const next = [...prior.filter((t) => t > cutoff), occurredAtMs];
+  const map = new Map(prev);
+  map.set(key, next);
+  return { map, count: next.length };
 }
 
 interface AgentRunsResponse {
@@ -54,6 +116,19 @@ interface PipelinesResponse {
 export interface ActivityProps {
   /** @internal Test seam — defaults to globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
+  /** @internal Test seam — per-listener subscribe callable for
+   *  the per-agent "Run now" buttons (PR-R3). When omitted, the
+   *  route builds ONE shared subscription via
+   *  `createAgentRunsSubscription` per pipelines-tab mount and
+   *  hands its `subscribe` down. Tests inject a stub directly. */
+  readonly subscribeToAgentRuns?: SubscribeToAgentRuns;
+  /** PR-W3 — invoked when the SSE feed receives a terminal
+   *  `auth_failed` event (the operator's PAT is durably stale).
+   *  App.tsx wires this to clear the PAT + flip `authed: false`,
+   *  re-rendering the gating PatEntryModal. Default fallback
+   *  (when omitted): `clearPat()` + a hard reload, which routes
+   *  the user through App.tsx's first-load auth gate. */
+  readonly onAuthFailed?: () => void;
 }
 
 // ─── Sub-tab type ─────────────────────────────────────────────────────────────
@@ -70,14 +145,6 @@ function runStatusTone(status: string): StatusTone | null {
     case "timeout": return "alert";
     default: return null;
   }
-}
-
-/** Build fetchAdmin's options object only when an override is provided —
- *  passing `{ fetchImpl: undefined }` would shadow the default. */
-function fetchOptsFor(
-  fetchImpl: typeof fetch | undefined,
-): { fetchImpl?: typeof fetch } {
-  return fetchImpl !== undefined ? { fetchImpl } : {};
 }
 
 /** Single-line status / empty / error row used by the runs + pipelines views. */
@@ -101,17 +168,45 @@ function NoticeRow(props: {
 
 // ─── Feed sub-view ────────────────────────────────────────────────────────────
 
-function FeedView(): JSX.Element {
+/** PR-W3 — default re-auth handoff used when no `onAuthFailed`
+ *  prop is wired. Clears the stale PAT from sessionStorage and
+ *  reloads, which routes the user through App.tsx's first-load
+ *  auth gate (the PatEntryModal). Lives at module scope so the
+ *  Activity component owns no extra state for the no-prop case. */
+function defaultAuthFailedHandler(): void {
+  clearPat();
+  if (typeof window !== "undefined") {
+    window.location.reload();
+  }
+}
+
+function FeedView(props: { onAuthFailed?: () => void }): JSX.Element {
   const { t } = useTranslation();
   const [connected, setConnected] = useState(false);
+  const [authExpired, setAuthExpired] = useState(false);
   const [entries, setEntries] = useState<FeedEntry[]>([]);
 
   useEffect(() => {
     const client = openSseClient("/api/admin/events");
+    // PR-W4 — per-(bindingId, errorClass) rolling 1-hour timestamp
+    // window used to compute the "similar failures (1h)" count
+    // surfaced on `pipeline.intake_failed` entries. Held in the
+    // effect closure (not React state) because the count is derived
+    // freshly each event arrival and embedded into the entry; the
+    // entry is what the renderer reads. Resets on component remount.
+    let recentMap: ReadonlyMap<string, readonly number[]> = new Map();
 
     // Connected acknowledgement.
     const offConnected = client.on<{ connectedAt: string }>("connected", () => {
       setConnected(true);
+    });
+
+    // PR-W3 — terminal `auth_failed` event from the SSE client. The
+    // client itself stops reconnecting; we flip the in-feed indicator
+    // to "auth expired" + render the inline alert with a re-auth CTA.
+    const offAuth = client.on<{ reason: string }>("auth_failed", () => {
+      setAuthExpired(true);
+      setConnected(false);
     });
 
     // Agent run lifecycle events — all statuses (running, success, failed).
@@ -163,6 +258,57 @@ function FeedView(): JSX.Element {
       ]);
     });
 
+    // PR-W4 — `pipeline.intake_failed` events emitted by the
+    // compile-worker's catch path (engine-ingestion). The feed entry
+    // renders binding id + errorClass chip + scrubbed snippet +
+    // similar-failure count via a dedicated render branch keyed by
+    // `intakeFailed`. The id is the intakeId so React doesn't
+    // collapse multiple failures from the same binding into one row.
+    const offIntakeFailed = client.on<{
+      bindingId: string;
+      errorClass: string;
+      errorTextSnippet: string;
+      intakeId: string;
+      occurredAt: string;
+    }>("pipeline.intake_failed", (evt) => {
+      const d = evt.data;
+      const occurredAtMs = Date.parse(d.occurredAt);
+      // `Date.parse` returns NaN on malformed input — fall back to
+      // `Date.now()` rather than skipping the event so the operator
+      // still sees the failure, just with the local clock as the
+      // tie-breaker for the rolling window.
+      const windowedAt = Number.isNaN(occurredAtMs)
+        ? Date.now()
+        : occurredAtMs;
+      const bumped = bumpIntakeFailedCount(
+        recentMap,
+        d.bindingId,
+        d.errorClass,
+        windowedAt,
+      );
+      recentMap = bumped.map;
+      setEntries((prev) => [
+        {
+          id: d.intakeId,
+          type: "pipeline.intake_failed",
+          at: d.occurredAt,
+          // `text` is fallback search/scan body for the renderer when
+          // the dedicated branch isn't taken (e.g. future telemetry
+          // dumps); the branch below renders the structured payload.
+          text: `${t("activity.feed.intakeFailed")} binding=${d.bindingId} class=${d.errorClass} — ${d.errorTextSnippet}`,
+          tone: "alert" as const,
+          intakeFailed: {
+            bindingId: d.bindingId,
+            errorClass: d.errorClass,
+            errorTextSnippet: d.errorTextSnippet,
+            intakeId: d.intakeId,
+            recentCount: bumped.count,
+          },
+        },
+        ...prev.slice(0, 99),
+      ]);
+    });
+
     // The fetch-streaming client does a real connect (PR-Q1); test
     // suites stub `openSseClient` directly, so the readyState here
     // reflects whatever the stub returns. Treat `open` as connected
@@ -173,11 +319,32 @@ function FeedView(): JSX.Element {
 
     return () => {
       offConnected();
+      offAuth();
       offRun();
       offDlq();
+      offIntakeFailed();
       client.close();
     };
   }, []);
+
+  const handleReauth = props.onAuthFailed ?? defaultAuthFailedHandler;
+
+  // The status-line color picks up `--alert` when the session is
+  // terminally unauthenticated — auth-expired IS a blocking state,
+  // not a transient "still connecting…". Avoid nested ternaries
+  // (CLAUDE.md: prefer explicit branches for >2 conditions).
+  let indicatorColor: string;
+  let indicatorLabel: string;
+  if (authExpired) {
+    indicatorColor = "var(--alert)";
+    indicatorLabel = t("activity.feed.authExpired");
+  } else if (connected) {
+    indicatorColor = "var(--healthy)";
+    indicatorLabel = t("activity.feed.live");
+  } else {
+    indicatorColor = "var(--ink-3)";
+    indicatorLabel = t("activity.feed.connecting");
+  }
 
   return (
     <div
@@ -192,13 +359,71 @@ function FeedView(): JSX.Element {
         style={{
           fontFamily: "var(--font-mono)",
           fontSize: 11,
-          color: connected ? "var(--healthy)" : "var(--ink-3)",
+          color: indicatorColor,
           letterSpacing: "0.06em",
           textTransform: "uppercase",
         }}
       >
-        {connected ? t("activity.feed.live") : t("activity.feed.connecting")}
+        {indicatorLabel}
       </div>
+      {/* PR-W3 — terminal auth-failure alert. `--alert` border + title
+          (auth expiry IS a destructive/blocking state); informational
+          secondary line in `--ink-3`. NO new motion loop — heartbeat
+          pulse is reserved for the agent layer. */}
+      {authExpired && (
+        <div
+          role="alert"
+          data-testid="sse-auth-failed-alert"
+          style={{
+            border: "1px solid var(--alert)",
+            borderRadius: 6,
+            padding: "12px 16px",
+            background: "var(--paper-2)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+          }}
+        >
+          <div
+            style={{
+              fontFamily: "var(--font-sans)",
+              fontWeight: 500,
+              fontSize: 13,
+              color: "var(--alert)",
+            }}
+          >
+            {t("activity.feed.authFailed.title")}
+          </div>
+          <div
+            style={{
+              fontFamily: "var(--font-sans)",
+              fontSize: 12,
+              color: "var(--ink-3)",
+            }}
+          >
+            {t("activity.feed.authFailed.body")}
+          </div>
+          <button
+            type="button"
+            onClick={handleReauth}
+            data-testid="sse-auth-failed-reauth"
+            style={{
+              alignSelf: "flex-start",
+              font: "inherit",
+              fontSize: 12,
+              fontFamily: "var(--font-sans)",
+              padding: "6px 12px",
+              border: "1px solid var(--alert)",
+              borderRadius: 3,
+              background: "var(--paper)",
+              color: "var(--alert)",
+              cursor: "pointer",
+            }}
+          >
+            {t("activity.feed.authFailed.action")}
+          </button>
+        </div>
+      )}
       {entries.length === 0 && (
         <div
           style={{
@@ -210,29 +435,81 @@ function FeedView(): JSX.Element {
           {t("activity.feed.empty")}
         </div>
       )}
-      {entries.map((e) => (
-        <div
-          key={e.id}
-          data-delivery-id={e.deliveryId}
-          title={e.deliveryId !== undefined ? `${t("activity.feed.dlqDeliveryId")}: ${e.deliveryId}` : undefined}
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: 12,
-            color: e.tone === "alert" ? "var(--alert)" : "var(--ink-2)",
-            borderLeft: `2px solid ${e.tone === "alert" ? "var(--alert)" : "var(--rule)"}`,
-            paddingLeft: 10,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-          }}
-        >
-          <span style={{ color: "var(--ink-3)" }}>{e.at}</span>
-          {e.tone === "alert" && (
-            <StatusPill tone="alert">{t("activity.feed.dlq")}</StatusPill>
-          )}
-          <span>{e.text}</span>
-        </div>
-      ))}
+      {entries.map((e) => {
+        // PR-W4 — dedicated render branch for `pipeline.intake_failed`
+        // entries. Surface binding id, errorClass chip, scrubbed
+        // snippet, and the "similar failures in the last hour" count
+        // so the operator can tell at a glance whether the failure
+        // is isolated or systemic. Falls back to the generic row
+        // when the structured payload is absent (e.g. a future
+        // unstructured event we don't yet have a branch for).
+        if (e.intakeFailed !== undefined) {
+          const f = e.intakeFailed;
+          return (
+            <div
+              key={e.id}
+              data-testid={`intake-failed-row-${e.id}`}
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                color: "var(--alert)",
+                borderLeft: "2px solid var(--alert)",
+                paddingLeft: 10,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+              }}
+            >
+              <span style={{ color: "var(--ink-3)" }}>{e.at}</span>
+              <StatusPill tone="alert">
+                {t("activity.feed.intakeFailed")}
+              </StatusPill>
+              <span style={{ color: "var(--ink-2)" }}>
+                {t("activity.feed.intakeFailedRow")}=
+              </span>
+              <span>{f.bindingId}</span>
+              <span style={{ color: "var(--ink-2)" }}>
+                {t("activity.feed.intakeFailedClass")}=
+              </span>
+              <span>{f.errorClass}</span>
+              <span
+                data-testid={`intake-failed-count-${f.bindingId}-${f.errorClass}`}
+                style={{ color: "var(--ink-3)" }}
+                title={t("activity.feed.intakeFailedRecentCount")}
+              >
+                ({f.recentCount}× / 1h)
+              </span>
+              <span style={{ color: "var(--ink-2)", flexBasis: "100%" }}>
+                {f.errorTextSnippet}
+              </span>
+            </div>
+          );
+        }
+        return (
+          <div
+            key={e.id}
+            data-delivery-id={e.deliveryId}
+            title={e.deliveryId !== undefined ? `${t("activity.feed.dlqDeliveryId")}: ${e.deliveryId}` : undefined}
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 12,
+              color: e.tone === "alert" ? "var(--alert)" : "var(--ink-2)",
+              borderLeft: `2px solid ${e.tone === "alert" ? "var(--alert)" : "var(--rule)"}`,
+              paddingLeft: 10,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <span style={{ color: "var(--ink-3)" }}>{e.at}</span>
+            {e.tone === "alert" && (
+              <StatusPill tone="alert">{t("activity.feed.dlq")}</StatusPill>
+            )}
+            <span>{e.text}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -326,9 +603,268 @@ function RunsView(props: { fetchImpl?: typeof fetch }): JSX.Element {
   );
 }
 
+// ─── Scheduled agents card list (PR-R3) ───────────────────────────────────────
+// One card per scheduled agent_instance from `/api/admin/scheduler`.
+// Each card carries a "Run now" CTA the operator uses to fire the
+// agent on demand without waiting for the cron tick.
+
+interface ScheduleEntry {
+  readonly instanceId: string;
+  readonly definitionSlug: string;
+  readonly name: string;
+  readonly scheduleCron: string;
+  readonly nextFireAt: string | null;
+  readonly lastFireAt: string | null;
+  readonly domainSlug: string | null;
+}
+
+interface ScheduleResponse {
+  readonly schedules: readonly ScheduleEntry[];
+}
+
+const RUN_NOW_DISPATCHABLE = new Set([
+  "heartbeat",
+  "lint",
+  "surfacer",
+  "builder",
+]);
+
+function ScheduledAgentsView(props: {
+  fetchImpl?: typeof fetch;
+  /** @internal Test seam — see HeartbeatView for the same pattern. */
+  subscribeToAgentRuns?: SubscribeToAgentRuns;
+}): JSX.Element {
+  const { t } = useTranslation();
+  const [schedules, setSchedules] = useState<readonly ScheduleEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // PR-R6 — which agent INSTANCE currently has the cadence editor
+  // expanded. Keyed by `instanceId` (not `definitionSlug`) so two
+  // instances of the same agent on the same page each have their
+  // own toggle target — clicking one card's "Edit schedule" doesn't
+  // open both editors. Only one editor open at a time keeps the
+  // column count visually predictable.
+  const [editingInstance, setEditingInstance] = useState<string | null>(null);
+
+  const refetch = async (): Promise<void> => {
+    try {
+      const r = await fetchAdmin<ScheduleResponse>(
+        "/api/admin/scheduler",
+        fetchOptsFor(props.fetchImpl),
+      );
+      setSchedules(r.schedules);
+      setError(null);
+    } catch {
+      setError(t("common.error"));
+    }
+  };
+
+  useEffect(() => {
+    void refetch();
+  }, []);
+
+  // Stable SSE subscription shared across the cards. ONE
+  // underlying client per ScheduledAgentsView mount; each
+  // "Run now" button calls `subscription.subscribe(listener)` to
+  // add a handler without re-opening the SSE pipe. Tests inject
+  // a stub `subscribe` callable directly via the prop.
+  const injectedSubscribe = props.subscribeToAgentRuns;
+  const subscription = useMemo(
+    () =>
+      injectedSubscribe !== undefined
+        ? null
+        : createAgentRunsSubscription(),
+    [injectedSubscribe],
+  );
+  useEffect(
+    () => (): void => {
+      subscription?.close();
+    },
+    [subscription],
+  );
+  const subscribeToAgentRuns: SubscribeToAgentRuns =
+    injectedSubscribe ?? subscription!.subscribe;
+
+  if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
+  if (schedules === null) {
+    return <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>;
+  }
+  if (schedules.length === 0) {
+    return (
+      <NoticeRow tone="muted">{t("agentsRunNow.activityCard.empty")}</NoticeRow>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {schedules.map((s) => {
+        // PR-R6 round-2 — split the gating cleanly:
+        //   - `editableSlug` (Edit-schedule visibility): agent slug
+        //     alone. Editing the cron pattern is independent of
+        //     dispatchability — a global Surfacer instance with no
+        //     bound domain still has a cron the operator can change.
+        //   - `dispatchable` (Run-now visibility): slug + domainSlug.
+        //     The Run-now button needs the domain to fire the agent.
+        const editableSlug = RUN_NOW_DISPATCHABLE.has(s.definitionSlug)
+          ? (s.definitionSlug as
+              | "heartbeat"
+              | "lint"
+              | "surfacer"
+              | "builder")
+          : null;
+        const dispatchable =
+          s.domainSlug !== null && editableSlug !== null;
+        const slug = dispatchable ? editableSlug : null;
+        const editing = editingInstance === s.instanceId;
+        // Used twice below (Edit-schedule and Run-now cells) when
+        // the agent slug isn't dispatchable — extract once so the
+        // grid keeps an identically-styled placeholder cell.
+        const dash = (
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              color: "var(--ink-3)",
+            }}
+          >
+            —
+          </span>
+        );
+        return (
+          <div
+            key={s.instanceId}
+            style={{
+              border: "1px solid var(--rule)",
+              borderRadius: 6,
+              padding: "16px 20px",
+              background: "var(--paper-2)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 0,
+            }}
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr auto auto auto auto auto",
+                gap: 18,
+                alignItems: "center",
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 13,
+                  color: "var(--ink)",
+                }}
+              >
+                {s.definitionSlug}
+              </span>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  color: "var(--ink-2)",
+                }}
+              >
+                {s.name}
+              </span>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  color: "var(--ink-3)",
+                }}
+              >
+                {s.scheduleCron}
+              </span>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  color: "var(--ink-3)",
+                }}
+              >
+                {s.lastFireAt !== null
+                  ? new Date(s.lastFireAt).toLocaleString()
+                  : "—"}
+              </span>
+              {/* PR-R6 — Edit schedule toggle. Default chrome
+                  (NO `--alert`); gated on the agent slug ALONE —
+                  editing the cron pattern is independent of
+                  dispatchability so a global Surfacer instance with
+                  no bound domain can still have its cadence
+                  flipped. */}
+              {editableSlug !== null ? (
+                <button
+                  type="button"
+                  onClick={(): void =>
+                    setEditingInstance(editing ? null : s.instanceId)
+                  }
+                  data-testid={`scheduler-editor-toggle-${s.definitionSlug}`}
+                  style={{
+                    font: "inherit",
+                    fontSize: 12,
+                    fontFamily: "var(--font-sans)",
+                    padding: "6px 12px",
+                    border: "1px solid var(--rule)",
+                    borderRadius: 3,
+                    background: editing ? "var(--paper-2)" : "var(--paper)",
+                    color: "var(--ink-2)",
+                    cursor: "pointer",
+                  }}
+                >
+                  {t("schedulerEditor.edit")}
+                </button>
+              ) : (
+                dash
+              )}
+              {slug !== null && s.domainSlug !== null ? (
+                <AgentsRunNowButton
+                  agentSlug={slug}
+                  domainSlug={s.domainSlug}
+                  instanceSlug={s.name}
+                  idleLabel={t("agentsRunNow.labels.runNow")}
+                  queuedLabelFormat={t("agentsRunNow.labels.queued")}
+                  runningLabelFormat={t("agentsRunNow.labels.running")}
+                  rateLimitedTooltipFormat={t(
+                    "agentsRunNow.tooltips.rateLimited",
+                  )}
+                  subscribeToAgentRuns={subscribeToAgentRuns}
+                  {...(props.fetchImpl !== undefined
+                    ? { fetchImpl: props.fetchImpl }
+                    : {})}
+                />
+              ) : (
+                dash
+              )}
+            </div>
+            {editing && editableSlug !== null && (
+              <SchedulerEditor
+                agentSlug={editableSlug}
+                currentCron={s.scheduleCron}
+                onApplied={(): void => {
+                  void refetch();
+                }}
+                onCancel={(): void => setEditingInstance(null)}
+                {...(props.fetchImpl !== undefined
+                  ? { fetchImpl: props.fetchImpl }
+                  : {})}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Pipelines sub-view ───────────────────────────────────────────────────────
 
-function PipelinesView(props: { fetchImpl?: typeof fetch }): JSX.Element {
+function PipelinesView(props: {
+  fetchImpl?: typeof fetch;
+  /** @internal Test seam — see ScheduledAgentsView. */
+  subscribeToAgentRuns?: SubscribeToAgentRuns;
+}): JSX.Element {
   const { t } = useTranslation();
   const [pipelines, setPipelines] = useState<readonly Pipeline[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -347,46 +883,85 @@ function PipelinesView(props: { fetchImpl?: typeof fetch }): JSX.Element {
     })();
   }, []);
 
-  if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
-  if (pipelines === null) return <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>;
-  if (pipelines.length === 0) return <NoticeRow tone="muted">{t("activity.pipelines.empty")}</NoticeRow>;
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "16px 0" }}>
-      {pipelines.map((p) => (
-        <div
-          key={p.name}
+    <div style={{ display: "flex", flexDirection: "column", gap: 24, padding: "16px 0" }}>
+      {/* PR-R3 — scheduled-agent cards with per-card "Run now". */}
+      <section>
+        <h3
           style={{
-            border: "1px solid var(--rule)",
-            borderRadius: 6,
-            padding: "16px 20px",
-            background: "var(--paper-2)",
-            display: "grid",
-            gridTemplateColumns: "1fr auto auto auto",
-            gap: 24,
-            alignItems: "center",
+            fontFamily: "var(--font-sans)",
+            fontSize: 12,
+            fontWeight: 500,
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            color: "var(--ink-3)",
+            margin: "0 0 8px 0",
           }}
         >
-          <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 13,
-              color: "var(--ink)",
-            }}
-          >
-            {p.name}
-          </span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-2)" }}>
-            depth: {p.depth}
-          </span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: p.failedCount > 0 ? "var(--alert)" : "var(--ink-2)" }}>
-            failed: {p.failedCount}
-          </span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: p.dlqCount > 0 ? "var(--alert)" : "var(--ink-2)" }}>
-            DLQ: {p.dlqCount}
-          </span>
-        </div>
-      ))}
+          {t("agentsRunNow.activityCard.title")}
+        </h3>
+        <ScheduledAgentsView
+          {...(props.fetchImpl !== undefined ? { fetchImpl: props.fetchImpl } : {})}
+          {...(props.subscribeToAgentRuns !== undefined
+            ? { subscribeToAgentRuns: props.subscribeToAgentRuns }
+            : {})}
+        />
+      </section>
+
+      {/* Existing BullMQ queue cards. */}
+      <section>
+        <h3
+          style={{
+            fontFamily: "var(--font-sans)",
+            fontSize: 12,
+            fontWeight: 500,
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            color: "var(--ink-3)",
+            margin: "0 0 8px 0",
+          }}
+        >
+          {t("activity.tabs.pipelines")}
+        </h3>
+        {error !== null ? (
+          <NoticeRow tone="alert">{error}</NoticeRow>
+        ) : pipelines === null ? (
+          <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>
+        ) : pipelines.length === 0 ? (
+          <NoticeRow tone="muted">{t("activity.pipelines.empty")}</NoticeRow>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {pipelines.map((p) => (
+              <div
+                key={p.name}
+                style={{
+                  border: "1px solid var(--rule)",
+                  borderRadius: 6,
+                  padding: "16px 20px",
+                  background: "var(--paper-2)",
+                  display: "grid",
+                  gridTemplateColumns: "1fr auto auto auto",
+                  gap: 24,
+                  alignItems: "center",
+                }}
+              >
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--ink)" }}>
+                  {p.name}
+                </span>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-2)" }}>
+                  depth: {p.depth}
+                </span>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: p.failedCount > 0 ? "var(--alert)" : "var(--ink-2)" }}>
+                  failed: {p.failedCount}
+                </span>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: p.dlqCount > 0 ? "var(--alert)" : "var(--ink-2)" }}>
+                  DLQ: {p.dlqCount}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -448,16 +1023,25 @@ export function Activity(props: ActivityProps = {}): JSX.Element {
           `exactOptionalPropertyTypes` — passing `fetchImpl={undefined}`
           would shadow the prop's optional default. */}
       <div style={{ flex: 1, overflowY: "auto" }}>
-        {activeTab === "feed" && <FeedView />}
+        {activeTab === "feed" && (
+          <FeedView
+            {...(props.onAuthFailed !== undefined
+              ? { onAuthFailed: props.onAuthFailed }
+              : {})}
+          />
+        )}
         {activeTab === "runs" && (
           props.fetchImpl !== undefined
             ? <RunsView fetchImpl={props.fetchImpl} />
             : <RunsView />
         )}
         {activeTab === "pipelines" && (
-          props.fetchImpl !== undefined
-            ? <PipelinesView fetchImpl={props.fetchImpl} />
-            : <PipelinesView />
+          <PipelinesView
+            {...(props.fetchImpl !== undefined ? { fetchImpl: props.fetchImpl } : {})}
+            {...(props.subscribeToAgentRuns !== undefined
+              ? { subscribeToAgentRuns: props.subscribeToAgentRuns }
+              : {})}
+          />
         )}
       </div>
     </div>

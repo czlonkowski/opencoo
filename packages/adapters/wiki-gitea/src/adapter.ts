@@ -30,6 +30,7 @@ import type {
 
 import type {
   CommitInspection,
+  CommitListEntry,
   GiteaClient,
   GiteaFileChange,
   GiteaRepoLocator,
@@ -50,6 +51,14 @@ export interface GiteaWikiAdapterDeps {
 /** Surface re-exported from index.ts for the gated contract test. */
 export interface GiteaWikiAdapter extends WikiAdapter {
   inspectCommit(sha: string, domainSlug: DomainSlug): Promise<CommitInspection>;
+  /** PR-W1 (phase-a appendix #13) — list the most recent commits on
+   *  the domain's repo branch, newest first. The worldview-trigger
+   *  pipeline consumes this to parse `Worldview-Impact:` trailers on
+   *  ingest commits and decide whether to enqueue a recompile. */
+  listRecentCommits(
+    domainSlug: DomainSlug,
+    limit: number,
+  ): Promise<readonly CommitListEntry[]>;
 }
 
 class GiteaWikiAdapterImpl implements GiteaWikiAdapter {
@@ -112,6 +121,17 @@ class GiteaWikiAdapterImpl implements GiteaWikiAdapter {
     return this.deps.client.inspectCommit(this.repoFor(domainSlug), sha);
   }
 
+  async listRecentCommits(
+    domainSlug: DomainSlug,
+    limit: number,
+  ): Promise<readonly CommitListEntry[]> {
+    return this.deps.client.listRecentCommits(
+      this.repoFor(domainSlug),
+      this.deps.branch,
+      limit,
+    );
+  }
+
   async listMarkdown(
     domainSlug: DomainSlug,
   ): Promise<readonly string[]> {
@@ -125,10 +145,30 @@ class GiteaWikiAdapterImpl implements GiteaWikiAdapter {
   }
 
   private repoFor(domainSlug: DomainSlug): GiteaRepoLocator {
-    return {
-      owner: this.deps.owner,
-      name: `${this.deps.repoPrefix}-${domainSlug}`,
-    };
+    // PR-Y3 (phase-a follow-up) — provisioning creates the Gitea repo
+    // as the BARE slug (`gitea-provisioning.ts:144` → `name: args.slug`),
+    // not `${prefix}-${slug}`. Earlier partner cutovers picked slugs
+    // that already carried the `wiki-` prefix (e.g. `wiki-estyl-pilot`),
+    // so the actual repo on disk is `wiki-estyl-pilot`. The original
+    // `${prefix}-${slug}` template would compute `wiki-wiki-estyl-pilot`
+    // and 404 on every read. Avoid double-prefixing: if the slug
+    // already starts with `${prefix}-`, pass it through unchanged;
+    // otherwise prepend the prefix. Reads + writes then always resolve
+    // the same repo that provisioning actually created.
+    //
+    // KNOWN RISK (Y3 Copilot triage): two distinct slugs `exec` and
+    // `wiki-exec` would both resolve to `wiki-exec` under this rule,
+    // so a second domain whose slug happens to match the
+    // prefix-shape of an existing domain would silently share the
+    // Gitea repo. v0.2 domain-create validation should reject slugs
+    // starting with `${repoPrefix}-` for NEW domains (grandfather
+    // existing partner-legacy ones via a one-time DB-state check).
+    // Filed as a phase-b candidate.
+    const slug = String(domainSlug);
+    const name = slug.startsWith(`${this.deps.repoPrefix}-`)
+      ? slug
+      : `${this.deps.repoPrefix}-${slug}`;
+    return { owner: this.deps.owner, name };
   }
 
   /**

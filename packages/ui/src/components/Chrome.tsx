@@ -29,6 +29,12 @@ interface SidebarProps {
 const TABS: ReadonlyArray<{ key: Tab; labelKey: string }> = [
   { key: "domains", labelKey: "nav.domains" },
   { key: "sources", labelKey: "nav.sources" },
+  // PR-W2 (phase-a appendix #13) — Agents tab between Sources and Outputs:
+  // operators bind an agent_instance to one or more output channels here.
+  { key: "agents", labelKey: "nav.agents" },
+  // PR-Z4 (phase-a appendix #12 G5) — Outputs tab between Sources and LLM
+  // policy: same surface family (binding-style CRUD over operator config).
+  { key: "outputs", labelKey: "nav.outputs" },
   { key: "llmPolicy", labelKey: "nav.llmPolicy" },
   { key: "prompts", labelKey: "nav.prompts" },
   // Phase-a appendix #4 PR-B: Activity tab (5th tab).
@@ -37,6 +43,10 @@ const TABS: ReadonlyArray<{ key: Tab; labelKey: string }> = [
   { key: "review", labelKey: "nav.review" },
   // Phase-a appendix #4 PR-D: Reports tab (7th tab).
   { key: "reports", labelKey: "nav.reports" },
+  // Phase-a appendix #10 PR-R4: Audit log viewer (8th tab).
+  { key: "audit", labelKey: "nav.audit" },
+  // Phase-a appendix #10 PR-R5: Cost analytics dashboard (9th tab).
+  { key: "cost", labelKey: "nav.cost" },
 ];
 
 export function Sidebar(props: SidebarProps): JSX.Element {

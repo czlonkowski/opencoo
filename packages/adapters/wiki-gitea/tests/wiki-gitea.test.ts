@@ -18,10 +18,14 @@ wikiAdapterContract({
   async makeAdapter(domainSlug) {
     const client = new MockGiteaClient();
     // Each test uses a fresh repo; the adapter binds a domain slug to
-    // a `${owner}/${repoPrefix}-${domainSlug}` Gitea repo. The mock
-    // initialises that repo as empty so getHeadSha returns a stable
-    // initial sha.
-    const repo = { owner: "opencoo", name: `wiki-${domainSlug}` };
+    // a `${owner}/${repoPrefix}-${domainSlug}` Gitea repo (or just
+    // `${owner}/${domainSlug}` if the slug already carries the prefix
+    // — PR-Y3 backward-compat for partner-legacy deployments that
+    // chose pre-prefixed slugs). The mock initialises that repo as
+    // empty so getHeadSha returns a stable initial sha.
+    const slug = String(domainSlug);
+    const name = slug.startsWith("wiki-") ? slug : `wiki-${slug}`;
+    const repo = { owner: "opencoo", name };
     await client.initRepo(repo);
     const adapter = giteaWikiAdapter({
       client,
@@ -72,6 +76,66 @@ describe("wiki-gitea — package-local", () => {
     // hr repo must NOT see x.md
     const hrPage = await adapter.readPage(hrSlug, "x.md");
     expect(hrPage).toBeNull();
+  });
+
+  // PR-Y3 (phase-a follow-up) — legacy partner cutovers picked slugs
+  // that already carried the `wiki-` prefix (`gitea-provisioning.ts`
+  // creates the Gitea repo as the BARE slug, so the operator put the
+  // prefix in the slug). Without the strip-if-present rule, `repoFor`
+  // would compute `wiki-wiki-estyl-pilot` and 404 on every read. This
+  // test pins both paths: a bare slug gets the prefix; a slug that
+  // already carries the prefix passes through unchanged.
+  it("resolves repo name correctly whether slug carries the prefix or not (PR-Y3)", async () => {
+    const client = new MockGiteaClient();
+    // Two repos, one created by the new convention, one by the
+    // partner-legacy convention. Both should be readable.
+    await client.initRepo({ owner: "opencoo", name: "wiki-exec" });
+    await client.initRepo({ owner: "opencoo", name: "wiki-estyl-pilot" });
+
+    const adapter = giteaWikiAdapter({
+      client,
+      owner: "opencoo",
+      repoPrefix: "wiki",
+      branch: "main",
+    });
+
+    type Slug = Parameters<typeof adapter.getHeadSha>[0];
+    // Case A — bare slug; adapter prepends prefix.
+    const aSha = await adapter.getHeadSha("exec" as Slug);
+    expect(aSha).toBeDefined();
+    // Case B — slug already carries the prefix; adapter passes through.
+    const bSha = await adapter.getHeadSha("wiki-estyl-pilot" as Slug);
+    expect(bSha).toBeDefined();
+
+    // Write under both shapes; the underlying repos are isolated, so
+    // a write under the bare slug must NOT bleed into the prefix-slug
+    // repo and vice versa.
+    const aR = await adapter.writeAtomic({
+      domainSlug: "exec" as Slug,
+      operations: [{ mode: "replace", path: "a.md", content: "A\n" }],
+      commitMessage: "[compiler] a",
+      author: { name: "engine", email: "e@e.test" },
+      parentSha: aSha,
+    });
+    expect(aR.status).toBe("ok");
+    const bR = await adapter.writeAtomic({
+      domainSlug: "wiki-estyl-pilot" as Slug,
+      operations: [{ mode: "replace", path: "b.md", content: "B\n" }],
+      commitMessage: "[compiler] b",
+      author: { name: "engine", email: "e@e.test" },
+      parentSha: bSha,
+    });
+    expect(bR.status).toBe("ok");
+
+    const aRead = await adapter.readPage("exec" as Slug, "a.md");
+    expect(aRead?.content).toBe("A\n");
+    const bRead = await adapter.readPage("wiki-estyl-pilot" as Slug, "b.md");
+    expect(bRead?.content).toBe("B\n");
+    // Cross-check: neither file leaks into the other repo.
+    expect(await adapter.readPage("exec" as Slug, "b.md")).toBeNull();
+    expect(
+      await adapter.readPage("wiki-estyl-pilot" as Slug, "a.md"),
+    ).toBeNull();
   });
 });
 

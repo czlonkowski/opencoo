@@ -66,6 +66,65 @@ export interface SourceScanResult {
 }
 
 /**
+ * Args for the optional `seed()` primitive (PR-Z2, phase-a
+ * appendix #12 G2). Brand-new bindings sync forward from the
+ * moment they're created — Drive's existing files and Asana's
+ * existing tasks are invisible until they change. `seed()` is
+ * the "initial pull from zero" path called on binding-create
+ * (Z3 wires the trigger) and on a manual "Scan now" against a
+ * cursor-less binding.
+ *
+ * Deliberately NO `cursor` field — the seed is always a fresh
+ * full-fetch from the source's current state. The result's
+ * `cursor` (analogous to `SourceScanResult.nextCursor`) is the
+ * handoff that subsequent `scan()` invocations resume from, so
+ * the seed-to-scan boundary doesn't re-emit documents that
+ * were already part of the seed.
+ *
+ * Adapters that don't need a backfill (webhook-only sources
+ * like Fireflies — meeting transcripts only exist
+ * forward-in-time) MAY leave `seed` undefined; the scanner
+ * falls back to `scan()` even on the first tick for those.
+ */
+export interface SourceSeedArgs {
+  /** Optional clock injection for deterministic tests. Adapters
+   *  that don't need a clock ignore this field. Mirrors the
+   *  same field on `SourceScanArgs`. */
+  readonly now?: number;
+}
+
+/**
+ * Result of `seed()`. Shape mirrors `SourceScanResult` so the
+ * Scanner's intake-dedupe + enqueue path can consume either
+ * without branching on the source. The `cursor` field is the
+ * persisted `sources_bindings.last_scan_cursor` after the
+ * seed completes — the next scanner tick reads it via
+ * `scan({ cursor })`, not `seed()`.
+ */
+export interface SourceSeedResult {
+  /** Documents pulled in the seed. Flow through the same
+   *  `ingestion_intake` UNIQUE(binding_id, source_doc_id,
+   *  source_revision) dedupe path that `scan()` results do —
+   *  a partial-seed replay is idempotent. */
+  readonly documents: readonly SourceChangedDocument[];
+  /** Cursor for the FIRST subsequent `scan()` call. **Always
+   *  non-null** because the scanner uses `last_scan_cursor ===
+   *  null` as the "this binding still needs seeding" flag — a
+   *  null cursor after a successful seed would cause every tick
+   *  to re-route to `seed()` forever. For Drive this is the
+   *  `getStartPageToken()` snapshot captured at seed-START (so
+   *  the change feed doesn't double-deliver files between
+   *  seed-start and seed-end as "changes"). For webhook
+   *  adapters where there's no resumable cursor (e.g. Asana),
+   *  return an opaque sentinel like `<slug>-seeded:<ISO>` that
+   *  `scan()` MUST treat as "no-op" (Asana's scan ignores its
+   *  input cursor entirely; sentinel is operator-readable for
+   *  forensics). Future webhook adapters that don't need a
+   *  sentinel can return any non-empty marker string. */
+  readonly cursor: string;
+}
+
+/**
  * Per-event shape emitted by webhook-mode adapters when their
  * `parseEvents` helper unpacks an inbound webhook body. The
  * receiver in engine-ingestion (PR 14) cross-references
@@ -266,6 +325,26 @@ export interface SourceAdapter {
   /** Discover documents changed since `args.cursor`. Returns
    *  the new cursor for the engine to persist. */
   scan(args: SourceScanArgs): Promise<SourceScanResult>;
+  /**
+   * One-off bootstrap pull (PR-Z2, phase-a appendix #12 G2).
+   * Called on binding-create (Z3 triggers the initial scan)
+   * and on a manual "Scan now" against a cursor-less binding
+   * to backfill existing source-side content that `scan()`
+   * cannot see (Drive files / Asana tasks that exist BEFORE
+   * the binding was created).
+   *
+   * Emissions flow through the SAME `ingestion_intake`
+   * UNIQUE(binding_id, source_doc_id, source_revision) dedupe +
+   * classify enqueue pipeline `scan()` uses — a seed followed
+   * by a same-tick `scan()` does NOT re-emit the seeded docs.
+   *
+   * Optional: webhook-only adapters that don't need a
+   * backfill (e.g. `fireflies` — meeting transcripts only
+   * exist forward-in-time) can leave `seed` undefined. The
+   * Scanner detects `seed === undefined` + a null cursor and
+   * falls back to `scan()` on the first tick.
+   */
+  readonly seed?: (args: SourceSeedArgs) => Promise<SourceSeedResult>;
   /** Webhook-mode helpers — set only by webhook adapters
    *  (PR 24 Asana, PR 27 Fireflies). The contract suite
    *  asserts presence + behavior when `mode === 'webhook'`. */
@@ -286,6 +365,38 @@ export {
   type SourceAdapterSlug,
   type WebhookCredentialSchema,
 } from "./credential-schemas.js";
+
+export {
+  SOURCE_ADAPTER_BINDING_CONFIG_SCHEMAS,
+  getSourceAdapterBindingConfigSchema,
+  type BindingConfigField,
+  type BindingConfigSchema,
+} from "./binding-config-schemas.js";
+
+/** PR-W1 (phase-a appendix #14) — per-adapter `allowed_paths`
+ *  suggestions. UI renders these as click-to-add chips in the
+ *  `+ New binding` wizard's 4th step; bootstrap scripts seed them
+ *  on partner fixtures. The runtime classifier guard
+ *  (`assertBindingNotWildcardOnly`) is unchanged — these are
+ *  suggestions, not enforcement. */
+export {
+  SOURCE_ADAPTER_DEFAULT_ALLOWED_PATHS,
+  getDefaultAllowedPaths,
+} from "./default-allowed-paths.js";
+
+/** PR-W1 (phase-a appendix #14) — the runtime classifier guard
+ *  symbols moved from `@opencoo/engine-ingestion/classifier` into
+ *  `@opencoo/shared/source-adapter` so the admin-API
+ *  POST/PATCH paths in `@opencoo/engine-self-operating` can
+ *  pre-validate `allowed_paths` without crossing the cross-engine
+ *  boundary. The classifier still calls `assertBindingNotWildcardOnly`
+ *  at scan-time — it just re-exports the symbol now. THREAT-MODEL
+ *  §3.4 invariant 2 (the wildcard-only fail-closed boundary) is
+ *  unchanged. */
+export {
+  assertBindingNotWildcardOnly,
+  BindingConfigError,
+} from "./binding-guard.js";
 
 export {
   TRANSCRIPTION_ADAPTER_SLUGS,

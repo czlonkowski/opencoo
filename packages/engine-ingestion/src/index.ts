@@ -14,6 +14,16 @@ export {
   INGESTION_QUEUE_PREFIX,
   type BuildIngestionQueueOptions,
 } from "./queue.js";
+// PR-W2 (phase-a appendix #14) — read-only enumerator over the
+// `ingestion.scanner.classify` queue's failed set, filtered by
+// payload bindingId (+ optionally intakeId). Powers the admin-API
+// `POST /api/admin/source-bindings/:id/retry-failed` route.
+export {
+  enumerateFailedJobsByBindingId,
+  type FailedJobLike,
+  type FailedJobsQueueLike,
+  type FailedJobEntry,
+} from "./enumerate-failed-jobs-by-binding-id.js";
 export {
   buildServer,
   type BuildServerOptions,
@@ -45,6 +55,8 @@ export {
 // engine's `start({ mode: 'workers' })` consumes.
 export {
   composeProductionWorkerContext,
+  SCANNER_CRON_DEFAULT,
+  SCANNER_REPEAT_KEY,
   type ComposeProductionContextArgs,
   type ProductionSourceAdapterFactory,
   type ProductionWorkerContext,
