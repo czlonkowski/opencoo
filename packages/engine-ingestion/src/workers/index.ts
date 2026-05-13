@@ -181,6 +181,11 @@ export function startIngestionWorkers(
     wikiDeps: ctx.wikiDeps,
     author: ctx.author,
     guardAdapter: ctx.guardAdapter,
+    // PR-W4 — thread the SSE bus from the orchestrator's cross-engine
+    // seam so the compile worker's catch path can publish
+    // `pipeline.intake_failed` events live on the Activity feed.
+    // Optional; the worker null-guards before calling.
+    ...(ctx.sseBus !== undefined ? { sseBus: ctx.sseBus } : {}),
     connection,
     ...ifDefined("concurrency", args.compileConcurrency),
     ...autorunOpt,

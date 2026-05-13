@@ -45,6 +45,61 @@ interface FeedEntry {
   /** Full delivery UUID for DLQ entries — shown truncated in the feed but
    *  available as a tooltip and `data-delivery-id` attr for audit lookup. */
   readonly deliveryId?: string;
+  /** PR-W4 — `pipeline.intake_failed` event payload threaded onto the
+   *  feed entry so the renderer can show binding-id + errorClass chip
+   *  + snippet + similar-failure count without re-parsing `text`. */
+  readonly intakeFailed?: {
+    readonly bindingId: string;
+    readonly errorClass: string;
+    readonly errorTextSnippet: string;
+    readonly intakeId: string;
+    /** Count of `pipeline.intake_failed` events that have arrived for
+     *  the same `(bindingId, errorClass)` pair within the rolling
+     *  1-hour window ending at the time the entry was created. The
+     *  renderer surfaces the count so the operator can tell whether
+     *  a failure is a one-off or systemic. */
+    readonly recentCount: number;
+  };
+}
+
+/** PR-W4 — bookkeeping for the "similar failures in the last hour"
+ *  count rendered on `pipeline.intake_failed` feed entries. The map
+ *  is keyed by `JSON.stringify([bindingId, errorClass])` and stores
+ *  the rolling 1-hour window of timestamps so we drop entries older
+ *  than the window cheaply.
+ *
+ *  Implementation note — the map lives in the SSE-subscriber
+ *  effect closure (NOT React state); each event arrival snapshots
+ *  the freshly-computed count INTO the rendered entry, so each
+ *  row's count is stable across re-renders of the entry it was
+ *  attached to. This avoids a per-event re-render of every prior
+ *  entry just because their rolling-window counters slid forward.
+ *
+ *  The window helper is pure; the structure is small enough
+ *  (per-binding+class entries × ≤a few hundred events/hour) that
+ *  we don't need a more complex data-structure here. */
+const INTAKE_FAILED_WINDOW_MS = 60 * 60 * 1000;
+
+function bumpIntakeFailedCount(
+  prev: ReadonlyMap<string, readonly number[]>,
+  bindingId: string,
+  errorClass: string,
+  occurredAtMs: number,
+): { readonly map: ReadonlyMap<string, readonly number[]>; readonly count: number } {
+  // PR-W4 Copilot triage — key uses JSON.stringify so the
+  // composite (bindingId, errorClass) key has no invisible-
+  // delimiter bytes (a prior revision used a literal SOH char
+  // which was easy to miss in review and could be mangled by
+  // editors / formatters / greps). JSON.stringify on a 2-tuple
+  // is unambiguous, printable, and survives every transport.
+  const key = JSON.stringify([bindingId, errorClass]);
+  const cutoff = occurredAtMs - INTAKE_FAILED_WINDOW_MS;
+  const prior = prev.get(key) ?? [];
+  // Drop entries older than the 1-hour window; append the new one.
+  const next = [...prior.filter((t) => t > cutoff), occurredAtMs];
+  const map = new Map(prev);
+  map.set(key, next);
+  return { map, count: next.length };
 }
 
 interface AgentRunsResponse {
@@ -133,6 +188,13 @@ function FeedView(props: { onAuthFailed?: () => void }): JSX.Element {
 
   useEffect(() => {
     const client = openSseClient("/api/admin/events");
+    // PR-W4 — per-(bindingId, errorClass) rolling 1-hour timestamp
+    // window used to compute the "similar failures (1h)" count
+    // surfaced on `pipeline.intake_failed` entries. Held in the
+    // effect closure (not React state) because the count is derived
+    // freshly each event arrival and embedded into the entry; the
+    // entry is what the renderer reads. Resets on component remount.
+    let recentMap: ReadonlyMap<string, readonly number[]> = new Map();
 
     // Connected acknowledgement.
     const offConnected = client.on<{ connectedAt: string }>("connected", () => {
@@ -196,6 +258,57 @@ function FeedView(props: { onAuthFailed?: () => void }): JSX.Element {
       ]);
     });
 
+    // PR-W4 — `pipeline.intake_failed` events emitted by the
+    // compile-worker's catch path (engine-ingestion). The feed entry
+    // renders binding id + errorClass chip + scrubbed snippet +
+    // similar-failure count via a dedicated render branch keyed by
+    // `intakeFailed`. The id is the intakeId so React doesn't
+    // collapse multiple failures from the same binding into one row.
+    const offIntakeFailed = client.on<{
+      bindingId: string;
+      errorClass: string;
+      errorTextSnippet: string;
+      intakeId: string;
+      occurredAt: string;
+    }>("pipeline.intake_failed", (evt) => {
+      const d = evt.data;
+      const occurredAtMs = Date.parse(d.occurredAt);
+      // `Date.parse` returns NaN on malformed input — fall back to
+      // `Date.now()` rather than skipping the event so the operator
+      // still sees the failure, just with the local clock as the
+      // tie-breaker for the rolling window.
+      const windowedAt = Number.isNaN(occurredAtMs)
+        ? Date.now()
+        : occurredAtMs;
+      const bumped = bumpIntakeFailedCount(
+        recentMap,
+        d.bindingId,
+        d.errorClass,
+        windowedAt,
+      );
+      recentMap = bumped.map;
+      setEntries((prev) => [
+        {
+          id: d.intakeId,
+          type: "pipeline.intake_failed",
+          at: d.occurredAt,
+          // `text` is fallback search/scan body for the renderer when
+          // the dedicated branch isn't taken (e.g. future telemetry
+          // dumps); the branch below renders the structured payload.
+          text: `${t("activity.feed.intakeFailed")} binding=${d.bindingId} class=${d.errorClass} — ${d.errorTextSnippet}`,
+          tone: "alert" as const,
+          intakeFailed: {
+            bindingId: d.bindingId,
+            errorClass: d.errorClass,
+            errorTextSnippet: d.errorTextSnippet,
+            intakeId: d.intakeId,
+            recentCount: bumped.count,
+          },
+        },
+        ...prev.slice(0, 99),
+      ]);
+    });
+
     // The fetch-streaming client does a real connect (PR-Q1); test
     // suites stub `openSseClient` directly, so the readyState here
     // reflects whatever the stub returns. Treat `open` as connected
@@ -209,6 +322,7 @@ function FeedView(props: { onAuthFailed?: () => void }): JSX.Element {
       offAuth();
       offRun();
       offDlq();
+      offIntakeFailed();
       client.close();
     };
   }, []);
@@ -321,29 +435,81 @@ function FeedView(props: { onAuthFailed?: () => void }): JSX.Element {
           {t("activity.feed.empty")}
         </div>
       )}
-      {entries.map((e) => (
-        <div
-          key={e.id}
-          data-delivery-id={e.deliveryId}
-          title={e.deliveryId !== undefined ? `${t("activity.feed.dlqDeliveryId")}: ${e.deliveryId}` : undefined}
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: 12,
-            color: e.tone === "alert" ? "var(--alert)" : "var(--ink-2)",
-            borderLeft: `2px solid ${e.tone === "alert" ? "var(--alert)" : "var(--rule)"}`,
-            paddingLeft: 10,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-          }}
-        >
-          <span style={{ color: "var(--ink-3)" }}>{e.at}</span>
-          {e.tone === "alert" && (
-            <StatusPill tone="alert">{t("activity.feed.dlq")}</StatusPill>
-          )}
-          <span>{e.text}</span>
-        </div>
-      ))}
+      {entries.map((e) => {
+        // PR-W4 — dedicated render branch for `pipeline.intake_failed`
+        // entries. Surface binding id, errorClass chip, scrubbed
+        // snippet, and the "similar failures in the last hour" count
+        // so the operator can tell at a glance whether the failure
+        // is isolated or systemic. Falls back to the generic row
+        // when the structured payload is absent (e.g. a future
+        // unstructured event we don't yet have a branch for).
+        if (e.intakeFailed !== undefined) {
+          const f = e.intakeFailed;
+          return (
+            <div
+              key={e.id}
+              data-testid={`intake-failed-row-${e.id}`}
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                color: "var(--alert)",
+                borderLeft: "2px solid var(--alert)",
+                paddingLeft: 10,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+              }}
+            >
+              <span style={{ color: "var(--ink-3)" }}>{e.at}</span>
+              <StatusPill tone="alert">
+                {t("activity.feed.intakeFailed")}
+              </StatusPill>
+              <span style={{ color: "var(--ink-2)" }}>
+                {t("activity.feed.intakeFailedRow")}=
+              </span>
+              <span>{f.bindingId}</span>
+              <span style={{ color: "var(--ink-2)" }}>
+                {t("activity.feed.intakeFailedClass")}=
+              </span>
+              <span>{f.errorClass}</span>
+              <span
+                data-testid={`intake-failed-count-${f.bindingId}-${f.errorClass}`}
+                style={{ color: "var(--ink-3)" }}
+                title={t("activity.feed.intakeFailedRecentCount")}
+              >
+                ({f.recentCount}× / 1h)
+              </span>
+              <span style={{ color: "var(--ink-2)", flexBasis: "100%" }}>
+                {f.errorTextSnippet}
+              </span>
+            </div>
+          );
+        }
+        return (
+          <div
+            key={e.id}
+            data-delivery-id={e.deliveryId}
+            title={e.deliveryId !== undefined ? `${t("activity.feed.dlqDeliveryId")}: ${e.deliveryId}` : undefined}
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 12,
+              color: e.tone === "alert" ? "var(--alert)" : "var(--ink-2)",
+              borderLeft: `2px solid ${e.tone === "alert" ? "var(--alert)" : "var(--rule)"}`,
+              paddingLeft: 10,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <span style={{ color: "var(--ink-3)" }}>{e.at}</span>
+            {e.tone === "alert" && (
+              <StatusPill tone="alert">{t("activity.feed.dlq")}</StatusPill>
+            )}
+            <span>{e.text}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

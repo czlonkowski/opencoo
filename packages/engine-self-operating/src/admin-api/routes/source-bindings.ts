@@ -173,6 +173,27 @@ interface BindingRow {
    *  may write into. Sources row drill-down renders this as a chip
    *  list; an Edit button dispatches `PATCH {allowed_paths}`. */
   readonly allowedPaths: readonly string[];
+  /** PR-W4 (phase-a appendix #14) — per-status counts of the
+   *  binding's `ingestion_intake` rows. Defaults each status to 0
+   *  so the SourceBindingDetail panel never has to special-case
+   *  "no intake yet". The 4 status literals must stay in lock-step
+   *  with `intake_status` (`@opencoo/shared/db/schema/enums.ts`)
+   *  — adding a new status here requires the migration first. */
+  readonly intakeCounts: {
+    readonly pending: number;
+    readonly classified: number;
+    readonly skipped: number;
+    readonly failed: number;
+  };
+  /** PR-W4 — top 3 most-recent `failed` intake rows (newest-first).
+   *  The snippet is scrubbed via `safeErrorMessage` and 200-char-
+   *  truncated at the query (`LEFT(error_text, 200)`) before
+   *  reaching this shape. THREAT-MODEL §3.6 invariant 11. */
+  readonly recentFailedIntake: ReadonlyArray<{
+    readonly id: string;
+    readonly errorClass: string | null;
+    readonly errorTextSnippet: string | null;
+  }>;
 }
 
 /** Coerce pg's timestamp result (Date when node-postgres parsed it,
@@ -188,6 +209,109 @@ export function toIso(value: Date | string | null): string | null {
   const d = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString();
+}
+
+/** The four `intake_status` enum literals — kept in lock-step with
+ *  `@opencoo/shared/db/schema/enums.ts` (W3 added `'failed'`). The
+ *  GET handler defaults each to `0` so the response shape is dense
+ *  even on bindings with no intake history. Adding a new status
+ *  literal here requires the migration to land first. */
+const INTAKE_STATUS_KEYS = [
+  "pending",
+  "classified",
+  "skipped",
+  "failed",
+] as const;
+
+interface IntakeCounts {
+  readonly pending: number;
+  readonly classified: number;
+  readonly skipped: number;
+  readonly failed: number;
+}
+
+/** PR-W4 — decode the `jsonb_object_agg(status, count)` blob into a
+ *  dense `IntakeCounts` shape with every status defaulted to 0.
+ *  Pglite returns the jsonb as an already-parsed object; node-postgres
+ *  returns it as a JSON string under some adapter configurations, so
+ *  the helper handles both. Unknown keys (e.g. a future enum literal
+ *  not yet declared here) are silently dropped — the response stays
+ *  on the dense 4-status shape until the migration + the
+ *  `INTAKE_STATUS_KEYS` constant catch up. */
+function decodeIntakeCounts(
+  raw: Record<string, number> | string | null | undefined,
+): IntakeCounts {
+  let parsed: Record<string, unknown> = {};
+  if (raw !== null && raw !== undefined) {
+    if (typeof raw === "string") {
+      try {
+        const j = JSON.parse(raw);
+        if (j !== null && typeof j === "object" && !Array.isArray(j)) {
+          parsed = j as Record<string, unknown>;
+        }
+      } catch {
+        // Malformed jsonb — fall through to all-zeros below.
+      }
+    } else {
+      parsed = raw as Record<string, unknown>;
+    }
+  }
+  const out: Record<string, number> = {};
+  for (const k of INTAKE_STATUS_KEYS) {
+    const v = parsed[k];
+    out[k] = typeof v === "number" ? v : 0;
+  }
+  return out as unknown as IntakeCounts;
+}
+
+/** PR-W4 — decode the recent-failed-intake jsonb_agg blob and scrub
+ *  the snippet through `safeErrorMessage` so PAT/JWT shapes that
+ *  somehow landed in `ingestion_intake.error_text` don't leak to the
+ *  client. The query already capped the column at 200 chars via
+ *  `LEFT(error_text, 200)`; the scrub here is defense-in-depth (the
+ *  same pattern `lastError` uses above). */
+function decodeRecentFailedIntake(
+  raw:
+    | ReadonlyArray<{
+        id: string;
+        error_class: string | null;
+        error_text_snippet: string | null;
+        created_at: Date | string;
+      }>
+    | string
+    | null
+    | undefined,
+): ReadonlyArray<{
+  readonly id: string;
+  readonly errorClass: string | null;
+  readonly errorTextSnippet: string | null;
+}> {
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.map((r) => {
+    const row = r as {
+      id?: unknown;
+      error_class?: unknown;
+      error_text_snippet?: unknown;
+    };
+    const id = typeof row.id === "string" ? row.id : "";
+    const errorClass =
+      typeof row.error_class === "string" ? row.error_class : null;
+    const rawSnippet =
+      typeof row.error_text_snippet === "string"
+        ? row.error_text_snippet
+        : null;
+    const errorTextSnippet =
+      rawSnippet === null ? null : safeErrorMessage(rawSnippet);
+    return { id, errorClass, errorTextSnippet };
+  });
 }
 
 const REVIEW_MODES = ["auto", "approve", "review"] as const;
@@ -369,6 +493,18 @@ export function registerSourceBindingsRoutes(
     // (latest event time, 24h sig-fail count, latest 24h intake error).
     // `name` falls back to `adapter_slug → domain_slug` when notes is null
     // — a dedicated column is a v0.2 enhancement.
+    //
+    // PR-W4 widens the SELECT with two more sub-selects:
+    //   - `intake_counts_json` — a jsonb_object_agg of status → count
+    //     across ALL of the binding's `ingestion_intake` rows. The
+    //     handler defaults each of the 4 status literals to 0 after
+    //     decoding so the response shape is dense even on bindings
+    //     with no intake history.
+    //   - `recent_failed_intake_json` — a jsonb_agg of up to 3
+    //     newest-first `failed` rows. `LEFT(error_text, 200)`
+    //     truncates the snippet at the query so we never pull more
+    //     than 200 chars across the wire (defense-in-depth against
+    //     W3's 1000-char DB cap drifting upward).
     const result = (await args.db.execute(sql`
       SELECT b.id::text AS id,
              d.slug AS domain_slug,
@@ -408,7 +544,33 @@ export function registerSourceBindingsRoutes(
                FROM webhook_events w
                WHERE w.binding_id = b.id
                  AND w.status = 'pending'
-             ) AS pending_events_count
+             ) AS pending_events_count,
+             (
+               SELECT COALESCE(
+                 jsonb_object_agg(g.status, g.cnt),
+                 '{}'::jsonb
+               )
+               FROM (
+                 SELECT ii.status::text AS status, COUNT(*)::int AS cnt
+                 FROM ingestion_intake ii
+                 WHERE ii.binding_id = b.id
+                 GROUP BY ii.status
+               ) g
+             ) AS intake_counts_json,
+             (
+               SELECT COALESCE(jsonb_agg(r ORDER BY r.created_at DESC), '[]'::jsonb)
+               FROM (
+                 SELECT ii.id::text AS id,
+                        ii.error_class::text AS error_class,
+                        LEFT(ii.error_text, 200) AS error_text_snippet,
+                        ii.created_at AS created_at
+                 FROM ingestion_intake ii
+                 WHERE ii.binding_id = b.id
+                   AND ii.status = 'failed'
+                 ORDER BY ii.created_at DESC
+                 LIMIT 3
+               ) r
+             ) AS recent_failed_intake_json
       FROM sources_bindings b
       JOIN domains d ON d.id = b.domain_id
       ORDER BY b.created_at DESC
@@ -429,6 +591,16 @@ export function registerSourceBindingsRoutes(
         sig_fail_count_24h: number;
         latest_error_class: string | null;
         pending_events_count: number;
+        intake_counts_json: Record<string, number> | string | null;
+        recent_failed_intake_json:
+          | ReadonlyArray<{
+              id: string;
+              error_class: string | null;
+              error_text_snippet: string | null;
+              created_at: Date | string;
+            }>
+          | string
+          | null;
       }>;
     };
 
@@ -470,6 +642,12 @@ export function registerSourceBindingsRoutes(
         // practice always non-null, but the safe fallback keeps the
         // type stable).
         allowedPaths: r.allowed_paths ?? [],
+        // PR-W4 (phase-a appendix #14): decoders default each status
+        // to 0 + scrub the snippet through `safeErrorMessage`.
+        intakeCounts: decodeIntakeCounts(r.intake_counts_json),
+        recentFailedIntake: decodeRecentFailedIntake(
+          r.recent_failed_intake_json,
+        ),
       };
     });
     return { rows };

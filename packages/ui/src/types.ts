@@ -176,6 +176,27 @@ export interface SourceBinding {
    *  surfaces an empty array `[]` for bindings still on the pre-W1
    *  default. */
   readonly allowedPaths?: readonly string[];
+  /** PR-W4 (phase-a appendix #14) — per-status `ingestion_intake`
+   *  counts. The SourceBindingDetail "Intake state" panel renders the
+   *  four numbers; the GET handler defaults each to 0 on bindings
+   *  with no intake history. Optional for back-compat with fixtures
+   *  predating W4. */
+  readonly intakeCounts?: {
+    readonly pending: number;
+    readonly classified: number;
+    readonly skipped: number;
+    readonly failed: number;
+  };
+  /** PR-W4 — top 3 most-recent `failed` intake rows (newest-first),
+   *  carrying the scrubbed + 200-char-capped `errorTextSnippet` and
+   *  the `error_class` chip. The SourceBindingDetail panel renders
+   *  one row per entry with a Retry button (currently disabled, ships
+   *  in PR-W2). */
+  readonly recentFailedIntake?: ReadonlyArray<{
+    readonly id: string;
+    readonly errorClass: string | null;
+    readonly errorTextSnippet: string | null;
+  }>;
 }
 
 export interface PromptManifestEntry {
