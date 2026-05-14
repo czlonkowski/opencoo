@@ -19,7 +19,7 @@ import { scrubPat } from "@opencoo/shared/scrub";
 import type { CredentialStore } from "@opencoo/shared/credential-store";
 import type { CredentialId } from "@opencoo/shared/db";
 
-/** Six fields from the PoC reference (TZLsyt2i4OkqwhqQ). */
+/** Six fields from the PoC reference. */
 export const DEFAULT_OPT_FIELDS = [
   "name",
   "assignee.name",
