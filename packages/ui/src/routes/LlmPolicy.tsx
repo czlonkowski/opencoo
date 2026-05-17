@@ -3,6 +3,10 @@
  * confirmation. Uses PR 28's `verifySovereigntyDiffToken`
  * primitives via the new `/preview` and `/apply` endpoints
  * (decision Q4 — paired with this UI).
+ *
+ * PR-W11 design-system audit (accent budgets, compliant):
+ * `--alert` only on error display + apply-error mono line;
+ * `--healthy` only on the apply-success indicator.
  */
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";

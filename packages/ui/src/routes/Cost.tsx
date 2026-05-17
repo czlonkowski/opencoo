@@ -27,6 +27,12 @@
  *     (the ONE motion loop in the app).
  *   - No gradients. No drop shadows. Border + paper-shift only.
  *   - No spinners. No emoji. Lowercase opencoo in any prose.
+ *
+ * PR-W11 design-system audit (accent budgets, compliant): the
+ * cost-bar tone mapping (`getBarColor`) is the canonical site
+ * for the documented `--healthy` / `--advisory` / `--alert`
+ * progression — operator-advisory budget is one of the explicit
+ * approved uses. Under 10% per viewport in the rendered table.
  */
 import {
   useEffect,

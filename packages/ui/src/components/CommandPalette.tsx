@@ -33,10 +33,12 @@
  * Design-system: reuses Modal's backdrop shell so the palette
  * inherits the no-shadow, no-blur, paper card aesthetic. No
  * emoji. Highlighted matched chars render as `<b>` with
- * `color: var(--wiki)` — the wiki-teal token is the only place
- * the codebase uses teal, and "compiled-knowledge surface" is
- * the right semantic for "search result that resolves to a
- * knowledge entity".
+ * `color: var(--ink)` + `fontWeight: 600` — the palette spans
+ * multiple result classes (domains, agents, sources, …), so we
+ * cannot tint matches with `--wiki` without violating the
+ * "Wiki Teal only on compiled-knowledge chrome" budget rule
+ * (PR-W11 audit). Bold-on-ink is sufficient differentiation
+ * without the tint.
  */
 import {
   useEffect,
@@ -199,9 +201,12 @@ const EMPTY_STYLE: CSSProperties = {
   textAlign: "center",
 };
 
-/** Highlight the matched substring with a wiki-teal `<b>` so
- *  the operator can see which characters resolved the query.
- *  Pure text walk — `q` is a literal substring, no regex. */
+/** Highlight the matched substring with bold ink so the
+ *  operator can see which characters resolved the query.
+ *  Pure text walk — `q` is a literal substring, no regex.
+ *  Tinting was ruled out (PR-W11 audit) — the palette spans
+ *  non-knowledge entities, so `--wiki` would violate the
+ *  "compiled-knowledge chrome only" budget. */
 function highlight(label: string, q: string): JSX.Element {
   if (q === "") return <>{label}</>;
   const idx = label.toLowerCase().indexOf(q.toLowerCase());
@@ -212,7 +217,7 @@ function highlight(label: string, q: string): JSX.Element {
   return (
     <>
       {before}
-      <b style={{ color: "var(--wiki)", fontWeight: 500 }}>{match}</b>
+      <b style={{ color: "var(--ink)", fontWeight: 600 }}>{match}</b>
       {after}
     </>
   );

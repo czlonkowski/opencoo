@@ -7,6 +7,10 @@
  * down (DomainDetail) for edit / soft-disable / hard-delete, the
  * "Show disabled" toggle (?include_disabled=1), and the disabled
  * badge on retired rows.
+ *
+ * PR-W11 design-system audit (accent budgets, compliant):
+ * `--alert` on the load-error message only; `--healthy` only on
+ * the enabled-status indicator.
  */
 import type { KeyboardEvent } from "react";
 import { useEffect, useState, type CSSProperties } from "react";

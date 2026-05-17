@@ -10,6 +10,10 @@
  *
  * Hard-nos honored: no gradients, no emoji, lowercase opencoo,
  * design-system tokens only.
+ *
+ * PR-W11 design-system audit (accent budgets, compliant):
+ * `--alert` on the load-error message only; `--healthy` only on
+ * the enabled-status indicator.
  */
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";

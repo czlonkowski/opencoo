@@ -181,7 +181,7 @@ describe("CommandPalette (PR-W10)", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("highlights the matched substring with the wiki-teal token", () => {
+  it("highlights the matched substring with bold ink (PR-W11: wiki-teal removed — palette spans non-knowledge entities, so `--wiki` would violate the compiled-knowledge-chrome budget)", () => {
     renderPalette();
     const input = screen.getByTestId(
       "command-palette-input",
@@ -193,7 +193,8 @@ describe("CommandPalette (PR-W10)", () => {
     const bold = row.querySelector("b") as HTMLElement;
     expect(bold).not.toBeNull();
     expect(bold.textContent).toBe("exec");
-    expect(bold.style.color).toBe("var(--wiki)");
+    expect(bold.style.color).toBe("var(--ink)");
+    expect(bold.style.fontWeight).toBe("600");
   });
 
   it("does not call any fetch when initialResults is supplied (read-only seam)", () => {

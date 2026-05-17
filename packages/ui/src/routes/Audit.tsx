@@ -23,6 +23,10 @@
  *     for the agent layer).
  *   - Pagination defaults to a SAFE limit (50) — no `?limit=∞`
  *     footgun.
+ *
+ * PR-W11 design-system audit (accent budgets, compliant): mapping
+ * documented above pinned in code at `actionTone()`. Under 10% per
+ * viewport.
  */
 import {
   useCallback,

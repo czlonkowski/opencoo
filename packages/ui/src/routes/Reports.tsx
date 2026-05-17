@@ -14,6 +14,16 @@
  *   - Redaction view shows matchedByteRangesCount (count) only — never
  *     the byte ranges, never the source bytes. §3.3.
  *   - Read-only tab: append-only invariant §2 invariant 8.
+ *
+ * PR-W11 design-system audit (accent budgets, compliant):
+ *   - `--advisory`: heartbeat report-card left-rail + advisory-ink tone
+ *     on the cap-pct cells; agent-layer only (heartbeat IS the agent
+ *     layer). Well under 10% per viewport.
+ *   - `--wiki`: citation badges (mono path tokens) only — compiled-
+ *     knowledge chrome, textbook fit.
+ *   - `--alert`: over-limit cell colors only — flagged items.
+ *   - `--healthy`: copy-to-clipboard success indicator + ok status —
+ *     compliant.
  */
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { TFunction } from "i18next";
