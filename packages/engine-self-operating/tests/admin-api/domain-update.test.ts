@@ -775,6 +775,53 @@ describe("admin-api PATCH /api/admin/domains/:id (PR-W3 — phase-a appendix #15
     expect(audit.rows.length).toBe(0);
   });
 
+  it("200: PATCH with one new-field absent leaves the nullable columns unchanged (CASE WHEN <flag> takes the ELSE branch)", async () => {
+    // Pins the "field absent → DB unchanged" SQL path for the three
+    // nullable W3 columns (`retention_days`, `review_role`,
+    // `llm_budget_monthly_cap_usd`). The handler uses
+    // `CASE WHEN <inBody>::boolean THEN <value> ELSE <col> END` — this
+    // test exercises ELSE explicitly: a PATCH that mutates only
+    // `display_name` must NOT clobber the seeded retention / role / cap
+    // back to null.
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    const { id } = await seedDomain(f.raw, "exec", {
+      retention_days: 42,
+      review_role: "ops-lead",
+      llm_budget_monthly_cap_usd: "75.00",
+    });
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+
+    const res = await f.app.inject({
+      method: "PATCH",
+      url: `/api/admin/domains/${id}`,
+      headers: {
+        authorization: `Bearer ${ADMIN_PAT}`,
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: { display_name: "Renamed" },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const dbRow = await f.raw.query<{
+      retention_days: number | null;
+      review_role: string | null;
+      llm_budget_monthly_cap_usd: string | null;
+    }>(
+      `SELECT retention_days,
+              review_role,
+              llm_budget_monthly_cap_usd::text AS llm_budget_monthly_cap_usd
+       FROM domains WHERE id = $1::uuid`,
+      [id],
+    );
+    expect(dbRow.rows[0]?.retention_days).toBe(42);
+    expect(dbRow.rows[0]?.review_role).toBe("ops-lead");
+    expect(dbRow.rows[0]?.llm_budget_monthly_cap_usd).toBe("75.00");
+  });
+
   it("200 multi-field change: audit changedFields lists every changed name (alphabetised against current row)", async () => {
     const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
     cleanup = f.close;

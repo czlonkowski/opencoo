@@ -739,16 +739,21 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
         }>;
       };
       try {
+        // Defensive `::boolean` casts on the `CASE WHEN <flag>` predicates:
+        // Drizzle binds JS booleans as Postgres `bool` parameters and the
+        // CASE WHEN reads them correctly today, but pinning the cast
+        // documents intent and protects against a future driver/Postgres
+        // upgrade where a bound parameter might land as text.
         updated = (await args.db.execute(sql`
           UPDATE domains
           SET name = COALESCE(${display_name ?? null}, name),
               locale = COALESCE(${locale ?? null}, locale),
               is_aggregator = COALESCE(${is_aggregator ?? null}, is_aggregator),
-              retention_days = CASE WHEN ${setRetention} THEN ${retention_days ?? null}::int ELSE retention_days END,
+              retention_days = CASE WHEN ${setRetention}::boolean THEN ${retention_days ?? null}::int ELSE retention_days END,
               governance_cadence = COALESCE(${governance_cadence ?? null}::governance_cadence, governance_cadence),
-              review_role = CASE WHEN ${setReviewRole} THEN ${review_role ?? null}::text ELSE review_role END,
+              review_role = CASE WHEN ${setReviewRole}::boolean THEN ${review_role ?? null}::text ELSE review_role END,
               worldview_enabled = COALESCE(${worldview_enabled ?? null}, worldview_enabled),
-              llm_budget_monthly_cap_usd = CASE WHEN ${setCap} THEN ${capForDb}::numeric ELSE llm_budget_monthly_cap_usd END,
+              llm_budget_monthly_cap_usd = CASE WHEN ${setCap}::boolean THEN ${capForDb}::numeric ELSE llm_budget_monthly_cap_usd END,
               updated_at = NOW()
           WHERE id = ${id}::uuid
           RETURNING id::text AS id,

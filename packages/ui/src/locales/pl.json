@@ -715,23 +715,6 @@
         "adapter": "adapter",
         "state": "state"
       }
-    },
-    "bulkDelete": {
-      "button": "Usuń {{count}}",
-      "confirm": "Usuń {{count}}",
-      "cancel": "Anuluj",
-      "submitting": "usuwanie…",
-      "confirmTitle": "Usunąć {{count}} kanałów?",
-      "confirmBody": "Usunięcie {{count}} kanałów jest nieodwracalne. Instancje agentów wciąż powiązane z usuniętym kanałem pominą dostarczanie przy następnym uruchomieniu.",
-      "confirmCheckboxLabel": "Rozumiem, że tej operacji nie można cofnąć.",
-      "successToast": "Usunięto {{deleted}}, pominięto {{skipped}}",
-      "selectAllAriaLabel": "Zaznacz wszystkie kanały",
-      "selectRowAriaLabel": "Zaznacz kanał {{name}}",
-      "errors": {
-        "auth": "Sesja wygasła. Zaloguj się ponownie.",
-        "transient": "Błąd przejściowy. Spróbuj ponownie za chwilę.",
-        "generic": "Nie udało się usunąć wybranych kanałów."
-      }
     }
   }
 }
