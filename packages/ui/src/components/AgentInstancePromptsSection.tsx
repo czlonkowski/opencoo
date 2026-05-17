@@ -293,33 +293,48 @@ export function AgentInstancePromptsSection(
     setLoadError(null);
     void (async (): Promise<void> => {
       try {
-        const next: ResolutionEntry[] = [];
+        // Build a flat work item list and fan out all GETs in
+        // parallel. Each item resolves to one ResolutionEntry so
+        // first paint is bounded by the slowest single request,
+        // not the sum of all of them (Copilot triage #1). For a
+        // `locale=auto` heartbeat that's 2 prompts × 2 locales =
+        // 4 entries, each issuing one instance GET + one optional
+        // domain GET; we Promise.all the 4 items and Promise.all
+        // the two GETs inside each item.
+        const items: Array<{ name: PromptName; locale: Locale }> = [];
         for (const name of promptNames) {
-          for (const locale of locales) {
-            const instanceRow = await fetchAdmin<SinglePromptResponse>(
+          for (const locale of locales) items.push({ name, locale });
+        }
+        const next = await Promise.all(
+          items.map(async ({ name, locale }): Promise<ResolutionEntry> => {
+            const instancePromise = fetchAdmin<SinglePromptResponse>(
               `/api/admin/agent-instances/${props.instance.id}/prompts/${name}/${locale}`,
               opts,
             );
-            let domainEntry: ResolutionEntry["domainOverride"] = null;
-            if (fallbackDomainId !== null) {
-              try {
-                const domainRow = await fetchAdmin<SinglePromptResponse>(
-                  `/api/admin/domains/${fallbackDomainId}/prompts/${name}/${locale}`,
-                  opts,
-                );
-                if (domainRow.source === "override") {
-                  domainEntry = {
+            const domainPromise: Promise<SinglePromptResponse | null> =
+              fallbackDomainId !== null
+                ? fetchAdmin<SinglePromptResponse>(
+                    `/api/admin/domains/${fallbackDomainId}/prompts/${name}/${locale}`,
+                    opts,
+                  ).catch(
+                    // Best-effort — a domain-scope fetch failure
+                    // shouldn't block the instance editor.
+                    () => null,
+                  )
+                : Promise.resolve(null);
+            const [instanceRow, domainRow] = await Promise.all([
+              instancePromise,
+              domainPromise,
+            ]);
+            const domainEntry: ResolutionEntry["domainOverride"] =
+              domainRow !== null && domainRow.source === "override"
+                ? {
                     version: domainRow.version,
                     baselineVersion:
                       domainRow.baselineVersion ?? domainRow.version,
                     isStale: domainRow.isStale === true,
-                  };
-                }
-              } catch {
-                // Best-effort — a domain-scope fetch failure
-                // shouldn't block the instance editor.
-              }
-            }
+                  }
+                : null;
             const instanceEntry: ResolutionEntry["instanceOverride"] =
               instanceRow.source === "override"
                 ? {
@@ -334,15 +349,15 @@ export function AgentInstancePromptsSection(
             // baseline.
             const baselineVersion =
               instanceRow.baselineVersion ?? instanceRow.version;
-            next.push({
+            return {
               name,
               locale,
               baselineVersion,
               domainOverride: domainEntry,
               instanceOverride: instanceEntry,
-            });
-          }
-        }
+            };
+          }),
+        );
         if (!mountedRef.current) return;
         setStacks(next);
       } catch (err) {
@@ -352,7 +367,19 @@ export function AgentInstancePromptsSection(
         if (mountedRef.current) setLoading(false);
       }
     })();
-  }, [refreshNonce, props.instance.id]);
+    // Depend on the instance's locale + scope head as well — they
+    // determine `locales` + `fallbackDomainId` which the effect
+    // reads (Copilot triage #4). `promptNames` derives from
+    // `definitionSlug` which is included via `props.instance.id`
+    // in practice (instance id is stable across mutations), but
+    // we add `definitionSlug` explicitly for safety.
+  }, [
+    refreshNonce,
+    props.instance.id,
+    props.instance.definitionSlug,
+    props.instance.locale,
+    fallbackDomainId,
+  ]);
 
   // ── Editor lifecycle (nested modal) ───────────────────────────────────
 
@@ -465,6 +492,16 @@ export function AgentInstancePromptsSection(
       );
       if (!mountedRef.current) return;
       setPreview(null);
+      // `appliedNotice` flows into PromptEditor.appliedNotice so
+      // the operator sees the success line inside the still-open
+      // editor. The section-level toast (gated to
+      // `editorOpen === null`) is not the render target on this
+      // path — the editor's own toast is. Revert is the only
+      // path that surfaces the section-level toast, because
+      // revert closes the editor first (Copilot triage #3 was
+      // about "dead section toast on apply" — the fix is the
+      // gate now correctly reflects that revert ≠ apply, not to
+      // remove this set).
       setAppliedNotice(t("prompts.editor.appliedToast"));
       // Refetch the resolution stack to surface the new override.
       setRefreshNonce((n) => n + 1);
@@ -537,11 +574,19 @@ export function AgentInstancePromptsSection(
       );
       if (!mountedRef.current) return;
       setRevertTarget(null);
-      setAppliedNotice(t("prompts.editor.revertedToast"));
+      // Use the scope-specific copy — at this scope it's the
+      // instance that falls back (to the domain override or
+      // baseline), not the domain (Copilot triage #7).
+      setAppliedNotice(t("agentInstance.detail.promptInstanceRevertedToast"));
       setRefreshNonce((n) => n + 1);
       props.onChanged?.();
     } catch (err) {
       if (!mountedRef.current) return;
+      // Close the modal so the error banner (rendered as a
+      // section-level sibling) is actually visible — without
+      // closing, the still-open RevertOverrideModal overlay
+      // would obscure the banner (Copilot triage #2).
+      setRevertTarget(null);
       setRevertError(mapApplyError(err));
     }
   };
@@ -580,6 +625,16 @@ export function AgentInstancePromptsSection(
             const rowKey = `${row.name}-${row.locale}`;
             const hasInstance = row.instanceOverride !== null;
             const hasDomain = row.domainOverride !== null;
+            // Effective version: what the resolver will actually
+            // load at run time. Instance override wins, then
+            // domain override, else baseline (Copilot triage #8).
+            // The stack lines below carry the per-level versions
+            // so the operator can still see the layered state.
+            const effectiveVersion = hasInstance
+              ? row.instanceOverride!.version
+              : hasDomain
+                ? row.domainOverride!.version
+                : row.baselineVersion;
             return (
               <div
                 key={rowKey}
@@ -590,7 +645,7 @@ export function AgentInstancePromptsSection(
                   <div>
                     <span style={PROMPT_NAME_STYLE}>{row.name}</span>
                     <span style={LOCALE_TAG_STYLE}>
-                      (v{row.baselineVersion}
+                      (v{effectiveVersion}
                       {" · "}
                       {row.locale})
                     </span>
@@ -695,10 +750,19 @@ export function AgentInstancePromptsSection(
               onProposedBodyChange={setProposedBody}
               onPreview={(): void => void onPreview()}
               onRevert={(): void => {
-                setRevertTarget({
+                // Stash the target BEFORE closing the editor —
+                // `closeEditor` clears `editorOpen` so we can't
+                // read it after. Then close the editor so the
+                // RevertOverrideModal isn't stacked behind it,
+                // and the post-DELETE state isn't confusingly
+                // refetched against the now-deleted override
+                // (Copilot triage #6).
+                const target = {
                   name: editorOpen.name,
                   locale: editorOpen.locale,
-                });
+                };
+                closeEditor();
+                setRevertTarget(target);
               }}
               onOpenDebug={(): void => {
                 // PromptDebugDrawer is keyed off domain in v0.1.

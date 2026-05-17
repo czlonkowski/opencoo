@@ -776,6 +776,7 @@
         "domain": "Nadpisanie domeny ({{slug}}): v{{version}}",
         "baseline": "Domyślna wersja: v{{version}}"
       },
+      "promptInstanceRevertedToast": "Nadpisanie instancji usunięte. Instancja korzysta teraz z nadpisania domeny (lub domyślnej wersji).",
       "bindOutputs": {
         "success": "Output channels saved."
       },

@@ -777,6 +777,7 @@
         "domain": "Domain override ({{slug}}): v{{version}}",
         "baseline": "Shipped baseline: v{{version}}"
       },
+      "promptInstanceRevertedToast": "Instance override removed. The instance now falls back to the domain override (or shipped baseline).",
       "bindOutputs": {
         "success": "Output channels saved."
       },
