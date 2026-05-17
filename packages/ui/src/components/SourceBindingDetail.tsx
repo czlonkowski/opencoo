@@ -2231,7 +2231,7 @@ function RetentionOverridePanel(
 
   return (
     <div style={ALLOWED_PANEL_STYLE} data-testid="retention-override-panel">
-      <span style={LABEL_STYLE}>
+      <span id="retention-override-title" style={LABEL_STYLE}>
         {t("sourceBindingDetail.retentionOverride.title")}
       </span>
       <p style={EDIT_FIELD_DESCRIPTION_STYLE}>
@@ -2245,11 +2245,13 @@ function RetentionOverridePanel(
         style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}
       >
         <input
+          id="retention-override-input"
           type="number"
           min={1}
           max={365}
           step={1}
           name="retention_days_override"
+          aria-labelledby="retention-override-title"
           data-testid="retention-override-input"
           value={draft}
           onChange={(e): void => {
@@ -2391,6 +2393,12 @@ function NotesPanel(props: NotesPanelProps): JSX.Element {
   };
 
   const onSave = (): void => {
+    // overCap is also gated by the Save button's `disabled` prop; this
+    // guard is kept as defense-in-depth so a programmatic click via the
+    // DOM ref still surfaces an inline error rather than firing a PATCH
+    // the server's Zod boundary would reject (Copilot review fix-up:
+    // pin the surface so the dead-branch concern resolves to a
+    // documented redundancy, not a latent UX gap).
     if (overCap) {
       setError(t("sourceBindingDetail.notes.overCap"));
       return;
@@ -2412,7 +2420,9 @@ function NotesPanel(props: NotesPanelProps): JSX.Element {
 
   return (
     <div style={ALLOWED_PANEL_STYLE} data-testid="notes-panel">
-      <span style={LABEL_STYLE}>{t("sourceBindingDetail.notes.title")}</span>
+      <span id="notes-title" style={LABEL_STYLE}>
+        {t("sourceBindingDetail.notes.title")}
+      </span>
       <p style={EDIT_FIELD_DESCRIPTION_STYLE}>
         {t("sourceBindingDetail.notes.helper")}
       </p>
@@ -2420,7 +2430,9 @@ function NotesPanel(props: NotesPanelProps): JSX.Element {
        *  primitive lands. The inline styles below mirror
        *  EDIT_FIELD_INPUT_STYLE shape adapted to a multi-line element. */}
       <textarea
+        id="notes-textarea-el"
         name="notes"
+        aria-labelledby="notes-title"
         data-testid="notes-textarea"
         value={draft}
         onChange={(e): void => {
