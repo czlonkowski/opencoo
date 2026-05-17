@@ -305,6 +305,40 @@ describe("admin-api POST /api/admin/output-channels/bulk-delete (PR-W6 phase-a a
     expect(res.statusCode).toBe(422);
   });
 
+  it("dedupes ids so [X, X] is treated as one logical deletion", async () => {
+    // Copilot review on PR-142 — without dedupe a caller sending the
+    // same id twice sees `{deleted: 1, skipped: 1}`, which misreports
+    // operator intent (they asked for one logical deletion). With
+    // dedupe the response is `{deleted: 1, skipped: 0}` and exactly
+    // ONE audit row is written.
+    const f = await makeAdminFixture({
+      outputChannelRegistry: buildStubRegistry(),
+    });
+    cleanup = f.close;
+    await setupAdmin(f);
+    const [id] = await seedChannels(f, ["only"]);
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+
+    const res = await f.app.inject({
+      method: "POST",
+      url: "/api/admin/output-channels/bulk-delete",
+      headers: {
+        authorization: `Bearer ${ADMIN_PAT}`,
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: { ids: [id, id, id] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ deleted: 1, skipped: 0 });
+
+    const audit = await f.raw.query<{ id: string }>(
+      `SELECT id FROM admin_audit_log WHERE action = 'output_channel.delete'`,
+    );
+    expect(audit.rows).toHaveLength(1);
+  });
+
   it("auth + CSRF gate", async () => {
     const f = await makeAdminFixture({
       outputChannelRegistry: buildStubRegistry(),

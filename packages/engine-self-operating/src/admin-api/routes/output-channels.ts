@@ -706,12 +706,21 @@ export async function registerOutputChannelsRoutes(
   // multi-select pattern (PR-W6, phase-a appendix #15).
   //
   // Audit invariant: ONE `output_channel.delete` row PER id, written
-  // BEFORE the row's DELETE. That ordering means a partial batch
-  // (e.g. a transient db failure mid-loop) still leaves a forensic
-  // trail of the operator's intent for each id; the operator's
-  // history reads the deletion as a discrete event per channel,
-  // never as one summarised batch entry. The 50-id cap (in the
-  // Zod schema) is the DB-lock-storm guard.
+  // AFTER the row's DELETE succeeds. This matches the single-DELETE
+  // handler at line ~635 of this file — that handler explicitly
+  // audits after the row drops "so a database failure leaves no
+  // false-positive audit record." The verb `output_channel.delete`
+  // reads as completion, not intent, so the audit trail must mirror
+  // the actual state. A partial batch (e.g. a transient db failure
+  // mid-loop) returns 500 with `{deleted, skipped}` reflecting the
+  // rows that DID land, never claiming completion for a row that
+  // failed.
+  //
+  // The 50-id cap (Zod schema) is the DB-lock-storm guard. Ids are
+  // de-duped before the loop so `[X, X]` reports a single deletion
+  // rather than `{deleted: 1, skipped: 1}` (Copilot review on PR-W6
+  // — a caller asking for one logical deletion sees one logical
+  // result).
   //
   // Credential rows are best-effort cleaned up after the channel
   // row deletes, mirroring the single-DELETE handler's policy:
@@ -746,10 +755,16 @@ export async function registerOutputChannelsRoutes(
           });
         }
       }
+      // Dedupe so `[X, X]` is treated as one logical deletion. Without
+      // this the operator sees `{deleted: 1, skipped: 1}` for a single
+      // id submitted twice — misleading. The Set preserves insertion
+      // order in modern JS engines so the audit row order still
+      // reflects the order the operator selected.
+      const uniqueIds = Array.from(new Set(parsed.data.ids));
 
       let deleted = 0;
       let skipped = 0;
-      for (const id of parsed.data.ids) {
+      for (const id of uniqueIds) {
         const existing = (await args.db.execute(sql`
           SELECT id::text AS id,
                  adapter_slug,
@@ -772,11 +787,34 @@ export async function registerOutputChannelsRoutes(
           continue;
         }
 
-        // Audit BEFORE the DELETE — invariant the rest of the file
-        // honors (single-DELETE handler is the only outlier; that
-        // one trails because the credentials FK forces a row-first
-        // ordering, but here we have no per-row constraint that
-        // forces credential cleanup before the audit write).
+        try {
+          await args.db.execute(sql`
+            DELETE FROM output_channels WHERE id = ${id}::uuid
+          `);
+        } catch (err) {
+          req.log?.warn({
+            msg: "output_channel.bulk_delete_row_failed",
+            channel_id: id,
+            err: err instanceof Error ? err.message : String(err),
+          });
+          // Response shape mirrors success — UI consumers don't need
+          // a separate type for the partial-failure path. The 500
+          // status code + `error` discriminator carry the failure
+          // signal; `deleted`/`skipped` reflect the rows that DID
+          // settle before the row that raised.
+          return reply.code(500).send({
+            error: "delete_failed",
+            channel_id: id,
+            deleted,
+            skipped,
+          });
+        }
+        deleted += 1;
+
+        // Audit AFTER the DELETE — same ordering as the single-DELETE
+        // handler in this file. A db failure on the DELETE returns
+        // BEFORE this write, so the audit trail never claims a row
+        // was deleted when it wasn't.
         await writeAuditLog(args.db, {
           action: "output_channel.delete",
           userId: ctx.userId,
@@ -790,24 +828,6 @@ export async function registerOutputChannelsRoutes(
           sourceIp: req.ip,
           userAgent: req.headers["user-agent"],
         });
-
-        try {
-          await args.db.execute(sql`
-            DELETE FROM output_channels WHERE id = ${id}::uuid
-          `);
-        } catch (err) {
-          req.log?.warn({
-            msg: "output_channel.bulk_delete_row_failed",
-            channel_id: id,
-            err: err instanceof Error ? err.message : String(err),
-          });
-          return reply.code(500).send({
-            error: "delete_failed",
-            channel_id: id,
-            deleted,
-          });
-        }
-        deleted += 1;
 
         // Best-effort credential cleanup — failure logs but doesn't
         // block the next id.

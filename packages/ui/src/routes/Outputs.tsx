@@ -22,7 +22,13 @@
  * `--alert` reserved for destructive surfaces, design-system
  * tokens only.
  */
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { useTranslation } from "react-i18next";
 
 import { Btn } from "../components/Btn.js";
@@ -128,6 +134,19 @@ export function Outputs(props: OutputsProps = {}): JSX.Element {
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
   const [bulkActionError, setBulkActionError] = useState<string | null>(null);
   const [bulkToast, setBulkToast] = useState<string | null>(null);
+  // Track the success-toast timer so unmount + back-to-back deletes
+  // can cancel the prior auto-clear before it fires (Copilot review
+  // on PR-142). Without this, navigating away during the 3s window
+  // would attempt to setState on an unmounted component.
+  const toastTimerRef = useRef<number | null>(null);
+  useEffect((): (() => void) => {
+    return (): void => {
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+    };
+  }, []);
   const opts = fetchOptsFor(props.fetchImpl);
 
   useEffect((): void => {
@@ -226,7 +245,13 @@ export function Outputs(props: OutputsProps = {}): JSX.Element {
         }),
       );
       setRefreshNonce((n) => n + 1);
-      window.setTimeout((): void => setBulkToast(null), 3000);
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+      toastTimerRef.current = window.setTimeout((): void => {
+        setBulkToast(null);
+        toastTimerRef.current = null;
+      }, 3000);
     } catch (err) {
       if (err instanceof ApiAuthError) {
         setBulkActionError(t("outputs.bulkDelete.errors.auth"));
