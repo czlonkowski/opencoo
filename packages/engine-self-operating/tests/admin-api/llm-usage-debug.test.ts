@@ -11,7 +11,8 @@
  *  - 400 on invalid promptName (not in PROMPT_NAMES)
  *  - 400 on malformed domainId (non-UUID)
  *  - prefix match: a `compiler-asana-project` pipeline_or_agent
- *    row surfaces under `promptName=compiler`
+ *    row surfaces under `promptName=compiler` (Copilot triage:
+ *    test name reads "prefix-matched", not "suffix-matched")
  *  - admin-team gate: 401 without PAT, 403 for outsider
  *  - prompt_text truncation: a >50KB body returns at-most-50KB
  */
@@ -202,7 +203,7 @@ describe("admin-api GET /api/admin/llm-usage-debug (PR-W7a)", () => {
     expect(JSON.parse(res.body).error).toBe("validation_failed");
   });
 
-  it("surfaces suffix-matched pipelineOrAgent under the parent promptName", async () => {
+  it("surfaces prefix-matched pipelineOrAgent under the parent promptName", async () => {
     const f = await makeAdminFixture({
       adminTeamSlug: "opencoo-admins",
       llmDebugLog: true,
@@ -249,6 +250,36 @@ describe("admin-api GET /api/admin/llm-usage-debug (PR-W7a)", () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body) as { rows: unknown[] };
     expect(body.rows).toEqual([]);
+  });
+
+  it("preserves authored U+FFFD characters within a body that fits the cap", async () => {
+    // Pins the Copilot-triage fix on PR #149: the prior
+    // truncateUtf8 stripped trailing U+FFFD bytes
+    // unconditionally; the code-point-walking variant only
+    // truncates when the body would exceed the cap.
+    const f = await makeAdminFixture({
+      adminTeamSlug: "opencoo-admins",
+      llmDebugLog: true,
+    });
+    cleanup = f.close;
+    await setupAdmin(f);
+    const { id: domainId } = await seedDomain(f.raw);
+    const authored = "prefix ��";
+    await seedUsageWithDebug(f.raw, {
+      domainId,
+      pipelineOrAgent: "heartbeat",
+      promptText: authored,
+    });
+    const res = await f.app.inject({
+      method: "GET",
+      url: `/api/admin/llm-usage-debug?promptName=heartbeat&domainId=${domainId}`,
+      headers: { authorization: "Bearer admin-pat" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as {
+      rows: Array<{ promptTextTruncated: string }>;
+    };
+    expect(body.rows[0]!.promptTextTruncated).toBe(authored);
   });
 
   it("truncates oversized prompt_text bodies to at most 50 KB", async () => {

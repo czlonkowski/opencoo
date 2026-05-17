@@ -74,21 +74,24 @@ interface DebugRow {
   readonly modelSlug: string;
 }
 
-/** UTF-8-byte-aware truncation. Mirrors the prompt-override
- *  route's `Buffer.byteLength` accounting so a polish or
- *  emoji-laden body codes correctly. */
+/** UTF-8-byte-aware truncation. Walks the original string's
+ *  code points and accumulates the UTF-8 byte length, returning
+ *  the longest prefix that fits within `maxBytes`. This avoids
+ *  the decoder-replacement-character ambiguity of cutting the
+ *  byte buffer first: a prompt that legitimately ends with
+ *  U+FFFD would otherwise have those bytes silently stripped
+ *  by the decoder fix-up step (Copilot triage on PR #149). */
 function truncateUtf8(s: string, maxBytes: number): string {
   if (Buffer.byteLength(s, "utf8") <= maxBytes) return s;
-  // Walk the string and cut at the last code-point boundary
-  // whose cumulative byte count fits. The naive `slice(0,
-  // maxBytes)` would split a multi-byte sequence and produce
-  // mojibake.
-  const buf = Buffer.from(s, "utf8");
-  // Decode the truncated buffer with `'utf8'` — Node's decoder
-  // replaces incomplete trailing bytes with U+FFFD. Stripping
-  // the final replacement character produces a clean cut.
-  const decoded = buf.subarray(0, maxBytes).toString("utf8");
-  return decoded.replace(/�+$/, "");
+  let cumulative = 0;
+  let cut = 0;
+  for (const cp of s) {
+    const cpBytes = Buffer.byteLength(cp, "utf8");
+    if (cumulative + cpBytes > maxBytes) break;
+    cumulative += cpBytes;
+    cut += cp.length;
+  }
+  return s.slice(0, cut);
 }
 
 export function registerLlmUsageDebugRoutes(
