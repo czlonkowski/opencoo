@@ -33,17 +33,21 @@
  * the PATCH being attempted without mocking globalThis.fetch.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 
 import { LocaleSwitcher } from "../../src/components/LocaleSwitcher.js";
 import i18n from "../../src/lib/i18n.js";
 
 const STORED_LOCALE_KEY = "opencoo_locale";
 
-afterEach(() => {
+afterEach(async () => {
   // Reset i18n + localStorage between tests so the next test's
-  // initial state is deterministic.
-  void i18n.changeLanguage("en");
+  // initial state is deterministic. Awaited — leaving the i18next
+  // promise unsettled can leak the prior locale into the next test
+  // (Copilot review #166).
+  if (i18n.language !== "en") {
+    await i18n.changeLanguage("en");
+  }
   try {
     window.localStorage.removeItem(STORED_LOCALE_KEY);
   } catch {
@@ -65,15 +69,15 @@ describe("LocaleSwitcher (PR-C2)", () => {
     ]);
   });
 
-  it("pre-selects the current i18n locale (en) on first paint", () => {
-    void i18n.changeLanguage("en");
+  it("pre-selects the current i18n locale (en) on first paint", async () => {
+    await i18n.changeLanguage("en");
     render(<LocaleSwitcher onChange={vi.fn()} />);
     const select = screen.getByRole("combobox") as HTMLSelectElement;
     expect(select.value).toBe("en");
   });
 
-  it("pre-selects 'pl' when i18n is in Polish", () => {
-    void i18n.changeLanguage("pl");
+  it("pre-selects 'pl' when i18n is in Polish", async () => {
+    await i18n.changeLanguage("pl");
     render(<LocaleSwitcher onChange={vi.fn()} />);
     const select = screen.getByRole("combobox") as HTMLSelectElement;
     expect(select.value).toBe("pl");
@@ -123,18 +127,38 @@ describe("LocaleSwitcher (PR-C2)", () => {
     expect(select.value).toBe("pl");
   });
 
-  it("renders option labels from locale.* keys (en + pl parity)", () => {
+  it("renders option labels from i18n locale.* keys (en + pl parity)", async () => {
     // en.json: locale.en = "English", locale.pl = "Polski".
-    // pl.json: same labels so the picker is identifiable
-    // regardless of the operator's current locale.
-    void i18n.changeLanguage("pl");
+    // pl.json: same self-language labels so the picker stays
+    // identifiable regardless of the current UI locale. The
+    // component reads labels via `t(\`locale.${loc}\`)` so the
+    // resource bundles are the single source of truth.
+    await i18n.changeLanguage("pl");
     render(<LocaleSwitcher onChange={vi.fn()} />);
     const select = screen.getByRole("combobox") as HTMLSelectElement;
     const labels = Array.from(select.querySelectorAll("option")).map(
       (o) => o.textContent,
     );
-    // The labels are static "English" / "Polski" — language names
-    // render in their own language, not the current UI locale.
     expect(labels).toEqual(["English", "Polski"]);
+  });
+
+  it("reflects an external i18n.changeLanguage (login reconciliation)", async () => {
+    // Mirrors `reconcileLocaleAtLogin` flipping i18n from outside
+    // the component — the controlled `value` MUST follow because
+    // `useTranslation()` re-renders on `languageChanged`. Without
+    // this the switcher silently shows the wrong locale until the
+    // operator touches it (the Copilot review #166 failure mode).
+    await i18n.changeLanguage("en");
+    render(<LocaleSwitcher onChange={vi.fn()} />);
+    expect(
+      (screen.getByRole("combobox") as HTMLSelectElement).value,
+    ).toBe("en");
+
+    await act(async () => {
+      await i18n.changeLanguage("pl");
+    });
+    expect(
+      (screen.getByRole("combobox") as HTMLSelectElement).value,
+    ).toBe("pl");
   });
 });

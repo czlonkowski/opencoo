@@ -27,7 +27,7 @@
  * lands the failure surfaces via `console.warn` only — once B7
  * is wired, replace the warn with `useToast().alert(...)`.
  */
-import { useState, type ChangeEvent } from "react";
+import { type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
 
 import i18n, {
@@ -36,16 +36,6 @@ import i18n, {
 } from "../lib/i18n.js";
 
 const LOCALES: ReadonlyArray<SupportedLocale> = ["en", "pl"];
-
-const LOCALE_LABELS: Record<SupportedLocale, string> = {
-  // The locale name renders in its own language (English in
-  // English, Polski in Polish) so the picker is identifiable
-  // regardless of the operator's current UI locale. The labels
-  // are NOT translated per-language — flipping the surrounding
-  // UI to PL doesn't rename "Polski" → "Polski (Polish)".
-  en: "English",
-  pl: "Polski",
-};
 
 export interface LocaleSwitcherProps {
   /** Background callable that PATCHes `/api/admin/users/me/locale`.
@@ -59,22 +49,25 @@ export interface LocaleSwitcherProps {
 
 export function LocaleSwitcher(props: LocaleSwitcherProps): JSX.Element {
   const { t, i18n: tInstance } = useTranslation();
-  // Initial value follows the live i18n locale. We track it
-  // locally so a re-render after a flip picks the new value
-  // even before i18next's pub/sub fires on this component.
-  const [value, setValue] = useState<SupportedLocale>(
-    isSupportedLocale(tInstance.language) ? tInstance.language : "en",
-  );
+  // Derive the controlled `value` directly from i18n's live
+  // language. `useTranslation()` re-renders on `languageChanged`
+  // so a flip from outside this component (e.g.
+  // `reconcileLocaleAtLogin` at login, or another LocaleSwitcher
+  // instance) keeps the select in sync without a manual
+  // `useEffect` (Copilot review #166).
+  const value: SupportedLocale = isSupportedLocale(tInstance.language)
+    ? tInstance.language
+    : "en";
 
   const handle = (e: ChangeEvent<HTMLSelectElement>): void => {
     const next = e.target.value;
     if (!isSupportedLocale(next)) return;
     // 1. Flip i18n synchronously so the next render reflects the
-    //    new locale without waiting on storage or network.
+    //    new locale without waiting on storage or network. The
+    //    `useTranslation()` pub/sub above re-renders this component
+    //    with `value === next`.
     void i18n.changeLanguage(next);
-    // 2. Mirror local state for this component's controlled value.
-    setValue(next);
-    // 3. Write localStorage — the in-session SoT — so the next
+    // 2. Write localStorage — the in-session SoT — so the next
     //    page load picks the same locale even if the DB write
     //    blips.
     writeStoredLocale(next);
@@ -117,7 +110,7 @@ export function LocaleSwitcher(props: LocaleSwitcherProps): JSX.Element {
     >
       {LOCALES.map((loc) => (
         <option key={loc} value={loc}>
-          {LOCALE_LABELS[loc]}
+          {t(`locale.${loc}`)}
         </option>
       ))}
     </select>

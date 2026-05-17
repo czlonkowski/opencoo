@@ -158,15 +158,22 @@ describe("PATCH /api/admin/users/me/locale (PR-C2)", () => {
     expect(body.ok).toBe(true);
     expect(body.localePreference).toBe("pl");
 
-    // Row persisted.
+    // Row persisted + capture the user UUID so the audit
+    // assertion below pins `metadata.user_id` to the actual
+    // operator row, not to itself (Copilot review #166).
     const row = await f.raw.query<{
+      id: string;
       locale_preference: string | null;
       gitea_username: string;
     }>(
-      `SELECT locale_preference, gitea_username FROM users
+      `SELECT id::text AS id, locale_preference, gitea_username FROM users
         WHERE gitea_username = 'alice'`,
     );
     expect(row.rows[0]?.locale_preference).toBe("pl");
+    const aliceId = row.rows[0]!.id;
+    expect(aliceId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
 
     // Audit row written with the exact verb + canonical metadata
     // shape. Body bytes never enter the audit table (no operator-
@@ -187,13 +194,11 @@ describe("PATCH /api/admin/users/me/locale (PR-C2)", () => {
     expect(audit.rows[0]?.action).toBe("user.set_locale_preference");
     expect(audit.rows[0]?.metadata.new_locale).toBe("pl");
     expect(audit.rows[0]?.metadata.caller_username).toBe("alice");
-    expect(audit.rows[0]?.metadata.user_id).toBe(row.rows[0]!.gitea_username
-      ? // The user_id is a UUID; we don't pin the value, only the
-        // shape. The caller_username is the load-bearing operator
-        // identity in the audit metadata.
-        audit.rows[0]!.metadata.user_id
-      : "");
-    expect(typeof audit.rows[0]?.metadata.user_id).toBe("string");
+    // Pin `user_id` to the actual operator UUID — the route is
+    // self-only so the audit user_id MUST equal the verified
+    // adminContext.userId. Selecting `id` from users beats
+    // comparing the metadata field to itself.
+    expect(audit.rows[0]?.metadata.user_id).toBe(aliceId);
   });
 
   it("200 — clearing to 'en' overwrites a previously-set 'pl'", async () => {
