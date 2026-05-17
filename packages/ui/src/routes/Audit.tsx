@@ -793,8 +793,15 @@ export function Audit(props: AuditProps = {}): JSX.Element {
           justifyContent: "space-between",
         }}
       >
-        <span
+        {/* PR-A2 — promote the existing title <span> to a proper
+            <h1> so the <main aria-labelledby="opencoo-page-h1">
+            landmark resolves and the page has a document outline.
+            `margin: 0` strips the default h1 chrome; the visual
+            recipe (font, weight, size, color) is preserved. */}
+        <h1
+          id="opencoo-page-h1"
           style={{
+            margin: 0,
             fontFamily: "var(--font-sans)",
             fontWeight: 500,
             fontSize: "var(--fs-body)",
@@ -802,7 +809,7 @@ export function Audit(props: AuditProps = {}): JSX.Element {
           }}
         >
           {t("audit.title")}
-        </span>
+        </h1>
         <span
           title={t("audit.scopeAside")}
           style={{

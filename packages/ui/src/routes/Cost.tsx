@@ -726,8 +726,15 @@ export function Cost(props: CostProps = {}): JSX.Element {
         }}
       >
         <div style={{ padding: "16px 0 8px" }}>
-          <span
+          {/* PR-A2 — promote the title <span> to a proper <h1>
+              so the loading branch also satisfies the
+              <main aria-labelledby="opencoo-page-h1"> contract.
+              Visual recipe preserved; `margin: 0` strips default
+              h1 chrome. */}
+          <h1
+            id="opencoo-page-h1"
             style={{
+              margin: 0,
               fontFamily: "var(--font-sans)",
               fontWeight: 500,
               fontSize: "var(--fs-body)",
@@ -735,7 +742,7 @@ export function Cost(props: CostProps = {}): JSX.Element {
             }}
           >
             {t("cost.title")}
-          </span>
+          </h1>
         </div>
         <Card>
           <div
@@ -778,8 +785,13 @@ export function Cost(props: CostProps = {}): JSX.Element {
         }}
       >
         <div style={{ display: "flex", alignItems: "baseline", gap: 16 }}>
-          <span
+          {/* PR-A2 — promote the title <span> to an <h1>. The
+              loaded branch carries the same id as the loading
+              branch's h1; only one is mounted at a time. */}
+          <h1
+            id="opencoo-page-h1"
             style={{
+              margin: 0,
               fontFamily: "var(--font-sans)",
               fontWeight: 500,
               fontSize: "var(--fs-body)",
@@ -787,7 +799,7 @@ export function Cost(props: CostProps = {}): JSX.Element {
             }}
           >
             {t("cost.title")}
-          </span>
+          </h1>
           <span style={MICRO_LABEL_STYLE}>{t("cost.subtitle")}</span>
         </div>
         <div

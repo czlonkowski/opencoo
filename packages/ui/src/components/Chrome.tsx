@@ -1,6 +1,17 @@
 /**
  * Sidebar + TopBar — IA polish for PR-W10 (phase-a appendix
- * #15 wave-15).
+ * #15 wave-15); semantic-landmark refinement for PR-A2 (wave-16).
+ *
+ * Wave-16 PR-A2 changes (does not alter visual chrome):
+ *   - TopBar root becomes `<header role="banner">`.
+ *   - Sidebar `<nav>` carries `aria-label={t("nav.primary")}`.
+ *   - Sidebar group labels become `<h2>` (same micro-label visual
+ *     recipe) so the sidebar contributes a real document outline.
+ *   - The active tab button carries `aria-current="page"`.
+ *
+ * The corresponding `<main aria-labelledby="opencoo-page-h1">`
+ * lives in App.tsx; routes own the `<h1 id="opencoo-page-h1">`
+ * the landmark name resolves against (one h1 per route).
  *
  * The sidebar groups tabs into four named clusters so the
  * flat 11-tab list reads as a coherent product chrome:
@@ -121,7 +132,11 @@ const MICRO_LABEL_STYLE = {
 export function Sidebar(props: SidebarProps): JSX.Element {
   const { t } = useTranslation();
   return (
+    // PR-A2 — aria-label scopes the <nav> to "primary navigation"
+    // for assistive tech. The label key (nav.primary) gets a
+    // default English string + a mirrored PL placeholder.
     <nav
+      aria-label={t("nav.primary")}
       style={{
         width: 240,
         background: "var(--paper-2)",
@@ -168,20 +183,38 @@ export function Sidebar(props: SidebarProps): JSX.Element {
             marginTop: idx === 0 ? 0 : 12,
           }}
         >
-          <div
+          {/* PR-A2 — group header is an <h2>, not a <div>, so the
+              sidebar has a real document outline (banner / main /
+              nav and four h2 group headings). Visual recipe is
+              unchanged: same mono-uppercase micro-label, same
+              padding. `margin: 0` strips the default <h2> chrome
+              that would otherwise add browser leading; `fontWeight:
+              400` keeps the micro-label flat, matching the prior
+              <div>'s computed weight. */}
+          <h2
             style={{
               ...MICRO_LABEL_STYLE,
+              fontWeight: 400,
+              margin: 0,
               padding: "4px 10px 6px",
             }}
           >
             {t(group.labelKey)}
-          </div>
+          </h2>
           {group.tabs.map((item) => {
             const active = props.tab === item.key;
+            // PR-A2 — aria-current="page" on the active tab; the
+            // attribute is omitted (not literally set to "false")
+            // for inactive entries so assistive tech sees a single
+            // canonical current-page marker.
+            const ariaCurrent = active
+              ? ({ "aria-current": "page" } as const)
+              : {};
             return (
               <button
                 key={item.key}
                 onClick={(): void => props.setTab(item.key)}
+                {...ariaCurrent}
                 style={{
                   textAlign: "left",
                   font: "inherit",
@@ -246,7 +279,12 @@ export function TopBar(props: TopBarProps): JSX.Element {
   // defensive only.
   const tabLabel = tabSpec ? t(tabSpec.labelKey) : props.tab;
   return (
-    <div
+    // PR-A2 — TopBar is the page banner. <header role="banner">
+    // exposes it as a landmark for assistive tech / "skip to
+    // main" keyboard nav. Explicit role survives nesting inside
+    // future flex containers (where an implicit role can vanish).
+    <header
+      role="banner"
       style={{
         display: "flex",
         alignItems: "center",
@@ -304,6 +342,6 @@ export function TopBar(props: TopBarProps): JSX.Element {
           {t("nav.logout")}
         </Btn>
       </span>
-    </div>
+    </header>
   );
 }

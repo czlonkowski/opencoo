@@ -1047,6 +1047,27 @@ export function Activity(props: ActivityProps = {}): JSX.Element {
         fontFamily: "var(--font-sans)",
       }}
     >
+      {/* PR-A2 — visually-hidden h1 satisfies the
+          <main aria-labelledby="opencoo-page-h1"> contract without
+          duplicating the page identifier already shown in the
+          breadcrumb (W10). Same .sr-only recipe used elsewhere in
+          the codebase. */}
+      <h1
+        id="opencoo-page-h1"
+        style={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          padding: 0,
+          margin: -1,
+          overflow: "hidden",
+          clip: "rect(0, 0, 0, 0)",
+          whiteSpace: "nowrap",
+          borderWidth: 0,
+        }}
+      >
+        {t("routes.activity.h1")}
+      </h1>
       {/* Sub-tab navigation */}
       <div
         style={{

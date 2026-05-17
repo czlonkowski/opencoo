@@ -508,7 +508,7 @@ export function Prompts(props: PromptsProps = {}): JSX.Element {
   return (
     <div style={PAGE_STYLE}>
       <div>
-        <h1 style={{ margin: 0 }}>{t("prompts.title")}</h1>
+        <h1 id="opencoo-page-h1" style={{ margin: 0 }}>{t("prompts.title")}</h1>
         <p style={{ margin: "4px 0 0", color: "var(--ink-3)" }}>
           {t("prompts.subtitleEditor")}
         </p>

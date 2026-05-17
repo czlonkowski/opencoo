@@ -325,7 +325,15 @@ export function App(): JSX.Element {
       <DebugBanner visible={debugActive} />
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
         <Sidebar tab={tab} setTab={navigateToTab} />
+        {/* PR-A2 — semantic landmark. The route render is the
+            primary content; <main aria-labelledby="opencoo-page-h1">
+            wires the landmark's accessible name to the active
+            route's h1, which carries id="opencoo-page-h1" by
+            convention. Every route must render exactly one h1
+            with that id — enforced by
+            tests/unit/h1-coverage.test.tsx. */}
         <main
+          aria-labelledby="opencoo-page-h1"
           style={{
             flex: 1,
             display: "flex",
