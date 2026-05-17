@@ -134,7 +134,7 @@ export function Domains(props: DomainsProps = {}): JSX.Element {
         }}
       >
         <div>
-          <h1 style={{ margin: 0 }}>{t("domains.title")}</h1>
+          <h1 id="opencoo-page-h1" style={{ margin: 0 }}>{t("domains.title")}</h1>
           <p style={{ margin: "4px 0 0", color: "var(--ink-3)" }}>
             {t("domains.subtitle")}
           </p>

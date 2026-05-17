@@ -20,6 +20,8 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { SR_ONLY_STYLE } from "../components/Chrome.js";
+
 import { LintFindings } from "./Review/LintFindings.js";
 import { SourceBindingsReview } from "./Review/SourceBindingsReview.js";
 import { SurfacerCandidates } from "./Review/SurfacerCandidates.js";
@@ -57,6 +59,14 @@ export function Review(props: ReviewProps = {}): JSX.Element {
         fontFamily: "var(--font-sans)",
       }}
     >
+      {/* PR-A2 — visually-hidden h1 satisfies the
+          <main aria-labelledby="opencoo-page-h1"> contract; the
+          page identifier is already shown in the W10 breadcrumb.
+          SR_ONLY_STYLE is the shared sr-only recipe from Chrome.tsx
+          (Copilot triage on PR-A2). */}
+      <h1 id="opencoo-page-h1" style={SR_ONLY_STYLE}>
+        {t("routes.review.h1")}
+      </h1>
       {/* Sub-tab navigation — mirrors Activity.tsx pattern */}
       <div
         style={{

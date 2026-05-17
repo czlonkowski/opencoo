@@ -357,12 +357,21 @@ export function App(): JSX.Element {
       <DebugBanner visible={debugActive} />
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
         <Sidebar tab={tab} setTab={navigateToTab} />
-        <main
+        {/* PR-A2 — landmark hierarchy: TopBar (banner) and route
+            content (main) are siblings, not nested. A
+            `<header role="banner">` nested inside `<main>` violates
+            the W3C landmark contract (banner is intended as
+            top-level chrome). This wrapper splits them: TopBar
+            renders OUTSIDE <main>; <main aria-labelledby="…">
+            wraps only the route render. The visual layout (flex
+            column with the bar above the scroll region) is
+            preserved. (Copilot triage on PR-A2.) */}
+        <div
           style={{
             flex: 1,
             display: "flex",
             flexDirection: "column",
-            overflow: "auto",
+            minHeight: 0,
           }}
         >
           <TopBar
@@ -374,8 +383,18 @@ export function App(): JSX.Element {
             }}
             onChangeLocale={onChangeLocale}
           />
-          {tabs[tab]}
-        </main>
+          <main
+            aria-labelledby="opencoo-page-h1"
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              overflow: "auto",
+            }}
+          >
+            {tabs[tab]}
+          </main>
+        </div>
       </div>
       {paletteOpen ? (
         <CommandPalette

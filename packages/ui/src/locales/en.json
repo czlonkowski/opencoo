@@ -5,6 +5,7 @@
     "version": "v0.1"
   },
   "nav": {
+    "primary": "primary navigation",
     "domains": "domains",
     "sources": "sources",
     "agents": "agents",
@@ -23,6 +24,11 @@
       "governance": "governance",
       "diagnostics": "diagnostics"
     }
+  },
+  "routes": {
+    "activity": { "h1": "Activity" },
+    "reports": { "h1": "Reports" },
+    "review": { "h1": "Review" }
   },
   "commandPalette": {
     "placeholder": "Type to search domains, bindings, agents, prompts…",
