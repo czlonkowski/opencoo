@@ -739,11 +739,16 @@ export function registerDomainsRoutes(args: RegisterDomainsRoutesArgs): void {
         }>;
       };
       try {
-        // Defensive `::boolean` casts on the `CASE WHEN <flag>` predicates:
-        // Drizzle binds JS booleans as Postgres `bool` parameters and the
-        // CASE WHEN reads them correctly today, but pinning the cast
-        // documents intent and protects against a future driver/Postgres
-        // upgrade where a bound parameter might land as text.
+        // Drizzle's `sql` tag binds every `${value}` interpolation as a
+        // parameterised query argument (not string-concatenated SQL) —
+        // there is no injection surface here, and the JS boolean lands
+        // as a Postgres `bool` parameter through node-postgres' type
+        // coercion. The defensive `::boolean` cast on the `CASE WHEN
+        // <flag>` predicates is a belt-and-braces measure: it pins the
+        // SQL-level contract and protects against a future
+        // driver/Postgres upgrade where a bound parameter might land
+        // as text. The W3 "field absent → DB unchanged" regression
+        // test exercises the ELSE branch explicitly.
         updated = (await args.db.execute(sql`
           UPDATE domains
           SET name = COALESCE(${display_name ?? null}, name),
