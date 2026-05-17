@@ -455,6 +455,11 @@
   "tooltip": {
     "about": "About {{term}}"
   },
+  "toast": {
+    "region": "Notifications",
+    "showDetails": "Show details",
+    "dismiss": "Dismiss"
+  },
   "help": {
     "reviewMode": {
       "label": "review mode",
