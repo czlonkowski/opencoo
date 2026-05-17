@@ -253,6 +253,13 @@ export function Sidebar(props: SidebarProps): JSX.Element {
                 {...ariaCurrent}
                 onMouseEnter={onPrefetch}
                 onFocus={onPrefetch}
+                // PR-C5: hover affordance via shared class. The
+                // active row already carries paper / rule, so the
+                // hover-class lifts only inactive entries to paper.
+                // Composed with PR-A2's aria-current="page" — both
+                // attach to the same <button>, neither overrides
+                // the other.
+                className="opencoo-hover-sidebar"
                 style={{
                   textAlign: "left",
                   font: "inherit",

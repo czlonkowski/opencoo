@@ -47,11 +47,18 @@ export interface BtnProps {
 export function Btn(props: BtnProps): JSX.Element {
   const variant = props.variant ?? "primary";
   const v = STYLES[variant];
+  // PR-C5 (wave-16): hover affordance attaches via class +
+  // data-variant. Disabled buttons opt out so the hover recipe
+  // can't fire against cursor: not-allowed.
+  const className =
+    props.disabled === true ? undefined : "opencoo-hover-btn";
   return (
     <button
       type={props.type ?? "button"}
       disabled={props.disabled}
       onClick={props.onClick}
+      className={className}
+      data-variant={variant}
       style={{
         display: "inline-flex",
         alignItems: "center",

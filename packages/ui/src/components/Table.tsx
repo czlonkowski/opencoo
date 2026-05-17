@@ -162,9 +162,19 @@ export function Table<R>(props: TableProps<R>): JSX.Element {
               borderBottom: "1px solid var(--rule)",
               ...(attrs?.style ?? {}),
             };
+            // PR-C5: rows whose <tr> is the click target get the
+            // shared hover class so their cells lift to paper-2.
+            // `cursor: pointer` is moved into the CSS rule so the
+            // caller doesn't need to set it inline.
+            const trClassName =
+              attrs?.onClick !== undefined ? "opencoo-hover-row" : undefined;
             return (
               <Fragment key={key}>
-                <tr {...(attrs ?? {})} style={trStyle}>
+                <tr
+                  {...(attrs ?? {})}
+                  className={trClassName}
+                  style={trStyle}
+                >
                   {props.columns.map((col) => {
                     const overlay =
                       typeof col.cellStyle === "function"
