@@ -32,7 +32,6 @@
  *     heartbeat pulse is animated, owned by the operate glyph)
  *   - no emoji / no marketing voice / no pills / no gradients
  */
-import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { Tab } from "../types.js";
@@ -89,15 +88,26 @@ export const GROUPS: ReadonlyArray<GroupSpec> = [
   },
 ];
 
-/** Reverse lookup — given a tab, what group does it belong to? */
+/** Reverse lookup — given a tab, what group does it belong to?
+ *
+ *  `Tab` is a closed union, so in steady-state every value is
+ *  covered above. The throw path catches the *future* case where
+ *  a new tab is added to `types.ts` without being assigned to a
+ *  group — a silent fallback would render an incorrect breadcrumb
+ *  / sidebar mapping with no signal (Copilot triage on PR-W10).
+ *  Throwing fails the next mount in dev/test so the omission is
+ *  caught immediately. */
 export function groupForTab(tab: Tab): GroupSpec {
   for (const g of GROUPS) {
     if (g.tabs.some((t) => t.key === tab)) return g;
   }
-  // Defensive — every Tab in `types.ts` is covered above; if a
-  // new tab is added without updating GROUPS, fall back to
-  // Diagnostics so the breadcrumb still renders.
-  return GROUPS[GROUPS.length - 1]!;
+  // Exhaustiveness assertion — if a new Tab value is added without
+  // being assigned to GROUPS, this throw fires. The `never` cast
+  // makes the omission a TS error at compile time when paired with
+  // a `switch (tab) { … default: const _ : never = tab }` style
+  // check, which isn't applicable here (we iterate GROUPS, not
+  // tabs). Runtime throw is the fallback.
+  throw new Error(`Chrome.tsx: no group assignment for tab="${tab as never}"`);
 }
 
 const MICRO_LABEL_STYLE = {
@@ -297,5 +307,3 @@ export function TopBar(props: TopBarProps): JSX.Element {
     </div>
   );
 }
-
-export type { ReactNode };

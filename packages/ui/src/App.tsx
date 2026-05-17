@@ -40,8 +40,10 @@ interface CsrfResponse {
  *  `PROMPT_NAMES` tuple in `packages/shared/src/prompts/loader.ts`.
  *  Duplicated here per the same rationale as `routes/Prompts.tsx`:
  *  the UI package keeps no `@opencoo/shared` runtime dependency,
- *  and adding a prompt is a one-line edit either way. */
-const PALETTE_PROMPT_NAMES: ReadonlyArray<string> = [
+ *  and adding a prompt is a one-line edit either way. The literal
+ *  union is the source of truth for the `initialPromptName` prop
+ *  the Prompts route accepts. */
+const PALETTE_PROMPT_NAMES = [
   "classifier",
   "compiler",
   "heartbeat",
@@ -51,7 +53,12 @@ const PALETTE_PROMPT_NAMES: ReadonlyArray<string> = [
   "builder",
   "worldview-domain",
   "worldview-company",
-];
+] as const;
+type PaletteName = (typeof PALETTE_PROMPT_NAMES)[number];
+
+function isPaletteName(s: string): s is PaletteName {
+  return (PALETTE_PROMPT_NAMES as readonly string[]).includes(s);
+}
 
 export function App(): JSX.Element {
   const { t } = useTranslation();
@@ -83,12 +90,26 @@ export function App(): JSX.Element {
   // without a drill-down (or with no row selected) pass null
   // and the bar renders the two-segment form.
   const [crumb, setCrumb] = useState<string | null>(null);
-  // PR-W10 — Cmd-K palette open state. Cmd-K (or Ctrl-K on
-  // non-mac) toggles the palette; selection or Esc closes it.
+  // PR-W10 — Cmd-K palette open state. Cmd-K (mac) / Ctrl-K
+  // (Linux/Win) toggles the palette; selection or Esc closes it.
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // PR-W10 — Prompts route pre-select on a palette prompt-hop.
+  // Distinct from `promptsInitialDomainId` (which seeds the
+  // domain picker on a DomainDetail → Prompts hop); this state
+  // seeds the prompt-name picker so Cmd-K → "Prompt: heartbeat"
+  // lands on the heartbeat editor instead of the empty picker.
+  // (Copilot triage on PR-W10.)
+  const [promptsInitialName, setPromptsInitialName] = useState<string | null>(
+    null,
+  );
 
   const onNavigateToPrompts = (domainId: string): void => {
     setPromptsInitialDomainId(domainId);
+    // `setTab` would unmount Domains before its `selected`-cleanup
+    // effect publishes `null`, so clear the crumb inline. Same
+    // crumb-clearing semantics as `navigateToTab`. (Copilot
+    // triage on PR-W10.)
+    setCrumb(null);
     setTab("prompts");
   };
 
@@ -110,16 +131,17 @@ export function App(): JSX.Element {
 
   // Palette dispatcher — maps a CommandPaletteTarget to the
   // existing setTab + initial-id plumbing. Domains/Sources/
-  // Agents each get a dedicated pre-select state; Prompts reuses
-  // the existing `promptsInitialDomainId` channel for domain
-  // hops, and the prompt-name hop only needs the tab switch
-  // because the Prompts route already restores the last
-  // selection (and the manifest list is shown alongside).
+  // Agents each get a dedicated pre-select state. Prompts honors
+  // both the domain-hop channel (`promptsInitialDomainId`) and
+  // the prompt-name channel (`promptsInitialName`) so Cmd-K →
+  // "Prompt: heartbeat" actually lands on the heartbeat editor
+  // rather than the empty picker (Copilot triage on PR-W10).
   const onPaletteNavigate = useCallback(
     (target: CommandPaletteTarget): void => {
       setDomainsOpenId(null);
       setSourcesOpenId(null);
       setAgentsOpenId(null);
+      setPromptsInitialName(null);
       setCrumb(null);
       if (target.tab === "domains" && target.entityId !== undefined) {
         setDomainsOpenId(target.entityId);
@@ -127,23 +149,49 @@ export function App(): JSX.Element {
         setSourcesOpenId(target.entityId);
       } else if (target.tab === "agents" && target.entityId !== undefined) {
         setAgentsOpenId(target.entityId);
+      } else if (target.tab === "prompts" && target.promptName !== undefined) {
+        setPromptsInitialName(target.promptName);
       }
       setTab(target.tab);
     },
     [],
   );
 
-  // Global Cmd-K (mac) / Ctrl-K (linux/win) listener. We bind
-  // it once at the root so the palette opens regardless of
+  // Consume-once callbacks for palette pre-select. Once a route
+  // applies its `initialOpenId`, App clears the corresponding
+  // state — closing the modal + switching away + returning no
+  // longer re-opens the stale row (Copilot triage on PR-W10).
+  const onDomainsOpenIdConsumed = useCallback(
+    (): void => setDomainsOpenId(null),
+    [],
+  );
+  const onSourcesOpenIdConsumed = useCallback(
+    (): void => setSourcesOpenId(null),
+    [],
+  );
+  const onAgentsOpenIdConsumed = useCallback(
+    (): void => setAgentsOpenId(null),
+    [],
+  );
+
+  // Global Cmd-K (macOS) / Ctrl-K (Linux/Windows) listener. We
+  // bind it once at the root so the palette opens regardless of
   // which tab has focus. The handler short-circuits when the
-  // gating PatEntryModal is up — there's nothing to navigate
-  // to until the operator's authed.
+  // gating PatEntryModal is up — there's nothing to navigate to
+  // until the operator's authed.
+  //
+  // Platform gate (Copilot triage on PR-W10): only `metaKey` on
+  // macOS, only `ctrlKey` elsewhere. Without this, Ctrl-K on macOS
+  // would steal the standard "delete to end of line" text-editing
+  // shortcut every textarea in the console relies on.
   useEffect(() => {
     if (!authed) return;
+    const isMac =
+      typeof navigator !== "undefined" &&
+      (navigator.platform ?? "").toLowerCase().includes("mac");
     const onKey = (e: KeyboardEvent): void => {
-      // `metaKey` is the macOS Command modifier; `ctrlKey`
-      // covers the Linux/Win convention. Match either.
-      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+      const modifier = isMac ? e.metaKey : e.ctrlKey;
+      if (modifier && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
         setPaletteOpen((open) => !open);
       }
@@ -223,18 +271,21 @@ export function App(): JSX.Element {
       <Domains
         onNavigateToPrompts={onNavigateToPrompts}
         onCrumbChange={onCrumbChange}
+        onInitialOpenIdConsumed={onDomainsOpenIdConsumed}
         {...(domainsOpenId !== null ? { initialOpenId: domainsOpenId } : {})}
       />
     ),
     sources: (
       <Sources
         onCrumbChange={onCrumbChange}
+        onInitialOpenIdConsumed={onSourcesOpenIdConsumed}
         {...(sourcesOpenId !== null ? { initialOpenId: sourcesOpenId } : {})}
       />
     ),
     agents: (
       <Agents
         onCrumbChange={onCrumbChange}
+        onInitialOpenIdConsumed={onAgentsOpenIdConsumed}
         {...(agentsOpenId !== null ? { initialOpenId: agentsOpenId } : {})}
       />
     ),
@@ -244,6 +295,9 @@ export function App(): JSX.Element {
       <Prompts
         {...(promptsInitialDomainId !== null
           ? { initialDomainId: promptsInitialDomainId }
+          : {})}
+        {...(promptsInitialName !== null && isPaletteName(promptsInitialName)
+          ? { initialPromptName: promptsInitialName }
           : {})}
       />
     ),

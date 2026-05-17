@@ -34,8 +34,14 @@ export interface AgentsProps {
   readonly fetchImpl?: typeof fetch;
   /** PR-W10 — Cmd-K palette pre-select. When set, the route
    *  auto-opens AgentInstanceDetail for the matching row once
-   *  the instance list resolves. */
+   *  the instance list resolves. Consumed once via
+   *  `onInitialOpenIdConsumed`; subsequent route remounts
+   *  without a fresh palette dispatch will NOT re-open the
+   *  old row. (Copilot triage on PR-W10.) */
   readonly initialOpenId?: string;
+  /** PR-W10 — Consume signal. Fired once the route has used
+   *  `initialOpenId`; the parent clears its `agentsOpenId`. */
+  readonly onInitialOpenIdConsumed?: () => void;
   /** PR-W10 — Breadcrumb publisher. Lifts the selected
    *  instance's `name` into App-level state for the TopBar
    *  third segment, and clears it on close. */
@@ -70,12 +76,20 @@ export function Agents(props: AgentsProps = {}): JSX.Element {
   }, [refreshNonce]);
 
   // PR-W10 — auto-open drill-down for a palette-dispatched id.
+  // `onInitialOpenIdConsumed` fires once the match is applied so
+  // the parent clears `agentsOpenId` — closing the modal and
+  // returning to this tab won't re-open the old row (Copilot
+  // triage on PR-W10).
   const initialOpenId = props.initialOpenId;
+  const onInitialOpenIdConsumed = props.onInitialOpenIdConsumed;
   useEffect((): void => {
     if (initialOpenId === undefined || rows === null) return;
     const match = rows.find((r) => r.id === initialOpenId);
-    if (match !== undefined) setSelected(match);
-  }, [initialOpenId, rows]);
+    if (match !== undefined) {
+      setSelected(match);
+      onInitialOpenIdConsumed?.();
+    }
+  }, [initialOpenId, rows, onInitialOpenIdConsumed]);
 
   // PR-W10 — publish row-name to the App's breadcrumb.
   const onCrumbChange = props.onCrumbChange;

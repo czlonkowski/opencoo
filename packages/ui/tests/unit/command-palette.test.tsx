@@ -221,4 +221,22 @@ describe("CommandPalette (PR-W10)", () => {
     expect(rows.length).toBe(1);
     expect(rows[0]!.getAttribute("data-result-id")).toBe("domain:2");
   });
+
+  // Copilot triage on PR-W10: selecting a prompt result must
+  // emit `promptName` on the navigation target so App.tsx can
+  // route the hop into the Prompts route's `initialPromptName`
+  // channel — otherwise the prompt-name palette command lands on
+  // the empty prompt picker.
+  it("dispatches promptName when selecting a prompt result", () => {
+    const { onClose, onNavigate } = renderPalette();
+    const row = document.querySelector(
+      '[data-result-id="prompt:heartbeat"]',
+    ) as HTMLElement;
+    fireEvent.click(row);
+    expect(onNavigate).toHaveBeenCalledWith({
+      tab: "prompts",
+      promptName: "heartbeat",
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

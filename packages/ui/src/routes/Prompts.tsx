@@ -198,6 +198,10 @@ export interface PromptsProps {
    *  picker. The route resolves it once domains land; manual
    *  selections persist across re-renders. */
   readonly initialDomainId?: string;
+  /** PR-W10 — Cmd-K palette prompt-name pre-select. When set,
+   *  the route opens the named prompt's editor instead of the
+   *  empty prompt-picker. (Copilot triage on PR-W10.) */
+  readonly initialPromptName?: PromptName;
 }
 
 export function Prompts(props: PromptsProps = {}): JSX.Element {
@@ -212,7 +216,7 @@ export function Prompts(props: PromptsProps = {}): JSX.Element {
   // Top-level state.
   const [domains, setDomains] = useState<ReadonlyArray<Domain> | null>(null);
   const [selectedPrompt, setSelectedPrompt] = useState<PromptName | null>(
-    null,
+    props.initialPromptName ?? null,
   );
   const [selectedDomainId, setSelectedDomainId] = useState<string | null>(
     props.initialDomainId ?? null,
