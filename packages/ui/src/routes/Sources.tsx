@@ -47,6 +47,14 @@ function formatRelativeTime(isoString: string, t: ReturnType<typeof useTranslati
 export interface SourcesProps {
   /** @internal Test seam — defaults to globalThis.fetch. */
   readonly fetchImpl?: typeof fetch;
+  /** PR-W10 — Cmd-K palette pre-select. When set, the route
+   *  auto-opens SourceBindingDetail for the matching row once
+   *  the binding list resolves. */
+  readonly initialOpenId?: string;
+  /** PR-W10 — Breadcrumb publisher. The route calls this with
+   *  the selected binding's `name` whenever the drill-down opens
+   *  and `null` when it closes. */
+  readonly onCrumbChange?: (value: string | null) => void;
 }
 
 export function Sources(props: SourcesProps = {}): JSX.Element {
@@ -78,6 +86,20 @@ export function Sources(props: SourcesProps = {}): JSX.Element {
     })();
     // refetch when the create modal flips refreshNonce.
   }, [refreshNonce]);
+
+  // PR-W10 — auto-open drill-down for a palette-dispatched id.
+  const initialOpenId = props.initialOpenId;
+  useEffect((): void => {
+    if (initialOpenId === undefined || rows === null) return;
+    const match = rows.find((b) => b.id === initialOpenId);
+    if (match !== undefined) setSelected(match);
+  }, [initialOpenId, rows]);
+
+  // PR-W10 — publish row-name to the App's breadcrumb.
+  const onCrumbChange = props.onCrumbChange;
+  useEffect((): void => {
+    onCrumbChange?.(selected !== null ? selected.name : null);
+  }, [selected, onCrumbChange]);
 
   return (
     <div style={{ padding: "24px 28px", display: "flex", flexDirection: "column", gap: 16 }}>

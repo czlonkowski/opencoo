@@ -1,10 +1,14 @@
 /**
  * Root App — Sidebar + TopBar + active tab + global flows
- * (PAT entry, debug banner, logout).
+ * (PAT entry, debug banner, logout, Cmd-K palette).
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import {
+  CommandPalette,
+  type CommandPaletteTarget,
+} from "./components/CommandPalette.js";
 import { DebugBanner } from "./components/DebugBanner.js";
 import { Sidebar, TopBar } from "./components/Chrome.js";
 import { PatEntryModal } from "./components/PatEntryModal.js";
@@ -32,6 +36,23 @@ interface CsrfResponse {
   readonly _llmDebugLogActive?: boolean;
 }
 
+/** Prompt roster surfaced by the Cmd-K palette. Mirrors the
+ *  `PROMPT_NAMES` tuple in `packages/shared/src/prompts/loader.ts`.
+ *  Duplicated here per the same rationale as `routes/Prompts.tsx`:
+ *  the UI package keeps no `@opencoo/shared` runtime dependency,
+ *  and adding a prompt is a one-line edit either way. */
+const PALETTE_PROMPT_NAMES: ReadonlyArray<string> = [
+  "classifier",
+  "compiler",
+  "heartbeat",
+  "lint",
+  "chat",
+  "surfacer",
+  "builder",
+  "worldview-domain",
+  "worldview-company",
+];
+
 export function App(): JSX.Element {
   const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>("domains");
@@ -46,11 +67,90 @@ export function App(): JSX.Element {
   const [promptsInitialDomainId, setPromptsInitialDomainId] = useState<
     string | null
   >(null);
+  // PR-W10 — Cmd-K palette navigation pre-selects a row inside
+  // the destination tab. The Domains / Sources / Agents routes
+  // accept an `initialOpenId` prop that resolves to the rows
+  // table once the data lands and auto-opens the drill-down
+  // modal. We track them as three separate states so a palette
+  // jump to one route doesn't accidentally re-open a drill-down
+  // on a different one.
+  const [domainsOpenId, setDomainsOpenId] = useState<string | null>(null);
+  const [sourcesOpenId, setSourcesOpenId] = useState<string | null>(null);
+  const [agentsOpenId, setAgentsOpenId] = useState<string | null>(null);
+  // PR-W10 — breadcrumb row-name. Each route lifts its selected
+  // row's display label into this state via `onCrumbChange` so
+  // the TopBar can render `<group> / <tab> / <row-name>`. Pages
+  // without a drill-down (or with no row selected) pass null
+  // and the bar renders the two-segment form.
+  const [crumb, setCrumb] = useState<string | null>(null);
+  // PR-W10 — Cmd-K palette open state. Cmd-K (or Ctrl-K on
+  // non-mac) toggles the palette; selection or Esc closes it.
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const onNavigateToPrompts = (domainId: string): void => {
     setPromptsInitialDomainId(domainId);
     setTab("prompts");
   };
+
+  // Tab navigation must clear the row-level crumb — the row name
+  // belongs to the route we're leaving. The destination route
+  // re-publishes its own crumb (or null) once mounted.
+  const navigateToTab = useCallback((next: Tab): void => {
+    setTab(next);
+    setCrumb(null);
+  }, []);
+
+  // Stable callback identity for child routes' effect dep lists
+  // — without `useCallback` each parent re-render would re-fire
+  // every route's onCrumbChange effect.
+  const onCrumbChange = useCallback(
+    (value: string | null): void => setCrumb(value),
+    [],
+  );
+
+  // Palette dispatcher — maps a CommandPaletteTarget to the
+  // existing setTab + initial-id plumbing. Domains/Sources/
+  // Agents each get a dedicated pre-select state; Prompts reuses
+  // the existing `promptsInitialDomainId` channel for domain
+  // hops, and the prompt-name hop only needs the tab switch
+  // because the Prompts route already restores the last
+  // selection (and the manifest list is shown alongside).
+  const onPaletteNavigate = useCallback(
+    (target: CommandPaletteTarget): void => {
+      setDomainsOpenId(null);
+      setSourcesOpenId(null);
+      setAgentsOpenId(null);
+      setCrumb(null);
+      if (target.tab === "domains" && target.entityId !== undefined) {
+        setDomainsOpenId(target.entityId);
+      } else if (target.tab === "sources" && target.entityId !== undefined) {
+        setSourcesOpenId(target.entityId);
+      } else if (target.tab === "agents" && target.entityId !== undefined) {
+        setAgentsOpenId(target.entityId);
+      }
+      setTab(target.tab);
+    },
+    [],
+  );
+
+  // Global Cmd-K (mac) / Ctrl-K (linux/win) listener. We bind
+  // it once at the root so the palette opens regardless of
+  // which tab has focus. The handler short-circuits when the
+  // gating PatEntryModal is up — there's nothing to navigate
+  // to until the operator's authed.
+  useEffect(() => {
+    if (!authed) return;
+    const onKey = (e: KeyboardEvent): void => {
+      // `metaKey` is the macOS Command modifier; `ctrlKey`
+      // covers the Linux/Win convention. Match either.
+      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return (): void => document.removeEventListener("keydown", onKey);
+  }, [authed]);
 
   useEffect((): void => {
     if (!authed) return;
@@ -119,9 +219,25 @@ export function App(): JSX.Element {
   }
 
   const tabs: Record<Tab, JSX.Element> = {
-    domains: <Domains onNavigateToPrompts={onNavigateToPrompts} />,
-    sources: <Sources />,
-    agents: <Agents />,
+    domains: (
+      <Domains
+        onNavigateToPrompts={onNavigateToPrompts}
+        onCrumbChange={onCrumbChange}
+        {...(domainsOpenId !== null ? { initialOpenId: domainsOpenId } : {})}
+      />
+    ),
+    sources: (
+      <Sources
+        onCrumbChange={onCrumbChange}
+        {...(sourcesOpenId !== null ? { initialOpenId: sourcesOpenId } : {})}
+      />
+    ),
+    agents: (
+      <Agents
+        onCrumbChange={onCrumbChange}
+        {...(agentsOpenId !== null ? { initialOpenId: agentsOpenId } : {})}
+      />
+    ),
     outputs: <Outputs />,
     llmPolicy: <LlmPolicy />,
     prompts: (
@@ -133,23 +249,9 @@ export function App(): JSX.Element {
     ),
     activity: <Activity onAuthFailed={onSseAuthFailed} />,
     review: <Review />,
-    reports: <Reports onNavigate={setTab} />,
+    reports: <Reports onNavigate={navigateToTab} />,
     audit: <Audit />,
     cost: <Cost />,
-  };
-
-  const titles: Record<Tab, string> = {
-    domains: t("domains.title"),
-    sources: t("sources.title"),
-    agents: t("agents.title"),
-    outputs: t("outputs.title"),
-    llmPolicy: t("llmPolicy.title"),
-    prompts: t("prompts.title"),
-    activity: t("activity.title"),
-    review: t("review.title"),
-    reports: t("reports.title"),
-    audit: t("audit.title"),
-    cost: t("cost.title"),
   };
 
   return (
@@ -163,7 +265,7 @@ export function App(): JSX.Element {
     >
       <DebugBanner visible={debugActive} />
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        <Sidebar tab={tab} setTab={setTab} />
+        <Sidebar tab={tab} setTab={navigateToTab} />
         <main
           style={{
             flex: 1,
@@ -173,7 +275,8 @@ export function App(): JSX.Element {
           }}
         >
           <TopBar
-            title={titles[tab]}
+            tab={tab}
+            {...(crumb !== null ? { crumb } : {})}
             username={username}
             onLogout={(): void => {
               void onLogout();
@@ -182,6 +285,13 @@ export function App(): JSX.Element {
           {tabs[tab]}
         </main>
       </div>
+      {paletteOpen ? (
+        <CommandPalette
+          onClose={(): void => setPaletteOpen(false)}
+          onNavigate={onPaletteNavigate}
+          promptNames={PALETTE_PROMPT_NAMES}
+        />
+      ) : null}
     </div>
   );
 }

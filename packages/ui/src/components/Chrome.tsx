@@ -1,18 +1,36 @@
 /**
- * Sidebar + TopBar — migrated from
- * design_system/ui_kits/management-console/Chrome.jsx with
- * the v0.1 admin-API tabs (Domains, Sources, LLM Policy,
- * Prompts).
+ * Sidebar + TopBar — IA polish for PR-W10 (phase-a appendix
+ * #15 wave-15).
  *
- * The sidebar is the canonical surface for app navigation.
- * The TopBar surfaces:
- *   - the current tab title,
- *   - the resolved username,
- *   - a logout button.
+ * The sidebar groups tabs into four named clusters so the
+ * flat 11-tab list reads as a coherent product chrome:
+ *   - Operate     — daily-task primacy (Agents · Outputs · Activity)
+ *   - Knowledge   — what the wiki is made of (Domains · Sources · Prompts)
+ *   - Governance  — review + policy + spend (Review · LlmPolicy · Cost · Audit)
+ *   - Diagnostics — observability (Reports)
  *
- * Both surfaces reference design-system CSS vars only — no
- * color literals, no second motion loop. (CLAUDE.md "Design
- * system" hard-nos.)
+ * The TopBar replaces the bare uppercase tab title with a
+ * `<group> / <tab> [ / <row-name> ]` breadcrumb. The third
+ * segment is optional — pages with no drill-down render the
+ * two-segment form. The `crumb` prop carries the lifted
+ * row-name from the active route; it's prop-drilled rather
+ * than threaded through a context because exactly one consumer
+ * needs it (TopBar) and the value is a single string.
+ *
+ * The visual grouping changes only the sidebar layout — the
+ * existing `tab` enum + `setTab` plumbing in App.tsx stays
+ * unchanged. Cmd-K palette navigation also goes through
+ * `setTab`, so the route table in App.tsx remains the single
+ * source of truth for tab keys.
+ *
+ * Design-system invariants honored:
+ *   - mono-uppercase micro-label per group (Geist micro-label
+ *     pattern, sized 10px tracking 0.08em — same recipe as the
+ *     existing footer in `app.version · app.tagline`)
+ *   - no color literals — only design-system CSS vars
+ *   - no second motion loop (group labels are static; only the
+ *     heartbeat pulse is animated, owned by the operate glyph)
+ *   - no emoji / no marketing voice / no pills / no gradients
  */
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -26,28 +44,69 @@ interface SidebarProps {
   readonly setTab: (t: Tab) => void;
 }
 
-const TABS: ReadonlyArray<{ key: Tab; labelKey: string }> = [
-  { key: "domains", labelKey: "nav.domains" },
-  { key: "sources", labelKey: "nav.sources" },
-  // PR-W2 (phase-a appendix #13) — Agents tab between Sources and Outputs:
-  // operators bind an agent_instance to one or more output channels here.
-  { key: "agents", labelKey: "nav.agents" },
-  // PR-Z4 (phase-a appendix #12 G5) — Outputs tab between Sources and LLM
-  // policy: same surface family (binding-style CRUD over operator config).
-  { key: "outputs", labelKey: "nav.outputs" },
-  { key: "llmPolicy", labelKey: "nav.llmPolicy" },
-  { key: "prompts", labelKey: "nav.prompts" },
-  // Phase-a appendix #4 PR-B: Activity tab (5th tab).
-  { key: "activity", labelKey: "nav.activity" },
-  // Phase-a appendix #4 PR-C: Review Dashboard (6th tab).
-  { key: "review", labelKey: "nav.review" },
-  // Phase-a appendix #4 PR-D: Reports tab (7th tab).
-  { key: "reports", labelKey: "nav.reports" },
-  // Phase-a appendix #10 PR-R4: Audit log viewer (8th tab).
-  { key: "audit", labelKey: "nav.audit" },
-  // Phase-a appendix #10 PR-R5: Cost analytics dashboard (9th tab).
-  { key: "cost", labelKey: "nav.cost" },
+/** Group order is fixed: Operate first carries daily-task primacy. */
+type GroupKey = "operate" | "knowledge" | "governance" | "diagnostics";
+
+interface GroupSpec {
+  readonly key: GroupKey;
+  readonly labelKey: string;
+  readonly tabs: ReadonlyArray<{ key: Tab; labelKey: string }>;
+}
+
+export const GROUPS: ReadonlyArray<GroupSpec> = [
+  {
+    key: "operate",
+    labelKey: "nav.groups.operate",
+    tabs: [
+      { key: "agents", labelKey: "nav.agents" },
+      { key: "outputs", labelKey: "nav.outputs" },
+      { key: "activity", labelKey: "nav.activity" },
+    ],
+  },
+  {
+    key: "knowledge",
+    labelKey: "nav.groups.knowledge",
+    tabs: [
+      { key: "domains", labelKey: "nav.domains" },
+      { key: "sources", labelKey: "nav.sources" },
+      { key: "prompts", labelKey: "nav.prompts" },
+    ],
+  },
+  {
+    key: "governance",
+    labelKey: "nav.groups.governance",
+    tabs: [
+      { key: "review", labelKey: "nav.review" },
+      { key: "llmPolicy", labelKey: "nav.llmPolicy" },
+      { key: "cost", labelKey: "nav.cost" },
+      { key: "audit", labelKey: "nav.audit" },
+    ],
+  },
+  {
+    key: "diagnostics",
+    labelKey: "nav.groups.diagnostics",
+    tabs: [{ key: "reports", labelKey: "nav.reports" }],
+  },
 ];
+
+/** Reverse lookup — given a tab, what group does it belong to? */
+export function groupForTab(tab: Tab): GroupSpec {
+  for (const g of GROUPS) {
+    if (g.tabs.some((t) => t.key === tab)) return g;
+  }
+  // Defensive — every Tab in `types.ts` is covered above; if a
+  // new tab is added without updating GROUPS, fall back to
+  // Diagnostics so the breadcrumb still renders.
+  return GROUPS[GROUPS.length - 1]!;
+}
+
+const MICRO_LABEL_STYLE = {
+  fontFamily: "var(--font-mono)",
+  fontSize: 10,
+  color: "var(--ink-3)",
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+} as const;
 
 export function Sidebar(props: SidebarProps): JSX.Element {
   const { t } = useTranslation();
@@ -85,39 +144,59 @@ export function Sidebar(props: SidebarProps): JSX.Element {
           {t("app.title")}
         </span>
       </div>
-      {TABS.map((item) => {
-        const active = props.tab === item.key;
-        return (
-          <button
-            key={item.key}
-            onClick={(): void => props.setTab(item.key)}
+      {GROUPS.map((group, idx) => (
+        <div
+          key={group.key}
+          data-group={group.key}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            // First group sits flush against the title row; later
+            // groups get a top gap so the section breaks read as
+            // breathing room, not a rule.
+            marginTop: idx === 0 ? 0 : 12,
+          }}
+        >
+          <div
             style={{
-              textAlign: "left",
-              font: "inherit",
-              fontSize: 13,
-              padding: "8px 10px",
-              background: active ? "var(--paper)" : "transparent",
-              border: "1px solid",
-              borderColor: active ? "var(--rule)" : "transparent",
-              borderRadius: 4,
-              color: active ? "var(--ink)" : "var(--ink-2)",
-              cursor: "pointer",
+              ...MICRO_LABEL_STYLE,
+              padding: "4px 10px 6px",
             }}
           >
-            {t(item.labelKey)}
-          </button>
-        );
-      })}
+            {t(group.labelKey)}
+          </div>
+          {group.tabs.map((item) => {
+            const active = props.tab === item.key;
+            return (
+              <button
+                key={item.key}
+                onClick={(): void => props.setTab(item.key)}
+                style={{
+                  textAlign: "left",
+                  font: "inherit",
+                  fontSize: 13,
+                  padding: "8px 10px",
+                  background: active ? "var(--paper)" : "transparent",
+                  border: "1px solid",
+                  borderColor: active ? "var(--rule)" : "transparent",
+                  borderRadius: 4,
+                  color: active ? "var(--ink)" : "var(--ink-2)",
+                  cursor: "pointer",
+                }}
+              >
+                {t(item.labelKey)}
+              </button>
+            );
+          })}
+        </div>
+      ))}
       <div
         style={{
           marginTop: "auto",
           paddingTop: 12,
           borderTop: "1px solid var(--rule)",
-          fontFamily: "var(--font-mono)",
-          fontSize: 10,
-          color: "var(--ink-3)",
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
+          ...MICRO_LABEL_STYLE,
         }}
       >
         {t("app.version")} · {t("app.tagline")}
@@ -127,13 +206,35 @@ export function Sidebar(props: SidebarProps): JSX.Element {
 }
 
 interface TopBarProps {
-  readonly title: ReactNode;
+  /** Active tab — drives the breadcrumb's middle segment + the
+   *  group-name segment via `groupForTab(tab)`. */
+  readonly tab: Tab;
+  /** Optional row-name shown as the third breadcrumb segment.
+   *  Pages with a drill-down lift the selected row's name into
+   *  this prop; pages without a drill-down (or with no row
+   *  open) pass `undefined` and the bar renders the two-segment
+   *  form. */
+  readonly crumb?: string;
   readonly username: string | null;
   readonly onLogout: () => void;
 }
 
+const CRUMB_SEP_STYLE = {
+  fontFamily: "var(--font-mono)",
+  color: "var(--ink-3)",
+  margin: "0 8px",
+  // No animation, no color shift — the separator is a static
+  // divider, not a motion cue.
+} as const;
+
 export function TopBar(props: TopBarProps): JSX.Element {
   const { t } = useTranslation();
+  const group = groupForTab(props.tab);
+  const groupLabel = t(group.labelKey);
+  const tabSpec = group.tabs.find((tt) => tt.key === props.tab);
+  // tabSpec is guaranteed by groupForTab — fall through is
+  // defensive only.
+  const tabLabel = tabSpec ? t(tabSpec.labelKey) : props.tab;
   return (
     <div
       style={{
@@ -149,8 +250,41 @@ export function TopBar(props: TopBarProps): JSX.Element {
         textTransform: "uppercase",
       }}
     >
-      <span>
-        <b style={{ color: "var(--ink)", fontWeight: 500 }}>{props.title}</b>
+      <span data-crumb="root">
+        <span data-crumb="group">{groupLabel}</span>
+        <span style={CRUMB_SEP_STYLE} aria-hidden="true">
+          /
+        </span>
+        <span
+          data-crumb="tab"
+          style={{ color: "var(--ink)", fontWeight: 500 }}
+        >
+          {tabLabel}
+        </span>
+        {props.crumb !== undefined && props.crumb !== "" ? (
+          <>
+            <span style={CRUMB_SEP_STYLE} aria-hidden="true">
+              /
+            </span>
+            <span
+              data-crumb="row"
+              style={{
+                color: "var(--ink)",
+                fontWeight: 500,
+                // The row-name preserves operator-chosen casing
+                // (slugs, IDs, locale-suffixed names) — only the
+                // group / tab segments get the uppercase chrome
+                // treatment that the TopBar applies to the entire
+                // bar by default.
+                textTransform: "none",
+                letterSpacing: 0,
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              {props.crumb}
+            </span>
+          </>
+        ) : null}
       </span>
       <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
         {props.username !== null ? (
@@ -163,3 +297,5 @@ export function TopBar(props: TopBarProps): JSX.Element {
     </div>
   );
 }
+
+export type { ReactNode };
