@@ -29,6 +29,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 
+import { AgentInstancePromptsSection } from "./AgentInstancePromptsSection.js";
 import { Btn } from "./Btn.js";
 import { Modal } from "./Modal.js";
 import { MultiSelectDomains } from "./MultiSelectDomains.js";
@@ -913,6 +914,15 @@ export function AgentInstanceDetail(
             </div>
           )}
         </div>
+
+        {/* Per-instance prompt overrides (PR-W7b) */}
+        <AgentInstancePromptsSection
+          instance={props.instance}
+          onChanged={props.onChanged}
+          {...(props.fetchImpl !== undefined
+            ? { fetchImpl: props.fetchImpl }
+            : {})}
+        />
 
         {/* Toast region */}
         {toast !== null ? (
