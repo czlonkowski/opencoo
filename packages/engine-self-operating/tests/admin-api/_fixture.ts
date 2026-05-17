@@ -76,6 +76,12 @@ const TABLES_DDL = `
     role user_role DEFAULT 'operator' NOT NULL,
     gitea_teams jsonb DEFAULT '[]'::jsonb NOT NULL,
     gitea_teams_refreshed_at timestamp with time zone,
+    -- PR-C2 (phase-a appendix #16): operator-controlled per-account
+    -- UI locale preference. NULL = "no preference, fall back to the
+    -- client-side detector default"; non-null constrained to
+    -- {'en','pl'} by CHECK (mirrors migration 0015).
+    locale_preference text CONSTRAINT users_locale_preference_allowed
+      CHECK (locale_preference IN ('en', 'pl')),
     created_at timestamp with time zone DEFAULT now() NOT NULL
   );
 

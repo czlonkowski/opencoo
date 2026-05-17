@@ -77,6 +77,7 @@ import {
   type ForgetJobEnqueueArgs,
   type RetryableFailedJob,
 } from "./routes/source-bindings.js";
+import { readLocalePreference, registerUsersRoutes } from "./routes/users.js";
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
@@ -241,11 +242,27 @@ export async function registerAdminApi(
     { preHandler: verifyAdmin },
     async (req, reply) => {
       const issued = issueCsrfToken(reply);
+      // PR-C2 (phase-a appendix #16): hydrate the operator's
+      // persisted locale preference so the SPA can reconcile
+      // localStorage at login. NULL = "no preference, fall back
+      // to the client-side detector default". The SELECT is
+      // cheap (single row by PK) and runs on every session-
+      // establishing _csrf call, mirroring the username
+      // reflection above.
+      const userId = req.adminContext?.userId;
+      const localePreference =
+        userId !== undefined
+          ? await readLocalePreference(args.db, userId)
+          : null;
       return reply.code(200).send({
         csrfToken: issued.csrfToken,
         // Reflect the resolved username — handy for the SPA's
         // top-bar without needing a separate /me call.
         username: req.adminContext?.username ?? null,
+        // Reflect the persisted locale preference — null when
+        // the operator has never flipped the locale switcher,
+        // 'en' | 'pl' otherwise. PR-C2 wave-16.
+        localePreference,
       });
     },
   );
@@ -361,6 +378,10 @@ export async function registerAdminApi(
     llmDebugLog: args.llmDebugLog,
   });
   registerLogoutRoute({ app: guardedApp, db: args.db });
+  // PR-C2 (phase-a appendix #16 wave-16) — operator-controlled
+  // per-account locale preference. PATCH /api/admin/users/me/locale
+  // is CSRF-gated + admin-team-gated + audit-write-before-mutate.
+  registerUsersRoutes({ app: guardedApp, db: args.db });
 
   // Phase-a appendix #4 PR-B — Activity tab routes.
   registerAgentRunsRoutes({

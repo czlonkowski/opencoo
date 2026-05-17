@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { check, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import { createdAt, primaryKeyId } from "./columns.js";
 import { userRole } from "./enums.js";
@@ -25,17 +25,37 @@ import { userRole } from "./enums.js";
  * The default `'[]'::jsonb` keeps existing rows from the v0.1
  * migration set valid; the admin-API populates the column on
  * first verifyAdmin success.
+ *
+ * PR-C2 (phase-a appendix #16) adds `locale_preference` — operator-
+ * controlled per-account UI locale persisted via the
+ * `PATCH /api/admin/users/me/locale` admin route. NULL means
+ * "no preference, fall back to the client-side detector default";
+ * non-null values are constrained to {'en','pl'} by the
+ * `users_locale_preference_allowed` CHECK. localStorage is the
+ * in-session SoT on the client; this column is the SoT at login.
  */
-export const users = pgTable("users", {
-  id: primaryKeyId(),
-  giteaUsername: text("gitea_username").notNull().unique(),
-  role: userRole("role").notNull().default("operator"),
-  giteaTeams: jsonb("gitea_teams")
-    .$type<string[]>()
-    .notNull()
-    .default(sql`'[]'::jsonb`),
-  giteaTeamsRefreshedAt: timestamp("gitea_teams_refreshed_at", {
-    withTimezone: true,
-  }),
-  createdAt: createdAt(),
-});
+export const users = pgTable(
+  "users",
+  {
+    id: primaryKeyId(),
+    giteaUsername: text("gitea_username").notNull().unique(),
+    role: userRole("role").notNull().default("operator"),
+    giteaTeams: jsonb("gitea_teams")
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    giteaTeamsRefreshedAt: timestamp("gitea_teams_refreshed_at", {
+      withTimezone: true,
+    }),
+    /** Per-PR-C2: NULL = "no preference"; non-null constrained to
+     *  {'en','pl'} by CHECK. */
+    localePreference: text("locale_preference"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check(
+      "users_locale_preference_allowed",
+      sql`${t.localePreference} IN ('en', 'pl')`,
+    ),
+  ],
+);

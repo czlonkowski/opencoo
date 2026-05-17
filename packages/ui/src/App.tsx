@@ -16,6 +16,10 @@ import {
   ApiAuthError,
   fetchAdmin,
 } from "./lib/api.js";
+import {
+  reconcileLocaleAtLogin,
+  type SupportedLocale,
+} from "./lib/i18n.js";
 import { clearPat, getPat, setPat } from "./lib/pat-store.js";
 import { Activity } from "./routes/Activity.js";
 import { Agents } from "./routes/Agents.js";
@@ -34,6 +38,12 @@ interface CsrfResponse {
   readonly csrfToken: string;
   readonly username: string | null;
   readonly _llmDebugLogActive?: boolean;
+  /** PR-C2 wave-16: operator's persisted locale preference from
+   *  `users.locale_preference`. NULL means "no preference, fall
+   *  back to the client-side detector default" — the SPA leaves
+   *  localStorage alone in that case so the in-session SoT on
+   *  this device persists. */
+  readonly localePreference?: string | null;
 }
 
 /** Prompt roster surfaced by the Cmd-K palette. Mirrors the
@@ -211,6 +221,12 @@ export function App(): JSX.Element {
         const r = await fetchAdmin<CsrfResponse>("/api/admin/_csrf");
         setUsername(r.username);
         setDebugActive(r._llmDebugLogActive === true);
+        // PR-C2 wave-16: reconcile localStorage against the DB
+        // SoT at login. NULL = "no preference"; the reconciler
+        // leaves localStorage alone in that case. Otherwise the
+        // DB value wins (e.g. operator flipped locale on machine
+        // A and is now signing into machine B).
+        reconcileLocaleAtLogin(r.localePreference ?? null);
         setAuthError(null);
       } catch (err) {
         // Both auth and non-auth failures must flip `authed: false`
@@ -249,6 +265,22 @@ export function App(): JSX.Element {
     setAuthed(false);
     setUsername(null);
   };
+
+  // PR-C2 wave-16 — operator-controlled locale flip. The
+  // LocaleSwitcher in TopBar calls this AFTER it has already
+  // flipped i18n + localStorage (the in-session SoT); we only
+  // own the DB-persistence side here. A non-2xx response throws
+  // — the switcher's catch handler logs the failure but does
+  // NOT regress local state.
+  const onChangeLocale = useCallback(
+    async (locale: SupportedLocale): Promise<void> => {
+      await fetchAdmin("/api/admin/users/me/locale", {
+        method: "PATCH",
+        body: { locale },
+      });
+    },
+    [],
+  );
 
   // PR-W3 — Activity feed signals a terminal SSE 401 (operator's PAT
   // is durably stale). Re-uses the existing PAT clear + sign-out flow:
@@ -340,6 +372,7 @@ export function App(): JSX.Element {
             onLogout={(): void => {
               void onLogout();
             }}
+            onChangeLocale={onChangeLocale}
           />
           {tabs[tab]}
         </main>

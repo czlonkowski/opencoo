@@ -54,6 +54,11 @@
   "csrf": {
     "retrying": "Refreshing CSRF token and retrying…"
   },
+  "locale": {
+    "en": "English",
+    "pl": "Polski",
+    "switcherAriaLabel": "Język interfejsu"
+  },
   "domains": {
     "title": "Domains",
     "subtitle": "Knowledge surfaces compiled by opencoo.",

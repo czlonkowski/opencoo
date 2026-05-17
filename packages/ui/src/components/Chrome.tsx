@@ -34,9 +34,11 @@
  */
 import { useTranslation } from "react-i18next";
 
+import type { SupportedLocale } from "../lib/i18n.js";
 import type { Tab } from "../types.js";
 
 import { Btn } from "./Btn.js";
+import { LocaleSwitcher } from "./LocaleSwitcher.js";
 
 interface SidebarProps {
   readonly tab: Tab;
@@ -227,6 +229,12 @@ interface TopBarProps {
   readonly crumb?: string;
   readonly username: string | null;
   readonly onLogout: () => void;
+  /** Optional locale-PATCH callable for the TopBar's
+   *  LocaleSwitcher (PR-C2 wave-16). When provided, the switcher
+   *  flips i18n + localStorage immediately and PATCHes the DB in
+   *  the background; failures don't regress local state. Omit
+   *  (test usage) to suppress the switcher entirely. */
+  readonly onChangeLocale?: (locale: SupportedLocale) => Promise<void>;
 }
 
 const CRUMB_SEP_STYLE = {
@@ -299,6 +307,13 @@ export function TopBar(props: TopBarProps): JSX.Element {
       <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
         {props.username !== null ? (
           <span>{t("auth.loggedInAs", { username: props.username })}</span>
+        ) : null}
+        {/* PR-C2 wave-16: operator-controlled locale toggle.
+            Omitted in test renders that don't pass onChangeLocale
+            so the existing TopBar tests (PR-W10 breadcrumb pins)
+            keep working without rewriting their fixtures. */}
+        {props.onChangeLocale !== undefined ? (
+          <LocaleSwitcher onChange={props.onChangeLocale} />
         ) : null}
         <Btn variant="ghost" onClick={props.onLogout}>
           {t("nav.logout")}
