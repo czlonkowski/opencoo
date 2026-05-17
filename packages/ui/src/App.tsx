@@ -173,6 +173,10 @@ export function App(): JSX.Element {
     (): void => setAgentsOpenId(null),
     [],
   );
+  const onPromptsNameConsumed = useCallback(
+    (): void => setPromptsInitialName(null),
+    [],
+  );
 
   // Global Cmd-K (macOS) / Ctrl-K (Linux/Windows) listener. We
   // bind it once at the root so the palette opens regardless of
@@ -293,6 +297,7 @@ export function App(): JSX.Element {
     llmPolicy: <LlmPolicy />,
     prompts: (
       <Prompts
+        onInitialPromptNameConsumed={onPromptsNameConsumed}
         {...(promptsInitialDomainId !== null
           ? { initialDomainId: promptsInitialDomainId }
           : {})}

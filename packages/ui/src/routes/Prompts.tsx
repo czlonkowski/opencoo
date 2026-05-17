@@ -29,7 +29,7 @@
  * `--wiki` because the lagging-overrides callout points at
  * compiled-knowledge chrome (prompt-name path tokens).
  */
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Card } from "../components/Card.js";
@@ -202,6 +202,12 @@ export interface PromptsProps {
    *  the route opens the named prompt's editor instead of the
    *  empty prompt-picker. (Copilot triage on PR-W10.) */
   readonly initialPromptName?: PromptName;
+  /** PR-W10 follow-up — Consume signal. Fired once the route
+   *  has used `initialPromptName` to seed the picker; App.tsx
+   *  clears its `promptsInitialName` state so re-mounting this
+   *  tab (e.g. via sidebar away-and-back) doesn't re-apply the
+   *  stale palette pick. */
+  readonly onInitialPromptNameConsumed?: () => void;
 }
 
 export function Prompts(props: PromptsProps = {}): JSX.Element {
@@ -218,6 +224,22 @@ export function Prompts(props: PromptsProps = {}): JSX.Element {
   const [selectedPrompt, setSelectedPrompt] = useState<PromptName | null>(
     props.initialPromptName ?? null,
   );
+  // PR-W10 follow-up — consume `initialPromptName` once on mount
+  // so App.tsx can clear its `promptsInitialName` state. Without
+  // this, a Cmd-K palette pick + sidebar away-and-back would
+  // re-apply the stale pre-select. (Copilot triage on PR-154.)
+  const onInitialPromptNameConsumed = props.onInitialPromptNameConsumed;
+  // Mount-only consume: capture the initial values once and fire
+  // the callback on first paint. Deps intentionally empty — we
+  // don't want to re-fire if the parent passes a different
+  // `initialPromptName` later (the consume signal is the parent's
+  // cue to stop passing it).
+  const initialPromptNameRef = useRef(props.initialPromptName);
+  useEffect((): void => {
+    if (initialPromptNameRef.current !== undefined) {
+      onInitialPromptNameConsumed?.();
+    }
+  }, [onInitialPromptNameConsumed]);
   const [selectedDomainId, setSelectedDomainId] = useState<string | null>(
     props.initialDomainId ?? null,
   );
