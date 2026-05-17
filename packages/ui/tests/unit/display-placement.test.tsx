@@ -10,12 +10,18 @@
  *   - `routes/Domains.tsx` — tab top-line summary
  *
  * Other routes (Activity, Sources, Outputs, Audit, Agents,
- * LlmPolicy) MUST NOT render an `<h2 class="t-lede">`.
+ * LlmPolicy, Review, Cost) MUST NOT render a `.t-lede` OR
+ * `.t-display` element. The negative list mirrors the full set of
+ * v0.1 management-console tabs minus the three approved
+ * placements; if a new route is added, this list needs updating
+ * (the C7 cross-route snapshot test will replace this manual
+ * listing once a shared tab registry exists).
  *
  * The check is structural: we render each route with a
- * minimum-viable fetch stub and look for an `h2.t-lede`
- * element. The C7 cross-route snapshot test (wave-end gate) will
- * tighten this with full route-walk asserts.
+ * minimum-viable fetch stub and look for `.t-lede` / `.t-display`
+ * elements. Both classes are counted so `<Display level={1}>`
+ * sneaking into a management-console route also fails — `level=1`
+ * is reserved for a future docs site, never the in-console UI.
  */
 import { describe, expect, it, vi } from "vitest";
 import { render, cleanup } from "@testing-library/react";
@@ -29,6 +35,8 @@ import { Outputs } from "../../src/routes/Outputs.js";
 import { Audit } from "../../src/routes/Audit.js";
 import { Agents } from "../../src/routes/Agents.js";
 import { LlmPolicy } from "../../src/routes/LlmPolicy.js";
+import { Review } from "../../src/routes/Review.js";
+import { Cost } from "../../src/routes/Cost.js";
 
 /** Returns an empty/healthy 200 envelope for any URL the route asks for. */
 function makeEmptyFetch(): typeof fetch {
@@ -51,28 +59,39 @@ function makeEmptyFetch(): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
-/** Counts `<Display level=2>` placements (`.t-lede` — the typescale
- *  class is the load-bearing marker; tag varies because `as="p"`
- *  is legitimate in non-heading contexts e.g. the Prompts empty-
- *  pane lede and the Domains tab-summary). */
+/** Counts `<Display level=2|3>` placements (`.t-lede`) inside a
+ *  rendered route. The typescale class is the load-bearing marker;
+ *  the tag varies because `as="p"` is legitimate in non-heading
+ *  contexts (Prompts empty-pane lede, Domains tab summary). */
 function countLedeNodes(container: HTMLElement): number {
   return container.querySelectorAll(".t-lede").length;
 }
 
+/** Counts `<Display level=1>` placements (`.t-display`). v0.1
+ *  management-console routes MUST NOT render any — the class is
+ *  reserved for a future docs site. */
+function countDisplayLevel1Nodes(container: HTMLElement): number {
+  return container.querySelectorAll(".t-display").length;
+}
+
 describe("Display placement contract (PR-C4, wave-16)", () => {
-  it("Reports route renders at least one <Display level=2>", () => {
+  it("Reports route renders exactly one <Display level=2>", () => {
     const { container } = render(<Reports fetchImpl={makeEmptyFetch()} />);
-    expect(countLedeNodes(container)).toBeGreaterThanOrEqual(1);
+    expect(countLedeNodes(container)).toBe(1);
+    // And no level=1 sneak — the display typescale is docs-site only.
+    expect(countDisplayLevel1Nodes(container)).toBe(0);
   });
 
-  it("Prompts route renders at least one <Display level=2> (empty-state lede)", () => {
+  it("Prompts route renders exactly one <Display level=2> (empty-state lede)", () => {
     const { container } = render(<Prompts fetchImpl={makeEmptyFetch()} />);
-    expect(countLedeNodes(container)).toBeGreaterThanOrEqual(1);
+    expect(countLedeNodes(container)).toBe(1);
+    expect(countDisplayLevel1Nodes(container)).toBe(0);
   });
 
-  it("Domains route renders at least one <Display level=2>", () => {
+  it("Domains route renders exactly one <Display level=2>", () => {
     const { container } = render(<Domains fetchImpl={makeEmptyFetch()} />);
-    expect(countLedeNodes(container)).toBeGreaterThanOrEqual(1);
+    expect(countLedeNodes(container)).toBe(1);
+    expect(countDisplayLevel1Nodes(container)).toBe(0);
   });
 
   it.each([
@@ -82,8 +101,10 @@ describe("Display placement contract (PR-C4, wave-16)", () => {
     ["Audit", Audit],
     ["Agents", Agents],
     ["LlmPolicy", LlmPolicy],
+    ["Review", Review],
+    ["Cost", Cost],
   ] as const)(
-    "%s route renders NO <Display level=2> (not a strategic placement)",
+    "%s route renders NO <Display> (not a strategic placement)",
     (_label, RouteComponent) => {
       const fetchImpl = makeEmptyFetch();
       // Each route takes a `fetchImpl` test-seam prop. Cast through
@@ -94,7 +115,11 @@ describe("Display placement contract (PR-C4, wave-16)", () => {
           {...({ fetchImpl } as unknown as Record<string, unknown>)}
         />,
       );
+      // Reject BOTH t-lede (levels 2/3) and t-display (level 1) so
+      // any sneaky <Display level={1}> in a non-approved route also
+      // fails — addresses Copilot's level-1 unguarded concern.
       expect(countLedeNodes(container)).toBe(0);
+      expect(countDisplayLevel1Nodes(container)).toBe(0);
       cleanup();
     },
   );

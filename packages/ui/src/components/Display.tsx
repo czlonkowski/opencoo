@@ -14,20 +14,27 @@
  *
  *   - `t-display` (line 99) — serif italic at `--fs-display` (56px),
  *     reserved for a future docs site. `<Display level={1}>` maps
- *     here. The wave-16 brief notes the UI lints level=1 use
- *     inside the management console; the component itself does
- *     not enforce that (the ESLint rule + the cross-route
- *     snapshot test in `display-placement.test.tsx` are the
- *     gates).
+ *     here. The placement test pins `level={1}` to zero appearances
+ *     in v0.1 management-console routes; an in-console level=1 is
+ *     therefore caught by the cross-route placement snapshot.
  *   - `t-lede` (line 158) — serif italic at 28px / 1.25, reserved
  *     for editorial ledes. `<Display level={2|3}>` maps here.
  *
- * Inline `font-family` + `font-style` are emitted on every
- * render — deliberately. They are the marker the ESLint rule
- * upstream looks for, and they guarantee the editorial face survives
- * even if the stylesheet hasn't loaded yet (e.g. critical-path
- * render before fonts swap). Color is left to the class so the
- * W11 audit-fence ("no inline color literals") stays clean.
+ * Inline `font-family` + `font-style` are emitted on every render
+ * — deliberately. They are the marker the ESLint rule upstream
+ * looks for, and they keep the editorial face safe from later
+ * cascade overrides once `--font-serif` resolves (the variable
+ * itself only resolves after `colors_and_type.css` loads, so
+ * critical-path renders before the stylesheet attaches still fall
+ * back to the platform default before swapping to Instrument Serif
+ * — there is no first-paint guarantee). Color is left to the class
+ * so the W11 audit-fence ("no inline color literals") stays clean.
+ *
+ * Default margin is reset to zero on the rendered element — the
+ * `t-display` / `t-lede` classes only set font metrics, so the
+ * browser defaults for `<h1|h2|h3|p>` would otherwise bleed
+ * vertical space that the surrounding layout's `padding` / `gap`
+ * does not expect. Callers compose their own spacing via wrappers.
  *
  * `as` overrides the wrapper tag for non-heading contexts (e.g.
  * inside an empty-state panel whose surrounding card already
@@ -71,6 +78,13 @@ function classFor(level: DisplayLevel): string {
 const INLINE_FONT_STYLE: CSSProperties = {
   fontFamily: "var(--font-serif)",
   fontStyle: "italic",
+  // Reset the browser's default heading/paragraph margins. Both
+  // typescale classes (`t-display`, `t-lede`) only set font metrics,
+  // so without this an h2/h3/p would carry user-agent margins
+  // (typically 0.83em–1.33em top/bottom) that the surrounding
+  // layout's `padding` / `gap` does not account for. Callers
+  // compose their own spacing via wrappers.
+  margin: 0,
 };
 
 export function Display(props: DisplayProps): JSX.Element {
