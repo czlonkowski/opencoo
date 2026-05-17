@@ -358,9 +358,19 @@ describe("DomainDetail — Configuration section (PR-W3, phase-a appendix #15)",
       />,
     );
     expect(screen.getByLabelText(/retention/i)).toHaveValue(30);
-    expect(screen.getByLabelText(/governance cadence/i)).toHaveValue("weekly");
+    // PR-C1 (wave-16) added a `?` Tooltip trigger next to the
+    // governance + worldview labels; its aria-label echoes the term
+    // ("About governance cadence"), so getByLabelText sees both the
+    // `<select>` and the trigger button. Pin to the form control.
+    expect(
+      screen.getByLabelText(/governance cadence/i, { selector: "select" }),
+    ).toHaveValue("weekly");
     expect(screen.getByLabelText(/review role/i)).toHaveValue("ops-lead");
-    expect(screen.getByLabelText(/worldview compilation/i)).not.toBeChecked();
+    expect(
+      screen.getByLabelText(/worldview compilation/i, {
+        selector: "input[type='checkbox']",
+      }),
+    ).not.toBeChecked();
     expect(screen.getByLabelText(/monthly llm budget/i)).toHaveValue(250);
   });
 
@@ -413,13 +423,18 @@ describe("DomainDetail — Configuration section (PR-W3, phase-a appendix #15)",
     const retention = screen.getByLabelText(/retention/i) as HTMLInputElement;
     await user.clear(retention);
     await user.type(retention, "14");
-    // Governance cadence: continuous → nightly.
+    // Governance cadence: continuous → nightly. PR-C1 wave-16 added
+    // a `?` trigger next to the label; pin to the <select>.
     await user.selectOptions(
-      screen.getByLabelText(/governance cadence/i),
+      screen.getByLabelText(/governance cadence/i, { selector: "select" }),
       "nightly",
     );
-    // Worldview enabled: true → false.
-    await user.click(screen.getByLabelText(/worldview compilation/i));
+    // Worldview enabled: true → false. Pin to the checkbox.
+    await user.click(
+      screen.getByLabelText(/worldview compilation/i, {
+        selector: "input[type='checkbox']",
+      }),
+    );
     // review_role + llm_budget left alone — must NOT be in the body.
 
     await user.click(screen.getByRole("button", { name: /save changes/i }));
@@ -498,5 +513,34 @@ describe("DomainDetail — Configuration section (PR-W3, phase-a appendix #15)",
       review_role: null,
       llm_budget_monthly_cap_usd: null,
     });
+  });
+
+  // PR-C1 (wave-16): every jargon field has a `?` Tooltip trigger
+  // sitting next to its label so operators can read the term
+  // explanation without leaving the form.
+  it("renders `?` tooltip triggers next to worldview + governance-cadence labels (PR-C1)", () => {
+    render(
+      <DomainDetail
+        domain={makeDomain()}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+        fetchImpl={vi.fn() as unknown as typeof fetch}
+      />,
+    );
+    // Each trigger button is `aria-label="About <term-label>"`.
+    // We search by accessible-name pattern (case-insensitive) so
+    // small wording changes ("review mode" vs "Review mode") still
+    // match.
+    const worldviewBtn = screen.getByRole("button", {
+      name: /about worldview/i,
+    });
+    expect(worldviewBtn.tagName).toBe("BUTTON");
+    expect(worldviewBtn.textContent).toBe("?");
+
+    const governanceBtn = screen.getByRole("button", {
+      name: /about governance/i,
+    });
+    expect(governanceBtn.tagName).toBe("BUTTON");
+    expect(governanceBtn.textContent).toBe("?");
   });
 });

@@ -440,6 +440,31 @@
     "retry": "Retry",
     "error": "Something went wrong."
   },
+  "tooltip": {
+    "about": "O parametrze {{term}}"
+  },
+  "help": {
+    "reviewMode": {
+      "label": "tryb przeglądu",
+      "body": "Sposób, w jaki dokumenty z tego źródła trafiają do wiki. `auto` zapisuje je bezpośrednio; `review` umieszcza każdą stronę w zakładce Review do zatwierdzenia przez człowieka; `approve` jest wariantem ściślejszym — strona musi też przejść Lint, zanim trafi do przeglądu. Surowsze tryby spowalniają przepływ, ale wcześniej wychwytują błędne kierowanie do domeny."
+    },
+    "allowedPaths": {
+      "label": "dozwolone ścieżki",
+      "body": "Wzorce glob określające, które pliki w źródle będą ingestowane przez to powiązanie. Pusta lista = nic nie wchodzi (powiązanie jest wstrzymane). Wzorce są dopasowywane do natywnego formatu ścieżek źródła; `**` dopasowuje wszystkie podkatalogi. Zawęź tę listę, aby ograniczyć adapter do konkretnego folderu zamiast całego dysku."
+    },
+    "scopeDomainIds": {
+      "label": "domeny w zasięgu",
+      "body": "Domeny, z których ta instancja agenta może czytać i do których może pisać. Wybierz co najmniej jedną; maksymalnie dwadzieścia. W trakcie działania instancja odrzuca narzędzia dotykające innych domen — to jest granica, która trzyma agenta HR z dala od wiki zarządu."
+    },
+    "worldviewEnabled": {
+      "label": "kompilacja worldview",
+      "body": "Gdy włączone, pipeline triggera kolejkuje rekompilacje pliku `worldview.md` dla tej domeny, dzięki czemu agenci mają zwięzłe, skompilowane przez Thinkera podsumowanie w swoim system prompcie. Wyłączenie zatrzymuje kolejne rekompilacje; istniejący plik worldview pozostaje w Gitea do czasu ręcznego usunięcia."
+    },
+    "governanceCadence": {
+      "label": "rytm governance",
+      "body": "Jak często ludzki reviewer ma przejrzeć skompilowane strony tej domeny. Steruje rytmem wyświetlania w agencie Heartbeat i pojawia się na osi Reports. Wybierz `weekly` dla domen o wysokiej dynamice, `quarterly` dla archiwalnych."
+    }
+  },
   "credentialForm": {
     "required": "required",
     "optional": "optional",

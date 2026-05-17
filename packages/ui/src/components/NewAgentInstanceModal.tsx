@@ -37,6 +37,7 @@ import { Btn } from "./Btn.js";
 import { Field } from "./Field.js";
 import { Modal } from "./Modal.js";
 import { MultiSelectDomains } from "./MultiSelectDomains.js";
+import { TooltipTrigger } from "./Tooltip.js";
 import { ApiValidationError, fetchAdmin, fetchOptsFor } from "../lib/api.js";
 
 /** Mirrors `packages/shared/agent-definitions` — kept inline here
@@ -324,6 +325,7 @@ export function NewAgentInstanceModal(
               {" "}
               *
             </span>
+            <TooltipTrigger term="scopeDomainIds" />
           </span>
           <MultiSelectDomains
             selectedIds={scopeDomainIds}

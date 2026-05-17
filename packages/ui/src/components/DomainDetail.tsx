@@ -30,6 +30,7 @@ import { useTranslation } from "react-i18next";
 import { Btn } from "./Btn.js";
 import { Modal } from "./Modal.js";
 import { GlyphFilledDisc } from "./Glyph.js";
+import { TooltipTrigger } from "./Tooltip.js";
 import {
   ApiAuthError,
   ApiTransientError,
@@ -849,6 +850,7 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
               style={LABEL_STYLE}
             >
               {t("domains.detail.fields.governanceCadence")}
+              <TooltipTrigger term="governanceCadence" />
             </label>
             <select
               id="domain-detail-governance-cadence"
@@ -901,6 +903,7 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
               onChange={(e): void => setWorldviewEnabled(e.target.checked)}
             />
             {t("domains.detail.fields.worldviewEnabled")}
+            <TooltipTrigger term="worldviewEnabled" />
           </label>
           <p style={HELPER_TEXT_STYLE}>
             {t("domains.detail.help.worldviewEnabled")}

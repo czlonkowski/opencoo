@@ -33,6 +33,7 @@ import { AgentInstancePromptsSection } from "./AgentInstancePromptsSection.js";
 import { Btn } from "./Btn.js";
 import { Modal } from "./Modal.js";
 import { MultiSelectDomains } from "./MultiSelectDomains.js";
+import { TooltipTrigger } from "./Tooltip.js";
 import {
   ApiAuthError,
   ApiValidationError,
@@ -585,6 +586,7 @@ export function AgentInstanceDetail(
         {/* Scope editor (PR-W4-UI) */}
         <h3 style={SECTION_HEADING_STYLE}>
           {t("agentInstance.detail.scope")}
+          <TooltipTrigger term="scopeDomainIds" />
         </h3>
         <div style={SECTION_STYLE}>
           {scopeEditing ? (

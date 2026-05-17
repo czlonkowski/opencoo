@@ -54,6 +54,7 @@ import { Btn } from "./Btn.js";
 import { GlyphFilledDisc } from "./Glyph.js";
 import { ImpactPreviewDialog } from "./ImpactPreviewDialog.js";
 import { Modal } from "./Modal.js";
+import { TooltipTrigger } from "./Tooltip.js";
 import {
   ApiAuthError,
   ApiTransientError,
@@ -1465,7 +1466,10 @@ export function SourceBindingDetail(
           <span style={LABEL_STYLE}>{t("sources.detail.labels.domain")}</span>
           <span style={VALUE_STYLE}>{props.binding.domainSlug}</span>
 
-          <span style={LABEL_STYLE}>{t("sources.detail.labels.reviewMode")}</span>
+          <span style={LABEL_STYLE}>
+            {t("sources.detail.labels.reviewMode")}
+            <TooltipTrigger term="reviewMode" />
+          </span>
           <span style={VALUE_STYLE}>{props.binding.reviewMode}</span>
 
           <span style={LABEL_STYLE}>{t("sources.detail.labels.enabled")}</span>

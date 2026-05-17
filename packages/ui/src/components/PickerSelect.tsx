@@ -10,6 +10,8 @@
  */
 import type { CSSProperties } from "react";
 
+import { TooltipTrigger } from "./Tooltip.js";
+
 const LABEL_STYLE: CSSProperties = {
   display: "flex",
   flexDirection: "column",
@@ -48,12 +50,20 @@ export interface PickerSelectProps {
   readonly value: string;
   readonly onChange: (v: string) => void;
   readonly options: readonly PickerOption[];
+  /** Optional `help.<term>` key — when set, renders a `?` Tooltip
+   *  trigger inline next to the caption. PR-C1 / wave-16. */
+  readonly helpTerm?: string;
 }
 
 export function PickerSelect(props: PickerSelectProps): JSX.Element {
   return (
     <label style={LABEL_STYLE}>
-      <span style={CAPTION_STYLE}>{props.label}</span>
+      <span style={CAPTION_STYLE}>
+        {props.label}
+        {props.helpTerm !== undefined ? (
+          <TooltipTrigger term={props.helpTerm} />
+        ) : null}
+      </span>
       <select
         name={props.name}
         value={props.value}
