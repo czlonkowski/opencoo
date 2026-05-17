@@ -29,6 +29,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { AgentsRunNowButton } from "../components/AgentsRunNowButton.js";
+import { SR_ONLY_STYLE } from "../components/Chrome.js";
 import { SchedulerEditor } from "../components/SchedulerEditor.js";
 import { Skeleton } from "../components/Skeleton.js";
 import { StatusPill, type StatusTone } from "../components/StatusPill.js";
@@ -1049,23 +1050,10 @@ export function Activity(props: ActivityProps = {}): JSX.Element {
     >
       {/* PR-A2 — visually-hidden h1 satisfies the
           <main aria-labelledby="opencoo-page-h1"> contract without
-          duplicating the page identifier already shown in the
-          breadcrumb (W10). Same .sr-only recipe used elsewhere in
-          the codebase. */}
-      <h1
-        id="opencoo-page-h1"
-        style={{
-          position: "absolute",
-          width: 1,
-          height: 1,
-          padding: 0,
-          margin: -1,
-          overflow: "hidden",
-          clip: "rect(0, 0, 0, 0)",
-          whiteSpace: "nowrap",
-          borderWidth: 0,
-        }}
-      >
+          duplicating the page identifier already shown in the W10
+          breadcrumb. SR_ONLY_STYLE is the shared sr-only recipe
+          from Chrome.tsx (Copilot triage on PR-A2). */}
+      <h1 id="opencoo-page-h1" style={SR_ONLY_STYLE}>
         {t("routes.activity.h1")}
       </h1>
       {/* Sub-tab navigation */}

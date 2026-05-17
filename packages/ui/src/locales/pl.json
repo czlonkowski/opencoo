@@ -28,8 +28,6 @@
   },
   "routes": {
     "activity": { "h1": "Activity" },
-    "audit": { "h1": "Audit log" },
-    "cost": { "h1": "Cost" },
     "reports": { "h1": "Reports" },
     "review": { "h1": "Review" }
   },

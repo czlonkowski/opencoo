@@ -129,6 +129,25 @@ const MICRO_LABEL_STYLE = {
   textTransform: "uppercase",
 } as const;
 
+/** PR-A2 — visually-hidden recipe shared by sub-tab routes that
+ *  carry a hidden `<h1 id="opencoo-page-h1">` so the
+ *  `<main aria-labelledby="opencoo-page-h1">` landmark name
+ *  resolves without duplicating the W10-breadcrumb page identifier
+ *  visually. Routes import { SR_ONLY_STYLE } from "./Chrome.js"
+ *  rather than re-declaring the same `.sr-only` block in three
+ *  places (Copilot triage on PR-A2). */
+export const SR_ONLY_STYLE = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  borderWidth: 0,
+} as const;
+
 export function Sidebar(props: SidebarProps): JSX.Element {
   const { t } = useTranslation();
   return (

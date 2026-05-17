@@ -55,9 +55,11 @@ function makeNoopFetch(): typeof fetch {
     else if (url.includes("/agent-runs")) body = { rows: [], total: 0 };
     else if (url.includes("/scheduler")) body = { schedules: [] };
     else if (url.includes("/heartbeat/preconditions")) {
-      // Full HeartbeatPreconditions shape — see types.ts. A
-      // healthy-with-rows configuration is enough for the h1
-      // smoke; the diagnostics panel reads every field.
+      // Full HeartbeatPreconditions shape — see types.ts. The
+      // diagnostics panel reads `mostRecentDispatchedAt` and
+      // `mostRecentRun.instanceName`; missing fields trigger
+      // an "Invalid Date" render path that masks h1-coverage
+      // regressions (Copilot triage on PR-A2).
       body = {
         heartbeatInstanceCount: 1,
         enabledHeartbeatInstanceCount: 1,
@@ -66,8 +68,9 @@ function makeNoopFetch(): typeof fetch {
           startedAt: new Date().toISOString(),
           status: "success",
           outputIsNull: false,
+          instanceName: "heartbeat-test",
         },
-        mostRecentRunStartedAt: new Date().toISOString(),
+        mostRecentDispatchedAt: new Date().toISOString(),
       };
     } else if (url.includes("/heartbeat")) body = { reports: [] };
     else if (url.includes("/redaction-events")) body = { rows: [] };
