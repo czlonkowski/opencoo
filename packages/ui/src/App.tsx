@@ -100,6 +100,14 @@ export function App(): JSX.Element {
     setCrumb(null);
   }, []);
 
+  // Stable callback identity for child routes' effect dep lists
+  // — without `useCallback` each parent re-render would re-fire
+  // every route's onCrumbChange effect.
+  const onCrumbChange = useCallback(
+    (value: string | null): void => setCrumb(value),
+    [],
+  );
+
   // Palette dispatcher — maps a CommandPaletteTarget to the
   // existing setTab + initial-id plumbing. Domains/Sources/
   // Agents each get a dedicated pre-select state; Prompts reuses
@@ -209,8 +217,6 @@ export function App(): JSX.Element {
       />
     );
   }
-
-  const onCrumbChange = (value: string | null): void => setCrumb(value);
 
   const tabs: Record<Tab, JSX.Element> = {
     domains: (
