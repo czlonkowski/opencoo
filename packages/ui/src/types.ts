@@ -39,6 +39,15 @@ export interface AgentInstance {
     readonly adapter_slug: string;
     readonly config: Record<string, unknown>;
   }>;
+  /** PR-W4-UI (phase-a appendix #15) — `locale` column. The
+   *  drill-down's Locale editor pre-selects this. Optional for
+   *  back-compat with pre-W4-UI fixtures. */
+  readonly locale?: string;
+  /** PR-W4-UI — `scope_domain_ids` uuid[]. The drill-down's
+   *  Scope section pre-checks the multi-select picker against
+   *  these. Optional for back-compat with pre-W4-UI fixtures
+   *  (defaults to empty array at the UI). */
+  readonly scopeDomainIds?: ReadonlyArray<string>;
   readonly lastRunStartedAt: string | null;
   readonly lastRunStatus: string | null;
 }
@@ -238,6 +247,31 @@ export interface SovereigntyDiffPreview {
   }>;
   readonly token: string;
   readonly expiresAt: number;
+}
+
+/** Line-level diff entry produced by the prompt-overrides
+ *  preview route (PR-W2). The server emits one per source-line
+ *  pair — `same` lines anchor the diff for the operator;
+ *  `add`/`del` lines are the actual changes. The
+ *  `DiffPreviewDialog` renders this shape with the same
+ *  Wiki-Teal / Alert-Red token bindings as the key-level diff. */
+export interface LineDiffEntry {
+  readonly op: "same" | "add" | "del";
+  readonly line: string;
+  readonly index: number;
+}
+
+/** Prompt-override preview shape (PR-W7a). Line-level diff
+ *  variant of `SovereigntyDiffPreview`; ships with the
+ *  baseline-version the diff was computed against so the apply
+ *  request can echo it back and the server can reject mid-flight
+ *  baseline drift with a distinct 422 `baseline_version_drifted`. */
+export interface PromptOverridePreview {
+  readonly diff: ReadonlyArray<LineDiffEntry>;
+  readonly token: string;
+  readonly expiresAt: number;
+  readonly baselineVersion: string;
+  readonly currentSource: "baseline" | "override";
 }
 
 /** Agent run list row (no `output` — detail only). */
