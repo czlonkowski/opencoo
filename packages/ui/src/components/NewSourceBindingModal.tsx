@@ -45,6 +45,7 @@ import { Btn } from "./Btn.js";
 import { Field } from "./Field.js";
 import { Modal } from "./Modal.js";
 import { PickerSelect } from "./PickerSelect.js";
+import { TooltipTrigger } from "./Tooltip.js";
 import { fetchAdmin } from "../lib/api.js";
 
 const REVIEW_MODES = ["auto", "approve", "review"] as const;
@@ -478,6 +479,7 @@ export function NewSourceBindingModal(
           <PickerSelect
             name="review_mode"
             label={t("sources.create.fields.reviewMode")}
+            helpTerm="reviewMode"
             value={reviewMode}
             onChange={(v): void => setReviewMode(v as ReviewMode)}
             options={REVIEW_MODES.map((r) => ({ value: r, label: r }))}
@@ -1014,7 +1016,10 @@ function AllowedPathsStep(props: AllowedPathsStepProps): JSX.Element {
       </p>
       {/* Selected chips — current state. Empty list shows the empty
           copy so the operator knows they need to add at least one. */}
-      <h3 style={SECTION_HEADER_STYLE}>{t("sources.allowedPaths.title")}</h3>
+      <h3 style={SECTION_HEADER_STYLE}>
+        {t("sources.allowedPaths.title")}
+        <TooltipTrigger term="allowedPaths" />
+      </h3>
       <div
         data-testid="allowed-paths-selected"
         style={CHIP_ROW_STYLE}

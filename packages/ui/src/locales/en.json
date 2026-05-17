@@ -441,6 +441,31 @@
     "yes": "yes",
     "no": "no"
   },
+  "tooltip": {
+    "about": "About {{term}}"
+  },
+  "help": {
+    "reviewMode": {
+      "label": "review mode",
+      "body": "How ingested documents from this binding land in the wiki. `auto` writes them straight through; `review` queues every page in the Review tab for a human sign-off before publish; `approve` is a stricter variant — Lint must also pass before review opens. Stricter modes slow throughput but catch wrong-domain routing earlier."
+    },
+    "allowedPaths": {
+      "label": "allowed paths",
+      "body": "Glob patterns that gate which files in the source this binding will ever ingest. Empty list = nothing ingests (the binding is paused). Patterns are matched against the source's native path format; `**` matches across directories. Tighten this to restrict an adapter to a folder instead of the whole drive."
+    },
+    "scopeDomainIds": {
+      "label": "scope domains",
+      "body": "The domains this agent instance is allowed to read from and write to. Pick at least one; at most twenty. The instance refuses tools that touch any other domain at runtime — this is the boundary that keeps an HR agent out of the executive wiki."
+    },
+    "worldviewEnabled": {
+      "label": "worldview compilation",
+      "body": "When on, the trigger pipeline enqueues `worldview.md` recompiles for this domain so agents have a bounded, Thinker-compiled summary in their system prompt. Turning off stops future recompiles; the existing worldview file stays in Gitea until cleaned up manually."
+    },
+    "governanceCadence": {
+      "label": "governance cadence",
+      "body": "How often a human reviewer is expected to walk this domain's compiled pages. Drives the heartbeat agent's surfacing cadence and shows on the Reports timeline. Choose `weekly` for high-velocity domains, `quarterly` for archival ones."
+    }
+  },
   "credentialForm": {
     "required": "required",
     "optional": "optional",
