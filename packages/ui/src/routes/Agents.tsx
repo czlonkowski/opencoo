@@ -28,6 +28,14 @@ interface AgentsResponse {
 export interface AgentsProps {
   /** @internal Test seam. */
   readonly fetchImpl?: typeof fetch;
+  /** PR-W10 — Cmd-K palette pre-select. When set, the route
+   *  auto-opens AgentInstanceDetail for the matching row once
+   *  the instance list resolves. */
+  readonly initialOpenId?: string;
+  /** PR-W10 — Breadcrumb publisher. Lifts the selected
+   *  instance's `name` into App-level state for the TopBar
+   *  third segment, and clears it on close. */
+  readonly onCrumbChange?: (value: string | null) => void;
 }
 
 export function Agents(props: AgentsProps = {}): JSX.Element {
@@ -56,6 +64,20 @@ export function Agents(props: AgentsProps = {}): JSX.Element {
       }
     })();
   }, [refreshNonce]);
+
+  // PR-W10 — auto-open drill-down for a palette-dispatched id.
+  const initialOpenId = props.initialOpenId;
+  useEffect((): void => {
+    if (initialOpenId === undefined || rows === null) return;
+    const match = rows.find((r) => r.id === initialOpenId);
+    if (match !== undefined) setSelected(match);
+  }, [initialOpenId, rows]);
+
+  // PR-W10 — publish row-name to the App's breadcrumb.
+  const onCrumbChange = props.onCrumbChange;
+  useEffect((): void => {
+    onCrumbChange?.(selected !== null ? selected.name : null);
+  }, [selected, onCrumbChange]);
 
   return (
     <div

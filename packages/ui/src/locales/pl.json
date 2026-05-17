@@ -17,7 +17,26 @@
     "reports": "reports",
     "logout": "log out",
     "audit": "audit",
-    "cost": "cost"
+    "cost": "cost",
+    "groups": {
+      "operate": "operate",
+      "knowledge": "knowledge",
+      "governance": "governance",
+      "diagnostics": "diagnostics"
+    }
+  },
+  "commandPalette": {
+    "placeholder": "Type to search domains, bindings, agents, prompts…",
+    "empty": "No results.",
+    "loading": "Loading…",
+    "shortcut": "Cmd-K",
+    "hint": "Up/Down to navigate · Enter to open · Esc to close",
+    "kind": {
+      "domain": "Domain",
+      "binding": "Binding",
+      "agent": "Agent",
+      "prompt": "Prompt"
+    }
   },
   "auth": {
     "modalTitle": "opencoo",
