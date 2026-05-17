@@ -21,6 +21,10 @@
  * Hard-nos honored: no gradients, no emoji, lowercase opencoo,
  * `--alert` reserved for destructive surfaces, design-system
  * tokens only.
+ *
+ * PR-W11 design-system audit (accent budgets, compliant):
+ * `--alert` only on the bulk-delete confirm + destructive button;
+ * `--healthy` only on the enabled-status indicator.
  */
 import {
   useEffect,

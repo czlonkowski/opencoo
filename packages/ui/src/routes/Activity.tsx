@@ -16,6 +16,14 @@
  *     LLM_DEBUG_LOG=1 on the server side).
  *   - Run list does NOT include `output` — only the detail view does.
  *   - StatusPill (PR-E) is used for run status indicators.
+ *
+ * PR-W11 design-system audit (accent budgets, compliant):
+ *   - `--alert`: auth-failure banner, error counts, failed/DLQ
+ *     counters, terminal-fail tone strings — all flagged items.
+ *   - `--healthy`: ok session-status indicator only.
+ *   - `--advisory`: StatusPill `running` tone (agent layer).
+ *   - No `--wiki` on this route — Activity is not compiled-
+ *     knowledge chrome.
  */
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";

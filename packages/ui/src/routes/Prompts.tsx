@@ -22,6 +22,12 @@
  * overrides exist anywhere, the lagging banner stays hidden and
  * the editor shows the shipped baseline body for the picked
  * (prompt, domain, locale).
+ *
+ * PR-W11 design-system audit (accent budgets, compliant):
+ * `--alert` only on the validation-error banner (border +
+ * color-mix background); the `PromptsDiffBanner` itself uses
+ * `--wiki` because the lagging-overrides callout points at
+ * compiled-knowledge chrome (prompt-name path tokens).
  */
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";

@@ -7,6 +7,10 @@
  * human-readable name, lastEventAt relative time, and lastError.
  * The old client-side `b.enabled ? "ok" : "paused"` derivation is
  * removed — the server now owns the 3-state health signal.
+ *
+ * PR-W11 design-system audit (accent budgets, compliant):
+ * `--alert` on lastError mono line only; Badge tone mapping
+ * (`advisory` for unbound) is the documented opt-in.
  */
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";

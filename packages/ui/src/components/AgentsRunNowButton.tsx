@@ -15,7 +15,7 @@
  *   running  — the SSE listener observed a `running` lifecycle
  *              event for the runId we tracked.
  *   done     — the SSE listener observed a `success` lifecycle
- *              event; the button shows a brief "✓"-equivalent
+ *              event; the button shows a brief filled-disc
  *              glyph then reverts to idle after ~1.5s.
  *   429      — the POST returned 429; we render the regular idle
  *              chrome but show a tooltip "Rate limited — try again
