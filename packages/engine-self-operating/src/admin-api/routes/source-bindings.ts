@@ -120,11 +120,44 @@ const bindingAllowedPathsPatchSchema = z
     allowed_paths: z.array(z.string().min(1)).min(1),
   })
   .strict();
+/** PR-W5 (phase-a appendix #15) — per-binding retention override.
+ *  Overrides the domain-level `domains.retention_days` for this
+ *  binding's intake rows. `null` clears the override (back to
+ *  domain default). Cap at 365 days at the Zod boundary so an
+ *  operator typo can't disable Cleanup forever.
+ *
+ *  STATUS NOTE: this PR ships the schema + API + audit; the
+ *  Cleanup pipeline read of `sources_bindings.retention_days_override`
+ *  is deferred to a follow-up PR (the cleanup worker currently
+ *  reads `domains.retention_days` only). Until then the column
+ *  is operator-settable but unread — flagged on the wave-15
+ *  appendix doc's out-of-scope list.
+ */
+const bindingRetentionOverridePatchSchema = z
+  .object({
+    retention_days_override: z.number().int().min(1).max(365).nullable(),
+  })
+  .strict();
+/** PR-W5 — operator-friendly notes field. Plain text, capped at
+ *  4096 chars. Rejects the empty string at the Zod boundary —
+ *  the display-label COALESCE in the list query treats empty
+ *  string as a present value, so an accidental empty-string
+ *  notes would mask the auto-generated `${adapter_slug} →
+ *  ${domain_slug}` label. Operators clear via `null`, not `""`.
+ *  The audit row records only `notes_changed: true` — the notes
+ *  value itself never enters audit metadata per §3.13. */
+const bindingNotesPatchSchema = z
+  .object({
+    notes: z.string().min(1).max(4096).nullable(),
+  })
+  .strict();
 const bindingPatchSchema = z.union([
   bindingEnabledPatchSchema,
   bindingConfigPatchSchema,
   bindingCredentialsPatchSchema,
   bindingAllowedPathsPatchSchema,
+  bindingRetentionOverridePatchSchema,
+  bindingNotesPatchSchema,
 ]);
 
 type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
@@ -1413,6 +1446,34 @@ export function registerSourceBindingsRoutes(
         });
       }
 
+      // PR-W5 (phase-a appendix #15) — `retention_days_override`
+      // branch. Per-binding override of the domain-level retention
+      // policy; `null` clears the override (back to domain default).
+      if ("retention_days_override" in parsed.data) {
+        return handleRetentionOverridePatch({
+          db: args.db,
+          req,
+          reply,
+          id,
+          submittedRetentionDays: parsed.data.retention_days_override,
+          ctx,
+        });
+      }
+
+      // PR-W5 — `notes` branch. Operator-friendly freeform text
+      // (current display-label convention per BindingRow comment).
+      // Notes value NEVER enters audit metadata (§3.13).
+      if ("notes" in parsed.data) {
+        return handleNotesPatch({
+          db: args.db,
+          req,
+          reply,
+          id,
+          submittedNotes: parsed.data.notes,
+          ctx,
+        });
+      }
+
       // `credentials` branch — in-place credential rotation.
       return handleCredentialsPatch({
         db: args.db,
@@ -2576,4 +2637,137 @@ async function encryptBindingCredentials(
     plaintext: Buffer.from(JSON.stringify(webhookCreds.webhook_secret), "utf8"),
   });
   return { credentialsId, webhookSecretCredentialsId };
+}
+
+// ── PR-W5 (phase-a appendix #15) — retention-override + notes
+//    handlers. Both are operator-controlled config; both follow
+//    the audit-before-mutate invariant via SELECT-prev → UPDATE
+//    → write-audit-after-confirmed-existence.
+
+interface RetentionOverridePatchArgs {
+  readonly db: Db;
+  readonly req: FastifyRequest;
+  readonly reply: FastifyReply;
+  readonly id: string;
+  readonly submittedRetentionDays: number | null;
+  readonly ctx: AdminContext;
+}
+
+async function handleRetentionOverridePatch(
+  args: RetentionOverridePatchArgs,
+): Promise<FastifyReply> {
+  // Existence + prev-value read in one SELECT — matches the
+  // allowed_paths handler shape.
+  const existing = (await args.db.execute(sql`
+    SELECT retention_days_override
+    FROM sources_bindings
+    WHERE id = ${args.id}::uuid
+    LIMIT 1
+  `)) as unknown as {
+    rows: Array<{ retention_days_override: number | null }>;
+  };
+  const prev = existing.rows[0];
+  if (prev === undefined) {
+    return args.reply.code(404).send({ error: "not_found", id: args.id });
+  }
+
+  const next = args.submittedRetentionDays;
+  if (prev.retention_days_override === next) {
+    return args.reply.code(200).send({ id: args.id, noOp: true });
+  }
+
+  // Audit-write-before-mutate (THREAT-MODEL §3.5 invariant): a
+  // crash between audit-write and UPDATE leaves the audit row
+  // recording operator intent without the side effect — which is
+  // the correct failure mode (forensic trail is preserved; an
+  // operator can re-attempt the UPDATE). The reverse ordering
+  // (UPDATE → audit) loses the audit row on a crash and silently
+  // mutates state, which is what Copilot triage flagged.
+  await writeAuditLog(args.db, {
+    action: "source_binding.set_retention_override",
+    userId: args.ctx.userId,
+    metadata: {
+      binding_id: args.id,
+      prev_retention_days_override: prev.retention_days_override,
+      new_retention_days_override: next,
+      caller_username: args.ctx.username,
+    },
+    sourceIp: args.req.ip,
+    userAgent: args.req.headers["user-agent"],
+  });
+
+  const updated = (await args.db.execute(sql`
+    UPDATE sources_bindings
+    SET retention_days_override = ${next},
+        updated_at = NOW()
+    WHERE id = ${args.id}::uuid
+    RETURNING id::text AS id
+  `)) as unknown as { rows: Array<{ id: string }> };
+  if (updated.rows[0] === undefined) {
+    return args.reply.code(500).send({ error: "update_returned_no_row" });
+  }
+
+  return args.reply
+    .code(200)
+    .send({ id: args.id, retention_days_override: next });
+}
+
+interface NotesPatchArgs {
+  readonly db: Db;
+  readonly req: FastifyRequest;
+  readonly reply: FastifyReply;
+  readonly id: string;
+  readonly submittedNotes: string | null;
+  readonly ctx: AdminContext;
+}
+
+async function handleNotesPatch(
+  args: NotesPatchArgs,
+): Promise<FastifyReply> {
+  // Existence check — notes are operator-controlled freeform
+  // text so the prev value is NOT included in audit metadata
+  // (§3.13). We still need to confirm the row exists before
+  // emitting the audit row.
+  const existing = (await args.db.execute(sql`
+    SELECT 1 AS one
+    FROM sources_bindings
+    WHERE id = ${args.id}::uuid
+    LIMIT 1
+  `)) as unknown as { rows: Array<{ one: number }> };
+  if (existing.rows[0] === undefined) {
+    return args.reply.code(404).send({ error: "not_found", id: args.id });
+  }
+
+  // Audit-write-before-mutate (§3.5 invariant). Records ONLY
+  // `notes_changed: true` + `cleared: boolean` + binding_id +
+  // caller_username. The notes value NEVER enters audit
+  // metadata per §3.13 (operator-controlled freeform text could
+  // include arbitrary content). Audit BEFORE UPDATE so a crash
+  // between the two leaves a forensic trail of intent without
+  // the side effect.
+  await writeAuditLog(args.db, {
+    action: "source_binding.set_notes",
+    userId: args.ctx.userId,
+    metadata: {
+      binding_id: args.id,
+      notes_changed: true,
+      cleared: args.submittedNotes === null,
+      caller_username: args.ctx.username,
+    },
+    sourceIp: args.req.ip,
+    userAgent: args.req.headers["user-agent"],
+  });
+
+  const updated = (await args.db.execute(sql`
+    UPDATE sources_bindings
+    SET notes = ${args.submittedNotes},
+        updated_at = NOW()
+    WHERE id = ${args.id}::uuid
+    RETURNING id::text AS id
+  `)) as unknown as { rows: Array<{ id: string }> };
+  if (updated.rows[0] === undefined) {
+    return args.reply.code(500).send({ error: "update_returned_no_row" });
+  }
+
+  return args.reply.code(200).send({ id: args.id, updated: true });
 }

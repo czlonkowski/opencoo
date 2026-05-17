@@ -116,6 +116,19 @@ export const AUDIT_LOG_ACTIONS = [
   // binding fails BEFORE the audit row and BEFORE any side effect,
   // matching the source_binding.config_update / set_enabled pattern.
   "source_binding.set_allowed_paths",
+  // PR-W5 (phase-a appendix #15) — per-binding retention override +
+  // operator-friendly notes field.
+  //
+  // `set_retention_override` — `retention_days_override` is operator-
+  //   controlled config (1–365 days, or null to clear). Metadata
+  //   records prev + new values + caller_username; recording the
+  //   numbers is operationally useful and never leaks secrets.
+  // `set_notes`              — `notes` is operator-controlled
+  //   freeform text. Metadata records ONLY `notes_changed: true`
+  //   + `cleared: boolean` + `caller_username` (§3.13 — operator-
+  //   supplied freeform text never enters audit metadata).
+  "source_binding.set_retention_override",
+  "source_binding.set_notes",
   // Phase-a appendix #10 (PR-R1) — Domains tab drill-down
   // actions. `update` covers PATCH (display_name / locale /
   // is_aggregator); `disable` covers DELETE (soft-delete);
