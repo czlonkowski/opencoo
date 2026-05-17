@@ -766,6 +766,7 @@ export function AgentInstanceDetail(
         <div style={SECTION_STYLE}>
           {catalogError !== null ? (
             <div
+              role="alert"
               style={{
                 color: "var(--alert)",
                 fontFamily: "var(--font-mono)",

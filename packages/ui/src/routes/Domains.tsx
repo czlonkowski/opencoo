@@ -224,6 +224,7 @@ export function Domains(props: DomainsProps = {}): JSX.Element {
       <Card>
         {error !== null ? (
           <div
+            role="alert"
             style={{
               color: "var(--alert)",
               fontFamily: "var(--font-mono)",

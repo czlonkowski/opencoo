@@ -123,7 +123,7 @@ export function LlmPolicy(): JSX.Element {
       <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 16 }}>
         <Card>
           {error !== null ? (
-            <div style={{ color: "var(--alert)" }}>{error}</div>
+            <div role="alert" style={{ color: "var(--alert)" }}>{error}</div>
           ) : domains === null ? (
             <div style={{ color: "var(--ink-3)" }}>{t("common.loading")}</div>
           ) : (
@@ -178,7 +178,7 @@ export function LlmPolicy(): JSX.Element {
                 </div>
               ) : null}
               {applyError !== null ? (
-                <div data-testid="apply-error" style={{ color: "var(--alert)", fontFamily: "var(--font-mono)", fontSize: "var(--fs-micro)" }}>
+                <div data-testid="apply-error" role="alert" style={{ color: "var(--alert)", fontFamily: "var(--font-mono)", fontSize: "var(--fs-micro)" }}>
                   {applyError}
                 </div>
               ) : null}

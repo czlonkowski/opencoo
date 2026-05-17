@@ -71,6 +71,8 @@ import {
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 
+import { pushAnnouncement } from "../lib/announce.js";
+
 type Tone = "success" | "advisory" | "alert";
 
 interface ToastOpts {
@@ -186,6 +188,22 @@ export function ToastProvider(props: {
           details: payload.details,
           durationMs: payload.durationMs,
         },
+      });
+      // PR-A4 (wave-16) — bridge to the global aria-live regions.
+      // The toast itself already carries `role=status`/`role=alert`
+      // + `aria-live`, but the toast is portalled to a visual
+      // location at the bottom-right of the viewport; some screen
+      // readers (and some operator setups) listen only to the
+      // App-level aria-live regions. Mirroring every toast push
+      // into the announcement queue guarantees the message is
+      // narrated regardless of which region the operator's AT
+      // happens to monitor. We pass ONLY the message string —
+      // details ride a collapsed `<pre>` and would be too long /
+      // too structurally complex to narrate as a single utterance.
+      // No scrubbing: the call site already passed a safe string
+      // (THREAT-MODEL §5; same contract Toast itself trusts).
+      pushAnnouncement(payload.message, {
+        tone: tone === "alert" ? "assertive" : "polite",
       });
     },
     [],

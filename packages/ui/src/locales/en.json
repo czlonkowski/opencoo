@@ -520,6 +520,12 @@
   "optimistic": {
     "savingError": "Couldn't save change"
   },
+  "aria": {
+    "live": {
+      "polite": "Status updates",
+      "assertive": "Errors and alerts"
+    }
+  },
   "help": {
     "reviewMode": {
       "label": "review mode",

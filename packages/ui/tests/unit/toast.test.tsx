@@ -29,6 +29,12 @@ import {
   ToastProvider,
   useToast,
 } from "../../src/components/Toast.js";
+import {
+  LiveRegions,
+  POLITE_REGION_ID,
+  ASSERTIVE_REGION_ID,
+} from "../../src/components/LiveRegions.js";
+import { __resetAnnouncementsForTests } from "../../src/lib/announce.js";
 
 /** Caller-side helper: render a button that invokes a toast
  *  method when clicked. Lets the tests drive the hook through
@@ -380,6 +386,85 @@ describe("ToastRegion — cleanup", () => {
     } finally {
       console.error = orig;
     }
+  });
+});
+
+describe("Toast → pushAnnouncement bridge (PR-A4)", () => {
+  beforeEach(() => {
+    __resetAnnouncementsForTests();
+  });
+  afterEach(() => {
+    __resetAnnouncementsForTests();
+  });
+
+  it("success toast pushes a POLITE announcement with the same text", () => {
+    render(
+      <ToastProvider>
+        <LiveRegions />
+        <Harness fire={(api): void => api.success("saved")} />
+        <ToastRegion />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByText("fire"));
+    const polite = document.getElementById(POLITE_REGION_ID) as HTMLElement;
+    const assertive = document.getElementById(
+      ASSERTIVE_REGION_ID,
+    ) as HTMLElement;
+    expect(polite.textContent).toContain("saved");
+    expect(assertive.textContent).toBe("");
+  });
+
+  it("advisory toast pushes a POLITE announcement", () => {
+    render(
+      <ToastProvider>
+        <LiveRegions />
+        <Harness fire={(api): void => api.advisory("heads up")} />
+        <ToastRegion />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByText("fire"));
+    const polite = document.getElementById(POLITE_REGION_ID) as HTMLElement;
+    expect(polite.textContent).toContain("heads up");
+  });
+
+  it("alert toast pushes an ASSERTIVE announcement", () => {
+    render(
+      <ToastProvider>
+        <LiveRegions />
+        <Harness fire={(api): void => api.alert("boom")} />
+        <ToastRegion />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByText("fire"));
+    const assertive = document.getElementById(
+      ASSERTIVE_REGION_ID,
+    ) as HTMLElement;
+    const polite = document.getElementById(POLITE_REGION_ID) as HTMLElement;
+    expect(assertive.textContent).toContain("boom");
+    expect(polite.textContent).toBe("");
+  });
+
+  it("opts-form toast (message only) also bridges to the live region", () => {
+    render(
+      <ToastProvider>
+        <LiveRegions />
+        <Harness
+          fire={(api): void =>
+            api.alert({ message: "validation failed", details: "name: too long" })
+          }
+        />
+        <ToastRegion />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByText("fire"));
+    const assertive = document.getElementById(
+      ASSERTIVE_REGION_ID,
+    ) as HTMLElement;
+    // Message is announced, details are NOT (they ride a collapsed
+    // pre in the visual toast and would be too long to narrate as
+    // a single utterance).
+    expect(assertive.textContent).toContain("validation failed");
+    expect(assertive.textContent).not.toContain("name: too long");
   });
 });
 
