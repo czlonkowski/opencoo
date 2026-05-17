@@ -1,31 +1,32 @@
 /**
- * Modal tests — overflow + sticky-action-row spec
- * (PR-W5, phase-a appendix #11).
+ * Modal tests — native <dialog> primitive (PR-A1, wave-16) +
+ * overflow / sticky-action-row pins from PR-W5.
  *
- * Closes the wave-end Chrome QA finding (2026-05-09): the
- * SourceBindingDetail edit form (~700px tall config + credentials
- * sections) and the DomainDetail edit form pushed the bottom action
- * row below the viewport at 1235x702. Operator could not see Save
- * without resizing the window.
+ * PR-A1 promises (browser-floor primitives we now depend on):
+ *   - element is <dialog>; opens via showModal() (free top-layer
+ *     + focus-trap + Esc + inert behind), closes via close().
+ *   - Esc dispatches close() through the browser's own handler
+ *     (we only listen to the resulting `cancel` event for
+ *     onClose plumbing — see the implementation).
+ *   - Backdrop click closes (target-equality guard, NOT inner-click).
+ *   - Inner-click does NOT close.
+ *   - Focus returns to the element that had focus before the
+ *     modal opened.
+ *   - Firefox font-inherit quirk: explicit `font-family: inherit`
+ *     CSS rule on <dialog> shipped via app.css.
  *
- * Pins:
- *   - Sheet caps at `calc(100vh - 64px)` (32px breathing room top
- *     + bottom) so the dialog never overflows the viewport, even
- *     when content is taller than the screen.
- *   - Body region is `overflow-y: auto` with `flex: 1 1 auto` and
- *     `min-height: 0` so it actually shrinks inside the flex
- *     column (the load-bearing min-height: 0 fix).
- *   - When `actions` prop is supplied, the actions slot is
- *     `position: sticky; bottom: 0` with `var(--paper)` background
- *     and a `1px solid var(--rule)` top border — so it visually
- *     separates from the scrollable body and masks scrolling
- *     content beneath it.
- *   - Backdrop padding is preserved (32px breathing room around
- *     the sheet at every viewport size we care about — 1024x600,
- *     1235x702, 1920x1080).
+ * PR-W5 promises preserved (still applies inside the <dialog>):
+ *   - Sheet caps at `calc(100vh - 64px)` so it never overflows
+ *     the viewport.
+ *   - Body region is `overflow-y: auto` + `flex: 1 1 auto` +
+ *     `min-height: 0` so it shrinks inside the flex column.
+ *   - When `actions` is supplied, the actions slot is
+ *     `position: sticky; bottom: 0` with `var(--paper)`
+ *     background + `1px solid var(--rule)` border-top.
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { Modal } from "../../src/components/Modal.js";
 
@@ -45,24 +46,173 @@ function setViewportWidth(w: number): void {
   });
 }
 
-describe("Modal overflow + sticky action row (PR-W5)", () => {
+describe("Modal — native <dialog> primitive (PR-A1, wave-16)", () => {
   beforeEach(() => {
-    // Reset to a generous default each test; individual specs
-    // override as needed.
     setViewportWidth(1235);
     setViewportHeight(702);
   });
 
-  it("caps sheet at calc(100vh - 64px) so it never overflows the viewport", () => {
+  it("renders the sheet as a <dialog> element with role=dialog + aria-modal", () => {
+    render(
+      <Modal title="Native dialog" onClose={vi.fn()}>
+        <div>body</div>
+      </Modal>,
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.tagName).toBe("DIALOG");
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+  });
+
+  it("opens via showModal() on mount", () => {
+    const spy = vi.spyOn(HTMLDialogElement.prototype, "showModal");
+    try {
+      render(
+        <Modal title="Opens via showModal" onClose={vi.fn()}>
+          <div>body</div>
+        </Modal>,
+      );
+      expect(spy).toHaveBeenCalledTimes(1);
+      const dialog = screen.getByRole("dialog");
+      expect(dialog.hasAttribute("open")).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("calls close() on the underlying <dialog> when unmounted", () => {
+    const spy = vi.spyOn(HTMLDialogElement.prototype, "close");
+    try {
+      const { unmount } = render(
+        <Modal title="Closes on unmount" onClose={vi.fn()}>
+          <div>body</div>
+        </Modal>,
+      );
+      unmount();
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("fires onClose when the dialog's `cancel` event fires (Esc path)", () => {
+    const onClose = vi.fn();
+    render(
+      <Modal title="Esc closes" onClose={onClose}>
+        <div>body</div>
+      </Modal>,
+    );
+    const dialog = screen.getByRole("dialog");
+    fireEvent(dialog, new Event("cancel"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("fires onClose when the operator clicks the <dialog> backdrop (target-equality guard)", async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <Modal title="Backdrop closes" onClose={onClose}>
+        <div data-testid="inner">body</div>
+      </Modal>,
+    );
+    const dialog = screen.getByRole("dialog");
+    // Click the dialog itself (acts as backdrop region).
+    await user.click(dialog);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT fire onClose when the click target is an inner element", async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <Modal title="Inner click ignored" onClose={onClose}>
+        <button type="button" data-testid="inner-btn">
+          inner
+        </button>
+      </Modal>,
+    );
+    await user.click(screen.getByTestId("inner-btn"));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("returns focus to the previously-focused element when closed", () => {
+    function Harness({ open }: { open: boolean }): JSX.Element {
+      return (
+        <div>
+          <button type="button" data-testid="trigger">
+            open
+          </button>
+          {open ? (
+            <Modal title="Returns focus" onClose={vi.fn()}>
+              <button type="button" data-testid="modal-btn">
+                in-modal
+              </button>
+            </Modal>
+          ) : null}
+        </div>
+      );
+    }
+
+    const { rerender } = render(<Harness open={false} />);
+    const trigger = screen.getByTestId("trigger") as HTMLButtonElement;
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    rerender(<Harness open={true} />);
+    // While the modal is open, focus may shift into it.
+    rerender(<Harness open={false} />);
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("respects prefers-reduced-motion (no enter animation class when reduce)", () => {
+    const original = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      writable: true,
+      value: (q: string) => ({
+        matches: q.includes("reduce"),
+        media: q,
+        onchange: null,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        dispatchEvent: () => false,
+      }),
+    });
+    try {
+      render(
+        <Modal title="Reduced motion" onClose={vi.fn()}>
+          <div>body</div>
+        </Modal>,
+      );
+      const dialog = screen.getByRole("dialog");
+      expect(dialog.classList.contains("opencoo-dialog-enter")).toBe(false);
+    } finally {
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        writable: true,
+        value: original,
+      });
+    }
+  });
+});
+
+describe("Modal overflow + sticky action row (PR-W5)", () => {
+  beforeEach(() => {
+    setViewportWidth(1235);
+    setViewportHeight(702);
+  });
+
+  it("caps the <dialog> sheet at calc(100vh - 64px) so it never overflows the viewport", () => {
     render(
       <Modal title="Tall modal" onClose={vi.fn()}>
         <div style={{ height: 1200 }}>tall content that exceeds any viewport</div>
       </Modal>,
     );
-    const sheet = screen.getByRole("dialog").firstChild as HTMLElement;
-    // 64px = 32px breathing room top + 32px bottom (matches the
-    // backdrop padding cue).
-    expect(sheet.style.maxHeight).toBe("calc(100vh - 64px)");
+    const dialog = screen.getByRole("dialog") as HTMLElement;
+    // The <dialog> itself is the sheet now (PR-A1 collapses the
+    // wrapper). 64px = 32px breathing room top + 32px bottom.
+    expect(dialog.style.maxHeight).toBe("calc(100vh - 64px)");
   });
 
   it("renders the body region with overflow-y: auto and flex: 1 1 auto / min-height: 0", () => {
@@ -76,15 +226,7 @@ describe("Modal overflow + sticky action row (PR-W5)", () => {
       .closest('[data-modal-region="body"]') as HTMLElement;
     expect(body).not.toBeNull();
     expect(body.style.overflowY).toBe("auto");
-    // The load-bearing flex pair: without min-height: 0 a
-    // flex child won't shrink below its content's intrinsic
-    // height, so overflow-y: auto would never trigger inside a
-    // flex column.
     expect(body.style.flex).toBe("1 1 auto");
-    // jsdom serializes a unitless `0` set on a CSSProperties
-    // numeric prop as the string "0" (no `px` suffix). Both
-    // forms collapse to the same computed style; pin the value
-    // not the unit.
     expect(body.style.minHeight).toBe("0");
   });
 
@@ -111,8 +253,6 @@ describe("Modal overflow + sticky action row (PR-W5)", () => {
     expect(actions.style.bottom).toBe("0px");
     expect(actions.style.background).toBe("var(--paper)");
     expect(actions.style.borderTop).toBe("1px solid var(--rule)");
-    // No drop shadow — depth = border + bg shift (CLAUDE.md
-    // design system hard-no).
     expect(actions.style.boxShadow).toBe("");
   });
 
@@ -125,9 +265,6 @@ describe("Modal overflow + sticky action row (PR-W5)", () => {
     expect(
       screen.getByTestId("just-body").closest('[data-modal-region="actions"]'),
     ).toBeNull();
-    // The body still gets the scrollable container so
-    // un-migrated modals don't overflow the viewport — they
-    // just don't get the sticky-action-row affordance.
     const body = screen
       .getByTestId("just-body")
       .closest('[data-modal-region="body"]') as HTMLElement;
@@ -153,16 +290,7 @@ describe("Modal overflow + sticky action row (PR-W5)", () => {
         </div>
       </Modal>,
     );
-    const sheet = screen.getByRole("dialog").firstChild as HTMLElement;
-    // The cap is responsive to the viewport via calc() — pin
-    // the formula, not a numeric value.
-    expect(sheet.style.maxHeight).toBe("calc(100vh - 64px)");
-    // Backdrop preserves 32px breathing room (var(--space-5)
-    // = 20px in the design tokens, but the load-bearing
-    // promise is "padding > 0 so the sheet never touches the
-    // viewport edge"; assert the property is set rather than
-    // pin a numeric value).
-    const backdrop = screen.getByRole("dialog");
-    expect(backdrop.style.padding).not.toBe("");
+    const dialog = screen.getByRole("dialog") as HTMLElement;
+    expect(dialog.style.maxHeight).toBe("calc(100vh - 64px)");
   });
 });

@@ -9,6 +9,60 @@ import { cleanup } from "@testing-library/react";
 
 import "../../src/lib/i18n.js";
 
+// jsdom 25.x ships HTMLDialogElement but stubs showModal/close.
+// Polyfill the open/close lifecycle so the Modal primitive
+// (PR-A1, wave-16) can be tested without a real browser.
+// Real browsers diverge from jsdom here — the e2e suite is the
+// authoritative check for top-layer + focus-trap behavior.
+if (typeof HTMLDialogElement !== "undefined") {
+  const proto = HTMLDialogElement.prototype as HTMLDialogElement & {
+    showModal: () => void;
+    close: (returnValue?: string) => void;
+    show: () => void;
+  };
+  if (typeof proto.showModal !== "function") {
+    proto.showModal = function showModal(this: HTMLDialogElement): void {
+      this.setAttribute("open", "");
+      (this as HTMLDialogElement & { _isModal?: boolean })._isModal = true;
+    };
+  }
+  if (typeof proto.show !== "function") {
+    proto.show = function show(this: HTMLDialogElement): void {
+      this.setAttribute("open", "");
+    };
+  }
+  if (typeof proto.close !== "function") {
+    proto.close = function close(
+      this: HTMLDialogElement,
+      returnValue?: string,
+    ): void {
+      this.removeAttribute("open");
+      if (returnValue !== undefined) this.returnValue = returnValue;
+      this.dispatchEvent(new Event("close"));
+    };
+  }
+}
+
+// jsdom does not implement matchMedia; the reduced-motion gating
+// for the dialog enter animation reads it. Default to "not matching"
+// so the animation class is applied in tests, matching the default
+// browser experience for operators who have not opted out.
+if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      dispatchEvent: () => false,
+    }),
+  });
+}
+
 afterEach(() => {
   cleanup();
 });
