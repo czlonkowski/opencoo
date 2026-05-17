@@ -114,10 +114,8 @@ export function useOptimisticPatch<T>(
     }
     // We intentionally do NOT depend on `optimistic.value` here —
     // the goal is to react to PARENT-driven changes, not to chase
-    // our own setState. The eslint rule will flag this; we accept
-    // the trade-off because the alternative (deeper equality check)
-    // doesn't address the underlying semantics.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // our own setState. (The alternative — a deeper equality check —
+    // doesn't address the underlying semantics.)
   }, [currentValue]);
 
   const setValue = useCallback(
