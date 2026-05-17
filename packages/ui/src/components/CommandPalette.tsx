@@ -398,11 +398,21 @@ export function CommandPalette(props: CommandPaletteProps): JSX.Element {
   // current index to compute. W3C APG combobox-with-listbox
   // (vertical) keeps focus on the input — assistive tech reads
   // the active row via aria-activedescendant.
+  //
+  // Copilot triage on PR-A5: when ranked.length === 0 (no matches
+  // / mid-load), the listbox is NOT rendered — the empty/loading
+  // text surfaces as `role="status"` outside the popup. That
+  // keeps the combobox's collapsed state (aria-expanded="false")
+  // semantically honest: AT sees no listbox to navigate, and the
+  // role="listbox" element is never populated with non-option
+  // children. aria-controls + aria-activedescendant are also
+  // omitted in the collapsed state.
   const LISTBOX_ID = "command-palette-listbox";
   const optionId = (idx: number): string => `palette-opt-${idx}`;
   const hasResults = ranked.length > 0;
-  const activeOptionId =
-    hasResults && activeIdx < ranked.length ? optionId(activeIdx) : null;
+  const activeOptionId = hasResults
+    ? optionId(Math.min(activeIdx, ranked.length - 1))
+    : null;
 
   return (
     <div
@@ -435,43 +445,35 @@ export function CommandPalette(props: CommandPaletteProps): JSX.Element {
             aria-label={t("commandPalette.placeholder")}
             data-testid="command-palette-input"
             // PR-A5 — combobox semantics. aria-expanded reflects
-            // whether there is anything in the popup to surface
-            // to AT; aria-activedescendant is omitted (not set to
-            // empty string) when no option is active, per the
-            // W3C APG combobox pattern.
+            // whether the popup listbox is currently rendered;
+            // when it is, aria-controls + aria-activedescendant
+            // point at it. Collapsed state omits all three popup
+            // references — the listbox is not in the DOM.
             role="combobox"
             aria-expanded={hasResults ? "true" : "false"}
-            aria-controls={LISTBOX_ID}
             aria-autocomplete="list"
+            {...(hasResults ? { "aria-controls": LISTBOX_ID } : {})}
             {...(activeOptionId !== null
               ? { "aria-activedescendant": activeOptionId }
               : {})}
           />
         </div>
-        {/* PR-A5 — listbox is a <ul> so structural + ARIA roles
-            align. The container's overflow-scroll style is
-            preserved; default list chrome (bullets, padding,
-            margin) is reset inline so the visual layout is
-            unchanged from the prior <div role="listbox">. */}
-        <ul
-          id={LISTBOX_ID}
-          role="listbox"
-          style={{
-            ...RESULTS_STYLE,
-            listStyle: "none",
-            margin: 0,
-          }}
-        >
-          {loading && ranked.length === 0 ? (
-            <li style={EMPTY_STYLE} aria-hidden="true">
-              {t("commandPalette.loading")}
-            </li>
-          ) : ranked.length === 0 ? (
-            <li style={EMPTY_STYLE} aria-hidden="true">
-              {t("commandPalette.empty")}
-            </li>
-          ) : (
-            ranked.map((r, idx) => {
+        {hasResults ? (
+          /* PR-A5 — listbox is a <ul> so structural + ARIA roles
+             align. Only rendered when there are options to
+             populate it; the empty/loading state below is a
+             role="status" sibling, so the listbox never carries
+             non-option children (Copilot triage on PR-A5). */
+          <ul
+            id={LISTBOX_ID}
+            role="listbox"
+            style={{
+              ...RESULTS_STYLE,
+              listStyle: "none",
+              margin: 0,
+            }}
+          >
+            {ranked.map((r, idx) => {
               const active = idx === activeIdx;
               return (
                 <li
@@ -499,9 +501,24 @@ export function CommandPalette(props: CommandPaletteProps): JSX.Element {
                   <span>{highlight(r.label, query)}</span>
                 </li>
               );
-            })
-          )}
-        </ul>
+            })}
+          </ul>
+        ) : (
+          /* Empty / loading state lives OUTSIDE the listbox so the
+             combobox's collapsed state is honest — role="status"
+             so AT announces the absence of results, but the
+             listbox itself is not in the DOM (Copilot triage on
+             PR-A5). */
+          <div
+            role="status"
+            data-testid="command-palette-empty-status"
+            style={EMPTY_STYLE}
+          >
+            {loading
+              ? t("commandPalette.loading")
+              : t("commandPalette.empty")}
+          </div>
+        )}
         <div style={HINT_ROW_STYLE} data-testid="command-palette-hint">
           {t("commandPalette.hint")}
         </div>

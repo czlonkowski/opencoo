@@ -203,16 +203,25 @@ describe("CommandPalette ARIA semantics (PR-A5)", () => {
     expect(visible[0]!.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("aria-expanded collapses to false when no results match", () => {
+  it("collapsed state: listbox unrendered, aria-controls + aria-activedescendant omitted, empty state announces via role=status", () => {
+    // Copilot triage on PR-A5: when aria-expanded="false", the
+    // combobox must not reference a listbox that isn't there. The
+    // listbox is dropped from the DOM and the empty/loading text
+    // surfaces as a role="status" sibling instead.
     renderPalette();
     const input = screen.getByTestId(
       "command-palette-input",
     ) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "qzx-no-match" } });
     expect(input.getAttribute("aria-expanded")).toBe("false");
-    // aria-activedescendant is removed when there is nothing to
-    // point at (per W3C APG combobox guidance).
+    expect(input.getAttribute("aria-controls")).toBeNull();
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
+    expect(document.querySelectorAll('[role="listbox"]').length).toBe(0);
+    const status = document.querySelector(
+      '[data-testid="command-palette-empty-status"]',
+    );
+    expect(status).not.toBeNull();
+    expect(status!.getAttribute("role")).toBe("status");
   });
 
   it("scoring + dispatch contract from PR-W10 is unchanged", () => {
