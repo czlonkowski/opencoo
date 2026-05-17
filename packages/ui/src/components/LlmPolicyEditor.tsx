@@ -555,7 +555,12 @@ export function LlmPolicyEditor(props: LlmPolicyEditorProps): JSX.Element {
         <button
           type="button"
           data-testid="advanced-toggle"
+          // PR-A5 — wire aria-controls to the panel id so assistive
+          // tech can resolve "what does this toggle?". The panel is
+          // rendered conditionally, but referencing an id that does
+          // not currently exist is benign per ARIA 1.2.
           aria-expanded={advancedOpen}
+          aria-controls="llm-policy-advanced-panel"
           onClick={(): void => setAdvancedOpen((v) => !v)}
           style={ADVANCED_HEADER_STYLE}
         >
@@ -563,7 +568,7 @@ export function LlmPolicyEditor(props: LlmPolicyEditorProps): JSX.Element {
           <span aria-hidden="true">{advancedOpen ? "−" : "+"}</span>
         </button>
         {advancedOpen ? (
-          <div style={ADVANCED_BODY_STYLE}>
+          <div id="llm-policy-advanced-panel" style={ADVANCED_BODY_STYLE}>
             <textarea
               name="raw-json"
               value={rawText}

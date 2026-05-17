@@ -391,6 +391,19 @@ export function CommandPalette(props: CommandPaletteProps): JSX.Element {
     }
   };
 
+  // PR-A5 — stable IDs for the combobox/listbox wiring. The
+  // listbox id is fixed (one palette per render) so the combobox
+  // `aria-controls` attribute resolves deterministically; option
+  // ids are positional so `aria-activedescendant` only needs the
+  // current index to compute. W3C APG combobox-with-listbox
+  // (vertical) keeps focus on the input — assistive tech reads
+  // the active row via aria-activedescendant.
+  const LISTBOX_ID = "command-palette-listbox";
+  const optionId = (idx: number): string => `palette-opt-${idx}`;
+  const hasResults = ranked.length > 0;
+  const activeOptionId =
+    hasResults && activeIdx < ranked.length ? optionId(activeIdx) : null;
+
   return (
     <div
       style={BACKDROP_STYLE}
@@ -421,21 +434,55 @@ export function CommandPalette(props: CommandPaletteProps): JSX.Element {
             style={SEARCH_INPUT_STYLE}
             aria-label={t("commandPalette.placeholder")}
             data-testid="command-palette-input"
+            // PR-A5 — combobox semantics. aria-expanded reflects
+            // whether there is anything in the popup to surface
+            // to AT; aria-activedescendant is omitted (not set to
+            // empty string) when no option is active, per the
+            // W3C APG combobox pattern.
+            role="combobox"
+            aria-expanded={hasResults ? "true" : "false"}
+            aria-controls={LISTBOX_ID}
+            aria-autocomplete="list"
+            {...(activeOptionId !== null
+              ? { "aria-activedescendant": activeOptionId }
+              : {})}
           />
         </div>
-        <div style={RESULTS_STYLE} role="listbox">
+        {/* PR-A5 — listbox is a <ul> so structural + ARIA roles
+            align. The container's overflow-scroll style is
+            preserved; default list chrome (bullets, padding,
+            margin) is reset inline so the visual layout is
+            unchanged from the prior <div role="listbox">. */}
+        <ul
+          id={LISTBOX_ID}
+          role="listbox"
+          style={{
+            ...RESULTS_STYLE,
+            listStyle: "none",
+            margin: 0,
+          }}
+        >
           {loading && ranked.length === 0 ? (
-            <div style={EMPTY_STYLE}>{t("commandPalette.loading")}</div>
+            <li style={EMPTY_STYLE} aria-hidden="true">
+              {t("commandPalette.loading")}
+            </li>
           ) : ranked.length === 0 ? (
-            <div style={EMPTY_STYLE}>{t("commandPalette.empty")}</div>
+            <li style={EMPTY_STYLE} aria-hidden="true">
+              {t("commandPalette.empty")}
+            </li>
           ) : (
             ranked.map((r, idx) => {
               const active = idx === activeIdx;
               return (
-                <div
+                <li
                   key={r.id}
+                  id={optionId(idx)}
                   role="option"
-                  aria-selected={active}
+                  // PR-A5 — omit aria-selected (not set to
+                  // "false") on inactive rows so AT sees a single
+                  // canonical selected option, matching the W10
+                  // single-active-index contract.
+                  aria-selected={active ? "true" : undefined}
                   data-result-id={r.id}
                   data-result-kind={r.kind}
                   data-result-active={active ? "true" : "false"}
@@ -450,11 +497,11 @@ export function CommandPalette(props: CommandPaletteProps): JSX.Element {
                     {t(`commandPalette.kind.${r.kind}`)}
                   </span>
                   <span>{highlight(r.label, query)}</span>
-                </div>
+                </li>
               );
             })
           )}
-        </div>
+        </ul>
         <div style={HINT_ROW_STYLE} data-testid="command-palette-hint">
           {t("commandPalette.hint")}
         </div>
