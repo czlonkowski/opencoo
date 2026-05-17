@@ -274,6 +274,26 @@ export function registerAgentInstancesRoutes(
       }
       const body = parsed.data;
 
+      // Dedupe-check FIRST so the POST surface matches the PATCH
+      // scope_domain_ids branch (Copilot triage #1 on PR #143).
+      // A duplicate UUID in the array would persist verbatim into
+      // the uuid[] column and confuse the resolver downstream.
+      const seenScope = new Set<string>();
+      const scopeDupes: string[] = [];
+      for (const sid of body.scope_domain_ids) {
+        if (seenScope.has(sid)) {
+          if (!scopeDupes.includes(sid)) scopeDupes.push(sid);
+        } else {
+          seenScope.add(sid);
+        }
+      }
+      if (scopeDupes.length > 0) {
+        return reply.code(422).send({
+          error: "duplicate_scope_domain_ids",
+          duplicates: scopeDupes,
+        });
+      }
+
       // Validate every scope_domain_id resolves to an existing
       // domain row. One IN(...) SELECT; 422 with the missing
       // list if any dangle. Mirrors the output-channel resolve
