@@ -41,12 +41,29 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 
+import cronParser from "cron-parser";
+
 import { Btn } from "./Btn.js";
 import { Field } from "./Field.js";
 import { Modal } from "./Modal.js";
 import { PickerSelect } from "./PickerSelect.js";
 import { TooltipTrigger } from "./Tooltip.js";
 import { fetchAdmin } from "../lib/api.js";
+import {
+  useLiveValidation,
+  type ValidationStateMap,
+} from "../hooks/useLiveValidation.js";
+
+/** Names a binding-config field is treated as a cron pattern for
+ *  live validation. The same `cron-parser` library + UTC invariant
+ *  the engine pins (SchedulerEditor.tsx:31). Adapters whose schema
+ *  declares one of these keys get a real-time parse check; the
+ *  server-side adapter Zod re-asserts on submit. */
+const CRON_FIELD_NAMES = ["cron", "schedule_cron", "cron_schedule", "schedule"];
+
+function isCronFieldName(key: string): boolean {
+  return CRON_FIELD_NAMES.includes(key);
+}
 
 const REVIEW_MODES = ["auto", "approve", "review"] as const;
 const TRANSCRIPTION_ADAPTER_SLUGS = ["fireflies"] as const;
@@ -265,6 +282,52 @@ export function NewSourceBindingModal(
     [adapters, adapterSlug],
   );
 
+  // PR-B4: picker-step live validation. The hook reacts to picker
+  // state — adapterSlug + targetDomainSlug — and surfaces the
+  // "pick something" message inline rather than waiting for the
+  // Next CTA's disabled state to do all the talking.
+  const pickerValidation = useLiveValidation<{
+    readonly adapter_slug: string;
+    readonly target_domain_slug: string;
+  }>(
+    { adapter_slug: adapterSlug, target_domain_slug: targetDomainSlug },
+    {
+      adapter_slug: (v: string): string | null =>
+        v.length > 0 ? null : t("validation.adapterRequired"),
+      target_domain_slug: (v: string): string | null =>
+        v.length > 0 ? null : t("sources.create.errors.requiredField"),
+    },
+  );
+
+  // PR-B4: config-step live validation. Cron-shaped fields get a
+  // real-time `cron-parser` parse (same lib + same UTC invariant
+  // as SchedulerEditor.tsx:31). The server's adapter Zod schema
+  // re-asserts on submit; this is a perceived-latency floor only.
+  const configValidatorMap = useMemo(() => {
+    const schema = currentAdapter?.bindingConfigSchema;
+    if (schema === undefined) return {};
+    const map: Record<string, (v: string) => string | null> = {};
+    for (const [key, field] of Object.entries(schema.properties)) {
+      if (field.hidden === true) continue;
+      if (isCronFieldName(key)) {
+        map[key] = (v: string): string | null => {
+          if (v.length === 0) return null;
+          try {
+            cronParser.parseExpression(v, { tz: "UTC" });
+            return null;
+          } catch {
+            return t("validation.cronInvalid");
+          }
+        };
+      }
+    }
+    return map;
+  }, [currentAdapter?.slug, t]);
+  const configValidation = useLiveValidation<Record<string, string>>(
+    configValues,
+    configValidatorMap,
+  );
+
   const validateCredentials = (): boolean => {
     if (currentAdapter === undefined) return false;
     const next: Record<string, string> = {};
@@ -469,6 +532,24 @@ export function NewSourceBindingModal(
               .map((a) => ({ value: a.slug, label: a.slug }))
               .sort((a, b) => a.label.localeCompare(b.label))}
           />
+          {/* PR-B4: inline picker-step validation chip. The hook
+              flags an empty adapter / domain as "invalid" so the
+              operator sees why the Next CTA is disabled — without
+              waiting for a server-side 422 on submit. */}
+          {pickerValidation.adapter_slug.status === "invalid" &&
+          pickerValidation.adapter_slug.message !== null ? (
+            <p
+              role="alert"
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: "var(--fs-micro)",
+                color: "var(--alert)",
+                margin: 0,
+              }}
+            >
+              {pickerValidation.adapter_slug.message}
+            </p>
+          ) : null}
           <PickerSelect
             name="target_domain_slug"
             label={t("sources.create.fields.targetDomain")}
@@ -476,6 +557,20 @@ export function NewSourceBindingModal(
             onChange={setTargetDomainSlug}
             options={domains.map((d) => ({ value: d.slug, label: d.slug }))}
           />
+          {pickerValidation.target_domain_slug.status === "invalid" &&
+          pickerValidation.target_domain_slug.message !== null ? (
+            <p
+              role="alert"
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: "var(--fs-micro)",
+                color: "var(--alert)",
+                margin: 0,
+              }}
+            >
+              {pickerValidation.target_domain_slug.message}
+            </p>
+          ) : null}
           <PickerSelect
             name="review_mode"
             label={t("sources.create.fields.reviewMode")}
@@ -539,6 +634,7 @@ export function NewSourceBindingModal(
           adapter={currentAdapter}
           values={configValues}
           errors={errors}
+          validation={configValidation}
           // PR-W1 Copilot triage #2: propagate the real `submitting`
           // flag so the Next CTA is disabled while a POST is in
           // flight. Prior to this fix the literal `false` allowed a
@@ -716,6 +812,12 @@ interface ConfigStepProps {
   readonly adapter: AdapterDescriptor | undefined;
   readonly values: Record<string, string>;
   readonly errors: Record<string, string>;
+  /** PR-B4: per-field live-validation state map keyed by config
+   *  field name. The hook only populates keys with declared
+   *  validators (currently cron-shaped fields); other fields read
+   *  out as undefined and render with the default helper/error
+   *  treatment. */
+  readonly validation: ValidationStateMap<Record<string, string>>;
   readonly submitting: boolean;
   readonly onValueChange: (key: string, value: string) => void;
   readonly onBack: () => void;
@@ -740,6 +842,7 @@ function ConfigStep(props: ConfigStepProps): JSX.Element {
           schema={schema}
           values={props.values}
           errors={props.errors}
+          validation={props.validation}
           onValueChange={props.onValueChange}
         />
       ) : null}
@@ -779,6 +882,7 @@ interface BindingConfigFieldsProps {
   readonly schema: BindingConfigSchema;
   readonly values: Record<string, string>;
   readonly errors: Record<string, string>;
+  readonly validation: ValidationStateMap<Record<string, string>>;
   readonly onValueChange: (key: string, value: string) => void;
 }
 
@@ -790,6 +894,7 @@ interface BindingConfigFieldsProps {
  *  credential, and rendering with the encrypted-note glyph would
  *  mis-cue the operator. */
 function BindingConfigFields(props: BindingConfigFieldsProps): JSX.Element {
+  const { t } = useTranslation();
   return (
     <>
       {Object.entries(props.schema.properties).map(([key, field]) => {
@@ -825,6 +930,23 @@ function BindingConfigFields(props: BindingConfigFieldsProps): JSX.Element {
             </div>
           );
         }
+        // PR-B4: read the per-field live-validation state. Fields
+        // without a registered validator come back as undefined →
+        // the chip is omitted entirely.
+        const liveState = props.validation[key];
+        const isValidating = liveState?.status === "validating";
+        const liveError =
+          liveState?.status === "invalid" && liveState.message !== null
+            ? liveState.message
+            : undefined;
+        // The B4 "checking…" chip is rendered into the helper slot
+        // so it lands in the Field's ARIA-described chain (A3)
+        // without competing with a real error message.
+        const helperText: string | undefined = isValidating
+          ? field.description !== undefined
+            ? `${field.description} · ${t("validation.checking")}`
+            : t("validation.checking")
+          : field.description;
         return (
           <Field
             key={key}
@@ -839,12 +961,15 @@ function BindingConfigFields(props: BindingConfigFieldsProps): JSX.Element {
             // mislead the operator.
             secret={false}
             {...(placeholder !== undefined ? { placeholder } : {})}
-            {...(field.description !== undefined
-              ? { helper: field.description }
+            {...(helperText !== undefined ? { helper: helperText } : {})}
+            {...(liveState !== undefined
+              ? { validationStatus: liveState.status }
               : {})}
             {...(props.errors[key] !== undefined
               ? { error: props.errors[key] }
-              : {})}
+              : liveError !== undefined
+                ? { error: liveError }
+                : {})}
           />
         );
       })}

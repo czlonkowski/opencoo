@@ -45,6 +45,7 @@ import { Field } from "./Field.js";
 import { Modal } from "./Modal.js";
 import { PickerSelect } from "./PickerSelect.js";
 import { ApiValidationError, fetchAdmin } from "../lib/api.js";
+import { useLiveValidation } from "../hooks/useLiveValidation.js";
 
 /** Slug regex pinned to the server domains_slug_format check. */
 const SLUG_REGEX = /^[a-z][a-z0-9-]{1,62}$/;
@@ -154,6 +155,15 @@ export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
   const [locale, setLocale] = useState<(typeof LOCALES)[number]>("en");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
+  // PR-B4: shadow-state mirror for the live DOM values, so
+  // useLiveValidation can react to operator keystrokes (and to
+  // password-manager external setters that dispatch `input`).
+  // The DOM remains the source of truth on submit; this state is
+  // only read by the validation hook.
+  const [liveValues, setLiveValues] = useState<{
+    readonly slug: string;
+    readonly display_name: string;
+  }>({ slug: "", display_name: "" });
 
   // Subscribe to native `input` events directly on the DOM nodes
   // — bypasses React's synthetic event system entirely, which
@@ -179,18 +189,37 @@ export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
       if (slugEl.value !== expected) {
         slugTouchedRef.current = true;
       }
+      // PR-B4: mirror live DOM value into React state so
+      // useLiveValidation can observe operator keystrokes (and
+      // password-manager external-setter dispatches).
+      setLiveValues((cur) =>
+        cur.slug === slugEl.value ? cur : { ...cur, slug: slugEl.value },
+      );
     };
 
     const onDisplayInput = (): void => {
-      if (slugTouchedRef.current) return;
-      const next = slugifyDisplayName(displayEl.value);
-      // Skip the write when the value is already correct — avoids
-      // re-positioning the caret if the slug input happens to be
-      // focused (the user can tab to it and start editing before
-      // the regex test fires).
-      if (slugEl.value !== next) {
-        setInputValueNative(slugEl, next);
+      if (!slugTouchedRef.current) {
+        const next = slugifyDisplayName(displayEl.value);
+        // Skip the write when the value is already correct — avoids
+        // re-positioning the caret if the slug input happens to be
+        // focused (the user can tab to it and start editing before
+        // the regex test fires).
+        if (slugEl.value !== next) {
+          setInputValueNative(slugEl, next);
+        }
       }
+      // PR-B4: mirror both fields. Display-name may have auto-filled
+      // the slug input above (which doesn't dispatch a new event
+      // when we call the native setter without firing 'input'), so
+      // pull both values out of the DOM here.
+      setLiveValues((cur) => {
+        const nextSlug = slugEl.value;
+        const nextDisplay = displayEl.value;
+        if (cur.slug === nextSlug && cur.display_name === nextDisplay) {
+          return cur;
+        }
+        return { slug: nextSlug, display_name: nextDisplay };
+      });
     };
 
     slugEl.addEventListener("input", onSlugInput);
@@ -200,6 +229,61 @@ export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
       displayEl.removeEventListener("input", onDisplayInput);
     };
   }, []);
+
+  // PR-B4: live validation. Sync slug-format runs on every input;
+  // the async slug-uniqueness probe is debounced 250ms via the
+  // hook and aborts on subsequent keystrokes. Display-name validation
+  // is sync-only (length 2-100). The hook drives the `validationStatus`
+  // prop slot the Field component shipped in PR-A3.
+  const validation = useLiveValidation<{ slug: string; display_name: string }>(
+    liveValues,
+    {
+      slug: {
+        sync: (v: string): string | null => {
+          if (v.length === 0) return null; // idle until typed
+          return SLUG_REGEX.test(v)
+            ? null
+            : t("domains.create.errors.slugFormat");
+        },
+        async: async (
+          v: string,
+          _all: { slug: string; display_name: string },
+          signal: AbortSignal,
+        ): Promise<string | null> => {
+          // GET the existing domains and check for a slug match.
+          // Server-side authz + CSRF is carried by `fetchAdmin`;
+          // we do NOT inline a raw fetch here (THREAT-MODEL §5).
+          try {
+            const resp = await fetchAdmin<{
+              rows: ReadonlyArray<{ slug: string }>;
+            }>("/api/admin/domains", {
+              ...(props.fetchImpl !== undefined
+                ? { fetchImpl: props.fetchImpl }
+                : {}),
+            });
+            if (signal.aborted) return null;
+            const hit = resp.rows.find((r) => r.slug === v);
+            return hit !== undefined ? t("validation.slugTaken") : null;
+          } catch {
+            // Surface no error inline — the submit-time error path
+            // still catches network failures with a generic message.
+            return null;
+          }
+        },
+      },
+      display_name: (v: string): string | null => {
+        if (v.length === 0) return null;
+        const trimmed = v.trim();
+        if (trimmed.length < 2) {
+          return t("domains.create.errors.displayNameRequired");
+        }
+        if (trimmed.length > 100) {
+          return t("domains.create.errors.displayNameRequired");
+        }
+        return null;
+      },
+    },
+  );
 
   const validate = (slug: string, displayName: string): Record<string, string> => {
     const next: Record<string, string> = {};
@@ -290,8 +374,18 @@ export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
           defaultValue=""
           mono
           required
-          helper={t("domains.create.help.slug")}
-          {...(errors["slug"] !== undefined ? { error: errors["slug"] } : {})}
+          helper={
+            validation.slug.status === "validating"
+              ? t("validation.checking")
+              : t("domains.create.help.slug")
+          }
+          validationStatus={validation.slug.status}
+          {...(errors["slug"] !== undefined
+            ? { error: errors["slug"] }
+            : validation.slug.status === "invalid" &&
+                validation.slug.message !== null
+              ? { error: validation.slug.message }
+              : {})}
         />
         <Field
           name="display_name"
@@ -299,9 +393,13 @@ export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
           inputRef={displayNameRef}
           defaultValue=""
           required
+          validationStatus={validation.display_name.status}
           {...(errors["display_name"] !== undefined
             ? { error: errors["display_name"] }
-            : {})}
+            : validation.display_name.status === "invalid" &&
+                validation.display_name.message !== null
+              ? { error: validation.display_name.message }
+              : {})}
         />
         <PickerSelect
           name="class"

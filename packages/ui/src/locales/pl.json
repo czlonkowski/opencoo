@@ -5,6 +5,15 @@
     "tagline": "self-hosted",
     "version": "v0.1"
   },
+  "validation": {
+    "checking": "sprawdzanie…",
+    "slugTaken": "Slug jest już użyty przez inną domenę.",
+    "scopeDomainMissing": "Niektóre wybrane domeny nie istnieją.",
+    "cronInvalid": "Wzorzec cron jest nieprawidłowy. Użyj 5 pól rozdzielonych spacjami.",
+    "definitionUnknown": "Nieznana definicja agenta.",
+    "credentialRequired": "Wybierz dane uwierzytelniające, aby kontynuować.",
+    "adapterRequired": "Wybierz adapter, aby kontynuować."
+  },
   "nav": {
     "primary": "primary navigation",
     "domains": "domains",
