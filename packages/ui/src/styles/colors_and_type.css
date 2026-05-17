@@ -164,3 +164,23 @@ html, body{
   color: var(--fg-1);
   max-width: 760px;
 }
+
+/* ============================================================
+   Reduced motion — PR-C5 (wave-16, phase-a appendix #16).
+   Operators who set `prefers-reduced-motion: reduce` at the OS
+   level get every transition + animation clamped to near-zero.
+   The single design-system motion loop (heartbeat-pulse on the
+   operate glyph) "steps to one-shot" — the loop keeps running
+   but each frame is instantaneous, so the glyph reads static.
+   The `!important` is load-bearing: it overrides component-
+   level inline-style `transition` / `animation` declarations.
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

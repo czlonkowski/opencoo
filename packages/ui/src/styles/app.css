@@ -158,3 +158,87 @@ dialog::backdrop {
 .opencoo-timer-color {
   transition: color 240ms var(--ease-write);
 }
+
+/* =============================================================
+   Hover affordances — PR-C5 (wave-16, phase-a appendix #16).
+
+   Uniform recipe across every clickable surface:
+     - 60ms easing via --ease-transform.
+     - Explicit per-property transitions (background-color +
+       border-color only). NEVER a wildcard transition target —
+       that catches transform / box-shadow / color and produces
+       flicker.
+     - No box-shadow (design-system depth = border + paper-2).
+     - No transform/scale (the heartbeat-pulse is the single
+       motion loop allowed in the system).
+
+   The reduced-motion media query in colors_and_type.css clamps
+   `transition-duration` globally so this 60ms collapses to near-
+   zero for operators who opted out.
+   ============================================================= */
+
+/* ---- Button hover ---- */
+.opencoo-hover-btn {
+  transition:
+    background-color 60ms var(--ease-transform),
+    border-color 60ms var(--ease-transform);
+}
+/* Primary — shift to a deeper ink tone. ink-2 is the secondary
+   body text color; using it as primary-hover keeps everything
+   inside the existing ink ramp (no new tokens, no color literals). */
+.opencoo-hover-btn[data-variant="primary"]:hover {
+  background-color: var(--ink-2);
+  border-color: var(--ink-2);
+}
+/* Ghost — fill in with paper-2 so the outline button "lifts"
+   without changing its border tone significantly. */
+.opencoo-hover-btn[data-variant="ghost"]:hover {
+  background-color: var(--paper-2);
+  border-color: var(--ink-2);
+}
+/* Advisory — keep the amber tone, tighten the border to
+   advisory-ink so the affordance reads as "the same amber, now
+   pressable". The background is intentionally NOT shifted: the
+   advisory layer needs to remain perceptibly the same color
+   across states (alerting, not interactive). */
+.opencoo-hover-btn[data-variant="advisory"]:hover {
+  background-color: var(--advisory);
+  border-color: var(--advisory-ink);
+}
+/* Subtle — paper-3 is the next step in the warm-neutral paper
+   ramp. Border tightens to match. */
+.opencoo-hover-btn[data-variant="subtle"]:hover {
+  background-color: var(--paper-3);
+  border-color: var(--ink-3);
+}
+
+/* ---- Card (clickable) ---- */
+.opencoo-hover-card {
+  transition:
+    background-color 60ms var(--ease-transform),
+    border-color 60ms var(--ease-transform);
+}
+.opencoo-hover-card:hover {
+  background-color: var(--paper-2);
+  border-color: var(--ink-3);
+}
+
+/* ---- Sidebar entries in Chrome.tsx ---- */
+.opencoo-hover-sidebar {
+  transition:
+    background-color 60ms var(--ease-transform),
+    border-color 60ms var(--ease-transform);
+}
+.opencoo-hover-sidebar:hover {
+  background-color: var(--paper);
+  border-color: var(--rule);
+}
+
+/* ---- Table rows whose <tr> is the click target ---- */
+.opencoo-hover-row {
+  cursor: pointer;
+  transition: background-color 60ms var(--ease-transform);
+}
+.opencoo-hover-row:hover > td {
+  background-color: var(--paper-2);
+}
