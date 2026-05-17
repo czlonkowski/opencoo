@@ -25,6 +25,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { render, cleanup } from "@testing-library/react";
+import type { ReactElement } from "react";
 
 import { Reports } from "../../src/routes/Reports.js";
 import { Prompts } from "../../src/routes/Prompts.js";
@@ -37,6 +38,15 @@ import { Agents } from "../../src/routes/Agents.js";
 import { LlmPolicy } from "../../src/routes/LlmPolicy.js";
 import { Review } from "../../src/routes/Review.js";
 import { Cost } from "../../src/routes/Cost.js";
+import { ToastProvider } from "../../src/components/Toast.js";
+
+/** PR-B7 wired `useToast` into Outputs.tsx; any route that calls
+ *  `useToast` throws if it isn't mounted under <ToastProvider>.
+ *  Cheaper to wrap every route unconditionally than to maintain a
+ *  per-route allow-list of which routes need the provider. */
+function withToastProvider(el: ReactElement): ReactElement {
+  return <ToastProvider>{el}</ToastProvider>;
+}
 
 /** Returns an empty/healthy 200 envelope for any URL the route asks for. */
 function makeEmptyFetch(): typeof fetch {
@@ -76,20 +86,26 @@ function countDisplayLevel1Nodes(container: HTMLElement): number {
 
 describe("Display placement contract (PR-C4, wave-16)", () => {
   it("Reports route renders exactly one <Display level=2>", () => {
-    const { container } = render(<Reports fetchImpl={makeEmptyFetch()} />);
+    const { container } = render(
+      withToastProvider(<Reports fetchImpl={makeEmptyFetch()} />),
+    );
     expect(countLedeNodes(container)).toBe(1);
     // And no level=1 sneak — the display typescale is docs-site only.
     expect(countDisplayLevel1Nodes(container)).toBe(0);
   });
 
   it("Prompts route renders exactly one <Display level=2> (empty-state lede)", () => {
-    const { container } = render(<Prompts fetchImpl={makeEmptyFetch()} />);
+    const { container } = render(
+      withToastProvider(<Prompts fetchImpl={makeEmptyFetch()} />),
+    );
     expect(countLedeNodes(container)).toBe(1);
     expect(countDisplayLevel1Nodes(container)).toBe(0);
   });
 
   it("Domains route renders exactly one <Display level=2>", () => {
-    const { container } = render(<Domains fetchImpl={makeEmptyFetch()} />);
+    const { container } = render(
+      withToastProvider(<Domains fetchImpl={makeEmptyFetch()} />),
+    );
     expect(countLedeNodes(container)).toBe(1);
     expect(countDisplayLevel1Nodes(container)).toBe(0);
   });
@@ -111,9 +127,11 @@ describe("Display placement contract (PR-C4, wave-16)", () => {
       // unknown — the shared shape is { fetchImpl?: typeof fetch }
       // for every admin-API consumer.
       const { container } = render(
-        <RouteComponent
-          {...({ fetchImpl } as unknown as Record<string, unknown>)}
-        />,
+        withToastProvider(
+          <RouteComponent
+            {...({ fetchImpl } as unknown as Record<string, unknown>)}
+          />,
+        ),
       );
       // Reject BOTH t-lede (levels 2/3) and t-display (level 1) so
       // any sneaky <Display level={1}> in a non-approved route also
