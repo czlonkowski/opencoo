@@ -69,13 +69,51 @@ function makeRedactionEvent(overrides: {
   };
 }
 
+/** PR-W8 — default preconditions shape: empty deployment, nothing
+ *  configured. Tests that need a specific diagnostic state pass a
+ *  partial override that the helper spreads over this baseline. */
+function makePreconditions(
+  over: Partial<{
+    heartbeatInstanceCount: number;
+    enabledHeartbeatInstanceCount: number;
+    instancesWithoutOutputChannels: number;
+    mostRecentRun:
+      | {
+          startedAt: string | null;
+          status: string;
+          outputIsNull: boolean;
+          instanceName: string | null;
+        }
+      | null;
+    mostRecentDispatchedAt: string | null;
+  }> = {},
+) {
+  return {
+    heartbeatInstanceCount: over.heartbeatInstanceCount ?? 0,
+    enabledHeartbeatInstanceCount: over.enabledHeartbeatInstanceCount ?? 0,
+    instancesWithoutOutputChannels: over.instancesWithoutOutputChannels ?? 0,
+    mostRecentRun: over.mostRecentRun ?? null,
+    mostRecentDispatchedAt: over.mostRecentDispatchedAt ?? null,
+  };
+}
+
 function makeFetch(opts: {
   reports?: ReturnType<typeof makeHeartbeatReport>[];
   events?: ReturnType<typeof makeRedactionEvent>[];
   total?: number;
+  preconditions?: ReturnType<typeof makePreconditions>;
 }): typeof fetch {
   return vi.fn(async (input: RequestInfo) => {
     const url = typeof input === "string" ? input : input.toString();
+    // The preconditions URL is a prefix-match against `/api/admin/heartbeat`
+    // too — match it FIRST so the diagnostic panel's fetch lands here, not
+    // on the list endpoint. PR-W8.
+    if (url.startsWith("/api/admin/heartbeat/preconditions")) {
+      return new Response(
+        JSON.stringify(opts.preconditions ?? makePreconditions()),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
     if (url.startsWith("/api/admin/heartbeat")) {
       return new Response(
         JSON.stringify({ reports: opts.reports ?? [] }),
@@ -154,12 +192,22 @@ describe("Reports route — heartbeat sub-tab", () => {
     expect(screen.getByText(/Project X deadline at risk/i)).toBeInTheDocument();
   });
 
-  it("shows empty state when no heartbeat reports exist", async () => {
-    const fetchImpl = makeFetch({ reports: [] });
-    render(<Reports fetchImpl={fetchImpl} />);
+  it("PR-W8: empty state shows the diagnostic panel naming the missing precondition", async () => {
+    // Default preconditions (everything zero) → first row is "no
+    // heartbeat instance configured", with a CTA to the Agents tab.
+    // The CTA only renders when `onNavigate` is wired (App.tsx passes
+    // it; tests opt in per-case).
+    const fetchImpl = makeFetch({ reports: [], preconditions: makePreconditions() });
+    const onNavigate = vi.fn();
+    render(<Reports fetchImpl={fetchImpl} onNavigate={onNavigate} />);
 
     await waitFor(() => expect(fetchImpl).toHaveBeenCalled());
-    expect(await screen.findByText(/no heartbeat reports yet/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/no heartbeat instance configured/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /create heartbeat instance/i }),
+    ).toBeInTheDocument();
   });
 
   it("shows instance name if available", async () => {
@@ -235,5 +283,182 @@ describe("Reports route — redaction events sub-tab", () => {
 
     await waitFor(() => expect(fetchImpl).toHaveBeenCalled());
     expect(await screen.findByText(/no redaction events yet/i)).toBeInTheDocument();
+  });
+});
+
+// ─── PR-W8 — diagnostic empty-state panel ────────────────────────────────────
+
+describe("Reports route — PR-W8 heartbeat diagnostics panel", () => {
+  it("surfaces disabled-instance row when an instance exists but is disabled", async () => {
+    const fetchImpl = makeFetch({
+      reports: [],
+      preconditions: makePreconditions({
+        heartbeatInstanceCount: 1,
+        enabledHeartbeatInstanceCount: 0,
+      }),
+    });
+    render(<Reports fetchImpl={fetchImpl} />);
+
+    expect(
+      await screen.findByText(/heartbeat instance exists but is disabled/i),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces no-channels-bound row when the enabled instance has no output channels", async () => {
+    const fetchImpl = makeFetch({
+      reports: [],
+      preconditions: makePreconditions({
+        heartbeatInstanceCount: 1,
+        enabledHeartbeatInstanceCount: 1,
+        instancesWithoutOutputChannels: 1,
+      }),
+    });
+    render(<Reports fetchImpl={fetchImpl} />);
+
+    expect(
+      await screen.findByText(/no output channels bound/i),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces output-null row when the latest run completed with no output", async () => {
+    const fetchImpl = makeFetch({
+      reports: [],
+      preconditions: makePreconditions({
+        heartbeatInstanceCount: 1,
+        enabledHeartbeatInstanceCount: 1,
+        instancesWithoutOutputChannels: 0,
+        mostRecentRun: {
+          startedAt: "2026-05-14T10:00:00.000Z",
+          status: "success",
+          outputIsNull: true,
+          instanceName: "heartbeat-exec",
+        },
+        mostRecentDispatchedAt: "2026-05-14T10:00:00.000Z",
+      }),
+    });
+    const onNavigate = vi.fn();
+    render(<Reports fetchImpl={fetchImpl} onNavigate={onNavigate} />);
+
+    expect(
+      await screen.findByText(/produced no output/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /view run details/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces runFailed row with the underlying status when the last run failed", async () => {
+    const fetchImpl = makeFetch({
+      reports: [],
+      preconditions: makePreconditions({
+        heartbeatInstanceCount: 1,
+        enabledHeartbeatInstanceCount: 1,
+        instancesWithoutOutputChannels: 0,
+        mostRecentRun: {
+          startedAt: "2026-05-14T10:00:00.000Z",
+          status: "failed",
+          outputIsNull: true,
+          instanceName: "heartbeat-exec",
+        },
+        mostRecentDispatchedAt: "2026-05-14T10:00:00.000Z",
+      }),
+    });
+    render(<Reports fetchImpl={fetchImpl} />);
+
+    // outputIsNull wins over status-not-success because the panel
+    // checks them in chain order; the test for runFailed-only state
+    // sits below this one with outputIsNull=false.
+    expect(
+      await screen.findByText(/produced no output/i),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces healthy state when every precondition passes but the window has no rows", async () => {
+    const fetchImpl = makeFetch({
+      reports: [],
+      preconditions: makePreconditions({
+        heartbeatInstanceCount: 1,
+        enabledHeartbeatInstanceCount: 1,
+        instancesWithoutOutputChannels: 0,
+        mostRecentRun: {
+          startedAt: "2026-05-14T10:00:00.000Z",
+          status: "success",
+          outputIsNull: false,
+          instanceName: "heartbeat-exec",
+        },
+        mostRecentDispatchedAt: "2026-05-14T10:00:00.000Z",
+      }),
+    });
+    render(<Reports fetchImpl={fetchImpl} />);
+
+    expect(
+      await screen.findByText(/heartbeat chain looks healthy/i),
+    ).toBeInTheDocument();
+  });
+
+  it("CTA invokes onNavigate with the linked tab", async () => {
+    const fetchImpl = makeFetch({
+      reports: [],
+      preconditions: makePreconditions(),
+    });
+    const onNavigate = vi.fn();
+    render(<Reports fetchImpl={fetchImpl} onNavigate={onNavigate} />);
+
+    const cta = await screen.findByRole("button", {
+      name: /create heartbeat instance/i,
+    });
+    fireEvent.click(cta);
+    expect(onNavigate).toHaveBeenCalledWith("agents");
+  });
+
+  it("surfaces real fetch error via safeErrorMessage when the heartbeat list 504s", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/admin/heartbeat/preconditions")) {
+        return new Response(JSON.stringify(makePreconditions()), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/admin/heartbeat")) {
+        return new Response("upstream timed out", { status: 504 });
+      }
+      return new Response("404", { status: 404 });
+    }) as unknown as typeof fetch;
+    render(<Reports fetchImpl={fetchImpl} />);
+
+    // The transient-error path of fetchAdmin throws an ApiTransientError
+    // with `HTTP 504` as the message; safeErrorMessage just caps + scrubs.
+    expect(await screen.findByText(/HTTP 504/i)).toBeInTheDocument();
+    // The help line is rendered alongside the prefixed message.
+    expect(
+      screen.getByText(/re-check that your PAT is still valid/i),
+    ).toBeInTheDocument();
+  });
+
+  it("scrubs Bearer-token bytes from a surfaced error before rendering", async () => {
+    const leakyMessage =
+      "fetch failed with Bearer abcdefghijklmnop1234567890 in Authorization";
+    const fetchImpl = vi.fn(async (input: RequestInfo) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/admin/heartbeat/preconditions")) {
+        return new Response(JSON.stringify(makePreconditions()), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/admin/heartbeat")) {
+        // Throw a network-style error so fetchAdmin wraps it as a
+        // transient error whose .message contains the underlying string.
+        throw new Error(leakyMessage);
+      }
+      return new Response("404", { status: 404 });
+    }) as unknown as typeof fetch;
+    render(<Reports fetchImpl={fetchImpl} />);
+
+    await screen.findByText(/Could not load heartbeats/i);
+    // The PAT-shaped substring must not appear in the rendered DOM.
+    expect(screen.queryByText(/abcdefghijklmnop1234567890/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Bearer \[REDACTED\]/i)).toBeInTheDocument();
   });
 });

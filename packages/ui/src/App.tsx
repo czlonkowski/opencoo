@@ -115,7 +115,7 @@ export function App(): JSX.Element {
     prompts: <Prompts />,
     activity: <Activity onAuthFailed={onSseAuthFailed} />,
     review: <Review />,
-    reports: <Reports />,
+    reports: <Reports onNavigate={setTab} />,
     audit: <Audit />,
     cost: <Cost />,
   };

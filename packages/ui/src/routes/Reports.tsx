@@ -16,16 +16,25 @@
  *   - Read-only tab: append-only invariant §2 invariant 8.
  */
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 
 import { AgentsRunNowButton } from "../components/AgentsRunNowButton.js";
+import { Btn } from "../components/Btn.js";
+import { GlyphOpenArc, GlyphRingWithDot } from "../components/Glyph.js";
 import {
   createAgentRunsSubscription,
   type SubscribeToAgentRuns,
 } from "../lib/agent-runs-subscription.js";
 import { fetchAdmin, fetchOptsFor } from "../lib/api.js";
+import { safeErrorMessage } from "../lib/safe-error.js";
 import { extractDomainSlugFromPath } from "../lib/wiki-path.js";
-import type { HeartbeatReport, RedactionEvent } from "../types.js";
+import type {
+  HeartbeatPreconditions,
+  HeartbeatReport,
+  RedactionEvent,
+  Tab,
+} from "../types.js";
 
 // ─── Sub-tab type ─────────────────────────────────────────────────────────────
 
@@ -43,6 +52,13 @@ export interface ReportsProps {
    *  `subscribe` down. Tests inject a stub directly so SSE wiring
    *  is bypassed. */
   readonly subscribeToAgentRuns?: SubscribeToAgentRuns;
+  /** PR-W8 (phase-a appendix #15) — navigation callback wired by
+   *  `App.tsx` so the empty-state diagnostic panel can deep-link to
+   *  the relevant tab (Agents / Activity). When omitted (tests,
+   *  isolated previews), the CTAs render as static text rather than
+   *  links — the panel still surfaces the diagnostic; only the
+   *  navigation affordance degrades. */
+  readonly onNavigate?: (tab: Tab) => void;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -93,6 +109,7 @@ function HeartbeatView(props: {
   fetchImpl?: typeof fetch;
   /** @internal Test seam — see LintFindings for the same pattern. */
   subscribeToAgentRuns?: SubscribeToAgentRuns;
+  onNavigate?: (tab: Tab) => void;
 }): JSX.Element {
   const { t } = useTranslation();
   const [reports, setReports] = useState<readonly HeartbeatReport[] | null>(null);
@@ -106,8 +123,13 @@ function HeartbeatView(props: {
           fetchOptsFor(props.fetchImpl),
         );
         setReports(r.reports);
-      } catch {
-        setError(t("common.error"));
+      } catch (err) {
+        // PR-W8 — surface the real error (401 / 504 / etc.) via
+        // `safeErrorMessage` so the operator sees what actually
+        // happened instead of a generic "Error". The helper scrubs
+        // Bearer-token bytes defensively in case the message echoes
+        // a request header — see lib/safe-error.ts.
+        setError(safeErrorMessage(err));
       }
     })();
   }, []);
@@ -137,10 +159,29 @@ function HeartbeatView(props: {
   const subscribeToAgentRuns: SubscribeToAgentRuns =
     injectedSubscribe ?? subscription!.subscribe;
 
-  if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
+  if (error !== null) {
+    return (
+      <NoticeRow tone="alert">
+        <div>
+          <strong>{t("reports.heartbeat.errorPrefix")}</strong> {error}
+        </div>
+        <div style={{ marginTop: 4, color: "var(--ink-3)" }}>
+          {t("reports.heartbeat.errorHelp")}
+        </div>
+      </NoticeRow>
+    );
+  }
   if (reports === null) return <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>;
   if (reports.length === 0) {
-    return <NoticeRow tone="muted">{t("reports.heartbeat.empty")}</NoticeRow>;
+    // PR-W8 — drill down the precondition chain so the operator
+    // sees WHY the list is empty (no instance / disabled / no
+    // channels / no runs / output IS NULL / failed status).
+    return (
+      <HeartbeatDiagnosticsPanel
+        {...(props.fetchImpl !== undefined ? { fetchImpl: props.fetchImpl } : {})}
+        {...(props.onNavigate !== undefined ? { onNavigate: props.onNavigate } : {})}
+      />
+    );
   }
 
   return (
@@ -358,6 +399,219 @@ function HeartbeatCard(props: {
   );
 }
 
+// ─── PR-W8 — Heartbeat diagnostics empty-state panel ─────────────────────────
+//
+// Renders when the heartbeat list is empty. Walks the precondition chain
+// top-to-bottom and surfaces the FIRST missing step with an inline CTA.
+// Stops at the first miss so the operator doesn't have to read past the
+// step that's actually blocking the chain.
+//
+// Tone budget: rows use Advisory Amber (`--advisory`) for under-10%
+// budget per the design system; the terminal failure-state row uses
+// Alert Red. Healthy chain renders Healthy Green with a quiet
+// reassurance message ("everything is wired; window has no rows yet").
+
+interface DiagnosticRow {
+  readonly tone: "advisory" | "alert" | "healthy";
+  readonly label: string;
+  readonly cta?: {
+    readonly label: string;
+    readonly target: Tab;
+  };
+}
+
+function deriveDiagnosticRow(
+  pre: HeartbeatPreconditions,
+  t: TFunction,
+): DiagnosticRow {
+  if (pre.heartbeatInstanceCount === 0) {
+    return {
+      tone: "advisory",
+      label: t("reports.diagnostics.noInstance.label"),
+      cta: { label: t("reports.diagnostics.noInstance.cta"), target: "agents" },
+    };
+  }
+  if (pre.enabledHeartbeatInstanceCount === 0) {
+    return {
+      tone: "advisory",
+      label: t("reports.diagnostics.disabled.label"),
+      cta: { label: t("reports.diagnostics.disabled.cta"), target: "agents" },
+    };
+  }
+  if (pre.instancesWithoutOutputChannels > 0) {
+    return {
+      tone: "advisory",
+      label: t("reports.diagnostics.noOutputChannels.label"),
+      cta: {
+        label: t("reports.diagnostics.noOutputChannels.cta"),
+        target: "agents",
+      },
+    };
+  }
+  if (pre.mostRecentRun === null) {
+    return {
+      tone: "advisory",
+      label: t("reports.diagnostics.noRuns.label"),
+      cta: { label: t("reports.diagnostics.noRuns.cta"), target: "agents" },
+    };
+  }
+  const when = pre.mostRecentRun.startedAt !== null
+    ? new Date(pre.mostRecentRun.startedAt).toLocaleString()
+    : "—";
+  if (pre.mostRecentRun.outputIsNull) {
+    return {
+      tone: "alert",
+      label: t("reports.diagnostics.outputNull.label", { when }),
+      cta: { label: t("reports.diagnostics.outputNull.cta"), target: "activity" },
+    };
+  }
+  if (pre.mostRecentRun.status !== "success") {
+    return {
+      tone: "alert",
+      label: t("reports.diagnostics.runFailed.label", {
+        status: pre.mostRecentRun.status,
+        when,
+      }),
+      cta: { label: t("reports.diagnostics.runFailed.cta"), target: "activity" },
+    };
+  }
+  // All checks pass — the chain is wired; the visible window just has
+  // no rows yet (heartbeat hasn't run recently enough, or the list
+  // query filtered to a tighter window).
+  return {
+    tone: "healthy",
+    label: t("reports.diagnostics.healthy"),
+  };
+}
+
+function HeartbeatDiagnosticsPanel(props: {
+  fetchImpl?: typeof fetch;
+  onNavigate?: (tab: Tab) => void;
+}): JSX.Element {
+  const { t } = useTranslation();
+  const [pre, setPre] = useState<HeartbeatPreconditions | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await fetchAdmin<HeartbeatPreconditions>(
+          "/api/admin/heartbeat/preconditions",
+          fetchOptsFor(props.fetchImpl),
+        );
+        setPre(r);
+      } catch (err) {
+        setError(safeErrorMessage(err));
+      }
+    })();
+  }, []);
+
+  if (error !== null) {
+    return (
+      <NoticeRow tone="alert">
+        <strong>{t("reports.diagnostics.errorPrefix")}</strong> {error}
+      </NoticeRow>
+    );
+  }
+  if (pre === null) {
+    return <NoticeRow tone="muted">{t("reports.diagnostics.loading")}</NoticeRow>;
+  }
+
+  const row = deriveDiagnosticRow(pre, t);
+  const glyphColor =
+    row.tone === "alert"
+      ? "var(--alert)"
+      : row.tone === "healthy"
+        ? "var(--healthy)"
+        : "var(--advisory-ink)";
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+        padding: "20px 0",
+      }}
+    >
+      <div
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 11,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: "var(--ink-3)",
+        }}
+      >
+        {t("reports.diagnostics.title")}
+      </div>
+      <div
+        style={{
+          border: "1px solid var(--rule)",
+          borderRadius: 6,
+          padding: "16px 20px",
+          background: "var(--paper-2)",
+          display: "flex",
+          alignItems: "center",
+          gap: 14,
+        }}
+      >
+        <span style={{ color: glyphColor, display: "inline-flex" }}>
+          {row.tone === "healthy" ? (
+            <GlyphRingWithDot size={20} />
+          ) : (
+            <GlyphOpenArc size={20} />
+          )}
+        </span>
+        <div
+          style={{
+            flex: 1,
+            fontFamily: "var(--font-sans)",
+            fontSize: 13,
+            color: "var(--ink)",
+            lineHeight: 1.5,
+          }}
+        >
+          {row.label}
+        </div>
+        {row.cta !== undefined && props.onNavigate !== undefined ? (
+          (() => {
+            const navigate = props.onNavigate;
+            const target = row.cta.target;
+            return (
+              <Btn
+                variant={row.tone === "alert" ? "ghost" : "subtle"}
+                onClick={(): void => navigate(target)}
+              >
+                {row.cta.label}
+              </Btn>
+            );
+          })()
+        ) : null}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          gap: 16,
+          fontFamily: "var(--font-mono)",
+          fontSize: 11,
+          color: "var(--ink-3)",
+        }}
+      >
+        <span>instances: {pre.heartbeatInstanceCount}</span>
+        <span>enabled: {pre.enabledHeartbeatInstanceCount}</span>
+        <span>unbound: {pre.instancesWithoutOutputChannels}</span>
+        {pre.mostRecentDispatchedAt !== null ? (
+          <span>
+            last dispatch:{" "}
+            {new Date(pre.mostRecentDispatchedAt).toLocaleString()}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 // ─── Redaction events sub-view ────────────────────────────────────────────────
 
 interface RedactionEventsResponse {
@@ -378,13 +632,25 @@ function RedactionEventsView(props: { fetchImpl?: typeof fetch }): JSX.Element {
           fetchOptsFor(props.fetchImpl),
         );
         setEvents(r.events);
-      } catch {
-        setError(t("common.error"));
+      } catch (err) {
+        // PR-W8 — surface the real error (see HeartbeatView for rationale).
+        setError(safeErrorMessage(err));
       }
     })();
   }, []);
 
-  if (error !== null) return <NoticeRow tone="alert">{error}</NoticeRow>;
+  if (error !== null) {
+    return (
+      <NoticeRow tone="alert">
+        <div>
+          <strong>{t("reports.redaction.errorPrefix")}</strong> {error}
+        </div>
+        <div style={{ marginTop: 4, color: "var(--ink-3)" }}>
+          {t("reports.redaction.errorHelp")}
+        </div>
+      </NoticeRow>
+    );
+  }
   if (events === null) return <NoticeRow tone="muted">{t("common.loading")}</NoticeRow>;
   if (events.length === 0) {
     return (
@@ -555,6 +821,7 @@ export function Reports(props: ReportsProps = {}): JSX.Element {
             {...(props.subscribeToAgentRuns !== undefined
               ? { subscribeToAgentRuns: props.subscribeToAgentRuns }
               : {})}
+            {...(props.onNavigate !== undefined ? { onNavigate: props.onNavigate } : {})}
           />
         )}
         {activeTab === "redaction" && (

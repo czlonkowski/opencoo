@@ -292,6 +292,31 @@ export interface HeartbeatReport {
   readonly output: HeartbeatOutput;
 }
 
+/** PR-W8 (phase-a appendix #15) — diagnostic preconditions for the
+ *  Reports empty-state panel. Counts only — no run output, no body
+ *  bytes — so the response is safe under the admin-team gate. The
+ *  panel walks the fields top-to-bottom and surfaces the FIRST missing
+ *  precondition with an inline CTA so operators don't have to grep
+ *  logs to find out why the heartbeat list is empty. */
+export interface HeartbeatPreconditions {
+  readonly heartbeatInstanceCount: number;
+  readonly enabledHeartbeatInstanceCount: number;
+  /** Enabled instances whose `output_channel_ids` array is empty. */
+  readonly instancesWithoutOutputChannels: number;
+  /** Newest `agent_runs` row for `definition_slug='heartbeat'`. */
+  readonly mostRecentRun: {
+    readonly startedAt: string | null;
+    readonly status: string;
+    readonly outputIsNull: boolean;
+    readonly instanceName: string | null;
+  } | null;
+  /** Newest heartbeat dispatch timestamp regardless of run status.
+   *  Mirrors `mostRecentRun.startedAt` today; surfaced separately so
+   *  future schema changes (e.g. distinguishing enqueue from start)
+   *  can refine it without breaking the panel. */
+  readonly mostRecentDispatchedAt: string | null;
+}
+
 /**
  * One redaction event row from GET /api/admin/redaction-events.
  *
