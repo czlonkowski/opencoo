@@ -24,7 +24,7 @@ import {
 import { ClassifierPathError } from "../../src/classifier/path-guard.js";
 import { BindingConfigError } from "../../src/classifier/binding-guard.js";
 
-import { freshClassifierDb } from "./_pglite-fixture.js";
+import { freshClassifierDb, type ClassifierTestDb } from "./_pglite-fixture.js";
 
 function silentLogger(): ConsoleLogger {
   return new ConsoleLogger({
@@ -35,6 +35,7 @@ function silentLogger(): ConsoleLogger {
 interface FixtureBundle {
   router: LlmRouter;
   domainId: string;
+  db: ClassifierTestDb;
 }
 
 async function makeFixture(provider: LlmProvider): Promise<FixtureBundle> {
@@ -46,7 +47,16 @@ async function makeFixture(provider: LlmProvider): Promise<FixtureBundle> {
     pauser: { paused: () => false, pause: () => undefined, resume: () => undefined },
     provider,
   });
-  return { router, domainId };
+  return { router, domainId, db };
+}
+
+/** PR-W1 hand-off helper — narrow the pglite-flavoured db to
+ *  the resolver's structural type so `classify({ db })` calls
+ *  stay tidy. */
+function asResolverDb(
+  db: ClassifierTestDb,
+): Parameters<typeof classify>[0]["db"] {
+  return db as unknown as Parameters<typeof classify>[0]["db"];
 }
 
 const ALLOWED_PATHS = ["strategy/**", "executive/**"];
