@@ -39,10 +39,37 @@ describe("safeErrorMessage", () => {
     expect(out).toMatch(/Bearer \[REDACTED\]/);
   });
 
-  it("scrubs authorization: header values", () => {
-    const out = safeErrorMessage("Server replied 401 authorization: Bearer.SHORT.TOKEN-XYZ_42");
+  it("scrubs Bearer scheme case-insensitively (Copilot triage on PR #148)", () => {
+    expect(safeErrorMessage("bearer SECRET-TOKEN-XYZ")).toMatch(
+      /bearer \[REDACTED\]/i,
+    );
+    expect(safeErrorMessage("BEARER SECRET-TOKEN-XYZ")).toMatch(
+      /BEARER \[REDACTED\]/i,
+    );
+  });
+
+  it("scrubs Basic auth scheme so base64 credentials don't leak", () => {
+    // `Basic <b64>` is the other RFC-7617 scheme. The base64 string
+    // can contain `+` and `=` which a strict charset would miss.
+    const out = safeErrorMessage(
+      "auth failed: Basic dXNlcjpwYXNzd29yZA== bad creds",
+    );
+    expect(out).not.toMatch(/dXNlcjpwYXNzd29yZA==/);
+    expect(out).toMatch(/Basic \[REDACTED\]/);
+  });
+
+  it("scrubs authorization: header values up to a delimiter", () => {
+    // The redaction must consume the WHOLE value half — including
+    // the scheme name and the b64-encoded credential — up to the
+    // next header delimiter (comma, semicolon, or newline).
+    const out = safeErrorMessage(
+      "Server replied 401 authorization: Basic dXNlcjpwYXNz, retry-after: 5",
+    );
     expect(out).toMatch(/authorization: \[REDACTED\]/i);
-    expect(out).not.toMatch(/SHORT\.TOKEN/);
+    expect(out).not.toMatch(/dXNlcjpwYXNz/);
+    // The non-auth header survives — we're scrubbing the credential
+    // half only, not the entire log line.
+    expect(out).toMatch(/retry-after: 5/);
   });
 
   it("caps at 200 chars (scrub-then-cap order)", () => {

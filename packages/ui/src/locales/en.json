@@ -484,6 +484,10 @@
         "label": "Heartbeat run completed but produced no output. Last run: {{when}}.",
         "cta": "View run details"
       },
+      "runInFlight": {
+        "label": "Heartbeat run is still in progress. Started: {{when}}.",
+        "cta": "Watch in Activity"
+      },
       "runFailed": {
         "label": "Most recent run ended as {{status}}. Last run: {{when}}.",
         "cta": "View run details"

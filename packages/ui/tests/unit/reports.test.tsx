@@ -365,11 +365,60 @@ describe("Reports route — PR-W8 heartbeat diagnostics panel", () => {
     });
     render(<Reports fetchImpl={fetchImpl} />);
 
-    // outputIsNull wins over status-not-success because the panel
-    // checks them in chain order; the test for runFailed-only state
-    // sits below this one with outputIsNull=false.
+    // Copilot triage on PR #148: status discrimination beats the
+    // output-null check for non-success terminal states. The operator
+    // should see "ended as failed", not "produced no output", because
+    // the latter is the genuine pathological case (success + null).
     expect(
-      await screen.findByText(/produced no output/i),
+      await screen.findByText(/ended as failed/i),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces run-in-flight advisory when the latest run is still running", async () => {
+    const fetchImpl = makeFetch({
+      reports: [],
+      preconditions: makePreconditions({
+        heartbeatInstanceCount: 1,
+        enabledHeartbeatInstanceCount: 1,
+        instancesWithoutOutputChannels: 0,
+        mostRecentRun: {
+          startedAt: "2026-05-14T10:00:00.000Z",
+          status: "running",
+          outputIsNull: true,
+          instanceName: "heartbeat-exec",
+        },
+        mostRecentDispatchedAt: "2026-05-14T10:00:00.000Z",
+      }),
+    });
+    render(<Reports fetchImpl={fetchImpl} />);
+
+    // A running heartbeat with output=null is in-flight, not a failure
+    // — the diagnostic surface must not label it "produced no output".
+    expect(
+      await screen.findByText(/still in progress/i),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces runFailed row for timeout terminal state even when output is null", async () => {
+    const fetchImpl = makeFetch({
+      reports: [],
+      preconditions: makePreconditions({
+        heartbeatInstanceCount: 1,
+        enabledHeartbeatInstanceCount: 1,
+        instancesWithoutOutputChannels: 0,
+        mostRecentRun: {
+          startedAt: "2026-05-14T10:00:00.000Z",
+          status: "timeout",
+          outputIsNull: true,
+          instanceName: "heartbeat-exec",
+        },
+        mostRecentDispatchedAt: "2026-05-14T10:00:00.000Z",
+      }),
+    });
+    render(<Reports fetchImpl={fetchImpl} />);
+
+    expect(
+      await screen.findByText(/ended as timeout/i),
     ).toBeInTheDocument();
   });
 

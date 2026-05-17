@@ -458,11 +458,21 @@ function deriveDiagnosticRow(
   const when = pre.mostRecentRun.startedAt !== null
     ? new Date(pre.mostRecentRun.startedAt).toLocaleString()
     : "—";
-  if (pre.mostRecentRun.outputIsNull) {
+  // Status discrimination ordering matters (Copilot triage on PR #148):
+  //   - `running` (in-progress): the operator should see "run is in
+  //     flight", not "output is null" — the output column being null
+  //     is expected mid-run, not a failure mode.
+  //   - any non-`success` terminal status (`failed`, `timeout`): surface
+  //     the actual status string so the operator knows what to look
+  //     for in Activity; this beats a generic "no output produced".
+  //   - `success` + `outputIsNull`: this is the genuine pathological
+  //     case (a Thinker call returned an empty heartbeat payload — the
+  //     bug that motivated the diagnostic surface to begin with).
+  if (pre.mostRecentRun.status === "running") {
     return {
-      tone: "alert",
-      label: t("reports.diagnostics.outputNull.label", { when }),
-      cta: { label: t("reports.diagnostics.outputNull.cta"), target: "activity" },
+      tone: "advisory",
+      label: t("reports.diagnostics.runInFlight.label", { when }),
+      cta: { label: t("reports.diagnostics.runInFlight.cta"), target: "activity" },
     };
   }
   if (pre.mostRecentRun.status !== "success") {
@@ -473,6 +483,13 @@ function deriveDiagnosticRow(
         when,
       }),
       cta: { label: t("reports.diagnostics.runFailed.cta"), target: "activity" },
+    };
+  }
+  if (pre.mostRecentRun.outputIsNull) {
+    return {
+      tone: "alert",
+      label: t("reports.diagnostics.outputNull.label", { when }),
+      cta: { label: t("reports.diagnostics.outputNull.cta"), target: "activity" },
     };
   }
   // All checks pass — the chain is wired; the visible window just has
