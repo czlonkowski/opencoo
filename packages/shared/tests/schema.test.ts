@@ -396,6 +396,19 @@ describe("users table", () => {
     expect(col.notNull).toBe(true);
     expect(col.hasDefault).toBe(true);
   });
+
+  // PR-C2 (phase-a appendix #16 wave-16) — operator-controlled
+  // per-account locale preference. NULL means "no preference, fall
+  // back to the client-side detector default"; CHECK constrains
+  // non-null values to {'en','pl'} so a bogus locale never lands
+  // via direct DB write.
+  it("has locale_preference text NULLABLE with IN check ('en','pl')", () => {
+    const cfg = tableCfg(users);
+    const col = columnByName(cfg, "locale_preference");
+    expect(col.getSQLType()).toBe("text");
+    expect(col.notNull).toBe(false);
+    expect(cfg.checks.length).toBeGreaterThan(0);
+  });
 });
 
 describe("sources_bindings table", () => {

@@ -1,0 +1,22 @@
+-- PR-C2 (phase-a appendix #16 wave-16) — operator-controlled
+-- per-account locale preference, persisted on `users.locale_preference`.
+--
+-- Two-tier persistence: localStorage is the in-session SoT (read at
+-- boot by the SPA's i18n detector); this column is the SoT at login
+-- (the SPA reads it back via `/api/admin/_csrf` hydration and
+-- reconciles localStorage). Cross-machine: if an operator changes
+-- locale on machine A and logs into machine B, machine B reads the
+-- DB value at login then writes localStorage. Locale is a per-device
+-- chrome preference more than a per-account one (mirrors IDE themes).
+--
+-- NULL means "no preference, fall back to the client-side detector
+-- default" (localStorage → browser language → 'en'). Non-null values
+-- are constrained by CHECK to the same {'en','pl'} set the UI
+-- supports — a bogus locale lands as 422 at the Zod boundary AND
+-- is rejected by the DB if a direct write tries to bypass.
+--
+-- Additive migration: no default, no NOT NULL — existing user rows
+-- get NULL and behave as "no preference" exactly like they did
+-- before this column existed.
+ALTER TABLE "users" ADD COLUMN "locale_preference" text;--> statement-breakpoint
+ALTER TABLE "users" ADD CONSTRAINT "users_locale_preference_allowed" CHECK ("users"."locale_preference" IN ('en', 'pl'));

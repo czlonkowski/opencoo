@@ -272,6 +272,17 @@ export const AUDIT_LOG_ACTIONS = [
   // intent without persisting the LLM-input bytes through audit.
   "prompt_override.apply",
   "prompt_override.delete",
+  // PR-C2 (phase-a appendix #16 wave-16) — operator-controlled
+  // per-account locale preference flip via
+  // `PATCH /api/admin/users/me/locale`. Metadata captures
+  // `user_id` (the row that flipped — always equal to the
+  // caller's id since the route is self-only), `new_locale`
+  // (the persisted value in {'en','pl'}), and `caller_username`.
+  // The route audits BEFORE the UPDATE (audit-write-before-mutate
+  // invariant, THREAT-MODEL §3.5). No operator-supplied freeform
+  // text enters audit metadata — locale is constrained to a
+  // closed set at both the Zod and DB layers.
+  "user.set_locale_preference",
   // Logout — records the operator-initiated session-end so an
   // audit-log read can correlate an action burst with the
   // operator's session window.
