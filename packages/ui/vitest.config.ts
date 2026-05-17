@@ -10,7 +10,13 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "jsdom",
-    include: ["tests/unit/**/*.test.{ts,tsx}"],
+    include: [
+      "tests/unit/**/*.test.{ts,tsx}",
+      // PR-B2 (wave-16) — bundle-size fence lives under tests/ui/.
+      // That file uses a per-file `// @vitest-environment node`
+      // directive to override jsdom; jsdom can't read fs/zlib.
+      "tests/ui/**/*.test.{ts,tsx}",
+    ],
     setupFiles: ["./tests/unit/setup.ts"],
     testTimeout: 15_000,
   },
