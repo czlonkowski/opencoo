@@ -22,7 +22,20 @@ import {
 
 import { Outputs } from "../../src/routes/Outputs.js";
 import { setPat } from "../../src/lib/pat-store.js";
+import { ToastProvider, ToastRegion } from "../../src/components/Toast.js";
 import type { OutputChannel } from "../../src/types.js";
+
+/** Outputs now consumes `useToast` (PR-B7, wave-16). Tests render
+ *  the route inside the same `<ToastProvider>` shell App.tsx
+ *  mounts at the root so the hook resolves. */
+function renderOutputs(node: JSX.Element): ReturnType<typeof render> {
+  return render(
+    <ToastProvider>
+      {node}
+      <ToastRegion />
+    </ToastProvider>,
+  );
+}
 
 interface FetchCall {
   readonly url: string;
@@ -98,7 +111,7 @@ describe("Outputs bulk-delete (PR-W6 phase-a appendix #15)", () => {
     setPat("test-pat");
     const calls: FetchCall[] = [];
     const stub = makeStubFetch({ rows: [ROW_A, ROW_B], calls });
-    render(<Outputs fetchImpl={stub} />);
+    renderOutputs(<Outputs fetchImpl={stub} />);
     await waitFor(() => {
       expect(screen.getByText(ROW_A.name)).toBeTruthy();
     });
@@ -109,7 +122,7 @@ describe("Outputs bulk-delete (PR-W6 phase-a appendix #15)", () => {
     setPat("test-pat");
     const calls: FetchCall[] = [];
     const stub = makeStubFetch({ rows: [ROW_A, ROW_B], calls });
-    render(<Outputs fetchImpl={stub} />);
+    renderOutputs(<Outputs fetchImpl={stub} />);
     const cb = await screen.findByTestId(`outputs-select-row-${ROW_A.id}`);
     fireEvent.click(cb);
     const btn = await screen.findByTestId("outputs-bulk-delete-btn");
@@ -125,7 +138,7 @@ describe("Outputs bulk-delete (PR-W6 phase-a appendix #15)", () => {
     setPat("test-pat");
     const calls: FetchCall[] = [];
     const stub = makeStubFetch({ rows: [ROW_A, ROW_B], calls });
-    render(<Outputs fetchImpl={stub} />);
+    renderOutputs(<Outputs fetchImpl={stub} />);
     const all = await screen.findByTestId("outputs-select-all");
     fireEvent.click(all);
     expect(
@@ -145,7 +158,7 @@ describe("Outputs bulk-delete (PR-W6 phase-a appendix #15)", () => {
     setPat("test-pat");
     const calls: FetchCall[] = [];
     const stub = makeStubFetch({ rows: [ROW_A], calls });
-    render(<Outputs fetchImpl={stub} />);
+    renderOutputs(<Outputs fetchImpl={stub} />);
     const rowCheckbox = await screen.findByTestId(
       `outputs-select-row-${ROW_A.id}`,
     );
@@ -173,7 +186,7 @@ describe("Outputs bulk-delete (PR-W6 phase-a appendix #15)", () => {
       calls,
       bulkDeleteResponse: { deleted: 2, skipped: 0 },
     });
-    render(<Outputs fetchImpl={stub} />);
+    renderOutputs(<Outputs fetchImpl={stub} />);
     // Wait for initial GET to settle so the rows render.
     await waitFor(() => {
       expect(screen.getByText(ROW_A.name)).toBeTruthy();
@@ -211,6 +224,44 @@ describe("Outputs bulk-delete (PR-W6 phase-a appendix #15)", () => {
     });
   });
 
+  it("on success, surfaces the result via the global Toast region (PR-B7)", async () => {
+    // After PR-B7, the success notice migrated from an inline
+    // local `<p style={TOAST_STYLE}>` to a `useToast().success()`
+    // call. Pin that the bulk-delete confirm dispatches a toast
+    // into the global region (`role="region"` + label) instead
+    // of any local element. The region label is the i18n
+    // `toast.region` string ("Notifications" in en).
+    setPat("test-pat");
+    const calls: FetchCall[] = [];
+    const stub = makeStubFetch({
+      rows: [ROW_A, ROW_B],
+      calls,
+      bulkDeleteResponse: { deleted: 2, skipped: 0 },
+    });
+    renderOutputs(<Outputs fetchImpl={stub} />);
+    await waitFor(() => {
+      expect(screen.getByText(ROW_A.name)).toBeTruthy();
+    });
+    fireEvent.click(screen.getByTestId(`outputs-select-row-${ROW_A.id}`));
+    fireEvent.click(screen.getByTestId(`outputs-select-row-${ROW_B.id}`));
+    fireEvent.click(screen.getByTestId("outputs-bulk-delete-btn"));
+    fireEvent.click(
+      screen.getByLabelText(/I understand this cannot be undone/i),
+    );
+    fireEvent.click(screen.getByTestId("outputs-bulk-delete-confirm"));
+    // The success toast lands as a `role="status"` inside the
+    // notifications region.
+    const region = await screen.findByRole("region", {
+      name: /notifications/i,
+    });
+    await waitFor(() => {
+      const t = region.querySelector('[role="status"]');
+      expect(t).not.toBeNull();
+      // The success copy reflects the server's deleted/skipped counts.
+      expect(t!.textContent).toMatch(/2/);
+    });
+  });
+
   it("bulk-delete button caps batch by the operator's selection (51 rows still allowed in UI; server caps)", async () => {
     // The UI itself does not cap — it forwards whatever the operator
     // selected; the server is the source of truth for the 50-id cap.
@@ -219,7 +270,7 @@ describe("Outputs bulk-delete (PR-W6 phase-a appendix #15)", () => {
     setPat("test-pat");
     const calls: FetchCall[] = [];
     const stub = makeStubFetch({ rows: [ROW_A, ROW_B], calls });
-    render(<Outputs fetchImpl={stub} />);
+    renderOutputs(<Outputs fetchImpl={stub} />);
     const all = await screen.findByTestId("outputs-select-all");
     fireEvent.click(all);
     const btn = screen.getByTestId("outputs-bulk-delete-btn");

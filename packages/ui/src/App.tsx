@@ -12,6 +12,7 @@ import {
 import { DebugBanner } from "./components/DebugBanner.js";
 import { Sidebar, TopBar } from "./components/Chrome.js";
 import { PatEntryModal } from "./components/PatEntryModal.js";
+import { ToastProvider, ToastRegion } from "./components/Toast.js";
 import {
   ApiAuthError,
   fetchAdmin,
@@ -60,7 +61,24 @@ function isPaletteName(s: string): s is PaletteName {
   return (PALETTE_PROMPT_NAMES as readonly string[]).includes(s);
 }
 
+/**
+ * Top-level export. Wraps the inner App in `<ToastProvider>` so
+ * the entire tree — including the gating PatEntryModal — can
+ * call `useToast()`, and mounts `<ToastRegion>` once. The region
+ * portals to `document.body` so it survives auth-flow renders
+ * without dropping queued toasts (the provider's state is held
+ * on a single React root, above the auth gate). PR-B7, wave-16.
+ */
 export function App(): JSX.Element {
+  return (
+    <ToastProvider>
+      <AppInner />
+      <ToastRegion />
+    </ToastProvider>
+  );
+}
+
+function AppInner(): JSX.Element {
   const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>("domains");
   const [authed, setAuthed] = useState<boolean>(() => getPat() !== null);

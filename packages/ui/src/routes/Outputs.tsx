@@ -29,7 +29,6 @@
 import {
   useEffect,
   useMemo,
-  useRef,
   useState,
   type CSSProperties,
 } from "react";
@@ -40,6 +39,7 @@ import { Card } from "../components/Card.js";
 import { Modal } from "../components/Modal.js";
 import { NewOutputChannelModal } from "../components/NewOutputChannelModal.js";
 import { OutputChannelDetail } from "../components/OutputChannelDetail.js";
+import { useToast } from "../components/Toast.js";
 import {
   fetchAdmin,
   fetchOptsFor,
@@ -116,15 +116,9 @@ const ERROR_TEXT_STYLE: CSSProperties = {
   margin: 0,
 };
 
-const TOAST_STYLE: CSSProperties = {
-  fontFamily: "var(--font-sans)",
-  fontSize: "var(--fs-small)",
-  color: "var(--healthy)",
-  margin: 0,
-};
-
 export function Outputs(props: OutputsProps = {}): JSX.Element {
   const { t } = useTranslation();
+  const toast = useToast();
   const [rows, setRows] = useState<readonly OutputChannel[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -137,20 +131,13 @@ export function Outputs(props: OutputsProps = {}): JSX.Element {
   const [bulkAck, setBulkAck] = useState(false);
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
   const [bulkActionError, setBulkActionError] = useState<string | null>(null);
-  const [bulkToast, setBulkToast] = useState<string | null>(null);
-  // Track the success-toast timer so unmount + back-to-back deletes
-  // can cancel the prior auto-clear before it fires (Copilot review
-  // on PR-142). Without this, navigating away during the 3s window
-  // would attempt to setState on an unmounted component.
-  const toastTimerRef = useRef<number | null>(null);
-  useEffect((): (() => void) => {
-    return (): void => {
-      if (toastTimerRef.current !== null) {
-        window.clearTimeout(toastTimerRef.current);
-        toastTimerRef.current = null;
-      }
-    };
-  }, []);
+  // Bulk-delete success notice migrated from a local inline toast
+  // (timer + setState on unmount risk) to the global Toast queue
+  // (PR-B7, wave-16). The queue owns the timer; unmounting the
+  // route cancels it via Toast's own cleanup. Inline-modal error
+  // strings (`bulkActionError`) stay local — they belong inside
+  // the open confirm modal next to the disabled confirm button
+  // so the operator sees them before the modal closes.
   const opts = fetchOptsFor(props.fetchImpl);
 
   useEffect((): void => {
@@ -242,20 +229,13 @@ export function Outputs(props: OutputsProps = {}): JSX.Element {
       setBulkStage("idle");
       setBulkAck(false);
       setSelectedIds(new Set());
-      setBulkToast(
+      toast.success(
         t("outputs.bulkDelete.successToast", {
           deleted: r.deleted,
           skipped: r.skipped,
         }),
       );
       setRefreshNonce((n) => n + 1);
-      if (toastTimerRef.current !== null) {
-        window.clearTimeout(toastTimerRef.current);
-      }
-      toastTimerRef.current = window.setTimeout((): void => {
-        setBulkToast(null);
-        toastTimerRef.current = null;
-      }, 3000);
     } catch (err) {
       if (err instanceof ApiAuthError) {
         setBulkActionError(t("outputs.bulkDelete.errors.auth"));
@@ -301,11 +281,6 @@ export function Outputs(props: OutputsProps = {}): JSX.Element {
           </Btn>
         </div>
       </div>
-      {bulkToast !== null ? (
-        <p style={TOAST_STYLE} role="status">
-          {bulkToast}
-        </p>
-      ) : null}
       <Card>
         {error !== null ? (
           <div

@@ -22,8 +22,21 @@ import {
 
 import { Outputs } from "../../src/routes/Outputs.js";
 import { OutputChannelDetail } from "../../src/components/OutputChannelDetail.js";
+import { ToastProvider, ToastRegion } from "../../src/components/Toast.js";
 import { setPat } from "../../src/lib/pat-store.js";
 import type { OutputChannel } from "../../src/types.js";
+
+/** Outputs now consumes `useToast` (PR-B7, wave-16). Tests render
+ *  the route inside the same `<ToastProvider>` shell App.tsx
+ *  mounts at the root so the hook resolves. */
+function renderOutputs(node: JSX.Element): ReturnType<typeof render> {
+  return render(
+    <ToastProvider>
+      {node}
+      <ToastRegion />
+    </ToastProvider>,
+  );
+}
 
 interface FetchCall {
   readonly url: string;
@@ -127,7 +140,7 @@ describe("Outputs route", () => {
   it("renders empty state when no channels exist", async () => {
     setPat("test-pat");
     const stub = makeStubFetch({ rows: [] });
-    render(<Outputs fetchImpl={stub} />);
+    renderOutputs(<Outputs fetchImpl={stub} />);
     await waitFor(() => {
       expect(screen.getByText(/No output channels yet/i)).toBeTruthy();
     });
@@ -148,7 +161,7 @@ describe("Outputs route", () => {
         },
       ],
     });
-    render(<Outputs fetchImpl={stub} />);
+    renderOutputs(<Outputs fetchImpl={stub} />);
     await waitFor(() => {
       expect(screen.getByText("daily-report")).toBeTruthy();
     });
@@ -170,7 +183,7 @@ describe("Outputs route", () => {
         },
       ],
     });
-    render(<Outputs fetchImpl={stub} />);
+    renderOutputs(<Outputs fetchImpl={stub} />);
     // Cells expose an `aria-label` describing the row's drill-down
     // target — Copilot-flagged a11y gap (PR #109 fix-up).
     const cells = await screen.findAllByLabelText(
@@ -206,7 +219,7 @@ describe("Outputs route", () => {
         },
       ],
     });
-    render(<Outputs fetchImpl={stub} />);
+    renderOutputs(<Outputs fetchImpl={stub} />);
     const cells = await screen.findAllByLabelText(
       /Open output channel daily-report/i,
     );
@@ -220,7 +233,7 @@ describe("Outputs route", () => {
     setPat("test-pat");
     const calls: FetchCall[] = [];
     const stub = makeStubFetch({ rows: [], calls });
-    render(<Outputs fetchImpl={stub} />);
+    renderOutputs(<Outputs fetchImpl={stub} />);
     await waitFor(() => {
       expect(screen.getByText(/\+ New output channel/i)).toBeTruthy();
     });
