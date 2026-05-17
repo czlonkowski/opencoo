@@ -263,11 +263,33 @@ function clearOnboardingDismissal(): void {
   }
   // Best-effort scroll-to-top — the wizard sits at the top of
   // Domains so the operator sees step 1 immediately.
+  //
+  // App.tsx renders the route inside a `<main>` element that
+  // owns the scrollable viewport (`overflow: auto`, see
+  // `packages/ui/src/App.tsx:487-494`) — `window.scrollTo`
+  // alone does not move that container. We scroll both the
+  // window (covers static-height layouts / future refactors)
+  // and the live `<main>` (covers the current chrome). The
+  // attribute selector matches the same node `aria-labelledby`
+  // anchors the route h1 to, so we don't depend on a brittle
+  // ref or DOM id. (Copilot triage on PR-B6.)
   if (typeof window !== "undefined") {
     try {
       window.scrollTo({ top: 0, behavior: "auto" });
     } catch {
       // ignore — degraded environment (jsdom etc.)
+    }
+  }
+  if (typeof document !== "undefined") {
+    const main = document.querySelector(
+      'main[aria-labelledby="opencoo-page-h1"]',
+    );
+    if (main !== null) {
+      try {
+        (main as HTMLElement).scrollTop = 0;
+      } catch {
+        // ignore
+      }
     }
   }
 }
