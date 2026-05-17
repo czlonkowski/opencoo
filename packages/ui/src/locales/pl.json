@@ -453,44 +453,10 @@
     "heartbeat": {
       "empty": "No heartbeat reports yet.",
       "noInstance": "(no instance)",
-      "priorityLabel": "P{{n}}:",
-      "errorPrefix": "Could not load heartbeats:",
-      "errorHelp": "Re-check that your PAT is still valid, then refresh."
-    },
-    "diagnostics": {
-      "title": "Heartbeat status",
-      "loading": "Checking heartbeat preconditions…",
-      "errorPrefix": "Could not load diagnostics:",
-      "healthy": "Heartbeat chain looks healthy — runs are completing with output. No reports in the visible window yet.",
-      "noInstance": {
-        "label": "No heartbeat instance configured.",
-        "cta": "Create heartbeat instance"
-      },
-      "disabled": {
-        "label": "Heartbeat instance exists but is disabled.",
-        "cta": "Open Agents tab"
-      },
-      "noOutputChannels": {
-        "label": "Heartbeat instance has no output channels bound.",
-        "cta": "Open Agents tab"
-      },
-      "noRuns": {
-        "label": "Heartbeat instance has never completed a run.",
-        "cta": "Open Agents tab"
-      },
-      "outputNull": {
-        "label": "Heartbeat run completed but produced no output. Last run: {{when}}.",
-        "cta": "View run details"
-      },
-      "runFailed": {
-        "label": "Most recent run ended as {{status}}. Last run: {{when}}.",
-        "cta": "View run details"
-      }
+      "priorityLabel": "P{{n}}:"
     },
     "redaction": {
-      "empty": "No redaction events yet.",
-      "errorPrefix": "Could not load redaction events:",
-      "errorHelp": "Re-check that your PAT is still valid, then refresh."
+      "empty": "No redaction events yet."
     }
   },
   "debug": {
