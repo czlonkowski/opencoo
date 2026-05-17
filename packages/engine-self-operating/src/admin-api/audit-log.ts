@@ -201,6 +201,19 @@ export const AUDIT_LOG_ACTIONS = [
   "agent_instance.bind_outputs",
   "agent_instance.set_enabled",
   "agent_instance.set_schedule",
+  // PR-W2 (phase-a appendix #15) — per-(domain, instance) prompt
+  // overrides. `apply` records every UPSERT into prompt_overrides
+  // via the sovereignty-token confirm flow; `delete` records every
+  // operator revert that drops the override row. Metadata captures
+  // `scope` ('domains' | 'agent-instances'), `scope_id` (UUID),
+  // `name` (prompt name), `locale`, `baseline_version` (the shipped
+  // version the override was forked from at apply time), and
+  // `payload_hash` (SHA-256 of the body+baselineVersion canonical
+  // form). The body itself NEVER enters the audit table — the
+  // `payload_hash` reference is enough to prove the operator's
+  // intent without persisting the LLM-input bytes through audit.
+  "prompt_override.apply",
+  "prompt_override.delete",
   // Logout — records the operator-initiated session-end so an
   // audit-log read can correlate an action burst with the
   // operator's session window.
