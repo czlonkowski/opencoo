@@ -45,6 +45,7 @@
  */
 import { useTranslation } from "react-i18next";
 
+import { useDensity, type Density } from "../hooks/useDensity.js";
 import type { SupportedLocale } from "../lib/i18n.js";
 import type { Tab } from "../types.js";
 
@@ -321,6 +322,77 @@ const CRUMB_SEP_STYLE = {
   // divider, not a motion cue.
 } as const;
 
+/** Density toggle (PR-C6, wave-16) — sits next to the locale
+ *  switcher in the TopBar. Two discrete buttons (comfortable /
+ *  compact) so the active state is a true visual press, not a
+ *  hidden dropdown the operator has to open to see which mode
+ *  they're in. `aria-pressed` carries the toggle semantics to
+ *  assistive tech without needing a separate role + state pattern.
+ *
+ *  Instant attribute swap on click — no CSS transition (the
+ *  design-system "exactly one motion loop" rule lets only the
+ *  heartbeat-pulse animate; everything else is either one-shot or
+ *  immediate, and density is the latter). */
+const DENSITY_OPTIONS: ReadonlyArray<Density> = ["comfortable", "compact"];
+
+function DensityToggle(): JSX.Element {
+  const { t } = useTranslation();
+  const { density, setDensity } = useDensity();
+  return (
+    <div
+      data-component="density-toggle"
+      role="group"
+      aria-label={t("density.ariaLabel")}
+      style={{
+        display: "inline-flex",
+        // 1px-thick "segmented control" — a single border around the
+        // pair, inner separator is the border between buttons.
+        border: "1px solid var(--rule)",
+        borderRadius: 3,
+        overflow: "hidden",
+        // Mono chrome to fit the TopBar's existing typography.
+        fontFamily: "var(--font-mono)",
+        fontSize: 11,
+        letterSpacing: "0.04em",
+        background: "var(--paper)",
+      }}
+    >
+      {DENSITY_OPTIONS.map((opt, idx) => {
+        const active = density === opt;
+        return (
+          <button
+            key={opt}
+            type="button"
+            aria-pressed={active}
+            data-density-option={opt}
+            onClick={(): void => {
+              setDensity(opt);
+            }}
+            style={{
+              font: "inherit",
+              padding: "3px 8px",
+              border: "none",
+              // Inner divider between the two buttons — mirrors the
+              // segmented-control idiom without introducing a new
+              // ruler color.
+              borderLeft: idx === 0 ? "none" : "1px solid var(--rule)",
+              background: active ? "var(--paper-2)" : "transparent",
+              color: active ? "var(--ink)" : "var(--ink-3)",
+              cursor: "pointer",
+              // Buttons read lowercase — the TopBar root carries
+              // `textTransform: uppercase`, so the button override
+              // restores the readable lowercase form for the toggle.
+              textTransform: "lowercase",
+            }}
+          >
+            {t(`density.${opt}`)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function TopBar(props: TopBarProps): JSX.Element {
   const { t } = useTranslation();
   const group = groupForTab(props.tab);
@@ -392,9 +464,19 @@ export function TopBar(props: TopBarProps): JSX.Element {
         {/* PR-C2 wave-16: operator-controlled locale toggle.
             Omitted in test renders that don't pass onChangeLocale
             so the existing TopBar tests (PR-W10 breadcrumb pins)
-            keep working without rewriting their fixtures. */}
+            keep working without rewriting their fixtures.
+
+            PR-C6 wave-16: density toggle inherits the same gating.
+            It's a chrome-level preference; the test fixtures that
+            mount TopBar without `onChangeLocale` are existence
+            pins for the breadcrumb / landmark contract — adding a
+            second always-on chrome control to those would force a
+            sweeping fixture update for no behavioural change. */}
         {props.onChangeLocale !== undefined ? (
-          <LocaleSwitcher onChange={props.onChangeLocale} />
+          <>
+            <DensityToggle />
+            <LocaleSwitcher onChange={props.onChangeLocale} />
+          </>
         ) : null}
         <Btn variant="ghost" onClick={props.onLogout}>
           {t("nav.logout")}

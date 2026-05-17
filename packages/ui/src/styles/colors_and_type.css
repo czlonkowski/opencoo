@@ -59,6 +59,19 @@
   --space-7: 48px;
   --space-8: 72px;
 
+  /* ---------- Density-scoped spacing (PR-C6, wave-16) ----------
+     The comfortable defaults sit on :root so every consumer that
+     reads `var(--row-pad-y)` etc. gets a real number even when the
+     density toggle has never been touched. `useDensity` writes
+     `<body data-density="compact">` to scope the tighter overrides
+     below; the swap is a pure attribute flip — no transition, no
+     animation (the design-system "exactly one loop" rule). */
+  --row-pad-y:           6px;     /* sidebar tab / list row vertical pad */
+  --row-pad-x:          10px;     /* sidebar tab / list row horizontal pad */
+  --table-cell-pad-y:    8px;     /* table cell vertical pad */
+  --table-cell-pad-x:   12px;     /* table cell horizontal pad */
+  --micro-label-tracking: 0.08em; /* mono-uppercase letter-spacing */
+
   /* ---------- Type families ---------- */
   --font-sans:  'Geist', -apple-system, system-ui, 'Segoe UI', sans-serif;
   --font-mono:  'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
@@ -163,6 +176,23 @@ html, body{
   letter-spacing: -0.01em;
   color: var(--fg-1);
   max-width: 760px;
+}
+
+/* ============================================================
+   Density-scoped overrides — PR-C6 (wave-16, phase-a appendix #16).
+   `useDensity()` writes `<body data-density="compact">` when the
+   operator picks the tighter mode. The compact values tighten row
+   padding, table cells, and micro-label tracking; every consumer
+   that reads via `var(--row-pad-y)` etc. picks them up on the next
+   render. No transition / no animation — instant attribute swap
+   to honour the "exactly one motion loop" rule.
+   ============================================================ */
+body[data-density="compact"]{
+  --row-pad-y:           4px;
+  --row-pad-x:           8px;
+  --table-cell-pad-y:    5px;
+  --table-cell-pad-x:    8px;
+  --micro-label-tracking: 0.06em;
 }
 
 /* ============================================================

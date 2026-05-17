@@ -59,6 +59,11 @@
     "pl": "Polski",
     "switcherAriaLabel": "Interface language"
   },
+  "density": {
+    "ariaLabel": "Interface density",
+    "comfortable": "comfortable",
+    "compact": "compact"
+  },
   "domains": {
     "title": "Domains",
     "subtitle": "Knowledge surfaces compiled by opencoo.",
