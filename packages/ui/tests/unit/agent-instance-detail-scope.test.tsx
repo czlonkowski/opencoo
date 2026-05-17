@@ -17,8 +17,15 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { AgentInstanceDetail } from "../../src/components/AgentInstanceDetail.js";
+import { ToastProvider } from "../../src/components/Toast.js";
 import { setPat } from "../../src/lib/pat-store.js";
 import type { AgentInstance, Domain } from "../../src/types.js";
+
+/** PR-B5 (wave-16): AgentInstanceDetail now calls `useToast` (for
+ *  optimistic-PATCH rollback alerts). Wrap renders in ToastProvider. */
+function withProvider(node: JSX.Element): JSX.Element {
+  return <ToastProvider>{node}</ToastProvider>;
+}
 
 interface FetchCall {
   readonly url: string;
@@ -115,14 +122,14 @@ describe("AgentInstanceDetail — Scope section", () => {
   it("renders existing scope as chips with the domain slug", async () => {
     setPat("test-pat");
     const stub = makeStubFetch({ domains: [DOMAIN_A, DOMAIN_B] });
-    render(
+    render(withProvider(
       <AgentInstanceDetail
         instance={INSTANCE}
         onClose={(): void => {}}
         onChanged={(): void => {}}
         fetchImpl={stub}
       />,
-    );
+    ));
     // Wait for the domains GET to resolve so the slug renders.
     await waitFor(() => {
       const chips = screen.getByTestId("scope-chips");
@@ -134,14 +141,14 @@ describe("AgentInstanceDetail — Scope section", () => {
     setPat("test-pat");
     const calls: FetchCall[] = [];
     const stub = makeStubFetch({ domains: [DOMAIN_A, DOMAIN_B], calls });
-    render(
+    render(withProvider(
       <AgentInstanceDetail
         instance={INSTANCE}
         onClose={(): void => {}}
         onChanged={(): void => {}}
         fetchImpl={stub}
       />,
-    );
+    ));
     await waitFor(() => {
       expect(screen.getByTestId("scope-chips")).toBeInTheDocument();
     });
@@ -185,14 +192,14 @@ describe("AgentInstanceDetail — Name editor", () => {
     setPat("test-pat");
     const calls: FetchCall[] = [];
     const stub = makeStubFetch({ domains: [DOMAIN_A], calls });
-    render(
+    render(withProvider(
       <AgentInstanceDetail
         instance={INSTANCE}
         onClose={(): void => {}}
         onChanged={(): void => {}}
         fetchImpl={stub}
       />,
-    );
+    ));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /Save name/i })).toBeInTheDocument();
     });
@@ -233,14 +240,14 @@ describe("AgentInstanceDetail — Name editor", () => {
         { status: 409, headers: { "content-type": "application/json" } },
       ),
     });
-    render(
+    render(withProvider(
       <AgentInstanceDetail
         instance={INSTANCE}
         onClose={(): void => {}}
         onChanged={(): void => {}}
         fetchImpl={stub}
       />,
-    );
+    ));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /Save name/i })).toBeInTheDocument();
     });
@@ -265,14 +272,14 @@ describe("AgentInstanceDetail — Locale editor", () => {
     setPat("test-pat");
     const calls: FetchCall[] = [];
     const stub = makeStubFetch({ domains: [DOMAIN_A], calls });
-    render(
+    render(withProvider(
       <AgentInstanceDetail
         instance={INSTANCE}
         onClose={(): void => {}}
         onChanged={(): void => {}}
         fetchImpl={stub}
       />,
-    );
+    ));
     // The Locale select has aria-label="Locale".
     await waitFor(() => {
       expect(screen.getByLabelText(/^Locale$/i)).toBeInTheDocument();
@@ -306,14 +313,14 @@ describe("AgentInstanceDetail — Memory clear", () => {
       calls,
     });
     const user = userEvent.setup();
-    render(
+    render(withProvider(
       <AgentInstanceDetail
         instance={INSTANCE}
         onClose={(): void => {}}
         onChanged={(): void => {}}
         fetchImpl={stub}
       />,
-    );
+    ));
     await waitFor(() => {
       expect(
         screen.getByRole("button", { name: /Clear memory/i }),

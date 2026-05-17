@@ -284,12 +284,12 @@ describe("OutputChannelDetail", () => {
       updatedAt: "2026-05-10T08:00:00Z",
     };
     render(
-      <OutputChannelDetail
+      <ToastProvider><OutputChannelDetail
         channel={channel}
         onClose={(): void => {}}
         onChanged={(): void => {}}
         fetchImpl={stub}
-      />,
+      /></ToastProvider>,
     );
     // The three field labels are sourced from
     // `outputs.detail.labels.{name,adapter,state}` via `t(...)`.
@@ -319,12 +319,12 @@ describe("OutputChannelDetail", () => {
     };
     const onChanged = vi.fn();
     render(
-      <OutputChannelDetail
+      <ToastProvider><OutputChannelDetail
         channel={channel}
         onClose={(): void => {}}
         onChanged={onChanged}
         fetchImpl={stub}
-      />,
+      /></ToastProvider>,
     );
     // First click → confirmation
     fireEvent.click(screen.getByText(/^Delete$/i));

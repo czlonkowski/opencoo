@@ -20,9 +20,19 @@ import {
 } from "@testing-library/react";
 
 import { AgentInstanceDetail } from "../../src/components/AgentInstanceDetail.js";
+import { ToastProvider } from "../../src/components/Toast.js";
 import { Agents } from "../../src/routes/Agents.js";
 import { setPat } from "../../src/lib/pat-store.js";
 import type { AgentInstance, OutputChannel } from "../../src/types.js";
+
+/** PR-B5 (wave-16): AgentInstanceDetail now calls `useToast` to fire
+ *  the rollback alert on optimistic-PATCH failures. Wrap the detail
+ *  in a ToastProvider so the hook resolves; the toast region itself
+ *  isn't asserted here (those assertions live in
+ *  agent-instance-detail-optimistic.test.tsx). */
+function withProvider(node: JSX.Element): JSX.Element {
+  return <ToastProvider>{node}</ToastProvider>;
+}
 
 interface FetchCall {
   readonly url: string;
@@ -117,7 +127,7 @@ describe("Agents route", () => {
   it("renders empty-state when no instances exist", async () => {
     setPat("test-pat");
     const stub = makeStubFetch({ instances: [] });
-    render(<Agents fetchImpl={stub} />);
+    render(withProvider(<Agents fetchImpl={stub} />));
     await waitFor(() => {
       expect(screen.getByText(/No agent instances yet/i)).toBeTruthy();
     });
@@ -129,7 +139,7 @@ describe("Agents route", () => {
       instances: [SAMPLE_INSTANCE],
       channels: [SAMPLE_CHANNEL_A],
     });
-    render(<Agents fetchImpl={stub} />);
+    render(withProvider(<Agents fetchImpl={stub} />));
     await waitFor(() => {
       expect(screen.getByText("Heartbeat 06:00")).toBeTruthy();
     });
@@ -153,12 +163,14 @@ describe("AgentInstanceDetail", () => {
       calls,
     });
     render(
-      <AgentInstanceDetail
-        instance={SAMPLE_INSTANCE}
-        onClose={(): void => {}}
-        onChanged={(): void => {}}
-        fetchImpl={stub}
-      />,
+      withProvider(
+        <AgentInstanceDetail
+          instance={SAMPLE_INSTANCE}
+          onClose={(): void => {}}
+          onChanged={(): void => {}}
+          fetchImpl={stub}
+        />,
+      ),
     );
 
     // Wait for the channel catalog to load.
@@ -198,12 +210,14 @@ describe("AgentInstanceDetail", () => {
     const calls: FetchCall[] = [];
     const stub = makeStubFetch({ channels: [], calls });
     render(
-      <AgentInstanceDetail
-        instance={SAMPLE_INSTANCE}
-        onClose={(): void => {}}
-        onChanged={(): void => {}}
-        fetchImpl={stub}
-      />,
+      withProvider(
+        <AgentInstanceDetail
+          instance={SAMPLE_INSTANCE}
+          onClose={(): void => {}}
+          onChanged={(): void => {}}
+          fetchImpl={stub}
+        />,
+      ),
     );
 
     await waitFor(() => {
@@ -228,12 +242,14 @@ describe("AgentInstanceDetail", () => {
     const calls: FetchCall[] = [];
     const stub = makeStubFetch({ channels: [], calls });
     render(
-      <AgentInstanceDetail
-        instance={SAMPLE_INSTANCE}
-        onClose={(): void => {}}
-        onChanged={(): void => {}}
-        fetchImpl={stub}
-      />,
+      withProvider(
+        <AgentInstanceDetail
+          instance={SAMPLE_INSTANCE}
+          onClose={(): void => {}}
+          onChanged={(): void => {}}
+          fetchImpl={stub}
+        />,
+      ),
     );
 
     await waitFor(() => {
@@ -270,21 +286,23 @@ describe("AgentInstanceDetail", () => {
       channels: [SAMPLE_CHANNEL_A, SAMPLE_CHANNEL_B],
     });
     render(
-      <AgentInstanceDetail
-        instance={{
-          ...SAMPLE_INSTANCE,
-          outputChannelCount: 1,
-          outputChannelIds: [
-            {
-              adapter_slug: "asana",
-              config: { channel_id: SAMPLE_CHANNEL_B.id },
-            },
-          ],
-        }}
-        onClose={(): void => {}}
-        onChanged={(): void => {}}
-        fetchImpl={stub}
-      />,
+      withProvider(
+        <AgentInstanceDetail
+          instance={{
+            ...SAMPLE_INSTANCE,
+            outputChannelCount: 1,
+            outputChannelIds: [
+              {
+                adapter_slug: "asana",
+                config: { channel_id: SAMPLE_CHANNEL_B.id },
+              },
+            ],
+          }}
+          onClose={(): void => {}}
+          onChanged={(): void => {}}
+          fetchImpl={stub}
+        />,
+      ),
     );
     await waitFor(() => {
       expect(screen.getByText("weekly-digest")).toBeTruthy();
