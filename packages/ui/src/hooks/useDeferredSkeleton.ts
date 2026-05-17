@@ -48,5 +48,13 @@ export function useDeferredSkeleton(
     };
   }, [isLoading, delayMs]);
 
-  return show;
+  // Gate the return value on the CURRENT `isLoading` prop, not just
+  // the latched `show` state. Without this AND, the render where
+  // `isLoading` flips from true→false would still return true once
+  // (the effect's setShow(false) runs only after commit), and a
+  // consumer that reads the hook directly would paint one extra
+  // skeleton frame after data lands. Triaged from PR-B1 Copilot
+  // review (wave-16): the hook contract promises "false immediately
+  // on flip-to-false", and the effect alone doesn't deliver that.
+  return show && isLoading;
 }

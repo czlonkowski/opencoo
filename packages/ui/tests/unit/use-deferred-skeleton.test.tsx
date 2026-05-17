@@ -15,7 +15,7 @@
  *     to avoid "setState on unmounted component" warnings.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, render, act } from "@testing-library/react";
 
 import { useDeferredSkeleton } from "../../src/hooks/useDeferredSkeleton.js";
 
@@ -115,6 +115,42 @@ describe("useDeferredSkeleton", () => {
       vi.advanceTimersByTime(80);
     });
     expect(result.current).toBe(true);
+  });
+
+  it("contracts: rendered value equals (show && isLoading) per render", () => {
+    // Triaged from PR-B1 Copilot review: the hook's setShow(false)
+    // in the flip-to-false branch runs in an effect, AFTER commit.
+    // The hook therefore gates its return value on the CURRENT
+    // `isLoading` prop (`show && isLoading`) — not just the
+    // latched `show` state — so consumers reading the hook never
+    // see one stale skeleton frame after data lands.
+    //
+    // The render-time bug ("returns stale `show` once") is hard to
+    // observe under `@testing-library/react`'s `act`-wrapped
+    // `rerender`, which flushes pending effects before the test
+    // sees the next render. This test is therefore a CONTRACT
+    // assertion, not a regression catcher: it asserts the rendered
+    // value matches the per-render expectation, locking the AND
+    // gate in place.
+    const history: { loading: boolean; result: boolean }[] = [];
+    function Probe({ loading }: { loading: boolean }): null {
+      const v = useDeferredSkeleton(loading);
+      history.push({ loading, result: v });
+      return null;
+    }
+    const { rerender } = render(<Probe loading={true} />);
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    rerender(<Probe loading={false} />);
+    // The contract: result is FALSE on every render where
+    // `loading` is false — no exceptions. (When loading is true,
+    // the result depends on whether the 80ms delay has elapsed.)
+    for (const entry of history) {
+      if (!entry.loading) {
+        expect(entry.result).toBe(false);
+      }
+    }
   });
 
   it("does not leak pending timers after unmount", () => {

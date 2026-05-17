@@ -72,7 +72,13 @@ describe("Skeleton.Row", () => {
     expect(placeholder!.style.fontFamily).toBe("var(--font-sans)");
   });
 
-  it("exposes role=status + aria-live=polite + aria-busy=true on the row", () => {
+  it("keeps the native <tr> row role and announces via an inner span", () => {
+    // Triaged from PR-B1 Copilot review: putting `role="status"`
+    // on a `<tr>` overrides the implicit `row` role and breaks
+    // screen-reader table navigation. The row keeps its row role;
+    // the live-region announcement moves to a `<span>` inside the
+    // first cell so assistive tech still hears "loading" without
+    // losing table semantics.
     const { container } = render(
       <table>
         <tbody>
@@ -81,12 +87,17 @@ describe("Skeleton.Row", () => {
       </table>,
     );
     const tr = container.querySelector("tr") as HTMLElement;
-    expect(tr.getAttribute("role")).toBe("status");
-    expect(tr.getAttribute("aria-live")).toBe("polite");
+    // No explicit role override on the row — implicit `row` applies.
+    expect(tr.getAttribute("role")).toBeNull();
     expect(tr.getAttribute("aria-busy")).toBe("true");
+    // The live region lives inside the first cell.
+    const firstCell = tr.querySelector("td") as HTMLElement;
+    const status = firstCell.querySelector('[role="status"]') as HTMLElement;
+    expect(status).not.toBeNull();
+    expect(status.getAttribute("aria-live")).toBe("polite");
   });
 
-  it("includes a visually-hidden i18n loading label", () => {
+  it("includes a visually-hidden i18n loading label inside the first cell", () => {
     const { container } = render(
       <table>
         <tbody>
@@ -102,6 +113,10 @@ describe("Skeleton.Row", () => {
     expect(sr.style.position).toBe("absolute");
     expect(sr.style.width).toBe("1px");
     expect(sr.style.height).toBe("1px");
+    // The visually-hidden span lives INSIDE a <td>, not directly
+    // on the <tr> — `<span>` inside `<tr>` would be invalid HTML
+    // and `role="status"` on `<td>` would override the cell role.
+    expect(sr.closest("td")).not.toBeNull();
   });
 });
 
@@ -147,16 +162,25 @@ describe("Skeleton.Block", () => {
 });
 
 describe("Skeleton.Field", () => {
-  it("matches Field's input baseline height (32px)", () => {
-    // Field.tsx renders <input> with padding 8px 10px + a line-
-    // height-1.5 13/15px body type. The skeleton input-shape
-    // mirrors that baseline so it reads as the same row when it
-    // swaps in. 32px = the resolved control height in the Field
-    // primitive (8 padding-top + 16 body line + 8 padding-bottom).
+  it("mirrors Field.tsx's input box recipe so swapping does not shift", () => {
+    // Triaged from PR-B1 Copilot review: a hardcoded 32px height
+    // does NOT match Field's actual rendered height (8px padding-
+    // top + body line × 1.55 line-height + 8px padding-bottom +
+    // 2px border ≈ 41px). Pin parity by asserting the SAME box
+    // recipe — padding, border, line-height, font-size — that
+    // Field.tsx applies to its <input>. With the global
+    // `box-sizing: border-box` (app.css:10), identical recipe ⇒
+    // identical border-box height ⇒ no swap-time layout shift.
     const { container } = render(<Skeleton.Field />);
     const field = container.querySelector('[role="status"]') as HTMLElement;
     expect(field).not.toBeNull();
-    expect(field.style.height).toBe("32px");
+    // Same padding as Field's <input> (Field.tsx:132).
+    expect(field.style.padding).toBe("8px 10px");
+    // Same font-size + line-height tokens so glyph metrics match.
+    expect(field.style.fontSize).toBe("var(--fs-body)");
+    expect(field.style.lineHeight).toBe("var(--lh-body)");
+    // 1px border — same width as Field's input border.
+    expect(field.style.border).toContain("1px solid");
   });
 
   it("exposes role=status + aria-live=polite + aria-busy=true", () => {
@@ -182,14 +206,16 @@ describe("Skeleton — no animation loop invariant", () => {
   // These tests pin that by asserting NO inline `animation` /
   // `animationName` style + NO `transition` (the skeleton is
   // a steady-state surface, not a transition target).
-  it("Skeleton.Block carries no inline animation", () => {
+  it("Skeleton.Block carries no inline animation or transition", () => {
     const { container } = render(<Skeleton.Block height={60} />);
     const block = container.querySelector('[role="status"]') as HTMLElement;
     expect(block.style.animation).toBe("");
     expect(block.style.animationName).toBe("");
+    expect(block.style.transition).toBe("");
+    expect(block.style.transitionProperty).toBe("");
   });
 
-  it("Skeleton.Row carries no inline animation on its cells", () => {
+  it("Skeleton.Row carries no inline animation or transition on its cells", () => {
     const { container } = render(
       <table>
         <tbody>
@@ -200,18 +226,24 @@ describe("Skeleton — no animation loop invariant", () => {
     const tr = container.querySelector("tr") as HTMLElement;
     expect(tr.style.animation).toBe("");
     expect(tr.style.animationName).toBe("");
+    expect(tr.style.transition).toBe("");
+    expect(tr.style.transitionProperty).toBe("");
     const placeholders = container.querySelectorAll("td > span");
     placeholders.forEach((node) => {
       const el = node as HTMLElement;
       expect(el.style.animation).toBe("");
       expect(el.style.animationName).toBe("");
+      expect(el.style.transition).toBe("");
+      expect(el.style.transitionProperty).toBe("");
     });
   });
 
-  it("Skeleton.Field carries no inline animation", () => {
+  it("Skeleton.Field carries no inline animation or transition", () => {
     const { container } = render(<Skeleton.Field />);
     const field = container.querySelector('[role="status"]') as HTMLElement;
     expect(field.style.animation).toBe("");
     expect(field.style.animationName).toBe("");
+    expect(field.style.transition).toBe("");
+    expect(field.style.transitionProperty).toBe("");
   });
 });

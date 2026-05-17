@@ -24,11 +24,17 @@
  *   - **No fully-rounded surfaces.** Radii are capped at the
  *     design-system tokens (`--radius-m` for inputs / row cells,
  *     `--radius-l` for blocks). No pills.
- *   - **ARIA.** Every sub-component renders `role="status"` +
- *     `aria-live="polite"` + `aria-busy="true"`, plus a visually-
- *     hidden i18n loading label so screen readers announce the
- *     in-flight fetch. Wave-16 A4 layers a global live region on
- *     top; these per-skeleton announcements complement it.
+ *   - **ARIA.**
+ *     - `Skeleton.Row` keeps its native `<tr>` `row` role so
+ *       table navigation works; `aria-busy="true"` lives on the
+ *       row, and the live-region announcement lives on a
+ *       `<span role="status" aria-live="polite">` inside the first
+ *       cell (visually-hidden i18n "Loading…").
+ *     - `Skeleton.Block` / `Skeleton.Field` render `<div>`s with
+ *       `role="status" aria-live="polite" aria-busy="true"` + the
+ *       same visually-hidden label.
+ *     Wave-16 A4 layers a global live region on top; these per-
+ *     skeleton announcements complement it.
  *
  * The consumer pattern is:
  *
@@ -91,10 +97,18 @@ function SkeletonRow(props: SkeletonRowProps): JSX.Element {
   // Empty array of fixed length so the index is stable across
   // renders and React's key warning stays quiet.
   const cells = Array.from({ length: cols });
+  // The `<tr>` keeps its native `row` role (no `role="status"`
+  // override) — screen-reader table navigation continues to work
+  // and the placeholder cells are still exposed as `gridcell`
+  // descendants. The live-region announcement lives on a `<span>`
+  // INSIDE the first cell so assistive tech still announces
+  // "loading" without losing table semantics. Triaged from PR-B1
+  // Copilot review.
+  //
+  // `aria-busy="true"` is valid on any element (incl. `<tr>`) and
+  // doesn't change the row role; it just signals "data not ready".
   return (
     <tr
-      role="status"
-      aria-live="polite"
       aria-busy="true"
       style={{
         borderBottom: "1px solid var(--paper-3)",
@@ -110,7 +124,15 @@ function SkeletonRow(props: SkeletonRowProps): JSX.Element {
           }}
         >
           <span style={placeholderStyle(mono)} aria-hidden="true" />
-          {i === 0 ? <span style={VISUALLY_HIDDEN}>{t("common.loading")}</span> : null}
+          {i === 0 ? (
+            <span
+              role="status"
+              aria-live="polite"
+              style={VISUALLY_HIDDEN}
+            >
+              {t("common.loading")}
+            </span>
+          ) : null}
         </td>
       ))}
     </tr>
@@ -145,20 +167,25 @@ function SkeletonBlock(props: SkeletonBlockProps): JSX.Element {
 
 function SkeletonField(): JSX.Element {
   const { t } = useTranslation();
-  // 32px = Field.tsx's resolved input height (8 px padding-top +
-  // 16 px body line + 8 px padding-bottom). Hard-pinned so a swap
-  // doesn't shift the form layout.
+  // Match `Field.tsx`'s input box exactly: same padding + border +
+  // font-size + line-height recipe. With the global `box-sizing:
+  // border-box` (app.css:10) the rendered border-box height is
+  // identical, so swapping skeleton → real Field cannot trigger
+  // layout shift. Triaged from PR-B1 Copilot review (a hardcoded
+  // 32px did NOT match Field's actual rendered height).
   return (
     <div
       role="status"
       aria-live="polite"
       aria-busy="true"
       style={{
-        height: "32px",
         width: "100%",
-        background: "var(--paper-2)",
+        padding: "8px 10px",
         border: "1px solid var(--paper-3)",
         borderRadius: "var(--radius-m)",
+        background: "var(--paper-2)",
+        fontSize: "var(--fs-body)",
+        lineHeight: "var(--lh-body)",
       }}
     >
       <span style={VISUALLY_HIDDEN}>{t("common.loading")}</span>
