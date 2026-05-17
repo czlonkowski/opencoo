@@ -54,6 +54,13 @@ import { LocaleSwitcher } from "./LocaleSwitcher.js";
 interface SidebarProps {
   readonly tab: Tab;
   readonly setTab: (t: Tab) => void;
+  /** PR-B2 (wave-16) — fire the matching lazy `import()` to
+   *  warm the chunk before the click lands. Bound to both
+   *  `onMouseEnter` and `onFocus` so mouse + keyboard
+   *  navigation get the same perceived-latency boost. Optional
+   *  so callers that don't ship route splitting (tests, design-
+   *  system previews) can omit the prop. */
+  readonly prefetch?: (t: Tab) => void;
 }
 
 /** Group order is fixed: Operate first carries daily-task primacy. */
@@ -231,11 +238,21 @@ export function Sidebar(props: SidebarProps): JSX.Element {
             const ariaCurrent = active
               ? ({ "aria-current": "page" } as const)
               : {};
+            // PR-B2 — prefetch on hover + focus warms the lazy
+            // route chunk before the click lands. The same
+            // dynamic `import()` Vite already split is re-called
+            // here so the browser's module-record cache dedupes
+            // and the post-click resolution is synchronous.
+            const onPrefetch = (): void => {
+              props.prefetch?.(item.key);
+            };
             return (
               <button
                 key={item.key}
                 onClick={(): void => props.setTab(item.key)}
                 {...ariaCurrent}
+                onMouseEnter={onPrefetch}
+                onFocus={onPrefetch}
                 style={{
                   textAlign: "left",
                   font: "inherit",

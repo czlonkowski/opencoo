@@ -1,8 +1,22 @@
 /**
  * Root App — Sidebar + TopBar + active tab + global flows
  * (PAT entry, debug banner, logout, Cmd-K palette).
+ *
+ * PR-B2 (wave-16, phase-a appendix #16) — every route is loaded
+ * via `React.lazy`. The Vite default chunker emits one chunk per
+ * `import()` boundary, so the entry chunk shipped to a cold
+ * operator carries only the React runtime + i18n bootstrap +
+ * Chrome shell + the Skeleton + RouteSkeleton primitives. Route
+ * bodies stream in when needed. Sidebar buttons additionally
+ * fire a prefetch on `onMouseEnter` / `onFocus` so the chunk
+ * lands before the click — the operator never sees a fallback
+ * unless they navigate via Cmd-K (where prefetch can't help).
+ *
+ * Each lazy adapter wraps the named export (`X`) into a default
+ * one — the routes keep their named-export shape so the existing
+ * unit tests under tests/unit/<route>.test.tsx don't drift.
  */
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -12,6 +26,7 @@ import {
 import { DebugBanner } from "./components/DebugBanner.js";
 import { Sidebar, TopBar } from "./components/Chrome.js";
 import { PatEntryModal } from "./components/PatEntryModal.js";
+import { RouteSkeleton } from "./components/RouteSkeleton.js";
 import { ToastProvider, ToastRegion } from "./components/Toast.js";
 import {
   ApiAuthError,
@@ -22,18 +37,73 @@ import {
   type SupportedLocale,
 } from "./lib/i18n.js";
 import { clearPat, getPat, setPat } from "./lib/pat-store.js";
-import { Activity } from "./routes/Activity.js";
-import { Agents } from "./routes/Agents.js";
-import { Audit } from "./routes/Audit.js";
-import { Cost } from "./routes/Cost.js";
-import { Domains } from "./routes/Domains.js";
-import { LlmPolicy } from "./routes/LlmPolicy.js";
-import { Outputs } from "./routes/Outputs.js";
-import { Prompts } from "./routes/Prompts.js";
-import { Reports } from "./routes/Reports.js";
-import { Review } from "./routes/Review.js";
-import { Sources } from "./routes/Sources.js";
 import type { Tab } from "./types.js";
+
+// ─── Route lazy boundaries ──────────────────────────────────
+// Each `lazy(...)` adapter wraps the named export into the
+// default-export shape React.lazy requires. Source routes keep
+// their named exports intact so existing route unit tests
+// continue to pass unchanged.
+const Activity = lazy(() =>
+  import("./routes/Activity.js").then((m) => ({ default: m.Activity })),
+);
+const Agents = lazy(() =>
+  import("./routes/Agents.js").then((m) => ({ default: m.Agents })),
+);
+const Audit = lazy(() =>
+  import("./routes/Audit.js").then((m) => ({ default: m.Audit })),
+);
+const Cost = lazy(() =>
+  import("./routes/Cost.js").then((m) => ({ default: m.Cost })),
+);
+const Domains = lazy(() =>
+  import("./routes/Domains.js").then((m) => ({ default: m.Domains })),
+);
+const LlmPolicy = lazy(() =>
+  import("./routes/LlmPolicy.js").then((m) => ({ default: m.LlmPolicy })),
+);
+const Outputs = lazy(() =>
+  import("./routes/Outputs.js").then((m) => ({ default: m.Outputs })),
+);
+const Prompts = lazy(() =>
+  import("./routes/Prompts.js").then((m) => ({ default: m.Prompts })),
+);
+const Reports = lazy(() =>
+  import("./routes/Reports.js").then((m) => ({ default: m.Reports })),
+);
+const Review = lazy(() =>
+  import("./routes/Review.js").then((m) => ({ default: m.Review })),
+);
+const Sources = lazy(() =>
+  import("./routes/Sources.js").then((m) => ({ default: m.Sources })),
+);
+
+/**
+ * Prefetch map — sidebar buttons call the matching function
+ * `onMouseEnter` + `onFocus` to warm the lazy import before the
+ * click lands. The same dynamic `import()` Vite already split
+ * into a chunk above is referenced verbatim so the module
+ * record is shared (Vite's import map dedupes on URL identity);
+ * a hovered chunk that subsequently gets clicked resolves
+ * synchronously.
+ *
+ * Exported so tests can assert the map is exhaustive over
+ * `Tab` — the `Record<Tab, …>` type makes a missing entry a TS
+ * compile error.
+ */
+export const ROUTE_PREFETCH: Readonly<Record<Tab, () => Promise<unknown>>> = {
+  domains: (): Promise<unknown> => import("./routes/Domains.js"),
+  sources: (): Promise<unknown> => import("./routes/Sources.js"),
+  agents: (): Promise<unknown> => import("./routes/Agents.js"),
+  outputs: (): Promise<unknown> => import("./routes/Outputs.js"),
+  llmPolicy: (): Promise<unknown> => import("./routes/LlmPolicy.js"),
+  prompts: (): Promise<unknown> => import("./routes/Prompts.js"),
+  activity: (): Promise<unknown> => import("./routes/Activity.js"),
+  review: (): Promise<unknown> => import("./routes/Review.js"),
+  reports: (): Promise<unknown> => import("./routes/Reports.js"),
+  audit: (): Promise<unknown> => import("./routes/Audit.js"),
+  cost: (): Promise<unknown> => import("./routes/Cost.js"),
+};
 
 interface CsrfResponse {
   readonly csrfToken: string;
@@ -363,6 +433,15 @@ function AppInner(): JSX.Element {
     cost: <Cost />,
   };
 
+  // PR-B2 — prefetch handler bound to sidebar buttons. Calling
+  // the matching dynamic import on hover/focus warms the lazy
+  // chunk before the click lands. `void` swallows the promise
+  // — React batches the import resolution into Suspense state,
+  // and we don't await it here.
+  const onSidebarPrefetch = (next: Tab): void => {
+    void ROUTE_PREFETCH[next]();
+  };
+
   return (
     <div
       style={{
@@ -374,7 +453,11 @@ function AppInner(): JSX.Element {
     >
       <DebugBanner visible={debugActive} />
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        <Sidebar tab={tab} setTab={navigateToTab} />
+        <Sidebar
+          tab={tab}
+          setTab={navigateToTab}
+          prefetch={onSidebarPrefetch}
+        />
         {/* PR-A2 — landmark hierarchy: TopBar (banner) and route
             content (main) are siblings, not nested. A
             `<header role="banner">` nested inside `<main>` violates
@@ -410,7 +493,17 @@ function AppInner(): JSX.Element {
               overflow: "auto",
             }}
           >
-            {tabs[tab]}
+            {/* PR-B2 — Suspense boundary per active tab. The
+                `key={tab}` resets the boundary on tab switch so
+                switching to an unresolved route re-shows the
+                matching skeleton fallback rather than the previous
+                route's resolved children. */}
+            <Suspense
+              key={tab}
+              fallback={<RouteSkeleton route={tab} />}
+            >
+              {tabs[tab]}
+            </Suspense>
           </main>
         </div>
       </div>
