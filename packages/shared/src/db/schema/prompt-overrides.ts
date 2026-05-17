@@ -9,8 +9,14 @@
  *
  * Schema shape:
  *   - `domain_id`         — FK → `domains(id) ON DELETE CASCADE`.
- *     Every override belongs to a domain; instance-scoped rows
- *     inherit the instance's primary scope domain.
+ *     Every override belongs to a domain. For instance-scoped
+ *     rows the admin-API (W2) writes the instance's primary
+ *     scope domain (`agent_instances.scope_domain_ids[0]`); the
+ *     schema itself does NOT enforce that match — adding a
+ *     CHECK against an array element would require a trigger or
+ *     stored procedure. W2 is the authoritative writer; direct
+ *     SQL bypassing the admin-API can drift this and the
+ *     resolver will surface whichever row matches the filter.
  *   - `instance_id`       — FK → `agent_instances(id) ON DELETE
  *     CASCADE`, NULLABLE. When NULL the row is a domain-scoped
  *     override.
@@ -56,9 +62,12 @@
  *     `prompt_override.delete` added in W2.
  *
  * Adding a new prompt name to the PROMPT_NAMES tuple requires a
- * follow-up migration to update the `prompt_name` CHECK list. A
- * pinned unit test (`prompt-overrides-schema.test.ts`) asserts
- * the CHECK list stays in lockstep with `PROMPT_NAMES`.
+ * follow-up migration to ALTER TABLE DROP CONSTRAINT / ADD
+ * CONSTRAINT with the new list — the CHECK is inlined in the
+ * migration SQL and frozen at apply-time. The lockstep test
+ * (`prompt-overrides-schema.test.ts` last suite) catches the
+ * drift at CI time so a missing follow-up migration cannot
+ * silently ship.
  */
 import { sql } from "drizzle-orm";
 import {

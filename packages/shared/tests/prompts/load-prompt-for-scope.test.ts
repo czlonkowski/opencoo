@@ -280,6 +280,35 @@ describe("loadPromptForScope — six pinned cases (PR-W1)", () => {
     expect(result.override?.scope).toBe("domain");
   });
 
+  // Sanity follow-up #2 (Copilot triage): instance-only row, no
+  // domain row, caller passes the matching instanceId — the
+  // instance row wins. Covers the gap the prior cases left: (c)
+  // exercised BOTH-rows-exist precedence; this case proves the
+  // resolver still surfaces an instance row when the domain row
+  // doesn't exist at all.
+  it("returns the instance override when ONLY an instance row exists (no domain row) and instanceId matches", async () => {
+    await insertOverride({
+      pg,
+      domainId: scopes.domainId,
+      instanceId: scopes.instanceId,
+      promptName: "heartbeat",
+      locale: "en",
+      body: "INSTANCE-ONLY OVERRIDE BODY",
+      overridesVersion: "3.0.0",
+      baselineVersion: PROMPT_VERSION_MANIFEST.heartbeat,
+    });
+    const result = await loadPromptForScope({
+      name: "heartbeat",
+      locale: "en",
+      domainId: scopes.domainId,
+      instanceId: scopes.instanceId,
+      db,
+    });
+    expect(result.body).toBe("INSTANCE-ONLY OVERRIDE BODY");
+    expect(result.override?.scope).toBe("instance");
+    expect(result.override?.overridesVersion).toBe("3.0.0");
+  });
+
   // (d) isStale: true when baseline_version drifts
   it("returns isStale: true when baseline_version < current shipped version", async () => {
     await insertOverride({

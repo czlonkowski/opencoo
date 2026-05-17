@@ -280,6 +280,25 @@ interface ExecResult<R> {
  * because (a) every v0.1 call site is downstream of that
  * harness check, and (b) duplicating the check here would
  * couple `@opencoo/shared` to the agent harness.
+ *
+ * UUID-FORMAT NOTE: `domainId` / `instanceId` are interpolated
+ * into a `::uuid` cast via Drizzle's parameterised template (so
+ * SQL injection is impossible), but malformed values surface as
+ * a Postgres `invalid input syntax for type uuid` error. The
+ * resolver does NOT pre-validate — every v0.1 caller obtains
+ * these from already-validated DB rows or admin-API surfaces
+ * (UUID-validated before cast per `domains-llm-policy.ts`
+ * pattern). A future caller path that doesn't share that
+ * upstream validation should validate before calling.
+ *
+ * PERF NOTE: the resolver issues one indexed SELECT per call.
+ * In hot paths (classifier / merge-page run per ingested doc;
+ * agents run once per scheduled tick) this is an extra DB
+ * roundtrip even when no override exists. The UNIQUE index on
+ * `(domain_id, instance_id, prompt_name, locale)` keeps the
+ * lookup O(log n), and on PGlite-fast Postgres the empty-case
+ * is sub-millisecond. A domain-scoped LRU is a v0.2 candidate
+ * once we have measurements showing the overhead is material.
  */
 export async function loadPromptForScope(
   args: LoadPromptForScopeArgs,

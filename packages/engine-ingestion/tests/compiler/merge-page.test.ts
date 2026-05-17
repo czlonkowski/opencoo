@@ -14,6 +14,7 @@ import { sql } from "drizzle-orm";
 import { LlmRouter, type LlmProvider } from "@opencoo/shared/llm-router";
 import { MockLlmClient } from "@opencoo/shared/llm-router/testing";
 import { ConsoleLogger } from "@opencoo/shared/logger";
+import { PROMPT_VERSION_MANIFEST } from "@opencoo/shared/prompts";
 
 import { mergePage } from "../../src/compiler/merge-page.js";
 import { CompilerValidationError } from "../../src/compiler/errors.js";
@@ -271,8 +272,10 @@ describe("mergePage — page_citations.prompt_version override contract (PR-W1)"
       pagePath: "strategy/x.md",
       locale: "en",
     });
-    // Pinned to the shipped baseline.
-    expect(result.promptVersion).toBe("1.0.0");
+    // Pinned to the shipped baseline (imported, not literal — a
+    // prompt rev should not break this test's invariant which is
+    // "baseline path returns the shipped baseline version").
+    expect(result.promptVersion).toBe(PROMPT_VERSION_MANIFEST.compiler);
   });
 
   it("returns the override's overridesVersion when a domain-scoped override row exists (NOT the baseline)", async () => {
