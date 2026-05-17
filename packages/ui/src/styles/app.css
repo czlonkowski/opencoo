@@ -25,6 +25,24 @@ a {
   color: inherit;
 }
 
+/* Native <dialog> defaults reset (PR-A1, wave-16).
+   - Firefox does NOT inherit font-family onto <dialog>; the
+     explicit rule below restores the design-system Geist UA.
+   - UA default has 1em padding + border-on-everything; we drive
+     visual styling from React via CSS vars so the bare element
+     starts neutral.
+   - Backdrop is the flat ink-tinted overlay (rgba(18,18,16,0.32)
+     — same RGBA as the legacy backdrop div), with NO blur. */
+dialog {
+  font-family: inherit;
+  color: inherit;
+  padding: 0;
+  border: 0;
+}
+dialog::backdrop {
+  background: rgba(18, 18, 16, 0.32);
+}
+
 /* Heartbeat pulse — the SINGLE animation loop in the system.
    Reserved for the operate glyph (--advisory). Everything else
    is one-shot ease-out via --ease-write or --ease-transform. */
@@ -71,6 +89,18 @@ a {
 
 .opencoo-dialog-enter {
   animation: opencoo-dialog-enter 180ms var(--ease-write) both;
+}
+
+/* Reduced-motion: drop the 180ms enter keyframe entirely so the
+   dialog appears instantly. The React layer also gates the class
+   application (Modal.tsx checks matchMedia at render time) — the
+   CSS rule is the belt to that suspenders so a class slipping
+   through (e.g. legacy consumer applying the class directly)
+   still respects the operator's preference. */
+@media (prefers-reduced-motion: reduce) {
+  .opencoo-dialog-enter {
+    animation: none;
+  }
 }
 
 /* Staggered field fade-in for CredentialForm — 120ms each,

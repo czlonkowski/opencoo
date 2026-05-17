@@ -62,11 +62,18 @@ describe("NewDomainModal", () => {
   });
 
   it("Esc fires onClose", async () => {
+    // PR-A1 (wave-16): the Modal is a native <dialog>; the
+    // browser fires a `cancel` event when the operator hits Esc.
+    // jsdom does not synthesize `cancel` from keyDown, so we
+    // dispatch the cancel event directly to pin the contract
+    // ("Esc closes the modal" — implementation detail is that
+    // it routes through cancel, not a document keydown listener).
     const onClose = vi.fn();
     render(
       <NewDomainModal onCreated={() => undefined} onClose={onClose} />,
     );
-    fireEvent.keyDown(document.body, { key: "Escape" });
+    const dialog = screen.getByRole("dialog");
+    fireEvent(dialog, new Event("cancel"));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 

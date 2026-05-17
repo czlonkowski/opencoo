@@ -1,5 +1,6 @@
 /**
- * PatEntryModal tests — UX token-binding spec assertions.
+ * PatEntryModal tests — UX token-binding spec assertions +
+ * wave-16 PR-A1 native-<dialog> shell migration.
  *
  * Pins:
  *   - input is type=password (NO eye-toggle)
@@ -10,15 +11,31 @@
  *     `authenticating…` mono and disables
  *   - storage-note copy renders the "session storage · cleared
  *     when this tab closes" mono line
- *   - NO close affordance — modal is gating
+ *   - NO close affordance — modal is gating (auth or nothing).
+ *     There is no Cancel / X — the only button is `Sign in`.
+ *
+ * PR-A1 (wave-16):
+ *   - rendered inside a native <dialog> (the shared Modal shell)
+ *     so it inherits focus-trap + Esc-block + top-layer for free.
+ *     Even though the operator cannot dismiss the gating auth
+ *     modal, the <dialog> primitive still provides browser
+ *     focus-trap which is the actual A1 win.
  */
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { PatEntryModal } from "../../src/components/PatEntryModal.js";
 
 describe("PatEntryModal", () => {
+  it("renders inside a native <dialog> shell (PR-A1)", () => {
+    render(<PatEntryModal onSubmit={() => undefined} />);
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.tagName).toBe("DIALOG");
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(screen.getByLabelText(/personal access token/i)).toBeInTheDocument();
+  });
+
   it("renders a masked password input with empty placeholder + storage-note", () => {
     render(<PatEntryModal onSubmit={() => undefined} />);
     const input = screen.getByLabelText(/personal access token/i) as HTMLInputElement;
@@ -65,10 +82,16 @@ describe("PatEntryModal", () => {
     render(<PatEntryModal onSubmit={onSubmit} />);
     await user.type(screen.getByLabelText(/personal access token/i), "x");
     void user.click(screen.getByRole("button", { name: /Sign in/i }));
-    await new Promise((r) => setTimeout(r, 10));
-    const btn = screen.getByRole("button") as HTMLButtonElement;
-    expect(btn.textContent).toMatch(/authenticating…/i);
-    expect(btn.disabled).toBe(true);
+    // Submit transitions to `authenticating…` once React flushes
+    // the state update for the in-flight (never-resolving here)
+    // onSubmit. waitFor is more robust than a fixed timeout —
+    // React's effect-flush timing is not perfectly deterministic
+    // under jsdom + the polyfilled <dialog> lifecycle.
+    await waitFor(() => {
+      const btn = screen.getByRole("button") as HTMLButtonElement;
+      expect(btn.textContent).toMatch(/authenticating…/i);
+      expect(btn.disabled).toBe(true);
+    });
     resolveOuter?.();
   });
 });

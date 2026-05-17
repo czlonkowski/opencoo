@@ -1,18 +1,24 @@
 /**
  * PatEntryModal — first-load admin auth modal (PR 29 / plan
- * #131; UX token-binding spec).
+ * #131; UX token-binding spec; collapsed onto the shared `Modal`
+ * shell in PR-A1 / phase-a appendix #16).
  *
  * Operator pastes a Gitea PAT into a single password-masked
  * field; PAT lives in sessionStorage and clears on tab close.
  * Admin-only chrome (no agent layer involved): primary button
  * is ink-on-paper, NOT advisory amber.
  *
+ * Wave-16 (PR-A1) note: this modal is *gating* — operator cannot
+ * dismiss it, and `onClose` is intentionally a no-op. We still
+ * compose on the shared `<dialog>`-backed Modal so we inherit
+ * focus-trap + top-layer + reduced-motion + Firefox
+ * font-inherit fix for free. The Modal's backdrop-click + Esc
+ * handlers route into the no-op `onClose` (auth or nothing).
+ *
  * Design-system bindings (every visual references a CSS var
  * from `colors_and_type.css`; no literals):
- *   - overlay-backdrop: rgba(18,18,16,0.32) flat (no blur)
- *   - modal-bg: var(--paper); border: 1px solid var(--ink);
- *     radius: var(--radius-xl); padding: var(--space-6)
- *   - title: var(--font-sans), 500, var(--fs-h3)
+ *   - modal shell: inherited from `Modal.tsx` (paper / ink /
+ *     radius-xl). Padding handled by the shell's regions.
  *   - input: var(--font-mono) — PAT is an ID
  *   - primary-btn: bg var(--ink), fg var(--paper)
  *
@@ -30,38 +36,7 @@
 import { useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 
-const BACKDROP_STYLE: CSSProperties = {
-  position: "fixed",
-  inset: 0,
-  // Flat ink-tinted overlay — explicitly no backdrop-blur.
-  background: "rgba(18, 18, 16, 0.32)",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  padding: "var(--space-5)",
-};
-
-const MODAL_STYLE: CSSProperties = {
-  width: "100%",
-  maxWidth: 420,
-  background: "var(--paper)",
-  border: "1px solid var(--ink)",
-  borderRadius: "var(--radius-xl)",
-  padding: "var(--space-6)",
-  display: "flex",
-  flexDirection: "column",
-  gap: "var(--space-4)",
-};
-
-const TITLE_STYLE: CSSProperties = {
-  fontFamily: "var(--font-sans)",
-  fontWeight: 500,
-  fontSize: "var(--fs-h3)",
-  lineHeight: "var(--lh-h3)",
-  letterSpacing: "var(--tr-h3)",
-  color: "var(--fg-1)",
-  margin: 0,
-};
+import { Modal } from "./Modal.js";
 
 const INSTRUCTION_STYLE: CSSProperties = {
   fontFamily: "var(--font-sans)",
@@ -170,57 +145,54 @@ export function PatEntryModal(props: PatEntryModalProps): JSX.Element {
   };
 
   return (
-    <div
-      style={BACKDROP_STYLE}
-      role="dialog"
-      aria-labelledby="pat-modal-title"
-      aria-modal="true"
+    <Modal
+      title={t("auth.modalTitle")}
+      // Gating modal — there's no Cancel / X. Esc and backdrop
+      // both route here so the operator's only path out is
+      // successful auth.
+      onClose={(): void => undefined}
+      maxWidth={420}
     >
-      <div className="opencoo-dialog-enter" style={MODAL_STYLE}>
-        <h2 id="pat-modal-title" style={TITLE_STYLE}>
-          {t("auth.modalTitle")}
-        </h2>
-        <p style={INSTRUCTION_STYLE}>{t("auth.patPrompt")}</p>
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "var(--space-2)",
-          }}
-        >
-          <label htmlFor="pat-input" style={FIELD_LABEL_STYLE}>
-            {t("auth.patFieldLabel")}
-          </label>
-          <input
-            id="pat-input"
-            name="pat"
-            type="password"
-            autoComplete="new-password"
-            value={pat}
-            onChange={(e): void => setPat(e.target.value)}
-            onFocus={(): void => setFocused(true)}
-            onBlur={(): void => setFocused(false)}
-            style={inputStyle}
-            data-secret="true"
-            // Spec: secret-field placeholder must NEVER look
-            // like a real value. Empty placeholder is the safe
-            // choice here.
-            placeholder=""
-          />
-          <p style={STORAGE_NOTE_STYLE}>{t("auth.storageNote")}</p>
-          {error !== null ? <p style={ERROR_TEXT_STYLE}>{error}</p> : null}
-        </div>
-        <button
-          type="button"
-          disabled={submitting}
-          onClick={(): void => {
-            void submit();
-          }}
-          style={btnStyle}
-        >
-          {submitting ? t("auth.authenticating") : t("auth.patSubmit")}
-        </button>
+      <p style={INSTRUCTION_STYLE}>{t("auth.patPrompt")}</p>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: "var(--space-2)",
+        }}
+      >
+        <label htmlFor="pat-input" style={FIELD_LABEL_STYLE}>
+          {t("auth.patFieldLabel")}
+        </label>
+        <input
+          id="pat-input"
+          name="pat"
+          type="password"
+          autoComplete="new-password"
+          value={pat}
+          onChange={(e): void => setPat(e.target.value)}
+          onFocus={(): void => setFocused(true)}
+          onBlur={(): void => setFocused(false)}
+          style={inputStyle}
+          data-secret="true"
+          // Spec: secret-field placeholder must NEVER look
+          // like a real value. Empty placeholder is the safe
+          // choice here.
+          placeholder=""
+        />
+        <p style={STORAGE_NOTE_STYLE}>{t("auth.storageNote")}</p>
+        {error !== null ? <p style={ERROR_TEXT_STYLE}>{error}</p> : null}
       </div>
-    </div>
+      <button
+        type="button"
+        disabled={submitting}
+        onClick={(): void => {
+          void submit();
+        }}
+        style={btnStyle}
+      >
+        {submitting ? t("auth.authenticating") : t("auth.patSubmit")}
+      </button>
+    </Modal>
   );
 }
