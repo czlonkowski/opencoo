@@ -32,6 +32,7 @@ import { useTranslation } from "react-i18next";
 import { AgentsRunNowButton } from "../components/AgentsRunNowButton.js";
 import { Btn } from "../components/Btn.js";
 import { SR_ONLY_STYLE } from "../components/Chrome.js";
+import { Display } from "../components/Display.js";
 import { GlyphOpenArc, GlyphRingWithDot } from "../components/Glyph.js";
 import { Table, type TableColumn } from "../components/Table.js";
 import {
@@ -775,6 +776,11 @@ export function Reports(props: ReportsProps = {}): JSX.Element {
       <h1 id="opencoo-page-h1" style={SR_ONLY_STYLE}>
         {t("routes.reports.h1")}
       </h1>
+      {/* Editorial lede — PR-C4 (wave-16). The lede itself is
+          rendered INSIDE HeartbeatView (so it's scoped to the
+          heartbeat sub-tab and not visible on Redaction); this
+          block left intentionally above the sub-tab nav for the
+          A2 h1. */}
       {/* Sub-tab navigation */}
       <div
         style={{
