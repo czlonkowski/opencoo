@@ -438,7 +438,12 @@ describe("admin-api POST /:scope/:id/prompts/:name/:locale/apply", () => {
         cookie: `opencoo_csrf=${cookie}`,
         "content-type": "application/json",
       },
-      payload: { proposedBody: "FIRST OVERRIDE", token, confirmDiff: true },
+      payload: {
+        proposedBody: "FIRST OVERRIDE",
+        token,
+        confirmDiff: true,
+        baselineVersion: PROMPT_VERSION_MANIFEST.heartbeat,
+      },
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -492,7 +497,12 @@ describe("admin-api POST /:scope/:id/prompts/:name/:locale/apply", () => {
         cookie: `opencoo_csrf=${ck1}`,
         "content-type": "application/json",
       },
-      payload: { proposedBody: "v1", token: token1, confirmDiff: true },
+      payload: {
+        proposedBody: "v1",
+        token: token1,
+        confirmDiff: true,
+        baselineVersion: PROMPT_VERSION_MANIFEST.heartbeat,
+      },
     });
     // Second apply (fresh preview required since token is bound
     // to body+baseline).
@@ -507,7 +517,12 @@ describe("admin-api POST /:scope/:id/prompts/:name/:locale/apply", () => {
         cookie: `opencoo_csrf=${ck2}`,
         "content-type": "application/json",
       },
-      payload: { proposedBody: "v2", token: token2, confirmDiff: true },
+      payload: {
+        proposedBody: "v2",
+        token: token2,
+        confirmDiff: true,
+        baselineVersion: PROMPT_VERSION_MANIFEST.heartbeat,
+      },
     });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).overridesVersion).toBe("1.0.1");
@@ -535,7 +550,12 @@ describe("admin-api POST /:scope/:id/prompts/:name/:locale/apply", () => {
         cookie: `opencoo_csrf=${cookie}`,
         "content-type": "application/json",
       },
-      payload: { proposedBody: "body", token: tampered, confirmDiff: true },
+      payload: {
+        proposedBody: "body",
+        token: tampered,
+        confirmDiff: true,
+        baselineVersion: PROMPT_VERSION_MANIFEST.heartbeat,
+      },
     });
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body).reason).toBe("signature_mismatch");
@@ -557,7 +577,12 @@ describe("admin-api POST /:scope/:id/prompts/:name/:locale/apply", () => {
         cookie: `opencoo_csrf=${cookie}`,
         "content-type": "application/json",
       },
-      payload: { proposedBody: "CHANGED", token, confirmDiff: true },
+      payload: {
+        proposedBody: "CHANGED",
+        token,
+        confirmDiff: true,
+        baselineVersion: PROMPT_VERSION_MANIFEST.heartbeat,
+      },
     });
     expect(res.statusCode).toBe(422);
     expect(JSON.parse(res.body).reason).toBe("payload_mismatch");
@@ -579,9 +604,99 @@ describe("admin-api POST /:scope/:id/prompts/:name/:locale/apply", () => {
         cookie: `opencoo_csrf=${cookie}`,
         "content-type": "application/json",
       },
-      payload: { proposedBody: "body", token },
+      payload: {
+        proposedBody: "body",
+        token,
+        baselineVersion: PROMPT_VERSION_MANIFEST.heartbeat,
+      },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("rejects 422 baseline_version_drifted when the apply's baselineVersion mismatches current shipped", async () => {
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    const { id } = await seedDomain(f.raw);
+    const { token } = await previewAndApply(f, id, "body");
+    const { csrfToken, cookie } = await getCsrf(f, "admin-pat");
+    const res = await f.app.inject({
+      method: "POST",
+      url: `/api/admin/domains/${id}/prompts/heartbeat/en/apply`,
+      headers: {
+        authorization: "Bearer admin-pat",
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: {
+        proposedBody: "body",
+        token,
+        confirmDiff: true,
+        baselineVersion: "0.0.0-ancient",
+      },
+    });
+    expect(res.statusCode).toBe(422);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe("baseline_version_drifted");
+    expect(body.previewBaselineVersion).toBe("0.0.0-ancient");
+    expect(body.currentBaselineVersion).toBe(PROMPT_VERSION_MANIFEST.heartbeat);
+  });
+
+  it("agent-instance scope: apply UPSERTs the instance row + writes audit row", async () => {
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    const { id: domainId } = await seedDomain(f.raw);
+    const { id: instanceId } = await seedInstance(f.raw, domainId);
+
+    const { csrfToken: pCsrf, cookie: pCookie } = await getCsrf(f, "admin-pat");
+    const previewRes = await f.app.inject({
+      method: "POST",
+      url: `/api/admin/agent-instances/${instanceId}/prompts/heartbeat/en/preview`,
+      headers: {
+        authorization: "Bearer admin-pat",
+        "x-csrf-token": pCsrf,
+        cookie: `opencoo_csrf=${pCookie}`,
+        "content-type": "application/json",
+      },
+      payload: { proposedBody: "INSTANCE-SCOPED OVERRIDE" },
+    });
+    expect(previewRes.statusCode).toBe(200);
+    const { token } = JSON.parse(previewRes.body);
+
+    const { csrfToken: aCsrf, cookie: aCookie } = await getCsrf(f, "admin-pat");
+    const res = await f.app.inject({
+      method: "POST",
+      url: `/api/admin/agent-instances/${instanceId}/prompts/heartbeat/en/apply`,
+      headers: {
+        authorization: "Bearer admin-pat",
+        "x-csrf-token": aCsrf,
+        cookie: `opencoo_csrf=${aCookie}`,
+        "content-type": "application/json",
+      },
+      payload: {
+        proposedBody: "INSTANCE-SCOPED OVERRIDE",
+        token,
+        confirmDiff: true,
+        baselineVersion: PROMPT_VERSION_MANIFEST.heartbeat,
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    // Row persisted with instance_id set, not null.
+    const rows = await f.raw.query<{ body: string; instance_id: string | null }>(
+      `SELECT body, instance_id::text AS instance_id FROM prompt_overrides
+         WHERE domain_id = $1::uuid AND prompt_name = 'heartbeat' AND locale = 'en'`,
+      [domainId],
+    );
+    expect(rows.rows[0]?.body).toBe("INSTANCE-SCOPED OVERRIDE");
+    expect(rows.rows[0]?.instance_id).toBe(instanceId);
+    // Audit row tagged with scope=agent-instances.
+    const audit = await f.raw.query<{ metadata: { scope: string; scope_id: string } }>(
+      `SELECT metadata FROM admin_audit_log WHERE action = 'prompt_override.apply' ORDER BY created_at DESC LIMIT 1`,
+    );
+    expect(audit.rows[0]?.metadata.scope).toBe("agent-instances");
+    expect(audit.rows[0]?.metadata.scope_id).toBe(instanceId);
   });
 });
 

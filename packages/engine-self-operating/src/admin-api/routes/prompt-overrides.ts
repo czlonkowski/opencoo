@@ -59,6 +59,36 @@
  * Mirrors `domains-llm-policy.ts:128-246` token-by-token; the
  * diff is line-level instead of key-level because prompt bodies
  * are plain text not JSON.
+ *
+ * v0.1 deliberate scope-cuts (documented here so a future
+ * reviewer doesn't reopen them without cause):
+ *   - Single-operator semantics: the token binds (body,
+ *     baselineVersion) but NOT the current override body/version
+ *     that the diff was computed from. Two operators applying
+ *     concurrently would race; the audit trail records both
+ *     applies for transparency. Multi-operator concurrent edit
+ *     lands when the deployment shape demands it.
+ *   - Token replay within TTL: a successfully used token stays
+ *     valid for the full 5-min TTL — a client retry after a
+ *     network blip can re-apply. The UPSERT is idempotent body-
+ *     wise; only the `overrides_version` patch-bumps and a
+ *     second audit row writes. Single-use tokens are a v0.2
+ *     hardening if the operator-visible "applied twice" line in
+ *     the audit log becomes noisy.
+ *   - `overrides_version` next-value SELECT before UPSERT can
+ *     race two concurrent applies onto the same version string.
+ *     Same single-operator caveat — the row state is identical
+ *     after either ordering; only the counter desynchronises.
+ *     Atomic incrementing inside the UPSERT (`overrides_version
+ *     = (split + bump)`) is a v0.2 candidate.
+ *   - Orphaned-instance domain: for scope=`agent-instances` the
+ *     resolved `domain_id` is `scope_domain_ids[0]` without
+ *     verifying the referenced domain still exists. The
+ *     prompt_overrides FK on `domain_id` REJECTS the UPSERT if
+ *     the domain has been deleted (defense in depth); list/
+ *     preview surface the baseline for an orphaned instance.
+ *     Adding a pre-check is a UX-message improvement, not a
+ *     safety one.
  */
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
@@ -86,22 +116,39 @@ type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
 
 /** 100 KB matches the DB CHECK. Defense in depth — the route
  *  rejects oversized bodies at the Zod boundary before the
- *  Postgres CHECK gets to. */
+ *  Postgres CHECK gets to. We measure UTF-8 byte length rather
+ *  than JS string length so a 50 000-char Polish or emoji-laden
+ *  body that codes to more than 100 KB on the wire is caught
+ *  here before the DB CHECK's `length(body)` (which is
+ *  character count in Postgres) lets it through. */
 const BODY_BYTE_CAP = 100_000;
 
 const PERSISTED_LOCALES = PROMPT_LOCALES.filter((l) => l !== "auto");
 
+const proposedBodySchema = z
+  .string()
+  .refine(
+    (s) => Buffer.byteLength(s, "utf8") <= BODY_BYTE_CAP,
+    `body exceeds ${BODY_BYTE_CAP}-byte UTF-8 cap`,
+  );
+
 const previewSchema = z
   .object({
-    proposedBody: z.string().max(BODY_BYTE_CAP),
+    proposedBody: proposedBodySchema,
   })
   .strict();
 
 const applySchema = z
   .object({
-    proposedBody: z.string().max(BODY_BYTE_CAP),
+    proposedBody: proposedBodySchema,
     token: z.string().min(1),
     confirmDiff: z.literal(true),
+    /** Baseline version the operator saw at preview time. The
+     *  apply route compares this to `current shipped` BEFORE
+     *  verifying the token so a baseline rev between preview and
+     *  apply surfaces as a distinct 422 `baseline_version_drifted`
+     *  rather than the generic `payload_mismatch`. */
+    baselineVersion: z.string().min(1),
   })
   .strict();
 
@@ -553,6 +600,23 @@ function registerApplyOverride(args: ScopedRegisterArgs): void {
       }
 
       const baseline = loadPrompt({ name, locale });
+
+      // Baseline-drift check BEFORE token verify so the operator
+      // gets a distinct 422 `baseline_version_drifted` rather
+      // than the generic `payload_mismatch`. The token's hash
+      // covers baselineVersion too, so a drift would surface as
+      // payload_mismatch downstream — but we want to name the
+      // exact cause so the UI can render "the shipped prompt
+      // was updated; click to re-fork from the new baseline"
+      // instead of a blanket "re-preview" prompt.
+      if (parsed.data.baselineVersion !== baseline.version) {
+        return reply.code(422).send({
+          error: "baseline_version_drifted",
+          previewBaselineVersion: parsed.data.baselineVersion,
+          currentBaselineVersion: baseline.version,
+        });
+      }
+
       const tokenIdentity = `${args.scope}:${params.id}:${name}:${locale}`;
       const verifyResult = verifySovereigntyDiffToken({
         key: args.sessionHmacKey,
@@ -566,12 +630,10 @@ function registerApplyOverride(args: ScopedRegisterArgs): void {
         },
       });
       if (!verifyResult.ok) {
-        // payload_mismatch covers both (a) operator edited the
-        // body between preview and apply, and (b) the shipped
-        // baseline rev'd between preview and apply (the token
-        // binds the baselineVersion, so a rev changes the
-        // payload hash). The UI reads the `reason` and tells
-        // the operator to re-preview.
+        // payload_mismatch here means the operator edited the
+        // body between preview and apply (baseline-drift was
+        // already caught above). The UI reads the `reason` and
+        // tells the operator to re-preview.
         const code =
           verifyResult.reason === "signature_mismatch" ||
           verifyResult.reason === "malformed"
@@ -754,6 +816,25 @@ function registerDeleteOverride(args: ScopedRegisterArgs): void {
         return reply.code(resolved.status).send({ error: resolved.reason });
       }
 
+      // Read the existing row FIRST so the audit metadata can
+      // capture overrides_version + baseline_version + a body
+      // hash before the row goes away. Without this the audit
+      // trail would only show "the operator deleted SOMETHING"
+      // — we want "the operator deleted version 1.0.3 forked
+      // from baseline 1.2.0 with body-hash <h>" so a future
+      // forensic walk can correlate the delete to the prior
+      // apply audit row.
+      const instanceIdParam =
+        args.scope === "domains" ? null : params.id;
+      const existing = await fetchOverrideRow(
+        args.db,
+        args.scope,
+        params.id,
+        resolved.domainId,
+        name,
+        locale,
+      );
+
       const action: AuditAction = "prompt_override.delete";
       await writeAuditLog(args.db, {
         action,
@@ -763,13 +844,24 @@ function registerDeleteOverride(args: ScopedRegisterArgs): void {
           scope_id: params.id,
           name,
           locale,
+          ...(existing !== null
+            ? {
+                overrides_version: existing.overrides_version,
+                baseline_version: existing.baseline_version,
+                payload_hash: computePayloadHash({
+                  domainId: `${args.scope}:${params.id}:${name}:${locale}`,
+                  proposed: {
+                    body: existing.body,
+                    baselineVersion: existing.baseline_version,
+                  },
+                }),
+              }
+            : {}),
         },
         sourceIp: req.ip,
         userAgent: req.headers["user-agent"],
       });
 
-      const instanceIdParam =
-        args.scope === "domains" ? null : params.id;
       const deleted = (await args.db.execute(
         instanceIdParam === null
           ? sql`
