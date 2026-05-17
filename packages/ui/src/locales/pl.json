@@ -797,6 +797,17 @@
       "cancelMemoryClear": "Cancel",
       "confirmMemoryClear": "Confirm clear",
       "memoryCleared": "Memory cleared ({{bytes}} bytes wiped).",
+      "prompts": "Prompty agenta",
+      "promptsUnknownDefinition": "Brak zmapowanych promptów dla tej definicji agenta.",
+      "promptEdit": "Edytuj",
+      "promptClearInstance": "Wyczyść nadpisanie instancji",
+      "promptEditorTitle": "Edytuj {{name}} ({{locale}}) dla tej instancji",
+      "promptStack": {
+        "instance": "Nadpisanie instancji: v{{version}}",
+        "domain": "Nadpisanie domeny ({{slug}}): v{{version}}",
+        "baseline": "Domyślna wersja: v{{version}}"
+      },
+      "promptInstanceRevertedToast": "Nadpisanie instancji usunięte. Instancja korzysta teraz z nadpisania domeny (lub domyślnej wersji).",
       "bindOutputs": {
         "success": "Output channels saved."
       },

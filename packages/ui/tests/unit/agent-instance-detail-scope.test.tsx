@@ -145,8 +145,14 @@ describe("AgentInstanceDetail — Scope section", () => {
     await waitFor(() => {
       expect(screen.getByTestId("scope-chips")).toBeInTheDocument();
     });
-    // Click Edit to open the multi-select editor.
-    fireEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
+    // Click Edit to open the multi-select editor. PR-W7b's
+    // Agent-prompts section adds its own Edit buttons, so target
+    // the Scope row's Edit by its sibling — the chips container's
+    // parent has the row layout, and the Edit button is the only
+    // <button> inside that wrapper.
+    const scopeChipsWrapper = screen.getByTestId("scope-chips").parentElement!;
+    const scopeEditBtn = scopeChipsWrapper.querySelector("button")!;
+    fireEvent.click(scopeEditBtn);
     // The multi-select renders — pick DOMAIN_B in addition.
     await waitFor(() => {
       expect(screen.getByTestId("multi-select-domains")).toBeInTheDocument();
