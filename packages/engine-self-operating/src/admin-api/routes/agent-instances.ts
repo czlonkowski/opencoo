@@ -155,6 +155,8 @@ interface AgentInstanceRow {
   readonly name: string;
   readonly schedule_cron: string | null;
   readonly enabled: boolean;
+  readonly locale: string;
+  readonly scope_domain_ids: ReadonlyArray<string> | null;
   readonly output_channel_ids: ReadonlyArray<{
     readonly adapter_slug: string;
     readonly config: Record<string, unknown>;
@@ -170,6 +172,15 @@ export interface AgentInstanceListRow {
   readonly name: string;
   readonly scheduleCron: string | null;
   readonly enabled: boolean;
+  /** PR-W4-UI (phase-a appendix #15) — surfaced so the drill-
+   *  down can pre-fill the Locale select without a second
+   *  round-trip. Mirrors the column directly. */
+  readonly locale: string;
+  /** PR-W4-UI — uuid[] of scope domains. Surfaced so the
+   *  drill-down can pre-check the MultiSelectDomains picker.
+   *  Empty array when the column is NULL/absent (defensive;
+   *  the schema marks it NOT NULL). */
+  readonly scopeDomainIds: ReadonlyArray<string>;
   /** Count of channels currently bound to this instance.
    *  Cheaper to surface than the full array — the Agents tab
    *  list only needs the count; the drill-down does the
@@ -218,6 +229,8 @@ export function registerAgentInstancesRoutes(
              ai.name,
              ai.schedule_cron,
              ai.enabled,
+             ai.locale,
+             ai.scope_domain_ids,
              ai.output_channel_ids,
              (
                SELECT ar.started_at
@@ -240,12 +253,15 @@ export function registerAgentInstancesRoutes(
 
     const rows: AgentInstanceListRow[] = result.rows.map((r) => {
       const channels = r.output_channel_ids ?? [];
+      const scope = r.scope_domain_ids ?? [];
       return {
         id: r.id,
         definitionSlug: r.definition_slug,
         name: r.name,
         scheduleCron: r.schedule_cron,
         enabled: r.enabled,
+        locale: r.locale,
+        scopeDomainIds: [...scope],
         outputChannelCount: channels.length,
         outputChannelIds: channels,
         lastRunStartedAt: toIso(r.last_run_started_at),

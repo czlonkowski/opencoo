@@ -17,6 +17,7 @@ import { useTranslation } from "react-i18next";
 import { AgentInstanceDetail } from "../components/AgentInstanceDetail.js";
 import { Btn } from "../components/Btn.js";
 import { Card } from "../components/Card.js";
+import { NewAgentInstanceModal } from "../components/NewAgentInstanceModal.js";
 import { fetchAdmin, fetchOptsFor } from "../lib/api.js";
 import type { AgentInstance } from "../types.js";
 
@@ -34,6 +35,7 @@ export function Agents(props: AgentsProps = {}): JSX.Element {
   const [rows, setRows] = useState<readonly AgentInstance[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<AgentInstance | null>(null);
+  const [creating, setCreating] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const opts = fetchOptsFor(props.fetchImpl);
 
@@ -78,12 +80,15 @@ export function Agents(props: AgentsProps = {}): JSX.Element {
             {t("agents.subtitle")}
           </p>
         </div>
-        {/* `+ New agent instance` — v0.1 stub: instance creation
-            lives in the `opencoo agents seed` CLI verb. The button
-            is rendered (so the operator sees the affordance) but
-            disabled until a follow-up wires the modal. */}
-        <Btn variant="primary" disabled={true}>
-          {t("agents.newInstanceStub")}
+        {/* `+ New agent instance` — PR-W4-UI (phase-a appendix #15)
+            wires the modal. The wave-13 PR-W2 stub copy
+            (`agents.newInstanceStub`) is retired; the operator now
+            sees a working CTA + modal flow. */}
+        <Btn
+          variant="primary"
+          onClick={(): void => setCreating(true)}
+        >
+          {t("agents.newInstance")}
         </Btn>
       </div>
       <Card>
@@ -215,6 +220,18 @@ export function Agents(props: AgentsProps = {}): JSX.Element {
           onClose={(): void => setSelected(null)}
           onChanged={(): void => {
             setSelected(null);
+            setRefreshNonce((n) => n + 1);
+          }}
+        />
+      ) : null}
+      {creating ? (
+        <NewAgentInstanceModal
+          {...(props.fetchImpl !== undefined
+            ? { fetchImpl: props.fetchImpl as typeof fetch }
+            : {})}
+          onClose={(): void => setCreating(false)}
+          onCreated={(): void => {
+            setCreating(false);
             setRefreshNonce((n) => n + 1);
           }}
         />

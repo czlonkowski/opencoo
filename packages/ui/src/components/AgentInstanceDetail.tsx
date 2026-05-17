@@ -31,6 +31,7 @@ import { useTranslation } from "react-i18next";
 
 import { Btn } from "./Btn.js";
 import { Modal } from "./Modal.js";
+import { MultiSelectDomains } from "./MultiSelectDomains.js";
 import {
   ApiAuthError,
   ApiValidationError,
@@ -210,6 +211,77 @@ export function AgentInstanceDetail(
   );
   const scheduleDirty = scheduleCron !== (props.instance.scheduleCron ?? "");
 
+  // ── Name state (PR-W4-UI) ──────────────────────────────────────────────
+
+  const [name, setName] = useState<string>(props.instance.name);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const nameDirty = name.trim() !== props.instance.name && name.trim().length > 0;
+
+  // ── Locale state (PR-W4-UI) ────────────────────────────────────────────
+
+  /** Server enum is `en | pl | auto`. The widget pins these literally;
+   *  the API's Zod parser is the source of truth and will 422 on a
+   *  future addition that lands here first. */
+  const LOCALES = ["en", "pl", "auto"] as const;
+  type LocaleOpt = (typeof LOCALES)[number];
+  const initialLocale = ((): LocaleOpt => {
+    const v = props.instance.locale;
+    if (v === "en" || v === "pl" || v === "auto") return v;
+    return "en";
+  })();
+  const [locale, setLocale] = useState<LocaleOpt>(initialLocale);
+
+  // ── Scope state (PR-W4-UI) ─────────────────────────────────────────────
+
+  const initialScope = props.instance.scopeDomainIds ?? [];
+  const [scopeIds, setScopeIds] = useState<ReadonlyArray<string>>(initialScope);
+  const [scopeError, setScopeError] = useState<string | null>(null);
+  const [scopeEditing, setScopeEditing] = useState<boolean>(false);
+  // Source-of-truth for the chip list — only updated after a
+  // successful PATCH so cancel-mid-edit reverts cleanly.
+  const [scopeCommitted, setScopeCommitted] =
+    useState<ReadonlyArray<string>>(initialScope);
+  const scopeDirty =
+    scopeEditing &&
+    (scopeIds.length !== scopeCommitted.length ||
+      scopeIds.some((id, i) => scopeCommitted[i] !== id));
+
+  // ── Memory-clear state (PR-W4-UI) ──────────────────────────────────────
+
+  const [memoryConfirmAck, setMemoryConfirmAck] = useState<boolean>(false);
+  const [memoryClearStage, setMemoryClearStage] = useState<"idle" | "confirm">(
+    "idle",
+  );
+
+  // ── Domains-name lookup (PR-W4-UI) ────────────────────────────────────
+  // The Scope chip list shows domain SLUGS, not raw UUIDs. We fetch
+  // once on mount for the read-only chip render; the editor reuses
+  // the MultiSelectDomains component which fetches its own catalog.
+
+  type DomainShort = { id: string; slug: string; name: string };
+  const [domainsCatalog, setDomainsCatalog] = useState<readonly DomainShort[]>(
+    [],
+  );
+  useEffect((): void => {
+    void (async (): Promise<void> => {
+      try {
+        const r = await fetchAdmin<{ rows: readonly DomainShort[] }>(
+          "/api/admin/domains",
+          opts,
+        );
+        if (!mountedRef.current) return;
+        setDomainsCatalog(r.rows);
+      } catch {
+        // Silent — the chip list falls back to raw UUIDs and the
+        // editor surfaces its own error.
+      }
+    })();
+  }, []);
+  const slugOf = (id: string): string => {
+    const found = domainsCatalog.find((d) => d.id === id);
+    return found?.slug ?? id;
+  };
+
   // ── Save lifecycle ─────────────────────────────────────────────────────
 
   const [busy, setBusy] = useState(false);
@@ -300,6 +372,139 @@ export function AgentInstanceDetail(
     }
   };
 
+  // ── Name / Locale / Scope / Memory-clear (PR-W4-UI) ──────────────────
+
+  const saveName = async (): Promise<void> => {
+    if (busy || onCooldown() || !nameDirty) return;
+    setNameError(null);
+    setBusy(true);
+    try {
+      await fetchAdmin(`/api/admin/agent-instances/${props.instance.id}`, {
+        method: "PATCH",
+        body: { name: name.trim() },
+        ...opts,
+      });
+      if (!mountedRef.current) return;
+      flashToast("healthy", t("agentInstance.detail.nameSaved"));
+      startCooldown();
+      props.onChanged();
+    } catch (err) {
+      if (!mountedRef.current) return;
+      if (err instanceof ApiValidationError && err.status === 409) {
+        const code = (err.body as { error?: string } | undefined)?.error;
+        if (code === "name_collision") {
+          setNameError(t("agentInstance.detail.errors.nameCollision"));
+          return;
+        }
+      }
+      flashToast("alert", mapErr(err, t("errors.bindOutputsFailed")));
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  };
+
+  const saveLocale = async (next: LocaleOpt): Promise<void> => {
+    if (busy || onCooldown() || next === locale) return;
+    setBusy(true);
+    try {
+      await fetchAdmin(`/api/admin/agent-instances/${props.instance.id}`, {
+        method: "PATCH",
+        body: { locale: next },
+        ...opts,
+      });
+      if (!mountedRef.current) return;
+      setLocale(next);
+      flashToast("healthy", t("agentInstance.detail.localeSaved"));
+      startCooldown();
+      props.onChanged();
+    } catch (err) {
+      if (!mountedRef.current) return;
+      flashToast("alert", mapErr(err, t("errors.bindOutputsFailed")));
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  };
+
+  const saveScope = async (): Promise<void> => {
+    if (busy || onCooldown() || !scopeDirty) return;
+    if (scopeIds.length === 0) {
+      setScopeError(t("agentInstance.detail.errors.scopeRequired"));
+      return;
+    }
+    setScopeError(null);
+    setBusy(true);
+    try {
+      await fetchAdmin(`/api/admin/agent-instances/${props.instance.id}`, {
+        method: "PATCH",
+        body: { scope_domain_ids: scopeIds },
+        ...opts,
+      });
+      if (!mountedRef.current) return;
+      setScopeCommitted(scopeIds);
+      setScopeEditing(false);
+      flashToast("healthy", t("agentInstance.detail.scopeSaved"));
+      startCooldown();
+      props.onChanged();
+    } catch (err) {
+      if (!mountedRef.current) return;
+      if (err instanceof ApiValidationError && err.status === 422) {
+        const code = (err.body as { error?: string } | undefined)?.error;
+        if (code === "unknown_scope_domain_ids") {
+          setScopeError(
+            t("agentInstance.detail.errors.unknownScopeDomainIds"),
+          );
+          return;
+        }
+        if (code === "duplicate_scope_domain_ids") {
+          setScopeError(
+            t("agentInstance.detail.errors.duplicateScopeDomainIds"),
+          );
+          return;
+        }
+      }
+      flashToast("alert", mapErr(err, t("errors.bindOutputsFailed")));
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  };
+
+  const cancelScopeEdit = (): void => {
+    setScopeIds(scopeCommitted);
+    setScopeEditing(false);
+    setScopeError(null);
+  };
+
+  const clearMemory = async (): Promise<void> => {
+    if (busy || onCooldown()) return;
+    setBusy(true);
+    try {
+      const r = await fetchAdmin<{ updated: boolean; priorBytes: number }>(
+        `/api/admin/agent-instances/${props.instance.id}`,
+        {
+          method: "PATCH",
+          body: { memory_clear: true },
+          ...opts,
+        },
+      );
+      if (!mountedRef.current) return;
+      flashToast(
+        "healthy",
+        t("agentInstance.detail.memoryCleared", {
+          bytes: r.priorBytes,
+        }),
+      );
+      setMemoryClearStage("idle");
+      setMemoryConfirmAck(false);
+      startCooldown();
+      props.onChanged();
+    } catch (err) {
+      if (!mountedRef.current) return;
+      flashToast("alert", mapErr(err, t("errors.bindOutputsFailed")));
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  };
+
   // ── Render ─────────────────────────────────────────────────────────────
 
   return (
@@ -318,12 +523,6 @@ export function AgentInstanceDetail(
         </div>
         <div style={ROW_STYLE}>
           <div style={{ color: "var(--ink-3)" }}>
-            {t("agentInstance.detail.labels.name")}
-          </div>
-          <div>{props.instance.name}</div>
-        </div>
-        <div style={ROW_STYLE}>
-          <div style={{ color: "var(--ink-3)" }}>
             {t("agentInstance.detail.labels.lastRun")}
           </div>
           <div>
@@ -337,6 +536,183 @@ export function AgentInstanceDetail(
             {t("agentInstance.detail.labels.boundChannels")}
           </div>
           <div>{props.instance.outputChannelCount}</div>
+        </div>
+
+        {/* Name editor (PR-W4-UI) */}
+        <h3 style={SECTION_HEADING_STYLE}>
+          {t("agentInstance.detail.name")}
+        </h3>
+        <div style={SECTION_STYLE}>
+          <input
+            type="text"
+            value={name}
+            onChange={(e): void => {
+              setName(e.target.value);
+              setNameError(null);
+            }}
+            style={INPUT_STYLE}
+            maxLength={100}
+            disabled={busy}
+            aria-invalid={nameError !== null ? true : undefined}
+          />
+          {nameError !== null ? (
+            <p
+              role="alert"
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: "var(--fs-micro)",
+                color: "var(--alert)",
+                margin: 0,
+              }}
+            >
+              {nameError}
+            </p>
+          ) : null}
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <Btn
+              variant="ghost"
+              onClick={(): void => {
+                void saveName();
+              }}
+              disabled={busy || onCooldown() || !nameDirty}
+            >
+              {t("agentInstance.detail.saveName")}
+            </Btn>
+          </div>
+        </div>
+
+        {/* Scope editor (PR-W4-UI) */}
+        <h3 style={SECTION_HEADING_STYLE}>
+          {t("agentInstance.detail.scope")}
+        </h3>
+        <div style={SECTION_STYLE}>
+          {scopeEditing ? (
+            <>
+              <MultiSelectDomains
+                selectedIds={scopeIds}
+                onChange={(next): void => {
+                  setScopeIds(next);
+                  setScopeError(null);
+                }}
+                disabled={busy}
+                {...(props.fetchImpl !== undefined
+                  ? { fetchImpl: props.fetchImpl }
+                  : {})}
+              />
+              {scopeError !== null ? (
+                <p
+                  role="alert"
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "var(--fs-micro)",
+                    color: "var(--alert)",
+                    margin: 0,
+                  }}
+                >
+                  {scopeError}
+                </p>
+              ) : null}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  gap: 8,
+                }}
+              >
+                <Btn
+                  variant="ghost"
+                  onClick={cancelScopeEdit}
+                  disabled={busy}
+                >
+                  {t("agentInstance.detail.cancelScopeEdit")}
+                </Btn>
+                <Btn
+                  variant="ghost"
+                  onClick={(): void => {
+                    void saveScope();
+                  }}
+                  disabled={busy || onCooldown() || !scopeDirty}
+                >
+                  {t("agentInstance.detail.saveScope")}
+                </Btn>
+              </div>
+            </>
+          ) : (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+              }}
+            >
+              <div
+                data-testid="scope-chips"
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 6,
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "var(--fs-micro)",
+                }}
+              >
+                {scopeCommitted.length === 0 ? (
+                  <span style={{ color: "var(--ink-3)" }}>
+                    {t("agentInstance.detail.scopeEmpty")}
+                  </span>
+                ) : (
+                  scopeCommitted.map((id) => (
+                    <span
+                      key={id}
+                      data-domain-id={id}
+                      style={{
+                        border: "1px solid var(--rule)",
+                        borderRadius: "var(--radius-m)",
+                        padding: "2px 6px",
+                        color: "var(--ink-1)",
+                        background: "var(--paper-2)",
+                      }}
+                    >
+                      {slugOf(id)}
+                    </span>
+                  ))
+                )}
+              </div>
+              <Btn
+                variant="ghost"
+                onClick={(): void => setScopeEditing(true)}
+                disabled={busy}
+              >
+                {t("agentInstance.detail.editScope")}
+              </Btn>
+            </div>
+          )}
+        </div>
+
+        {/* Locale editor (PR-W4-UI) */}
+        <h3 style={SECTION_HEADING_STYLE}>
+          {t("agentInstance.detail.locale")}
+        </h3>
+        <div style={SECTION_STYLE}>
+          <select
+            value={locale}
+            disabled={busy || onCooldown()}
+            onChange={(e): void => {
+              const v = e.target.value;
+              if (v === "en" || v === "pl" || v === "auto") {
+                void saveLocale(v);
+              }
+            }}
+            style={INPUT_STYLE}
+            aria-label={t("agentInstance.detail.locale")}
+          >
+            {LOCALES.map((l) => (
+              <option key={l} value={l}>
+                {l}
+              </option>
+            ))}
+          </select>
         </div>
 
         {/* Output channels */}
@@ -453,6 +829,89 @@ export function AgentInstanceDetail(
               {t("agentInstance.detail.saveSchedule")}
             </Btn>
           </div>
+        </div>
+
+        {/* Memory clear (PR-W4-UI) — destructive; gated by confirm
+            checkbox per the design-system rule for irreversible
+            actions (DomainDetail hard-delete pattern). */}
+        <h3 style={SECTION_HEADING_STYLE}>
+          {t("agentInstance.detail.memory")}
+        </h3>
+        <div style={SECTION_STYLE}>
+          {memoryClearStage === "confirm" ? (
+            <>
+              <p style={HINT_STYLE}>
+                {t("agentInstance.detail.memoryClearConfirmBody")}
+              </p>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontFamily: "var(--font-sans)",
+                  fontSize: "var(--fs-small)",
+                  color: "var(--ink-2)",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={memoryConfirmAck}
+                  disabled={busy}
+                  onChange={(e): void =>
+                    setMemoryConfirmAck(e.target.checked)
+                  }
+                />
+                {t("agentInstance.detail.memoryClearAck")}
+              </label>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  gap: 8,
+                }}
+              >
+                <Btn
+                  variant="ghost"
+                  onClick={(): void => {
+                    setMemoryClearStage("idle");
+                    setMemoryConfirmAck(false);
+                  }}
+                  disabled={busy}
+                >
+                  {t("agentInstance.detail.cancelMemoryClear")}
+                </Btn>
+                <Btn
+                  variant="ghost"
+                  onClick={(): void => {
+                    void clearMemory();
+                  }}
+                  disabled={busy || onCooldown() || !memoryConfirmAck}
+                >
+                  {t("agentInstance.detail.confirmMemoryClear")}
+                </Btn>
+              </div>
+            </>
+          ) : (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <p style={HINT_STYLE}>
+                {t("agentInstance.detail.memoryClearHint")}
+              </p>
+              <Btn
+                variant="ghost"
+                onClick={(): void => setMemoryClearStage("confirm")}
+                disabled={busy || onCooldown()}
+              >
+                {t("agentInstance.detail.clearMemory")}
+              </Btn>
+            </div>
+          )}
         </div>
 
         {/* Toast region */}
