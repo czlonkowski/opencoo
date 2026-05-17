@@ -21,6 +21,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, within } from "@testing-library/react";
 
 import { GROUPS, Sidebar, TopBar, groupForTab } from "../../src/components/Chrome.js";
+import type { Tab } from "../../src/types.js";
 
 describe("Sidebar groups (PR-W10)", () => {
   it("renders the four groups in canonical order (Operate first)", () => {
@@ -95,6 +96,16 @@ describe("Sidebar groups (PR-W10)", () => {
     expect(groupForTab("cost").key).toBe("governance");
     expect(groupForTab("audit").key).toBe("governance");
     expect(groupForTab("reports").key).toBe("diagnostics");
+  });
+
+  // Copilot triage on PR-W10: silent fallback to Diagnostics
+  // would mis-render the breadcrumb on a future tab that wasn't
+  // assigned to GROUPS. Throw fast so the regression surfaces at
+  // mount time in dev/test.
+  it("groupForTab throws when a future tab lacks group coverage", () => {
+    expect(() => groupForTab("unknown" as unknown as Tab)).toThrow(
+      /no group assignment for tab/i,
+    );
   });
 });
 

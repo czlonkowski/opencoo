@@ -38,9 +38,16 @@ export interface DomainsProps {
   readonly onNavigateToPrompts?: (domainId: string) => void;
   /** PR-W10 — Cmd-K palette pre-select. When set, the route
    *  auto-opens DomainDetail for the matching row once the
-   *  domains list resolves. The prop is read once on mount and
-   *  on `rows` arrival; manual selections after that ignore it. */
+   *  domains list resolves. Consumed once via
+   *  `onInitialOpenIdConsumed`; subsequent route remounts
+   *  without a fresh palette dispatch will NOT re-open the
+   *  old row. (Copilot triage on PR-W10.) */
   readonly initialOpenId?: string;
+  /** PR-W10 — Consume signal. Fired once the route has used
+   *  `initialOpenId` to open the matching drill-down. App.tsx
+   *  clears its `domainsOpenId` state so closing the modal +
+   *  navigating away + returning doesn't re-open the same row. */
+  readonly onInitialOpenIdConsumed?: () => void;
   /** PR-W10 — Breadcrumb publisher. The route calls this with
    *  the selected domain's slug whenever the drill-down opens,
    *  and with `null` when it closes. App.tsx renders the value
@@ -86,14 +93,21 @@ export function Domains(props: DomainsProps = {}): JSX.Element {
   }, [refreshNonce, showDisabled]);
 
   // PR-W10 — auto-open drill-down for a palette-dispatched id.
-  // Runs once per `initialOpenId` change, gated on `rows`
-  // arrival so the matching domain is in scope.
+  // The effect is gated on `rows` arrival so the matching domain
+  // is in scope; once it fires `onInitialOpenIdConsumed` the
+  // parent clears its `domainsOpenId` and this effect won't
+  // re-trigger on subsequent remounts / refetches (Copilot
+  // triage on PR-W10).
   const initialOpenId = props.initialOpenId;
+  const onInitialOpenIdConsumed = props.onInitialOpenIdConsumed;
   useEffect((): void => {
     if (initialOpenId === undefined || rows === null) return;
     const match = rows.find((d) => d.id === initialOpenId);
-    if (match !== undefined) setSelected(match);
-  }, [initialOpenId, rows]);
+    if (match !== undefined) {
+      setSelected(match);
+      onInitialOpenIdConsumed?.();
+    }
+  }, [initialOpenId, rows, onInitialOpenIdConsumed]);
 
   // PR-W10 — publish row-name to the App's breadcrumb on
   // selection changes.

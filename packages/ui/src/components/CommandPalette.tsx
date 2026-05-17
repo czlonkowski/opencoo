@@ -49,7 +49,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 
-import { fetchAdmin } from "../lib/api.js";
+import { fetchAdmin, fetchOptsFor } from "../lib/api.js";
 import type {
   AgentInstance,
   Domain,
@@ -249,18 +249,24 @@ export function CommandPalette(props: CommandPaletteProps): JSX.Element {
   const onNavigate = props.onNavigate;
 
   // Esc-to-close + focus on mount. Listen on document so the
-  // handler fires regardless of where focus sits (the input
-  // gets initial focus but operators may tab away).
+  // handler fires regardless of where focus sits (the input gets
+  // initial focus but operators may tab away). Captured at the
+  // capture phase + `stopImmediatePropagation` so an underlying
+  // Modal's document Esc listener doesn't ALSO close — without
+  // this, opening the palette while a domain detail is open and
+  // pressing Esc closed both surfaces (Copilot triage on PR-W10).
   useEffect(() => {
     inputRef.current?.focus();
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") {
         e.preventDefault();
+        e.stopImmediatePropagation();
         onClose();
       }
     };
-    document.addEventListener("keydown", onKey);
-    return (): void => document.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, { capture: true });
+    return (): void =>
+      document.removeEventListener("keydown", onKey, { capture: true });
   }, [onClose]);
 
   // Async load of admin-API result lists. Skipped when the test
@@ -271,7 +277,10 @@ export function CommandPalette(props: CommandPaletteProps): JSX.Element {
     let cancelled = false;
     void (async (): Promise<void> => {
       try {
-        const fetchOpts = fetchImpl !== undefined ? { fetchImpl } : {};
+        // Use the shared `fetchOptsFor` helper so optional
+        // `fetchImpl` threading matches every other route under
+        // `exactOptionalPropertyTypes` (Copilot triage on PR-W10).
+        const fetchOpts = fetchOptsFor(fetchImpl);
         const [domainsResp, bindingsResp, agentsResp] = await Promise.all([
           fetchAdmin<DomainsResponse>("/api/admin/domains", fetchOpts),
           fetchAdmin<BindingsResponse>(
@@ -291,10 +300,16 @@ export function CommandPalette(props: CommandPaletteProps): JSX.Element {
           });
         }
         for (const b of bindingsResp.rows ?? []) {
+          // Label by `name` (the same property Sources renders +
+          // breadcrumbs publish) so what the operator sees in the
+          // palette matches what opens in Sources. The
+          // `adapterSlug → domainSlug` form is appended as the
+          // searchable subtitle so adapter/domain queries still
+          // resolve. (Copilot triage on PR-W10.)
           collected.push({
             id: `binding:${b.id}`,
             kind: "binding",
-            label: `${b.adapterSlug} → ${b.domainSlug}`,
+            label: `${b.name} (${b.adapterSlug} → ${b.domainSlug})`,
             target: { tab: "sources", entityId: b.id },
           });
         }
