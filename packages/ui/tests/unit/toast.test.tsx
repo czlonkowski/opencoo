@@ -262,6 +262,57 @@ describe("useToast — auto-dismiss + hover pause", () => {
     expect(screen.queryByRole("status")).toBeNull();
   });
 
+  it("does not resume the timer when focus moves between descendants (focusout bubble)", () => {
+    // `onBlur` bubbles in React (focusout); moving focus between
+    // descendants (e.g. Dismiss → Show details) would otherwise
+    // fire a spurious blur + immediate focus pair and resume the
+    // timer mid-interaction. The fix is to gate on
+    // `relatedTarget`: only resume when focus has left the toast.
+    // (Copilot triage on PR-B7.)
+    renderWithProvider(
+      <Harness
+        fire={(api): void =>
+          api.alert({
+            message: "boom",
+            details: "name: too long",
+            sticky: false,
+            durationMs: 6000,
+          })
+        }
+      />,
+    );
+    fireEvent.click(screen.getByText("fire"));
+    const toast = screen.getByRole("alert");
+    const dismissBtn = within(toast).getByRole("button", { name: /dismiss/i });
+    const detailsBtn = within(toast).getByRole("button", { name: /details/i });
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    // Focus enters via the dismiss button — pause armed.
+    fireEvent.focus(dismissBtn);
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(screen.queryByRole("alert")).not.toBeNull();
+    // Move focus from Dismiss → Details (both inside the toast).
+    // The bubbled blur on the <li> carries `relatedTarget =
+    // detailsBtn`, which is contained in the toast — no resume.
+    fireEvent.blur(dismissBtn, { relatedTarget: detailsBtn });
+    fireEvent.focus(detailsBtn, { relatedTarget: dismissBtn });
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    // Toast must still be present — the focus shuffle inside it
+    // did not resume the timer.
+    expect(screen.queryByRole("alert")).not.toBeNull();
+    // Focus leaves the toast entirely — resume.
+    fireEvent.blur(detailsBtn, { relatedTarget: document.body });
+    act(() => {
+      vi.advanceTimersByTime(4001);
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("sticky toasts never auto-dismiss", () => {
     renderWithProvider(
       <Harness

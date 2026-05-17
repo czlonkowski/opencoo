@@ -35,11 +35,20 @@
  *     `--paper-3` border on three sides + the tone-colored
  *     left-border.
  *   - No fully-rounded surfaces — `--radius-m` (4px).
- *   - No animation loop — mount is a single 200ms slide-in via
- *     `--ease-write`; dismiss is a 150ms fade. Respects
- *     `prefers-reduced-motion: reduce` (no inline animations
- *     are emitted; the design tokens carry the reduced-motion
- *     clamp).
+ *   - No animation: mount is an instant insert and dismiss is
+ *     an instant remove. The component emits no inline
+ *     `animation` or `transition` styles (a unit test pins this
+ *     against re-introducing a shimmer/pulse loop). The plan-
+ *     appendix §B7 brief originally specified one-shot
+ *     `--ease-write` slide-in + fade-out for mount/dismiss, but
+ *     implementing real enter/exit transitions requires an
+ *     "exiting" state on the reducer + a per-toast unmount-after-
+ *     animation timer; that machinery was deferred because the
+ *     test-pinned no-loop invariant already satisfies the
+ *     design-system "exactly one loop" rule and `prefers-reduced-
+ *     motion` (which would otherwise need a second clamp here).
+ *     A4 (Phase 3) lands the live-region wiring next and is the
+ *     natural place to revisit enter/exit motion if needed.
  *   - No gradients, no backdrop-blur.
  *
  * Security: `safeErrorMessage` from `lib/safe-error.ts` must be
@@ -247,7 +256,15 @@ export function ToastRegion(): JSX.Element | null {
         <ToastItem
           key={toast.id}
           toast={toast}
-          onDismiss={(): void => ctx.dismiss(toast.id)}
+          // `ctx.dismiss` is `useCallback`-stable (it dispatches
+          // a reducer action — no closed-over rendered state).
+          // Passing it down + the id separately lets `<ToastItem>`
+          // keep its dismiss-timer `useEffect` dependency list
+          // tight (Copilot triage on PR-B7 — without this, every
+          // re-render of ToastRegion would form a fresh inline
+          // closure and `<ToastItem>`'s effect would clear + re-
+          // arm the timer on every keystroke elsewhere in the app).
+          dismiss={ctx.dismiss}
         />
       ))}
     </ol>
@@ -267,10 +284,13 @@ export function ToastRegion(): JSX.Element | null {
  * ============================================================ */
 function ToastItem(props: {
   readonly toast: InternalToast;
-  readonly onDismiss: () => void;
+  /** Stable reference (`useCallback` over `dispatch({type:"dismiss"})`)
+   *  so the dismiss-timer effect can list it as a dep without
+   *  thrashing the timer on every parent re-render. */
+  readonly dismiss: (id: string) => void;
 }): JSX.Element {
   const { t } = useTranslation();
-  const { toast } = props;
+  const { toast, dismiss } = props;
   const [showDetails, setShowDetails] = useState(false);
   const [paused, setPaused] = useState(false);
   // `remainingRef` carries the un-expired portion of the toast's
@@ -292,7 +312,7 @@ function ToastItem(props: {
     }
     tickStartRef.current = Date.now();
     timerRef.current = setTimeout((): void => {
-      props.onDismiss();
+      dismiss(toast.id);
     }, remainingRef.current);
     return (): void => {
       if (timerRef.current !== null) {
@@ -307,12 +327,12 @@ function ToastItem(props: {
         timerRef.current = null;
       }
     };
-    // Re-arm whenever paused flips. `toast.durationMs` is stable
-    // for the toast's lifetime (set on push). `props.onDismiss`
-    // is a fresh closure per render of the parent, but the effect
-    // is idempotent — re-arming just clears + restarts the timer
-    // with the same remaining budget.
-  }, [paused, props, toast.durationMs]);
+    // Deps are exactly the values the effect closes over.
+    // `dismiss` is `useCallback`-stable from the provider (Copilot
+    // triage); `toast.id` + `toast.durationMs` are pinned on push;
+    // `paused` flips on hover/focus. No `props` object in deps —
+    // that would re-fire on every parent render (Copilot triage).
+  }, [paused, toast.durationMs, toast.id, dismiss]);
 
   const onMouseEnter = useCallback((): void => {
     setPaused(true);
@@ -320,14 +340,40 @@ function ToastItem(props: {
   const onMouseLeave = useCallback((): void => {
     setPaused(false);
   }, []);
-  // Focus/blur mirror hover so keyboard users get the same pause
-  // semantics. `onFocus` on the `<li>` fires when any descendant
-  // is focused (the close button, the details toggle).
-  const onFocus = onMouseEnter;
-  const onBlur = onMouseLeave;
+  // Keyboard parity: focus pauses, blur resumes — but only when
+  // focus leaves the toast entirely. `onFocus` / `onBlur` bubble
+  // in React (focusin / focusout semantics), so moving focus
+  // between descendants (Dismiss → Show details → Dismiss) would
+  // otherwise fire spurious blur/focus pairs and resume the timer
+  // mid-interaction (Copilot triage on PR-B7).
+  const onFocus = useCallback(
+    (e: React.FocusEvent<HTMLLIElement>): void => {
+      // `relatedTarget` is where focus is moving FROM; if it was
+      // outside this `<li>`, we're entering the toast → pause.
+      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+        setPaused(true);
+      }
+    },
+    [],
+  );
+  const onBlur = useCallback(
+    (e: React.FocusEvent<HTMLLIElement>): void => {
+      // `relatedTarget` is where focus is moving TO; if it's
+      // still inside the toast, we're moving between descendants
+      // → keep paused. Only resume when focus has left the toast.
+      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+        setPaused(false);
+      }
+    },
+    [],
+  );
 
   const tone = TONE_STYLES[toast.tone];
   const role = toast.tone === "alert" ? "alert" : "status";
+
+  const onDismissClick = useCallback((): void => {
+    dismiss(toast.id);
+  }, [dismiss, toast.id]);
 
   return (
     <li
@@ -359,7 +405,7 @@ function ToastItem(props: {
         <button
           type="button"
           aria-label={t("toast.dismiss")}
-          onClick={props.onDismiss}
+          onClick={onDismissClick}
           style={DISMISS_BTN_STYLE}
         >
           {/* Times-glyph rendered as a typographic character so
