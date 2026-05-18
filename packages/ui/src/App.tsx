@@ -460,8 +460,18 @@ function AppInner(): JSX.Element {
         flexDirection: "column",
         height: "100%",
         background: "var(--paper)",
+        position: "relative",
       }}
     >
+      {/* PR-A6 (wave-16) — "Skip to content" skip-link. MUST be
+          the first focusable element in the tree so a Tab press
+          from the URL bar lands on it before any chrome. Off-
+          screen by default (CSS: top: -100px), slides into view
+          on :focus. Target id `opencoo-main` lives on the <main>
+          element below. */}
+      <a href="#opencoo-main" className="opencoo-skip-link">
+        {t("accessibility.skipToContent")}
+      </a>
       <DebugBanner visible={debugActive} />
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
         <Sidebar
@@ -496,6 +506,7 @@ function AppInner(): JSX.Element {
             onChangeLocale={onChangeLocale}
           />
           <main
+            id="opencoo-main"
             aria-labelledby="opencoo-page-h1"
             style={{
               flex: 1,

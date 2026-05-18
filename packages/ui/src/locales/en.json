@@ -4,6 +4,9 @@
     "tagline": "self-hosted",
     "version": "v0.1"
   },
+  "accessibility": {
+    "skipToContent": "Skip to content"
+  },
   "validation": {
     "checking": "checking…",
     "slugTaken": "Slug is already used by another domain.",
