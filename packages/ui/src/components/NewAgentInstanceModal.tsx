@@ -167,6 +167,15 @@ export function NewAgentInstanceModal(
     readonly name: string;
     readonly schedule_cron: string;
   }>({ name: "", schedule_cron: "" });
+  // PR-B4 (Copilot triage): cache the known domain-id set so the
+  // scope-domain-ids async validator doesn't re-GET `/api/admin/
+  // domains` on every selection toggle. Fetched once per modal
+  // session; the server's submit-time `unknown_scope_domain_ids`
+  // 422 still catches any race between cache load and submit.
+  const domainIdCacheRef = useRef<ReadonlySet<string> | null>(null);
+  const domainIdCacheLoadingRef = useRef<Promise<ReadonlySet<string>> | null>(
+    null,
+  );
 
   // Subscribe to native `input` events on the uncontrolled inputs.
   // Mirrors the Z9 pattern in NewDomainModal — external-setter
@@ -216,9 +225,13 @@ export function NewAgentInstanceModal(
     },
     {
       name: (v: string): string | null => {
+        // Empty input stays idle (operator hasn't typed yet) — the
+        // submit-time `nameRequired` gate still fires.
         if (v.length === 0) return null;
         const trimmed = v.trim();
-        if (trimmed.length < 1) {
+        // Pure whitespace flags `nameRequired` as soon as it's typed
+        // (the operator clearly meant to enter a name).
+        if (trimmed.length === 0) {
           return t("agentInstance.create.errors.nameRequired");
         }
         if (trimmed.length > 100) {
@@ -250,16 +263,29 @@ export function NewAgentInstanceModal(
           if (v.length === 0) return null;
           const picked = v.split(",").filter((s) => s.length > 0);
           if (picked.length === 0) return null;
+          // PR-B4 (Copilot triage): match against a cached known-id
+          // set; the GET fires at most once per modal session. The
+          // server's submit-time `unknown_scope_domain_ids` 422
+          // catches any race between cache load and submit.
           try {
-            const resp = await fetchAdmin<{
-              rows: ReadonlyArray<{ id: string }>;
-            }>(
-              "/api/admin/domains",
-              fetchOptsFor(props.fetchImpl),
-            );
+            let known = domainIdCacheRef.current;
+            if (known === null) {
+              if (domainIdCacheLoadingRef.current === null) {
+                domainIdCacheLoadingRef.current = (async (): Promise<
+                  ReadonlySet<string>
+                > => {
+                  const resp = await fetchAdmin<{
+                    rows: ReadonlyArray<{ id: string }>;
+                  }>("/api/admin/domains", fetchOptsFor(props.fetchImpl));
+                  const set = new Set(resp.rows.map((r) => r.id));
+                  domainIdCacheRef.current = set;
+                  return set;
+                })();
+              }
+              known = await domainIdCacheLoadingRef.current;
+            }
             if (signal.aborted) return null;
-            const known = new Set(resp.rows.map((r) => r.id));
-            const missing = picked.filter((id) => !known.has(id));
+            const missing = picked.filter((id) => !known!.has(id));
             return missing.length === 0
               ? null
               : t("validation.scopeDomainMissing");

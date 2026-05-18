@@ -107,6 +107,7 @@
         "slugFormat": "Slug must match ^[a-z][a-z0-9-]{1,62}$.",
         "slugTaken": "That slug is already taken.",
         "displayNameRequired": "Display name is required.",
+        "displayNameTooLong": "Display name must be 100 characters or fewer.",
         "generic": "Could not create domain. Try again or check the audit log."
       }
     },

@@ -164,6 +164,17 @@ export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
     readonly slug: string;
     readonly display_name: string;
   }>({ slug: "", display_name: "" });
+  // PR-B4 (Copilot triage): cache the slug set so the live-
+  // validation async leg doesn't re-GET `/api/admin/domains` on
+  // every keystroke. The list is fetched once per modal session
+  // and the async validator matches locally. A stale cache window
+  // is acceptable here — the server's `slug_taken` check still
+  // runs at submit time and surfaces the inline 409 error if a
+  // race created a colliding slug between cache load and submit.
+  const slugCacheRef = useRef<{
+    readonly slugs: ReadonlySet<string>;
+  } | null>(null);
+  const slugCacheLoadingRef = useRef<Promise<ReadonlySet<string>> | null>(null);
 
   // Subscribe to native `input` events directly on the DOM nodes
   // — bypasses React's synthetic event system entirely, which
@@ -250,20 +261,36 @@ export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
           _all: { slug: string; display_name: string },
           signal: AbortSignal,
         ): Promise<string | null> => {
-          // GET the existing domains and check for a slug match.
+          // PR-B4 (Copilot triage): match against a cached slug
+          // set; the GET fires at most once per modal session.
           // Server-side authz + CSRF is carried by `fetchAdmin`;
           // we do NOT inline a raw fetch here (THREAT-MODEL §5).
+          // The submit-time `slug_taken` server check still catches
+          // any race between cache load and submit.
           try {
-            const resp = await fetchAdmin<{
-              rows: ReadonlyArray<{ slug: string }>;
-            }>("/api/admin/domains", {
-              ...(props.fetchImpl !== undefined
-                ? { fetchImpl: props.fetchImpl }
-                : {}),
-            });
+            let cache = slugCacheRef.current;
+            if (cache === null) {
+              if (slugCacheLoadingRef.current === null) {
+                slugCacheLoadingRef.current = (async (): Promise<
+                  ReadonlySet<string>
+                > => {
+                  const resp = await fetchAdmin<{
+                    rows: ReadonlyArray<{ slug: string }>;
+                  }>("/api/admin/domains", {
+                    ...(props.fetchImpl !== undefined
+                      ? { fetchImpl: props.fetchImpl }
+                      : {}),
+                  });
+                  const set = new Set(resp.rows.map((r) => r.slug));
+                  slugCacheRef.current = { slugs: set };
+                  return set;
+                })();
+              }
+              const slugs = await slugCacheLoadingRef.current;
+              cache = { slugs };
+            }
             if (signal.aborted) return null;
-            const hit = resp.rows.find((r) => r.slug === v);
-            return hit !== undefined ? t("validation.slugTaken") : null;
+            return cache.slugs.has(v) ? t("validation.slugTaken") : null;
           } catch {
             // Surface no error inline — the submit-time error path
             // still catches network failures with a generic message.
@@ -278,7 +305,7 @@ export function NewDomainModal(props: NewDomainModalProps): JSX.Element {
           return t("domains.create.errors.displayNameRequired");
         }
         if (trimmed.length > 100) {
-          return t("domains.create.errors.displayNameRequired");
+          return t("domains.create.errors.displayNameTooLong");
         }
         return null;
       },

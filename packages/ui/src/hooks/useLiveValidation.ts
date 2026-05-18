@@ -96,6 +96,17 @@ export function useLiveValidation<T extends Record<string, string>>(
   // shape at mount time.
   const fieldNames = Object.keys(validators) as Array<keyof T & string>;
 
+  // Validators are stored on a ref so the effect (which only
+  // depends on `values` + the field-name set) always reads the
+  // freshest closures. Callers commonly recreate the validator
+  // map every render — they close over `t` (i18n) or component
+  // props, and a stale closure here would surface English error
+  // copy on locale-switched modals (or worse, stale comparisons
+  // against props that no longer apply). Updating the ref on
+  // every render is cheap; the effect runs only on value changes.
+  const validatorsRef = useRef<ValidatorMap<T>>(validators);
+  validatorsRef.current = validators;
+
   const [state, setState] = useState<Record<string, ValidationState>>({});
 
   // Refs that survive renders without triggering re-runs.
@@ -124,7 +135,7 @@ export function useLiveValidation<T extends Record<string, string>>(
       // changed either.
       if (value === prevValue) continue;
 
-      const entry = normalizeEntry<T>(validators[name]);
+      const entry = normalizeEntry<T>(validatorsRef.current[name]);
 
       // Sync first — short-circuits async on format failure.
       if (entry.sync !== undefined) {

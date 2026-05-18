@@ -82,7 +82,6 @@ describe("NewAgentInstanceModal — live validation (PR-B4)", () => {
   it("name field surfaces 'name too long' inline when the operator types over 100 chars", async () => {
     setPat("test-pat");
     const stub = makeStubFetch();
-    const user = userEvent.setup();
     render(
       <NewAgentInstanceModal
         onCreated={() => undefined}
@@ -97,15 +96,15 @@ describe("NewAgentInstanceModal — live validation (PR-B4)", () => {
       "input[name='name']",
     ) as HTMLInputElement;
     const oversized = "a".repeat(101);
-    // userEvent.type would key-press 101 times — set via native
-    // setter for speed.
+    // user.type would key-press 101 times — set via the native
+    // value setter for speed (and to dispatch a single `input`
+    // event the modal's listener consumes).
     const setter = Object.getOwnPropertyDescriptor(
       window.HTMLInputElement.prototype,
       "value",
     )?.set;
     setter!.call(nameInput, oversized);
     fireEvent(nameInput, new Event("input", { bubbles: true }));
-    void user; // keep import non-removed
     await waitFor(() =>
       expect(nameInput).toHaveAttribute("aria-invalid", "true"),
     );
