@@ -552,6 +552,10 @@
     "governanceCadence": {
       "label": "rytm nadzoru",
       "body": "Jak często ludzki recenzent ma przejrzeć skompilowane strony tej domeny. Steruje rytmem wyświetlania w agencie Heartbeat i pojawia się na osi Raportów. Wybierz `weekly` dla domen o wysokiej dynamice, `quarterly` dla archiwalnych."
+    },
+    "assigneeGid": {
+      "label": "gid przypisanej osoby",
+      "body": "Opcjonalny gid użytkownika Asany, do którego automatycznie przypisywane jest zadanie Heartbeat. Zostaw puste, by nie przypisywać. Aby znaleźć gid: otwórz profil osoby w Asanie i odczytaj końcowy numer w adresie URL (`asana.com/0/<gid>` lub trasa `/users/<gid>`) albo skopiuj go z listy członków przestrzeni roboczej."
     }
   },
   "credentialForm": {
@@ -1052,6 +1056,13 @@
         "name": "nazwa",
         "adapter": "adapter",
         "state": "stan"
+      },
+      "asana": {
+        "assigneeGidLabel": "assignee_gid",
+        "saveAssignee": "Zapisz przypisanego",
+        "savingAssignee": "zapisywanie…",
+        "savedAssignee": "zapisano",
+        "saveError": "Nie udało się zapisać przypisanego. Spróbuj ponownie lub sprawdź dziennik audytu."
       }
     },
     "bulkDelete": {

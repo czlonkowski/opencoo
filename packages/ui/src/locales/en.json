@@ -549,6 +549,10 @@
     "governanceCadence": {
       "label": "governance cadence",
       "body": "How often a human reviewer is expected to walk this domain's compiled pages. Drives the heartbeat agent's surfacing cadence and shows on the Reports timeline. Choose `weekly` for high-velocity domains, `quarterly` for archival ones."
+    },
+    "assigneeGid": {
+      "label": "assignee gid",
+      "body": "Optional Asana user gid the heartbeat task is auto-assigned to. Leave empty to leave the task unassigned. To find a user gid: open the person's Asana profile and read the trailing number in the URL (`asana.com/0/<gid>` or the `/users/<gid>` route), or copy it from the Asana workspace members list."
     }
   },
   "credentialForm": {
@@ -1047,6 +1051,13 @@
         "name": "name",
         "adapter": "adapter",
         "state": "state"
+      },
+      "asana": {
+        "assigneeGidLabel": "assignee_gid",
+        "saveAssignee": "Save assignee",
+        "savingAssignee": "saving…",
+        "savedAssignee": "saved",
+        "saveError": "Could not save the assignee. Try again or check the audit log."
       }
     },
     "bulkDelete": {

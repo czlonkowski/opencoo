@@ -8,11 +8,20 @@
  *   - Delete via DELETE — an inline confirmation step gates the
  *     destructive action.
  *
- * Adapter-specific credential rotation + config edit land in v0.2
- * — they require the schema-driven form renderer (mirroring
- * `SourceBindingDetail.tsx`'s Edit panel). For phase-a partner
- * cutover, Enable/Disable/Delete is enough to recover from a
- * mis-configured channel.
+ * PR-Asana (wave-17 / phase-a appendix #17) — adds an Asana-only
+ * inline editor for `assignee_gid`. Wave-14 W5 added the field to
+ * the channel-config Zod schema and the heartbeat-to-Asana
+ * transformer reads it; this is the operator-facing way to set or
+ * clear it after the channel has been provisioned. The previous
+ * "v0.2 schema-driven editor" note still holds for the other
+ * Asana fields (`section_gid`, `due_date_policy`, `title_prefix`)
+ * — only `assignee_gid` ships in this PR because that's the field
+ * partners need today.
+ *
+ * Adapter-specific credential rotation + the schema-driven full
+ * config-edit panel land in v0.2 (mirroring `SourceBindingDetail.tsx`'s
+ * Edit panel). For phase-a partner cutover, Enable/Disable/Delete +
+ * `assignee_gid` is enough.
  */
 import { useCallback, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
@@ -21,6 +30,7 @@ import { Btn } from "./Btn.js";
 import { Modal } from "./Modal.js";
 import { SavingDot, type SavingDotState } from "./SavingDot.js";
 import { useToast } from "./Toast.js";
+import { TooltipTrigger } from "./Tooltip.js";
 import { useOptimisticPatch } from "../hooks/useOptimisticPatch.js";
 import { ApiAuthError, ApiValidationError, fetchAdmin, fetchOptsFor } from "../lib/api.js";
 import { safeErrorMessage } from "../lib/safe-error.js";
@@ -115,6 +125,63 @@ export function OutputChannelDetail(
     }
   };
 
+  // ── PR-Asana (wave-17): inline `assignee_gid` editor for Asana
+  // channels. Local draft state + a manual Save button (no
+  // optimistic-on-change like Enable/Disable — the operator types a
+  // GID, then commits). Empty draft → field is dropped from the
+  // PATCH body (the Asana Zod schema rejects ""; optional means
+  // absent, not empty string).
+  const isAsana = props.channel.adapterSlug === "asana";
+  const initialAssignee =
+    typeof props.channel.config["assignee_gid"] === "string"
+      ? (props.channel.config["assignee_gid"] as string)
+      : "";
+  const [assigneeDraft, setAssigneeDraft] = useState<string>(initialAssignee);
+  const [assigneeCueState, setAssigneeCueState] =
+    useState<SavingDotState>("idle");
+  const [assigneeBusy, setAssigneeBusy] = useState(false);
+
+  const onSaveAssignee = async (): Promise<void> => {
+    setAssigneeBusy(true);
+    setAssigneeCueState("saving");
+    setError(null);
+    // Server PATCH `/config` is a full jsonb REPLACE — preserve every
+    // existing key on the channel so a partial edit doesn't clobber
+    // `project_gid`/`section_gid`/`title_prefix`/etc. Then set or
+    // drop `assignee_gid` based on the draft.
+    const nextConfig: Record<string, unknown> = { ...props.channel.config };
+    const trimmed = assigneeDraft.trim();
+    if (trimmed.length > 0) {
+      nextConfig["assignee_gid"] = trimmed;
+    } else {
+      delete nextConfig["assignee_gid"];
+    }
+    try {
+      await fetchAdmin(`/api/admin/output-channels/${props.channel.id}`, {
+        method: "PATCH",
+        body: { config: nextConfig },
+        ...opts,
+      });
+      setAssigneeCueState("success");
+      props.onChanged();
+    } catch (err) {
+      setAssigneeCueState("error");
+      const msg =
+        err instanceof ApiAuthError || err instanceof ApiValidationError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      setError(msg);
+      toastApi.alert({
+        message: t("outputs.detail.asana.saveError"),
+        details: safeErrorMessage(err),
+      });
+    } finally {
+      setAssigneeBusy(false);
+    }
+  };
+
   const rowStyle: CSSProperties = {
     display: "grid",
     gridTemplateColumns: "120px 1fr",
@@ -150,6 +217,64 @@ export function OutputChannelDetail(
               : t("outputs.enabledNo")}
           </div>
         </div>
+        {isAsana ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              paddingTop: 8,
+              borderTop: "1px solid var(--rule)",
+            }}
+          >
+            <label
+              htmlFor="output-channel-assignee-gid"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                fontFamily: "var(--font-mono)",
+                fontSize: "var(--fs-micro)",
+                color: "var(--ink-3)",
+                textTransform: "uppercase",
+                letterSpacing: "0.04em",
+              }}
+            >
+              {t("outputs.detail.asana.assigneeGidLabel")}
+              <TooltipTrigger term="assigneeGid" />
+              <SavingDot state={assigneeCueState} />
+            </label>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                id="output-channel-assignee-gid"
+                type="text"
+                value={assigneeDraft}
+                onChange={(e): void => setAssigneeDraft(e.target.value)}
+                disabled={assigneeBusy}
+                style={{
+                  flex: 1,
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "var(--fs-mono)",
+                  padding: "6px 8px",
+                  border: "1px solid var(--rule)",
+                  borderRadius: 4,
+                  background: "var(--paper)",
+                }}
+              />
+              <Btn
+                variant="ghost"
+                onClick={(): void => {
+                  void onSaveAssignee();
+                }}
+                disabled={assigneeBusy}
+                aria-label={t("outputs.detail.asana.saveAssignee")}
+              >
+                {assigneeBusy
+                  ? t("outputs.detail.asana.savingAssignee")
+                  : t("outputs.detail.asana.saveAssignee")}
+              </Btn>
+            </div>
+          </div>
+        ) : null}
         {error !== null ? (
           <div
             role="alert"
