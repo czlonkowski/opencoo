@@ -5,10 +5,13 @@
  *
  * Mounted unconditionally from `App.tsx`; the body short-circuits
  * to `null` unless `import.meta.env.DEV` is true OR the URL carries
- * `?perfDebug=1`. In production the static-replacer collapses the
- * `import.meta.env.DEV` reference to `false`, so the component's
- * polling effect never runs and its render returns `null` — the
- * Rollup tree-shake then drops the unused render path.
+ * `?perfDebug=1`. The component IS retained in the production
+ * bundle (because of the runtime `?perfDebug=1` escape hatch),
+ * but the polling effect short-circuits on `!enabled` so a
+ * normal prod operator pays only the cost of one boolean check
+ * per App render. (Originally claimed to tree-shake out; revised
+ * after Copilot triage on PR-B8 — the runtime URL check holds
+ * the path alive for the production-debugging use case.)
  *
  * The panel polls `window.opencoo_perf` on a 1-second interval
  * (entries don't arrive on a React-state cycle — they're pushed
@@ -37,9 +40,11 @@ import type { OpencooPerfEntry } from "../lib/perf-marks.js";
 
 export interface PerfPanelProps {
   /** @internal Test seam — forces the gating boolean. Production
-   *  callers MUST NOT pass this; the panel is gated by
-   *  `import.meta.env.DEV` + the URL search param so it
-   *  tree-shakes out of the prod bundle. */
+   *  callers MUST NOT pass this; the panel decides on its own
+   *  based on `import.meta.env.DEV || ?perfDebug=1`. The runtime
+   *  URL check means the render path is RETAINED in the prod
+   *  bundle (a small fixed cost, since the panel is mounted once
+   *  at App root and short-circuits to `null` on `!enabled`). */
   readonly enabledOverride?: boolean;
 }
 

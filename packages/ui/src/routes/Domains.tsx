@@ -13,7 +13,7 @@
  * the enabled-status indicator.
  */
 import type { KeyboardEvent } from "react";
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Btn } from "../components/Btn.js";
@@ -126,6 +126,16 @@ export function Domains(props: DomainsProps = {}): JSX.Element {
 
   const fetchOpts = fetchOptsFor(props.fetchImpl);
 
+  // PR-B8 (wave-16) — only the FIRST fetch following mount is a
+  // route-navigation event. Subsequent refetches (showDisabled
+  // toggle, refreshNonce after a create / detail commit) are
+  // intra-route operations — they share the route's "click" mark
+  // but they aren't the nav. Without this gate, measureRouteNav
+  // would re-measure click → fetch-end for every refetch and
+  // pollute `window.opencoo_perf` with non-navigation timings
+  // (Copilot triage on PR-B8).
+  const didMeasureNavRef = useRef(false);
+
   useEffect((): void => {
     // PR-B8 (wave-16) — bracket the data-fetch with perf marks
     // so the click → fetch-end measure lands on
@@ -146,7 +156,10 @@ export function Domains(props: DomainsProps = {}): JSX.Element {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
         markRouteFetchEnd("domains");
-        measureRouteNav("domains");
+        if (!didMeasureNavRef.current) {
+          didMeasureNavRef.current = true;
+          measureRouteNav("domains");
+        }
       }
     })();
     // refetch when the create modal flips refreshNonce, when the

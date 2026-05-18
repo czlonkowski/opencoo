@@ -48,10 +48,43 @@ declare global {
 }
 
 /**
+ * Maximum entries retained on `window.opencoo_perf`. Past this,
+ * the oldest entries are dropped FIFO — the side-channel is for
+ * recent timings, not historical telemetry. Without a cap a
+ * long-lived SPA session would leak memory; with a cap, the
+ * trailing N entries are always available to a Lighthouse
+ * runner or the dev PerfPanel (Copilot triage on PR-B8).
+ */
+const MAX_ENTRIES = 200;
+
+/**
+ * Route key tag — narrowed to the routes' `Tab` union so
+ * `markRoute*` consumers can't pass a typoed slug that no
+ * Lighthouse / PerfPanel consumer would recognize. Duplicated
+ * literal-union rather than importing `../types.js` to keep this
+ * lib free of cross-module deps (it is the lowest-level lib in
+ * the UI package; everything imports it, it imports nothing).
+ * (Copilot triage on PR-B8.)
+ */
+export type PerfRouteKey =
+  | "domains"
+  | "sources"
+  | "agents"
+  | "outputs"
+  | "llmPolicy"
+  | "prompts"
+  | "activity"
+  | "review"
+  | "reports"
+  | "audit"
+  | "cost";
+
+/**
  * Append a single entry to `window.opencoo_perf`, creating the
- * array on first use. Exported so consumers that emit custom
- * non-route marks (e.g. agent-runs SSE) can share the channel
- * without re-importing the array.
+ * array on first use. Caps retention at `MAX_ENTRIES` (FIFO eviction)
+ * so a long-lived session can't leak memory. Exported so
+ * consumers that emit custom non-route marks (e.g. agent-runs
+ * SSE) can share the channel without re-importing the array.
  */
 export function pushPerfEntry(entry: OpencooPerfEntry): void {
   if (typeof window === "undefined") return;
@@ -59,6 +92,11 @@ export function pushPerfEntry(entry: OpencooPerfEntry): void {
     window.opencoo_perf = [];
   }
   window.opencoo_perf.push(entry);
+  // FIFO trim — keep the trailing MAX_ENTRIES so the cap is
+  // both predictable and cheap (no allocation when under cap).
+  if (window.opencoo_perf.length > MAX_ENTRIES) {
+    window.opencoo_perf.splice(0, window.opencoo_perf.length - MAX_ENTRIES);
+  }
 }
 
 function safeMark(name: string): void {
@@ -77,27 +115,27 @@ function safeMark(name: string): void {
 }
 
 /** Mark the moment a sidebar / palette click dispatches a nav. */
-export function markRouteClick(tab: string): void {
+export function markRouteClick(tab: PerfRouteKey): void {
   safeMark(`route:${tab}:click`);
 }
 
 /** Mark the start of the `React.lazy` chunk load for `tab`. */
-export function markRouteImportStart(tab: string): void {
+export function markRouteImportStart(tab: PerfRouteKey): void {
   safeMark(`route:${tab}:import-start`);
 }
 
 /** Mark the moment the lazy chunk has resolved. */
-export function markRouteImportEnd(tab: string): void {
+export function markRouteImportEnd(tab: PerfRouteKey): void {
   safeMark(`route:${tab}:import-end`);
 }
 
 /** Mark the start of the route's data fetch. */
-export function markRouteFetchStart(tab: string): void {
+export function markRouteFetchStart(tab: PerfRouteKey): void {
   safeMark(`route:${tab}:fetch-start`);
 }
 
 /** Mark the resolution of the route's data fetch. */
-export function markRouteFetchEnd(tab: string): void {
+export function markRouteFetchEnd(tab: PerfRouteKey): void {
   safeMark(`route:${tab}:fetch-end`);
 }
 
@@ -106,17 +144,27 @@ export function markRouteFetchEnd(tab: string): void {
  * that fires if the bracket marks aren't present (operator bailed
  * mid-nav). The measure also lands on `window.opencoo_perf` for
  * the dev panel.
+ *
+ * Important: callers MUST only invoke this once per nav (i.e. on
+ * the FIRST fetch following a click). The function does NOT
+ * deduplicate — if a route's data effect re-runs for a non-nav
+ * reason (toggle, refresh-nonce), calling `measureRouteNav` again
+ * would re-measure from the stale click mark and inflate the
+ * side-channel with non-navigation timings. The route is
+ * responsible for the gating (typically: capture a "did-mount"
+ * ref and only measure on the first effect run). (Copilot triage
+ * on PR-B8.)
  */
-export function measureRouteNav(tab: string): void {
+export function measureRouteNav(tab: PerfRouteKey): void {
   if (
     typeof performance === "undefined" ||
     typeof performance.measure !== "function"
   ) {
     return;
   }
-  const startName = `route:${tab}:click`;
-  const endName = `route:${tab}:fetch-end`;
-  const measureName = `route:${tab}:nav`;
+  const startName = `route:${String(tab)}:click`;
+  const endName = `route:${String(tab)}:fetch-end`;
+  const measureName = `route:${String(tab)}:nav`;
   let duration: number | undefined;
   try {
     const m = performance.measure(measureName, startName, endName);

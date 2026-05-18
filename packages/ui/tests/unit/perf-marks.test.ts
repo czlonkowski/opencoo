@@ -169,4 +169,16 @@ describe("pushPerfEntry", () => {
     expect(window.opencoo_perf[0]?.name).toBe("pre-existing");
     expect(window.opencoo_perf[1]?.name).toBe("new");
   });
+
+  it("caps the side-channel at 200 entries (FIFO eviction)", async () => {
+    const { pushPerfEntry } = await import("../../src/lib/perf-marks.js");
+    // Push 250 entries — the oldest 50 should be evicted, the
+    // trailing 200 retained.
+    for (let i = 0; i < 250; i++) {
+      pushPerfEntry({ name: `entry-${i}`, type: "mark", time: i });
+    }
+    expect(window.opencoo_perf).toHaveLength(200);
+    expect(window.opencoo_perf![0]?.name).toBe("entry-50");
+    expect(window.opencoo_perf![199]?.name).toBe("entry-249");
+  });
 });

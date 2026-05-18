@@ -139,18 +139,30 @@ const Sources = lazy(
  * `Tab` — the `Record<Tab, …>` type makes a missing entry a TS
  * compile error.
  */
+/**
+ * PR-B8 (wave-16) — prefetch entries are wrapped in the same
+ * tracedImport helper as the lazy adapters so the real chunk
+ * download time lands on `window.opencoo_perf` regardless of
+ * whether the chunk was warmed by hover/focus or pulled
+ * synchronously from the React.lazy adapter. Vite dedupes the
+ * dynamic-import URL across both call sites, so a hovered chunk
+ * + a subsequent click resolves the lazy adapter against the
+ * already-resolved promise; the import-start/end emitted from
+ * the prefetch path represents the ACTUAL download (Copilot
+ * triage on PR-B8).
+ */
 export const ROUTE_PREFETCH: Readonly<Record<Tab, () => Promise<unknown>>> = {
-  domains: (): Promise<unknown> => import("./routes/Domains.js"),
-  sources: (): Promise<unknown> => import("./routes/Sources.js"),
-  agents: (): Promise<unknown> => import("./routes/Agents.js"),
-  outputs: (): Promise<unknown> => import("./routes/Outputs.js"),
-  llmPolicy: (): Promise<unknown> => import("./routes/LlmPolicy.js"),
-  prompts: (): Promise<unknown> => import("./routes/Prompts.js"),
-  activity: (): Promise<unknown> => import("./routes/Activity.js"),
-  review: (): Promise<unknown> => import("./routes/Review.js"),
-  reports: (): Promise<unknown> => import("./routes/Reports.js"),
-  audit: (): Promise<unknown> => import("./routes/Audit.js"),
-  cost: (): Promise<unknown> => import("./routes/Cost.js"),
+  domains: tracedImport("domains", () => import("./routes/Domains.js")),
+  sources: tracedImport("sources", () => import("./routes/Sources.js")),
+  agents: tracedImport("agents", () => import("./routes/Agents.js")),
+  outputs: tracedImport("outputs", () => import("./routes/Outputs.js")),
+  llmPolicy: tracedImport("llmPolicy", () => import("./routes/LlmPolicy.js")),
+  prompts: tracedImport("prompts", () => import("./routes/Prompts.js")),
+  activity: tracedImport("activity", () => import("./routes/Activity.js")),
+  review: tracedImport("review", () => import("./routes/Review.js")),
+  reports: tracedImport("reports", () => import("./routes/Reports.js")),
+  audit: tracedImport("audit", () => import("./routes/Audit.js")),
+  cost: tracedImport("cost", () => import("./routes/Cost.js")),
 };
 
 interface CsrfResponse {
@@ -212,10 +224,12 @@ export function App(): JSX.Element {
       <LiveRegions />
       <AppInner />
       <ToastRegion />
-      {/* PR-B8 (wave-16) — dev-only perceived-performance panel.
-          The component tree-shakes out of the prod bundle: its
-          body returns null unless `import.meta.env.DEV` is true
-          or the URL carries `?perfDebug=1`. */}
+      {/* PR-B8 (wave-16) — perceived-performance debug panel.
+          Hidden by default. Renders only if `import.meta.env.DEV`
+          is true OR the URL carries `?perfDebug=1` — the runtime
+          query check holds the render path alive in the prod
+          bundle so a partner-deployment operator can flip the
+          panel on against a built bundle without a rebuild. */}
       <PerfPanel />
     </ToastProvider>
   );

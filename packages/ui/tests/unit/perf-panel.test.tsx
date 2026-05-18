@@ -20,13 +20,21 @@
  *   3. Refresh — the panel polls / re-reads the array so new
  *      entries appear (operators trigger marks AFTER mount).
  */
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 
 import { PerfPanel } from "../../src/components/PerfPanel.js";
 
 beforeEach(() => {
   delete (window as { opencoo_perf?: unknown }).opencoo_perf;
+});
+
+afterEach(() => {
+  // Defensive: if any test in this file installs fake timers and
+  // fails before its `vi.useRealTimers()` call, subsequent tests
+  // can inherit the fake-timer state. Restore unconditionally so
+  // a failure doesn't cascade (Copilot triage on PR-B8).
+  vi.useRealTimers();
 });
 
 describe("PerfPanel — gating", () => {
