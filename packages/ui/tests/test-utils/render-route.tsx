@@ -119,20 +119,29 @@ export function renderRoute(
 }
 
 /** Canonical list of every Tab the visual-consistency suite walks.
- *  Mirrors the `Tab` union in `src/types.ts` and the
- *  `ROUTE_PREFETCH` map in `App.tsx` — both are sources of truth;
- *  any new entry there must show up here too (the suite asserts
- *  `ALL_TABS.length === 11` to surface the omission). */
-export const ALL_TABS: readonly Tab[] = [
-  "domains",
-  "sources",
-  "agents",
-  "outputs",
-  "prompts",
-  "reports",
-  "activity",
-  "audit",
-  "review",
-  "cost",
-  "llmPolicy",
-] as const;
+ *
+ *  Made exhaustive over the `Tab` union via `satisfies Record<Tab, true>`:
+ *  TypeScript fails to compile if a new union member is added without
+ *  also being added here. The `true` placeholder values don't matter —
+ *  the `Record<Tab, …>` shape is the compile-time check, and the
+ *  `Object.keys(…)` cast yields the runtime array.
+ *
+ *  Mirrors the `Tab` union in `src/types.ts` and the `ROUTE_PREFETCH`
+ *  map in `App.tsx`; the compile-time exhaustiveness guarantee here
+ *  is stronger than relying on `ALL_TABS.length === 11`, which would
+ *  let a silently-skipped new tab pass the visual-consistency walk. */
+const TAB_REGISTRY = {
+  domains: true,
+  sources: true,
+  agents: true,
+  outputs: true,
+  prompts: true,
+  reports: true,
+  activity: true,
+  audit: true,
+  review: true,
+  cost: true,
+  llmPolicy: true,
+} as const satisfies Record<Tab, true>;
+
+export const ALL_TABS: readonly Tab[] = Object.keys(TAB_REGISTRY) as Tab[];

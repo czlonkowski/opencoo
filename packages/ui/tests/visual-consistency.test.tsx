@@ -20,8 +20,11 @@
  * the JSX wrote. The static scan reads the verbatim source bytes
  * the W11 audit fence is meant to police:
  *   3. No hex literals (`#rgb`/`#rrggbb`/`#rrggbbaa`) anywhere
- *      under `src/`. Catches inline `style={{}}` literals AND
- *      shared `CSSProperties` consts AND string-template CSS.   (W11)
+ *      under `src/` — `.ts`/`.tsx`/`.css` — except in the
+ *      canonical `styles/colors_and_type.css` token sheet
+ *      (which defines `--paper`, `--ink`, etc.). Catches inline
+ *      `style={{}}` literals AND shared `CSSProperties` consts
+ *      AND non-token CSS rules.                                 (W11)
  *   4. No `dangerouslySetInnerHTML` JSX prop anywhere under `src/`.
  *      THREAT-MODEL §3.13 invariant.                          (PIN)
  *
@@ -153,28 +156,45 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const SRC_ROOT = resolve(__dirname, "..", "src");
 
-/** Recursive walk yielding every `.ts` / `.tsx` file under a
- *  directory. Skips `node_modules` defensively — `src/` doesn't
- *  carry one, but a future re-org might.
+/** Recursive walk yielding every source file under a directory
+ *  matching one of the given extensions. Skips `node_modules`
+ *  defensively — `src/` doesn't carry one, but a future re-org
+ *  might.
  *
  *  Synchronous on purpose: the tree is ~100 files and vitest's
  *  worker pool isn't worth the I/O contention for this many
  *  shallow reads. */
-function* walkTs(dir: string): Generator<string> {
+function* walkFiles(
+  dir: string,
+  extensions: readonly string[],
+): Generator<string> {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
     if (entry === "node_modules" || entry.startsWith(".")) continue;
     const s = statSync(full);
     if (s.isDirectory()) {
-      yield* walkTs(full);
-    } else if (
-      s.isFile() &&
-      (entry.endsWith(".ts") || entry.endsWith(".tsx"))
-    ) {
+      yield* walkFiles(full, extensions);
+    } else if (s.isFile() && extensions.some((ext) => entry.endsWith(ext))) {
       yield full;
     }
   }
 }
+
+const TS_EXTENSIONS = [".ts", ".tsx"] as const;
+const CODE_AND_CSS_EXTENSIONS = [".ts", ".tsx", ".css"] as const;
+
+/** Files allowed to carry hex literals because they ARE the
+ *  canonical source-of-truth for the design-system color tokens.
+ *  Paths are stored relative to `SRC_ROOT` so the allowlist
+ *  survives moves of the package root.
+ *
+ *  `colors_and_type.css` defines the CSS custom properties
+ *  (`--paper`, `--ink`, etc.) every other file consumes via
+ *  `var(--…)`. Hex literals are required there by definition;
+ *  any other CSS file with a hex literal is a W11 regression. */
+const HEX_ALLOWLIST: readonly string[] = [
+  "styles/colors_and_type.css",
+];
 
 interface StyleHexHit {
   readonly file: string;
@@ -183,9 +203,11 @@ interface StyleHexHit {
   readonly match: string;
 }
 
-/** Walks every `.ts`/`.tsx` source file under `src/` looking for
- *  hex color literals. After `stripComments` runs, any remaining
- *  `#rgb`/`#rrggbb`/`#rrggbbaa` byte sequence is either:
+/** Walks every `.ts`/`.tsx`/`.css` source file under `src/`
+ *  looking for hex color literals. `colors_and_type.css` is
+ *  allowlisted via `HEX_ALLOWLIST` because it IS the canonical
+ *  source-of-truth for the design-system color tokens; hex
+ *  literals there are required. Any other hit is a W11 violation:
  *
  *    - an inline-style hex literal (`style={{ color: "#aabbcc" }}`) —
  *      a W11 audit-fence violation; or
@@ -193,20 +215,21 @@ interface StyleHexHit {
  *      pattern) — also a violation; or
  *    - a hex inside any other string/template-literal value that's
  *      almost certainly downstream CSS — still a violation under
- *      the design-system "no hex literals anywhere" rule.
- *
- *  The previous shape of this scan filtered to "only inside
- *  `style={{ ... }}`" but that missed shared `const STYLE: CSSProperties`
- *  objects + string-template CSS strings the route bodies use. The
- *  W11 audit fence's intent is broader than that — any hex byte
- *  pattern under `src/` is a regression. */
+ *      the design-system "no hex literals anywhere except the
+ *      canonical token sheet" rule; or
+ *    - a hex inside `app.css` or any future non-token CSS file. */
 function findInlineStyleHexInSources(): readonly StyleHexHit[] {
   const hits: StyleHexHit[] = [];
-  for (const file of walkTs(SRC_ROOT)) {
+  for (const file of walkFiles(SRC_ROOT, CODE_AND_CSS_EXTENSIONS)) {
+    const rel = relative(SRC_ROOT, file);
+    if (HEX_ALLOWLIST.includes(rel)) continue;
     // Strip all comments first — line counts are preserved (every
     // newline inside a stripped /* ... */ block survives as a bare
     // newline) so diagnostic line numbers downstream still match
-    // the operator's view of the file.
+    // the operator's view of the file. The same C-style comment
+    // syntax covers both `.ts(x)` and `.css`, so `stripComments`
+    // is correct for both — CSS `/* … */` blocks survive the same
+    // way TS `/* … */` JSDoc does.
     const src = stripComments(readFileSync(file, "utf8"));
     const lines = src.split("\n");
     for (let i = 0; i < lines.length; i++) {
@@ -214,7 +237,7 @@ function findInlineStyleHexInSources(): readonly StyleHexHit[] {
       // `matchAll` on a /g regex; each iteration yields one hit.
       for (const m of line.matchAll(HEX_COLOR_RE)) {
         hits.push({
-          file: relative(SRC_ROOT, file),
+          file: rel,
           line: i + 1,
           snippet: line.trim().slice(0, 120),
           match: m[0],
@@ -337,7 +360,7 @@ function stripComments(src: string): string {
  *  positive. */
 function findDangerousInnerHtmlInSources(): readonly DangerousHit[] {
   const hits: DangerousHit[] = [];
-  for (const file of walkTs(SRC_ROOT)) {
+  for (const file of walkFiles(SRC_ROOT, TS_EXTENSIONS)) {
     const src = stripComments(readFileSync(file, "utf8"));
     const lines = src.split("\n");
     for (let i = 0; i < lines.length; i++) {
@@ -398,20 +421,21 @@ describe("Cross-route visual consistency (PR-C7, wave-16)", () => {
   });
 
   describe("static source fences (filesystem grep)", () => {
-    it("no hex-color literals anywhere under src/ (W11 audit fence)", () => {
+    it("no hex-color literals outside the canonical token sheet (W11 audit fence)", () => {
       // jsdom canonicalises `style="color: #aabbcc"` to
       // `style="color: rgb(170, 187, 204);"` BEFORE the DOM is
       // queryable, so a runtime walk silently passes through
       // hex literals. The static source scan reads the verbatim
-      // bytes of every `.ts`/`.tsx` file in `src/` (after
+      // bytes of every `.ts`/`.tsx`/`.css` file in `src/` (after
       // stripping comments — references to PRs like "#131" must
-      // not false-positive) and flags every hex byte sequence.
+      // not false-positive) and flags every hex byte sequence
+      // outside the canonical `colors_and_type.css` token sheet.
       //
       // The design system permits color values only via CSS vars
-      // (`var(--ink)` / `var(--paper)` etc); any inline hex is
-      // a regression regardless of whether it lands in a JSX
+      // (`var(--ink)` / `var(--paper)` etc); any hex elsewhere
+      // is a regression regardless of whether it lands in a JSX
       // `style={{}}` literal, a shared `CSSProperties` const,
-      // or a CSS-in-JS string template.
+      // a CSS-in-JS string template, or a non-token CSS file.
       if (STYLE_HEX_HITS.length > 0) {
         const summary = STYLE_HEX_HITS.slice(0, 5)
           .map(
@@ -420,7 +444,7 @@ describe("Cross-route visual consistency (PR-C7, wave-16)", () => {
           )
           .join("\n  ");
         throw new Error(
-          `Found ${STYLE_HEX_HITS.length} hex color literal(s) under src/:\n  ${summary}`,
+          `Found ${STYLE_HEX_HITS.length} hex color literal(s) outside the token sheet:\n  ${summary}`,
         );
       }
       expect(STYLE_HEX_HITS).toEqual([]);
