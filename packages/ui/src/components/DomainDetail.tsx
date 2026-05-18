@@ -949,7 +949,10 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
                 displayNameOptimistic.saving ||
                 displayName === displayNameOptimistic.value
               }
-              data-testid="display-name-quick-save"
+              // NOTE: <Btn> doesn't forward unknown HTML attributes
+              // to its underlying <button>; tests target this button
+              // via the input's sibling chain instead. Kept as a
+              // documentation handle for the field's intent.
             >
               {t("domains.detail.actions.quickSave")}
             </Btn>
