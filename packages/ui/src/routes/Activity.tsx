@@ -25,7 +25,7 @@
  *   - No `--wiki` on this route — Activity is not compiled-
  *     knowledge chrome.
  */
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { AgentsRunNowButton } from "../components/AgentsRunNowButton.js";
@@ -42,6 +42,11 @@ import {
 import { fetchAdmin, fetchOptsFor } from "../lib/api.js";
 import { formatDateTime, formatTime } from "../lib/intl-format.js";
 import { clearPat } from "../lib/pat-store.js";
+import {
+  markRouteFetchEnd,
+  markRouteFetchStart,
+  measureRouteNav,
+} from "../lib/perf-marks.js";
 import { openSseClient } from "../lib/sse.js";
 import type { AgentRun, Pipeline } from "../types.js";
 
@@ -535,7 +540,14 @@ function RunsView(props: { fetchImpl?: typeof fetch }): JSX.Element {
   // reshape when /api/admin/agent-runs lands.
   const showSkeleton = useDeferredSkeleton(rows === null && error === null);
 
+  // PR-B8+ (wave-17) — first-fetch-only nav measure (see Domains).
+  // Activity's default sub-tab is `feed` (SSE-only); the route's
+  // primary fetchAdmin lives here, in the `runs` sub-view. The
+  // bracket fires once the operator switches to the runs tab.
+  const didMeasureNavRef = useRef(false);
+
   useEffect(() => {
+    markRouteFetchStart("activity");
     void (async () => {
       try {
         const r = await fetchAdmin<AgentRunsResponse>(
@@ -545,6 +557,12 @@ function RunsView(props: { fetchImpl?: typeof fetch }): JSX.Element {
         setRows(r.rows);
       } catch {
         setError(t("common.error"));
+      } finally {
+        markRouteFetchEnd("activity");
+        if (!didMeasureNavRef.current) {
+          didMeasureNavRef.current = true;
+          measureRouteNav("activity");
+        }
       }
     })();
   }, []);
