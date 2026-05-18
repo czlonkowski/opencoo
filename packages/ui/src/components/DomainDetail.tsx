@@ -24,13 +24,22 @@
  *   - NO emoji / NO marketing voice / NO spinners
  *   - lowercase `opencoo` in any future copy
  */
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { useTranslation } from "react-i18next";
 
 import { Btn } from "./Btn.js";
 import { Modal } from "./Modal.js";
 import { GlyphFilledDisc } from "./Glyph.js";
+import { SavingDot, type SavingDotState } from "./SavingDot.js";
+import { useToast } from "./Toast.js";
 import { TooltipTrigger } from "./Tooltip.js";
+import { useOptimisticPatch } from "../hooks/useOptimisticPatch.js";
 import {
   ApiAuthError,
   ApiTransientError,
@@ -38,6 +47,7 @@ import {
   fetchAdmin,
   fetchOptsFor,
 } from "../lib/api.js";
+import { safeErrorMessage } from "../lib/safe-error.js";
 import type { Domain } from "../types.js";
 
 export interface DomainDetailProps {
@@ -321,6 +331,148 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
     };
   }, []);
 
+  // ── Optimistic per-field PATCH wires (PR-B5+, wave-17) ─────────────────
+  //
+  // Three whitelisted fields render a per-field "Quick save" button
+  // wired through `useOptimisticPatch`. The button issues a single-
+  // field PATCH; the row beneath the modal flips to the new value
+  // immediately + the saving-cue dot fades in. On 422 the field
+  // reverts + the B7 alert toast surfaces. The combined "Save
+  // changes" button below stays as-is for bulk edits and the
+  // non-whitelisted fields — the combined PATCH and the per-field
+  // PATCH share the existing admin-API discriminated-union route, so
+  // both paths preserve audit-write-before-mutate (THREAT-MODEL §3.13).
+
+  const toastApi = useToast();
+  const [displayNameCueState, setDisplayNameCueState] =
+    useState<SavingDotState>("idle");
+  const [localeCueState, setLocaleCueState] =
+    useState<SavingDotState>("idle");
+  const [worldviewCueState, setWorldviewCueState] =
+    useState<SavingDotState>("idle");
+
+  const fireRollbackToast = useCallback(
+    (err: unknown): void => {
+      toastApi.alert({
+        message: t("optimistic.savingError"),
+        details: safeErrorMessage(err),
+      });
+    },
+    [toastApi, t],
+  );
+
+  const applyDisplayName = useCallback(
+    async (next: string): Promise<string> => {
+      setDisplayNameCueState("saving");
+      try {
+        await fetchAdmin<{ id: string }>(
+          `/api/admin/domains/${props.domain.id}`,
+          {
+            method: "PATCH",
+            body: { display_name: next },
+            ...fetchOptsFor(props.fetchImpl),
+          },
+        );
+        if (mountedRef.current) {
+          setDisplayNameCueState("success");
+          props.onChanged();
+        }
+        return next;
+      } catch (err) {
+        if (mountedRef.current) setDisplayNameCueState("error");
+        throw err;
+      }
+    },
+    [props],
+  );
+  const displayNameOptimistic = useOptimisticPatch<string>(
+    props.domain.name,
+    applyDisplayName,
+    { rollbackToast: fireRollbackToast },
+  );
+
+  const applyLocaleOpt = useCallback(
+    async (next: LocaleOption): Promise<LocaleOption> => {
+      setLocaleCueState("saving");
+      try {
+        await fetchAdmin<{ id: string }>(
+          `/api/admin/domains/${props.domain.id}`,
+          {
+            method: "PATCH",
+            body: { locale: next },
+            ...fetchOptsFor(props.fetchImpl),
+          },
+        );
+        if (mountedRef.current) {
+          setLocaleCueState("success");
+          props.onChanged();
+        }
+        return next;
+      } catch (err) {
+        if (mountedRef.current) setLocaleCueState("error");
+        throw err;
+      }
+    },
+    [props],
+  );
+  const localeOptimistic = useOptimisticPatch<LocaleOption>(
+    isLocale(props.domain.locale) ? props.domain.locale : "en",
+    applyLocaleOpt,
+    { rollbackToast: fireRollbackToast },
+  );
+
+  const applyWorldview = useCallback(
+    async (next: boolean): Promise<boolean> => {
+      setWorldviewCueState("saving");
+      try {
+        await fetchAdmin<{ id: string }>(
+          `/api/admin/domains/${props.domain.id}`,
+          {
+            method: "PATCH",
+            body: { worldview_enabled: next },
+            ...fetchOptsFor(props.fetchImpl),
+          },
+        );
+        if (mountedRef.current) {
+          setWorldviewCueState("success");
+          props.onChanged();
+        }
+        return next;
+      } catch (err) {
+        if (mountedRef.current) setWorldviewCueState("error");
+        throw err;
+      }
+    },
+    [props],
+  );
+  const worldviewOptimistic = useOptimisticPatch<boolean>(
+    props.domain.worldviewEnabled ?? true,
+    applyWorldview,
+    { rollbackToast: fireRollbackToast },
+  );
+
+  /** Quick-save handlers for the 3 whitelisted fields. Each fires
+   *  a single-field PATCH through `useOptimisticPatch`; the combined
+   *  Save below remains the canonical path for bulk edits + non-
+   *  whitelisted fields. */
+  const quickSaveDisplayName = (): void => {
+    const next = displayName;
+    if (next === displayNameOptimistic.value) return;
+    if (displayNameOptimistic.saving) return;
+    displayNameOptimistic.setValue(next);
+  };
+  const quickSaveLocale = (next: LocaleOption): void => {
+    if (next === localeOptimistic.value || localeOptimistic.saving) return;
+    setLocale(next);
+    localeOptimistic.setValue(next);
+  };
+  const quickSaveWorldview = (next: boolean): void => {
+    if (next === worldviewOptimistic.value || worldviewOptimistic.saving)
+      return;
+    setWorldviewEnabled(next);
+    worldviewOptimistic.setValue(next);
+  };
+
   const bindingCount = props.domain.bindingCount ?? 0;
 
   /** Map a thrown error to an operator-facing i18n string.
@@ -342,8 +494,20 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
     setSubmitting(true);
     try {
       const body: Record<string, unknown> = {};
-      if (displayName !== props.domain.name) body["display_name"] = displayName;
-      if (locale !== props.domain.locale) body["locale"] = locale;
+      // PR-B5+ (wave-17): `display_name`, `locale`, and
+      // `worldview_enabled` are now committed via per-field
+      // optimistic PATCH (the Quick-save button + onChange handler
+      // above). The combined Save still emits these fields IF the
+      // operator changed them in the modal but didn't trigger the
+      // per-field path — for `display_name` this happens when they
+      // type-and-hit-Save-without-clicking-Quick-save; for `locale`
+      // and `worldview_enabled` the onChange handler always fires
+      // the optimistic PATCH, so the combined Save typically sees
+      // them already committed (the diff vs prop snapshot is empty).
+      if (displayName !== displayNameOptimistic.value) {
+        body["display_name"] = displayName;
+      }
+      if (locale !== localeOptimistic.value) body["locale"] = locale;
       if (isAggregator !== props.domain.isAggregator) {
         body["is_aggregator"] = isAggregator;
       }
@@ -386,8 +550,12 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
         body["review_role"] = reviewRoleValue;
       }
 
-      const currentWorldviewEnabled = props.domain.worldviewEnabled ?? true;
-      if (worldviewEnabled !== currentWorldviewEnabled) {
+      // PR-B5+ (wave-17): `worldview_enabled` is committed via the
+      // checkbox onChange → optimistic single-field PATCH path
+      // above. Combined Save diffs against `worldviewOptimistic.value`
+      // so it doesn't double-emit a PATCH for the same value the
+      // optimistic hook already committed.
+      if (worldviewEnabled !== worldviewOptimistic.value) {
         body["worldview_enabled"] = worldviewEnabled;
       }
 
@@ -741,36 +909,70 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
           </div>
         ) : null}
 
-        {/* Editable fields. */}
+        {/* Editable fields. The 3 whitelisted fields render a per-
+         *  field Quick-save button wired through useOptimisticPatch
+         *  (PR-B5+, wave-17) — the saving-cue dot beside each label
+         *  reflects the round-trip lifecycle; on 422 the field
+         *  reverts to the committed value + the B7 alert toast
+         *  surfaces. The combined Save button below is unchanged. */}
         <div style={FORM_FIELD_STYLE}>
           <label
             htmlFor="domain-detail-display-name"
             style={LABEL_STYLE}
           >
             {t("domains.detail.fields.displayName")}
+            <SavingDot state={displayNameCueState} />
           </label>
-          <input
-            id="domain-detail-display-name"
-            type="text"
-            value={displayName}
-            disabled={submitting}
-            onChange={(e): void => setDisplayName(e.target.value)}
-            maxLength={120}
-            style={INPUT_STYLE}
-          />
+          <div
+            style={{
+              display: "flex",
+              gap: "var(--space-2)",
+              alignItems: "center",
+            }}
+          >
+            <input
+              id="domain-detail-display-name"
+              type="text"
+              value={displayName}
+              disabled={submitting || displayNameOptimistic.saving}
+              onChange={(e): void => setDisplayName(e.target.value)}
+              maxLength={120}
+              style={{ ...INPUT_STYLE, flex: 1 }}
+            />
+            <Btn
+              variant="subtle"
+              onClick={(): void => quickSaveDisplayName()}
+              disabled={
+                submitting ||
+                displayNameOptimistic.saving ||
+                displayName === displayNameOptimistic.value
+              }
+              data-testid="display-name-quick-save"
+            >
+              {t("domains.detail.actions.quickSave")}
+            </Btn>
+          </div>
         </div>
 
         <div style={FORM_FIELD_STYLE}>
           <label htmlFor="domain-detail-locale" style={LABEL_STYLE}>
             {t("domains.detail.fields.locale")}
+            <SavingDot state={localeCueState} />
           </label>
           <select
             id="domain-detail-locale"
             value={locale}
-            disabled={submitting}
+            disabled={submitting || localeOptimistic.saving}
             onChange={(e): void => {
               const v = e.target.value;
-              if (isLocale(v)) setLocale(v);
+              if (isLocale(v)) {
+                // Locale picks fire an optimistic single-field PATCH
+                // immediately — the operator's intent is a single
+                // commit per pick. The combined Save flow no longer
+                // re-PATCHes locale because the committed value
+                // tracks `localeOptimistic.value`.
+                quickSaveLocale(v);
+              }
             }}
             style={INPUT_STYLE}
           >
@@ -899,11 +1101,18 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
             <input
               type="checkbox"
               checked={worldviewEnabled}
-              disabled={submitting}
-              onChange={(e): void => setWorldviewEnabled(e.target.checked)}
+              disabled={submitting || worldviewOptimistic.saving}
+              onChange={(e): void => {
+                // Worldview toggle fires an optimistic single-field
+                // PATCH on each click; the combined Save no longer
+                // re-PATCHes worldview because the committed value
+                // tracks `worldviewOptimistic.value`.
+                quickSaveWorldview(e.target.checked);
+              }}
             />
             {t("domains.detail.fields.worldviewEnabled")}
             <TooltipTrigger term="worldviewEnabled" />
+            <SavingDot state={worldviewCueState} />
           </label>
           <p style={HELPER_TEXT_STYLE}>
             {t("domains.detail.help.worldviewEnabled")}
