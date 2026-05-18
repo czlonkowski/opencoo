@@ -537,8 +537,18 @@ function AppInner(): JSX.Element {
         flexDirection: "column",
         height: "100%",
         background: "var(--paper)",
+        position: "relative",
       }}
     >
+      {/* PR-A6 (wave-16) — "Skip to content" skip-link. MUST be
+          the first focusable element in the tree so a Tab press
+          from the URL bar lands on it before any chrome. Off-
+          screen by default (CSS: top: -100px), slides into view
+          on :focus. Target id `opencoo-main` lives on the <main>
+          element below. */}
+      <a href="#opencoo-main" className="opencoo-skip-link">
+        {t("accessibility.skipToContent")}
+      </a>
       <DebugBanner visible={debugActive} />
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
         <Sidebar
@@ -572,7 +582,17 @@ function AppInner(): JSX.Element {
             }}
             onChangeLocale={onChangeLocale}
           />
+          {/* PR-A6 — `tabIndex={-1}` makes the <main> a valid focus
+              target for the in-page skip-link anchor jump. WAI-ARIA
+              skip-link pattern: the browser scrolls to the fragment
+              target, and (for elements with a tabindex) moves keyboard
+              focus there so the next Tab lands inside the route.
+              Without the tabindex, <main> is not focusable by default
+              and only the scroll-to happens (focus stays on the link,
+              defeating the skip).  Copilot review on PR-A6. */}
           <main
+            id="opencoo-main"
+            tabIndex={-1}
             aria-labelledby="opencoo-page-h1"
             style={{
               flex: 1,

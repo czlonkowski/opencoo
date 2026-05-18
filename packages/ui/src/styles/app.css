@@ -72,6 +72,48 @@ dialog::backdrop {
   outline-offset: 1px;
 }
 
+/* =============================================================
+   "Skip to content" skip-link — PR-A6 (wave-16, phase-a appendix
+   #16). WAI-ARIA Authoring Practices skip-link pattern.
+
+   Off-screen by default (`top: -100px`) so sighted-mouse operators
+   never see it. The element remains in the DOM and keyboard-
+   focusable so a screen-reader / Tab-key operator lands on it
+   first. On `:focus` it slides into the top-left corner, styled
+   as a Btn variant="primary" (ink fill, paper text) for strong
+   contrast against the paper canvas — paper-on-ink is swept by
+   the contrast test (~16.9:1).
+
+   The slide is a one-shot CSS transition (no @keyframes loop);
+   `prefers-reduced-motion: reduce` in colors_and_type.css clamps
+   transition-duration to near-zero so the link snaps into view
+   without motion for operators who opted out.
+   ============================================================= */
+.opencoo-skip-link {
+  position: absolute;
+  top: -100px;
+  left: var(--space-2);
+  z-index: 100;
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-2) var(--space-4);
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--fs-body);
+  text-decoration: none;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-m);
+  transition: top 120ms var(--ease-write);
+}
+.opencoo-skip-link:focus,
+.opencoo-skip-link:focus-visible {
+  top: var(--space-2);
+  outline: 2px solid var(--paper);
+  outline-offset: 2px;
+}
+
 /* One-shot dialog enter — 180ms fade + 8px translate-up. Used
    by PatEntryModal + DiffPreviewDialog. NO exit motion (per
    the UX spec); when the consumer unmounts, the dialog

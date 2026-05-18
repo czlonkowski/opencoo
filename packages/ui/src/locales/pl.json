@@ -5,6 +5,9 @@
     "tagline": "samodzielny hosting",
     "version": "v0.1"
   },
+  "accessibility": {
+    "skipToContent": "Przejdź do treści"
+  },
   "validation": {
     "checking": "sprawdzanie…",
     "slugTaken": "Slug jest już użyty przez inną domenę.",
