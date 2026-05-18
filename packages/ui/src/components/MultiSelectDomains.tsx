@@ -99,6 +99,7 @@ export function MultiSelectDomains(props: MultiSelectDomainsProps): JSX.Element 
   if (error !== null) {
     return (
       <div
+        role="alert"
         style={{
           color: "var(--alert)",
           fontFamily: "var(--font-mono)",

@@ -25,6 +25,7 @@ import {
 } from "./components/CommandPalette.js";
 import { DebugBanner } from "./components/DebugBanner.js";
 import { Sidebar, TopBar } from "./components/Chrome.js";
+import { LiveRegions } from "./components/LiveRegions.js";
 import { PatEntryModal } from "./components/PatEntryModal.js";
 import { RouteSkeleton } from "./components/RouteSkeleton.js";
 import { ToastProvider, ToastRegion } from "./components/Toast.js";
@@ -148,10 +149,20 @@ function isPaletteName(s: string): s is PaletteName {
  * portals to `document.body` so it survives auth-flow renders
  * without dropping queued toasts (the provider's state is held
  * on a single React root, above the auth gate). PR-B7, wave-16.
+ *
+ * PR-A4 (wave-16) — mounts `<LiveRegions />` once at the App
+ * root. The two SR-only `<div aria-live>` regions subscribe to
+ * `lib/announce.ts` and narrate any `pushAnnouncement(...)`
+ * call (and, by extension, every Toast — the Toast bridge calls
+ * pushAnnouncement when a toast is added). Mounting at the top
+ * of the tree (above the auth gate) means the gating PatEntryModal
+ * can also push announcements (e.g. an auth-failure error) and
+ * have them narrated.
  */
 export function App(): JSX.Element {
   return (
     <ToastProvider>
+      <LiveRegions />
       <AppInner />
       <ToastRegion />
     </ToastProvider>

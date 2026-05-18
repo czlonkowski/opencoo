@@ -519,6 +519,12 @@
   "optimistic": {
     "savingError": "Nie udało się zapisać zmiany"
   },
+  "aria": {
+    "live": {
+      "polite": "Aktualizacje statusu",
+      "assertive": "Błędy i alerty"
+    }
+  },
   "help": {
     "reviewMode": {
       "label": "tryb przeglądu",

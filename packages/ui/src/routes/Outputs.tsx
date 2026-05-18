@@ -295,6 +295,7 @@ export function Outputs(props: OutputsProps = {}): JSX.Element {
       <Card>
         {error !== null ? (
           <div
+            role="alert"
             style={{
               color: "var(--alert)",
               fontFamily: "var(--font-mono)",

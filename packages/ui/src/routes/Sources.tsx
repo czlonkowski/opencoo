@@ -150,7 +150,7 @@ export function Sources(props: SourcesProps = {}): JSX.Element {
       ) : (
       <Card>
         {error !== null ? (
-          <div style={{ color: "var(--alert)", fontFamily: "var(--font-mono)", fontSize: "var(--fs-micro)" }}>
+          <div role="alert" style={{ color: "var(--alert)", fontFamily: "var(--font-mono)", fontSize: "var(--fs-micro)" }}>
             {error}
           </div>
         ) : rows === null ? (

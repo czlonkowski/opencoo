@@ -448,7 +448,7 @@ export function DiffPreviewDialog(
           </div>
         </div>
         {props.errorMessage !== null && props.errorMessage !== undefined ? (
-          <p data-testid="diff-error" style={ERROR_TEXT_STYLE}>
+          <p data-testid="diff-error" role="alert" style={ERROR_TEXT_STYLE}>
             {props.errorMessage}
           </p>
         ) : null}

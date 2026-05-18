@@ -152,6 +152,7 @@ export function OutputChannelDetail(
         </div>
         {error !== null ? (
           <div
+            role="alert"
             style={{
               color: "var(--alert)",
               fontFamily: "var(--font-mono)",
