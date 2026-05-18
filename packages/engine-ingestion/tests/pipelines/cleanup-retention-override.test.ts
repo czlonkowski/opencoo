@@ -226,6 +226,43 @@ describe("runCleanup — retention_days_override semantics (PR-W5+, wave-17)", (
     expect(await countDebugRows(f, f.domainId)).toBe(1);
   });
 
+  it("override > domain retention WITH a sibling NULL-override binding: sibling's domain-default policy wins (per-binding effective, then MIN)", async () => {
+    // PR #182 Copilot regression test. Two bindings under one
+    // domain. Binding-A override = 365 (loose). Binding-B override =
+    // NULL, which means "use the domain default" = 30. The per-
+    // binding effective retentions are 365 and 30; their MIN is 30,
+    // so the per-domain cutoff is 30 days — binding-B's stricter
+    // policy is honored, NOT silently weakened by binding-A's 365.
+    //
+    // The earlier shape of this PR took MIN only over non-null
+    // overrides (skipping binding-B's NULL), which would have made
+    // the cutoff 365 and let one long override weaken every sibling
+    // binding's policy. Copilot review caught it; this test pins
+    // the correction.
+    const f = await freshPipelineDb({ retentionDays: 30 });
+    await setBindingOverride(f, f.bindingId, 365);
+    await addBinding(f, {
+      domainId: f.domainId,
+      override: null,
+      adapterSlug: "fireflies",
+    });
+    // 60-day-old row: under broken MIN-skipping-NULL → 365 cutoff →
+    // survives. Under correct per-binding-effective MIN → 30 cutoff
+    // → deletes.
+    await seedDebugRows(f, { count: 1, ageDaysAgo: 60, domainId: f.domainId });
+    // 1-day-old row: always survives (1 < 30).
+    await seedDebugRows(f, { count: 1, ageDaysAgo: 1, domainId: f.domainId });
+
+    const result = await runCleanup({
+      db: f.db as unknown as Parameters<typeof runCleanup>[0]["db"],
+      logger: silentLogger(),
+    });
+
+    expect(result.debugRowsDeleted).toBe(1);
+    expect(await countDebugRows(f, f.domainId)).toBe(1);
+    expect(result.perDomain[0]!.retentionDays).toBe(30);
+  });
+
   it("cross-domain isolation: a sweep of one domain never deletes rows from another", async () => {
     // Two domains, each with its own binding. Domain-A
     // retention_days = 7 (strict). Domain-B retention_days = 365

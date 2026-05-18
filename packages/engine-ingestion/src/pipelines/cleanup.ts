@@ -8,13 +8,17 @@
  * at sweep-time (PR-W5+, wave-17). The W5 PATCH path (wave-15 #145)
  * writes the column from the management UI; this worker reads it.
  *
- * Effective retention precedence:
+ * Effective retention precedence (per binding, then collapsed
+ * across the domain's bindings):
+ *
+ *   per-binding effective retention =
+ *     COALESCE(b.retention_days_override, d.retention_days)
  *
  *   per-domain effective horizon =
  *     COALESCE(
- *       MIN(sources_bindings.retention_days_override)
- *           OVER bindings of this domain WHERE override IS NOT NULL,
- *       domains.retention_days,
+ *       MIN(per-binding effective retention)
+ *           OVER bindings of this domain,
+ *       d.retention_days,
  *       DEFAULT_DEBUG_RETENTION_DAYS
  *     )
  *
@@ -26,8 +30,12 @@
  * "keep my debug telemetry <= 7 days," and that policy must not be
  * silently bypassed by another binding under the same domain
  * wanting a longer horizon (THREAT-MODEL §2 invariant 11). A
- * future schema change adding binding_id to llm_usage would lift
- * the collapse and allow truly per-binding cutoffs.
+ * binding with override=NULL contributes the domain default to the
+ * MIN — that's its intent ("use the domain policy"), and skipping
+ * NULL overrides would let one long override silently weaken the
+ * stricter sibling-binding-with-NULL policy (PR #182 Copilot
+ * review). A future schema change adding binding_id to llm_usage
+ * would lift the collapse and allow truly per-binding cutoffs.
  *
  * The default is 7 days (THREAT-MODEL §2 invariant 11) — applied
  * when both override and domain retention are NULL.
@@ -106,19 +114,30 @@ export async function runCleanup(args: RunCleanupArgs): Promise<CleanupResult> {
   const now = (args.now ?? ((): Date => new Date()))();
 
   // LEFT JOIN sources_bindings so every domain row appears even when
-  // it has no bindings yet. MIN over the override picks the strictest
-  // policy across the domain's bindings (NULL overrides are skipped
-  // by SQL aggregate semantics); COALESCE then falls back to
-  // domains.retention_days (and the caller falls back to the default
-  // when both are NULL). The aggregate is implemented in SQL rather
-  // than in JS so the cost is one round-trip and the planner can use
-  // the existing (domain_id) index on sources_bindings.
+  // it has no bindings yet. Per binding, the effective retention is
+  // COALESCE(b.retention_days_override, d.retention_days) — a NULL
+  // override means "use the domain default," so a binding with NULL
+  // override contributes the domain default to the per-domain MIN
+  // (not skipped). The outer COALESCE handles the no-bindings case:
+  // when the LEFT JOIN produces no binding rows for a domain,
+  // MIN(NULL) is NULL and we fall back to d.retention_days alone.
+  // The aggregate is implemented in SQL rather than in JS so the
+  // cost is one round-trip and the planner can use the existing
+  // (domain_id) index on sources_bindings.
+  //
+  // The MIN-of-per-binding-effective rule is the privacy-preserving
+  // choice (THREAT-MODEL §2 invariant 11): if binding-A has
+  // override=365 and binding-B has NULL with domain default=30, the
+  // per-domain cutoff is MIN(365, 30) = 30 — binding-B's stricter
+  // intent is honored. Copilot review on PR #182 flagged the prior
+  // shape that skipped NULL overrides as letting one long override
+  // weaken sibling bindings' policy; this revision fixes that.
   const domainRows = (await args.db.execute(
     sql`SELECT
           d.id::text AS id,
           d.slug,
           COALESCE(
-            MIN(b.retention_days_override),
+            MIN(COALESCE(b.retention_days_override, d.retention_days)),
             d.retention_days
           ) AS retention_days
         FROM domains d
