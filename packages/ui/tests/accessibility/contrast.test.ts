@@ -65,11 +65,14 @@ interface Rgb {
 }
 
 function parseHex(hex: string): Rgb | null {
-  const m = /^#([0-9a-fA-F]{3,8})$/.exec(hex.trim());
+  // Accept only #RGB or #RRGGBB. Alpha-channel hex (#RRGGBBAA, used
+  // by `--rule` for the 10% hairline) is handled by a dedicated
+  // alpha-strip branch in `resolveColor` so the alpha is observable
+  // there rather than silently dropped here.
+  const m = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(hex.trim());
   if (m === null) return null;
   let h = m[1] ?? "";
   if (h.length === 3) h = h.split("").map((c) => c + c).join("");
-  if (h.length !== 6 && h.length !== 8) return null;
   return {
     r: parseInt(h.slice(0, 2), 16),
     g: parseInt(h.slice(2, 4), 16),

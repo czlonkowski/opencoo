@@ -505,8 +505,17 @@ function AppInner(): JSX.Element {
             }}
             onChangeLocale={onChangeLocale}
           />
+          {/* PR-A6 — `tabIndex={-1}` makes the <main> a valid focus
+              target for the in-page skip-link anchor jump. WAI-ARIA
+              skip-link pattern: the browser scrolls to the fragment
+              target, and (for elements with a tabindex) moves keyboard
+              focus there so the next Tab lands inside the route.
+              Without the tabindex, <main> is not focusable by default
+              and only the scroll-to happens (focus stays on the link,
+              defeating the skip).  Copilot review on PR-A6. */}
           <main
             id="opencoo-main"
+            tabIndex={-1}
             aria-labelledby="opencoo-page-h1"
             style={{
               flex: 1,

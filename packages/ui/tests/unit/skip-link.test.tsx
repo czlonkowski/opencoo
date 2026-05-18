@@ -111,7 +111,7 @@ describe("Skip-to-content link (PR-A6)", () => {
     expect(first.classList.contains("opencoo-skip-link")).toBe(true);
   });
 
-  it("href points at the #opencoo-main landmark target", async () => {
+  it("href points at the #opencoo-main landmark target which is focusable", async () => {
     const { App } = await loadApp();
     const { container } = render(<App />);
     await waitFor(() => {
@@ -122,13 +122,19 @@ describe("Skip-to-content link (PR-A6)", () => {
       | null;
     expect(link).not.toBeNull();
     expect(link!.getAttribute("href")).toBe("#opencoo-main");
-    const target = container.querySelector("#opencoo-main");
+    const target = container.querySelector("#opencoo-main") as HTMLElement | null;
     expect(target).not.toBeNull();
     const main = container.querySelector("main");
     expect(main).not.toBeNull();
     const idOnMain = main!.id === "opencoo-main";
     const idInsideMain = main!.querySelector("#opencoo-main") !== null;
     expect(idOnMain || idInsideMain).toBe(true);
+    // The target MUST be focusable: <main> is not focusable by
+    // default, so the anchor jump would scroll-only without moving
+    // keyboard focus. `tabIndex={-1}` makes it programmatically
+    // focusable (focusable via the anchor activation, not part of
+    // the natural tab order) — the WAI-ARIA skip-link contract.
+    expect(target!.getAttribute("tabindex")).toBe("-1");
   });
 
   it("renders the label from the accessibility.skipToContent i18n key", async () => {
