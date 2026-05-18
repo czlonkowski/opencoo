@@ -1,6 +1,7 @@
 /**
  * Sidebar + TopBar — IA polish for PR-W10 (phase-a appendix
- * #15 wave-15); semantic-landmark refinement for PR-A2 (wave-16).
+ * #15 wave-15); semantic-landmark refinement for PR-A2 (wave-16);
+ * roving-tabindex keyboard navigation for PR-A5 (wave-16).
  *
  * Wave-16 PR-A2 changes (does not alter visual chrome):
  *   - TopBar root becomes `<header role="banner">`.
@@ -8,6 +9,21 @@
  *   - Sidebar group labels become `<h2>` (same micro-label visual
  *     recipe) so the sidebar contributes a real document outline.
  *   - The active tab button carries `aria-current="page"`.
+ *
+ * Wave-16 PR-A5 — W3C APG menubar pattern, vertical adaptation:
+ *   - Exactly one nav button is in the Tab sequence at a time:
+ *     the active tab gets `tabindex="0"`; every other entry gets
+ *     `tabindex="-1"`. Focus moves within the sidebar via arrow
+ *     keys, not the Tab key.
+ *   - Up/Down move focus WITHIN the current group; the group
+ *     boundary is hard (no wrap into the next group). Left/Right
+ *     move focus BETWEEN groups (to the FIRST entry of the
+ *     previous/next group), without wrapping past either end.
+ *     Home/End jump to the global first/last entry.
+ *   - aria-current="page" stays on the *active* tab regardless of
+ *     where roving focus has landed — focus is independent of
+ *     selection. setTab is still the dispatcher (Enter/Space
+ *     route through the native button onClick chain).
  *
  * The corresponding `<main aria-labelledby="opencoo-page-h1">`
  * lives in App.tsx; routes own the `<h1 id="opencoo-page-h1">`
@@ -43,6 +59,7 @@
  *     heartbeat pulse is animated, owned by the operate glyph)
  *   - no emoji / no marketing voice / no pills / no gradients
  */
+import { useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useDensity, type Density } from "../hooks/useDensity.js";
@@ -160,6 +177,107 @@ export const SR_ONLY_STYLE = {
 
 export function Sidebar(props: SidebarProps): JSX.Element {
   const { t } = useTranslation();
+
+  // PR-A5 — keyboard-navigation infrastructure.
+  //
+  // `flat` is the global document-order list of (groupIdx, tabIdx,
+  // Tab key) triples — the same canonical Operate · Knowledge ·
+  // Governance · Diagnostics order the sidebar paints. Computed
+  // each render rather than memoized: GROUPS is a module constant
+  // so the cost is bounded + the dependency-array bookkeeping would
+  // be more complex than the recomputation.
+  const flat: ReadonlyArray<{
+    readonly groupIdx: number;
+    readonly tabIdx: number;
+    readonly tab: Tab;
+  }> = GROUPS.flatMap((group, groupIdx) =>
+    group.tabs.map((entry, tabIdx) => ({
+      groupIdx,
+      tabIdx,
+      tab: entry.key,
+    })),
+  );
+
+  // Button refs keyed by Tab so the keydown handler can call
+  // .focus() on the target. A Map (not an object) — Tab is a union
+  // of strings so either works, but a Map keeps the type narrowing
+  // exact without a Record<Tab, …> shape that requires every key.
+  const buttonRefs = useRef<Map<Tab, HTMLButtonElement | null>>(new Map());
+
+  const focusTab = (tab: Tab): void => {
+    const el = buttonRefs.current.get(tab);
+    if (el !== null && el !== undefined) el.focus();
+  };
+
+  const onKeyDownForTab = useCallback(
+    (tab: Tab) =>
+      (e: React.KeyboardEvent<HTMLButtonElement>): void => {
+        // Find the position of this tab in the canonical flat list.
+        const here = flat.findIndex((f) => f.tab === tab);
+        if (here < 0) return;
+        const { groupIdx, tabIdx } = flat[here]!;
+        const group = GROUPS[groupIdx]!;
+        switch (e.key) {
+          case "ArrowDown": {
+            // Within-group move; don't wrap into next group.
+            if (tabIdx < group.tabs.length - 1) {
+              e.preventDefault();
+              focusTab(group.tabs[tabIdx + 1]!.key);
+            } else {
+              // At end of group — pin so the browser doesn't scroll.
+              e.preventDefault();
+            }
+            return;
+          }
+          case "ArrowUp": {
+            if (tabIdx > 0) {
+              e.preventDefault();
+              focusTab(group.tabs[tabIdx - 1]!.key);
+            } else {
+              e.preventDefault();
+            }
+            return;
+          }
+          case "ArrowRight": {
+            // Inter-group move to FIRST entry of next group.
+            if (groupIdx < GROUPS.length - 1) {
+              e.preventDefault();
+              focusTab(GROUPS[groupIdx + 1]!.tabs[0]!.key);
+            } else {
+              e.preventDefault();
+            }
+            return;
+          }
+          case "ArrowLeft": {
+            if (groupIdx > 0) {
+              e.preventDefault();
+              focusTab(GROUPS[groupIdx - 1]!.tabs[0]!.key);
+            } else {
+              e.preventDefault();
+            }
+            return;
+          }
+          case "Home": {
+            e.preventDefault();
+            focusTab(flat[0]!.tab);
+            return;
+          }
+          case "End": {
+            e.preventDefault();
+            focusTab(flat[flat.length - 1]!.tab);
+            return;
+          }
+          // Enter + Space fall through to the native button onClick
+          // chain — no preventDefault, no synthesized setTab here.
+          // That preserves the W10 dispatch contract and survives
+          // future click-handler refactors automatically.
+          default:
+            return;
+        }
+      },
+    [flat],
+  );
+
   return (
     // PR-A2 — aria-label scopes the <nav> to "primary navigation"
     // for assistive tech. The label key (nav.primary) gets a
@@ -250,8 +368,23 @@ export function Sidebar(props: SidebarProps): JSX.Element {
             return (
               <button
                 key={item.key}
+                ref={(el): void => {
+                  // PR-A5 — register/unregister the button ref so
+                  // arrow-key handlers can .focus() peers without
+                  // a DOM query. Clear on unmount to avoid a stale
+                  // reference if the sidebar re-mounts.
+                  if (el === null) buttonRefs.current.delete(item.key);
+                  else buttonRefs.current.set(item.key, el);
+                }}
                 onClick={(): void => props.setTab(item.key)}
+                onKeyDown={onKeyDownForTab(item.key)}
                 {...ariaCurrent}
+                // PR-A5 — roving tabindex. Only the active tab is
+                // in the Tab sequence; everything else is reachable
+                // only via the arrow keys (the W3C APG menubar
+                // contract). aria-current="page" is independent —
+                // it tracks the active tab, not the focused tab.
+                tabIndex={active ? 0 : -1}
                 onMouseEnter={onPrefetch}
                 onFocus={onPrefetch}
                 // PR-C5: hover affordance via shared class. The
