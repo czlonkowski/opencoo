@@ -15,8 +15,15 @@
  *      `animation` declaration attaches to the skip-link rules.
  *   5. The visible label is the i18n key `accessibility.skipToContent`.
  */
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, waitFor } from "@testing-library/react";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 vi.mock("../../src/routes/Activity.js", () => ({
   Activity: (): JSX.Element => <div data-testid="route-activity">Activity</div>,
@@ -138,8 +145,6 @@ describe("Skip-to-content link (PR-A6)", () => {
   it("CSS positions the link OFF-SCREEN by default and slides into view on focus", () => {
     // Source-level CSS pin — the CSS file is parsed directly because
     // jsdom does not reliably resolve external stylesheets.
-    const { readFileSync } = require("node:fs") as typeof import("node:fs");
-    const { resolve } = require("node:path") as typeof import("node:path");
     const cssPath = resolve(__dirname, "../../src/styles/app.css");
     const css = readFileSync(cssPath, "utf-8");
     expect(css).toMatch(/\.opencoo-skip-link\s*\{[^}]*position:\s*(absolute|fixed)/);
