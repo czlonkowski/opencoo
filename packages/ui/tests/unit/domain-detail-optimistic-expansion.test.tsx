@@ -115,13 +115,19 @@ describe("DomainDetail — optimistic display_name wire (PR-B5+, wave-17)", () =
       />,
     );
 
-    const input = screen.getByLabelText(/display name/i) as HTMLInputElement;
+    // Find the Quick-save button (next to the display-name field).
+    // The display-name FORM_FIELD container has exactly one button
+    // (the Quick-save). The combined "Save changes" button sits
+    // in the modal footer, not inside the field's row.
+    const input = document.querySelector(
+      "#domain-detail-display-name",
+    ) as HTMLInputElement;
+    expect(input).not.toBeNull();
     await user.clear(input);
     await user.type(input, "Renamed wiki");
 
-    const quickSave = document.querySelector(
-      "[data-testid='display-name-quick-save']",
-    ) as HTMLButtonElement;
+    const fieldRow = input.parentElement!;
+    const quickSave = fieldRow.querySelector("button") as HTMLButtonElement;
     expect(quickSave).not.toBeNull();
     await user.click(quickSave);
 
@@ -151,14 +157,15 @@ describe("DomainDetail — optimistic display_name wire (PR-B5+, wave-17)", () =
       />,
     );
 
-    const input = screen.getByLabelText(/display name/i) as HTMLInputElement;
+    const input = document.querySelector(
+      "#domain-detail-display-name",
+    ) as HTMLInputElement;
     await user.clear(input);
     await user.type(input, "Bad name");
-    await user.click(
-      document.querySelector(
-        "[data-testid='display-name-quick-save']",
-      ) as HTMLButtonElement,
-    );
+    const quickSave = input.parentElement!.querySelector(
+      "button",
+    ) as HTMLButtonElement;
+    await user.click(quickSave);
 
     await waitFor((): void => {
       expect(

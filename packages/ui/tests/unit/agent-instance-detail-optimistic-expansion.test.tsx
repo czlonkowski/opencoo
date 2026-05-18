@@ -342,8 +342,13 @@ describe("AgentInstanceDetail — optimistic scope_domain_ids wire (PR-B5+, wave
       expect(screen.getByText(/No output channels available/i)).toBeTruthy();
     });
 
-    // Open the scope editor.
-    fireEvent.click(screen.getByText(/Edit scope/i));
+    // Open the scope editor. The button text is just "Edit"; we
+    // target it via its container (the chips wrapper's sibling
+    // <Btn>).
+    const chipsContainer = screen.getByTestId("scope-chips");
+    const scopeWrapper = chipsContainer.parentElement!;
+    const editBtn = scopeWrapper.querySelector("button")!;
+    fireEvent.click(editBtn);
 
     // Add wiki-test-b to the selection. The MultiSelectDomains
     // component renders one checkbox per available domain.
@@ -393,7 +398,10 @@ describe("AgentInstanceDetail — optimistic scope_domain_ids wire (PR-B5+, wave
       expect(screen.getByText(/No output channels available/i)).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByText(/Edit scope/i));
+    const chipsContainer2 = screen.getByTestId("scope-chips");
+    const scopeWrapper2 = chipsContainer2.parentElement!;
+    const editBtn2 = scopeWrapper2.querySelector("button")!;
+    fireEvent.click(editBtn2);
 
     const checkboxes = await waitFor((): HTMLInputElement[] => {
       const got = Array.from(
