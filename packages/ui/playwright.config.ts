@@ -78,15 +78,25 @@ export default defineConfig({
     // locale by writing `localStorage.opencoo_locale` before each
     // navigation; the project name flows into the report so a
     // failure surfaces "axe@pl: route X violation Y" verbatim.
+    //
+    // `testMatch` is scoped to `*.spec.ts` so the Playwright
+    // runner does NOT pick up A6's `contrast.test.ts` (a Vitest
+    // unit test that lives in the same directory). Loading a
+    // Vitest test under Playwright trips a
+    // `Cannot redefine property: Symbol($$jest-matchers-object)`
+    // global-state clash. The convention going forward:
+    // `*.spec.ts` = Playwright; `*.test.ts` = Vitest.
     {
       name: "axe-en",
       testDir: "./tests/accessibility",
+      testMatch: /\.spec\.ts$/,
       use: { ...devices["Desktop Chrome"], locale: "en-US" },
       metadata: { opencooLocale: "en" },
     },
     {
       name: "axe-pl",
       testDir: "./tests/accessibility",
+      testMatch: /\.spec\.ts$/,
       use: { ...devices["Desktop Chrome"], locale: "pl-PL" },
       metadata: { opencooLocale: "pl" },
     },
