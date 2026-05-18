@@ -21,6 +21,12 @@ export default defineConfig({
       // (no jsdom needed), but kept under vitest so a `pnpm test`
       // run at the package root catches drifts.
       "tests/accessibility/**/*.test.{ts,tsx}",
+      // PR-C7 (wave-16) — the cross-route visual-consistency snapshot
+      // sits at `tests/visual-consistency.test.tsx` (alongside the
+      // unit/ui/e2e subtrees). Picked up by an explicit glob rather
+      // than promoting `tests/*.test.tsx` so future top-level files
+      // are an opt-in surface.
+      "tests/visual-consistency.test.tsx",
     ],
     setupFiles: ["./tests/unit/setup.ts"],
     testTimeout: 15_000,
