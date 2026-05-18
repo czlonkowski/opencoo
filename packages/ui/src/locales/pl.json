@@ -60,6 +60,11 @@
     "pl": "Polski",
     "switcherAriaLabel": "Język interfejsu"
   },
+  "density": {
+    "ariaLabel": "Gęstość interfejsu",
+    "comfortable": "komfortowy",
+    "compact": "kompaktowy"
+  },
   "domains": {
     "title": "Domains",
     "subtitle": "Knowledge surfaces compiled by opencoo.",
