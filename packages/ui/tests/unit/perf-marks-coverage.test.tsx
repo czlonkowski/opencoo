@@ -32,8 +32,8 @@
  *    Activity case we render the `runs` tab so a fetchAdmin call
  *    actually fires.
  */
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { render, waitFor } from "@testing-library/react";
 
 vi.mock("../../src/lib/perf-marks.js", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../../src/lib/perf-marks.js")>();
@@ -180,11 +180,11 @@ const ROUTE_CASES: ReadonlyArray<RouteCase> = [
         { prefix: "/api/admin/pipelines", body: { pipelines: [] } },
         { prefix: "/api/admin/scheduler", body: { schedules: [] } },
       ]);
+      // Activity's default tab is the SSE-only `feed`, so the
+      // route emits its perf bracket synthetically on mount
+      // (no fetchAdmin to wrap). Rendering the default surface
+      // is sufficient — no sub-tab navigation required.
       render(<Activity fetchImpl={fetchImpl} />);
-      // Activity's default tab is `feed` (SSE-only). The route's
-      // primary fetchAdmin lives in the `runs` sub-tab — click it
-      // so the bracket fires.
-      fireEvent.click(screen.getByRole("button", { name: /runs/i }));
     },
   },
   {
@@ -240,6 +240,15 @@ const ROUTE_CASES: ReadonlyArray<RouteCase> = [
 ];
 
 describe("perf-marks coverage — 11 operator-facing routes", () => {
+  // LlmPolicy doesn't accept a `fetchImpl` test seam — it calls
+  // `fetchAdmin` against `globalThis.fetch` directly, so the test
+  // stubs the global. Without this cleanup, Vitest's module
+  // ordering can leak the mocked fetch into later test files
+  // (Copilot triage on PR-B8+).
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   for (const c of ROUTE_CASES) {
     it(`route ${c.tab}: emits markRouteFetchStart(${c.tab}) + markRouteFetchEnd(${c.tab})`, async () => {
       markRouteFetchStartSpy.mockClear();

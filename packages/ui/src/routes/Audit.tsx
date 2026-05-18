@@ -750,10 +750,17 @@ export function Audit(props: AuditProps = {}): JSX.Element {
       } catch {
         if (!cancelled) setError(t("audit.loadError"));
       } finally {
-        markRouteFetchEnd("audit");
-        if (!didMeasureNavRef.current) {
-          didMeasureNavRef.current = true;
-          measureRouteNav("audit");
+        // Respect the cancelled flag so an abandoned request
+        // (operator paged away mid-flight, or unmount) doesn't
+        // emit fetch-end and consume the one-shot nav
+        // measurement — that would record a nav whose data was
+        // never rendered (Copilot triage on PR-B8+).
+        if (!cancelled) {
+          markRouteFetchEnd("audit");
+          if (!didMeasureNavRef.current) {
+            didMeasureNavRef.current = true;
+            measureRouteNav("audit");
+          }
         }
       }
     })();

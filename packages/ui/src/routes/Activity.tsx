@@ -540,14 +540,7 @@ function RunsView(props: { fetchImpl?: typeof fetch }): JSX.Element {
   // reshape when /api/admin/agent-runs lands.
   const showSkeleton = useDeferredSkeleton(rows === null && error === null);
 
-  // PR-B8+ (wave-17) — first-fetch-only nav measure (see Domains).
-  // Activity's default sub-tab is `feed` (SSE-only); the route's
-  // primary fetchAdmin lives here, in the `runs` sub-view. The
-  // bracket fires once the operator switches to the runs tab.
-  const didMeasureNavRef = useRef(false);
-
   useEffect(() => {
-    markRouteFetchStart("activity");
     void (async () => {
       try {
         const r = await fetchAdmin<AgentRunsResponse>(
@@ -557,12 +550,6 @@ function RunsView(props: { fetchImpl?: typeof fetch }): JSX.Element {
         setRows(r.rows);
       } catch {
         setError(t("common.error"));
-      } finally {
-        markRouteFetchEnd("activity");
-        if (!didMeasureNavRef.current) {
-          didMeasureNavRef.current = true;
-          measureRouteNav("activity");
-        }
       }
     })();
   }, []);
@@ -1046,6 +1033,23 @@ function PipelinesView(props: {
 export function Activity(props: ActivityProps = {}): JSX.Element {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<ActivityTab>("feed");
+
+  // PR-B8+ (wave-17) — route-level perf bracket. Activity's
+  // default sub-tab is the SSE-only `feed`, so there's no
+  // fetchAdmin call to bracket at the route boundary. Emitting
+  // both marks on mount keeps the wave-end Lighthouse runner's
+  // expectation (every route emits a `route:<tab>:fetch-*` pair
+  // when the operator navigates to it) intact, regardless of
+  // which sub-tab is active. Copilot triage on PR-B8+.
+  const didMeasureNavRef = useRef(false);
+  useEffect(() => {
+    markRouteFetchStart("activity");
+    markRouteFetchEnd("activity");
+    if (!didMeasureNavRef.current) {
+      didMeasureNavRef.current = true;
+      measureRouteNav("activity");
+    }
+  }, []);
 
   const tabs: Array<{ key: ActivityTab; label: string }> = [
     { key: "feed", label: t("activity.tabs.feed") },

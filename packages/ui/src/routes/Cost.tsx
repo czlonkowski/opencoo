@@ -678,10 +678,16 @@ export function Cost(props: CostProps = {}): JSX.Element {
       } catch {
         if (!cancelled) setError(t("cost.loadError"));
       } finally {
-        markRouteFetchEnd("cost");
-        if (!didMeasureNavRef.current) {
-          didMeasureNavRef.current = true;
-          measureRouteNav("cost");
+        // Respect the cancelled flag so an abandoned request
+        // (operator changed filters / navigated away mid-flight)
+        // doesn't emit fetch-end and consume the one-shot nav
+        // measurement (Copilot triage on PR-B8+).
+        if (!cancelled) {
+          markRouteFetchEnd("cost");
+          if (!didMeasureNavRef.current) {
+            didMeasureNavRef.current = true;
+            measureRouteNav("cost");
+          }
         }
       }
     })();
