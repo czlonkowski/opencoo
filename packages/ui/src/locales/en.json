@@ -470,6 +470,9 @@
     "showDetails": "Show details",
     "dismiss": "Dismiss"
   },
+  "optimistic": {
+    "savingError": "Couldn't save change"
+  },
   "help": {
     "reviewMode": {
       "label": "review mode",

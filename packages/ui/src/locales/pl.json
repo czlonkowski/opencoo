@@ -469,6 +469,9 @@
     "showDetails": "Pokaż szczegóły",
     "dismiss": "Zamknij"
   },
+  "optimistic": {
+    "savingError": "Nie udało się zapisać zmiany"
+  },
   "help": {
     "reviewMode": {
       "label": "tryb przeglądu",

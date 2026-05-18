@@ -26,20 +26,30 @@
  * `opencoo`, `--alert` reserved for destructive surfaces only,
  * design-system tokens only.
  */
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { useTranslation } from "react-i18next";
 
 import { AgentInstancePromptsSection } from "./AgentInstancePromptsSection.js";
 import { Btn } from "./Btn.js";
 import { Modal } from "./Modal.js";
 import { MultiSelectDomains } from "./MultiSelectDomains.js";
+import { SavingDot, type SavingDotState } from "./SavingDot.js";
+import { useToast } from "./Toast.js";
 import { TooltipTrigger } from "./Tooltip.js";
+import { useOptimisticPatch } from "../hooks/useOptimisticPatch.js";
 import {
   ApiAuthError,
   ApiValidationError,
   fetchAdmin,
   fetchOptsFor,
 } from "../lib/api.js";
+import { safeErrorMessage } from "../lib/safe-error.js";
 import type { AgentInstance, OutputChannel } from "../types.js";
 
 /** Cooldown after a successful save — prevents accidental
@@ -143,6 +153,7 @@ export function AgentInstanceDetail(
   props: AgentInstanceDetailProps,
 ): JSX.Element {
   const { t } = useTranslation();
+  const toastApi = useToast();
   const opts = fetchOptsFor(props.fetchImpl);
   const mountedRef = useRef(true);
   useEffect(
@@ -150,6 +161,24 @@ export function AgentInstanceDetail(
       mountedRef.current = false;
     },
     [],
+  );
+
+  // ── Optimistic-patch lifecycle cues (PR-B5, wave-16) ───────────────────
+  // The saving-cue dot next to each whitelisted field renders one of
+  // four states (`idle | saving | success | error`) projected from
+  // `useOptimisticPatch`'s `saving + lastError` pair via local state.
+  // The B7 alert toast surfaces on rollback via `fireRollbackToast`.
+  const [enabledCueState, setEnabledCueState] =
+    useState<SavingDotState>("idle");
+
+  const fireRollbackToast = useCallback(
+    (err: unknown): void => {
+      toastApi.alert({
+        message: t("optimistic.savingError"),
+        details: safeErrorMessage(err),
+      });
+    },
+    [toastApi, t],
   );
 
   // ── Output channels: fetch the catalog ─────────────────────────────────
@@ -202,9 +231,45 @@ export function AgentInstanceDetail(
     );
   };
 
-  // ── Enabled state ──────────────────────────────────────────────────────
+  // ── Enabled state (optimistic, PR-B5) ──────────────────────────────────
+  // Operator clicks Disable/Enable → UI flips immediately and the
+  // saving-cue dot fades in. On success the dot brief-flashes green;
+  // on failure the dot turns red, the value rolls back, and the B7
+  // alert toast surfaces via `fireRollbackToast`. The PATCH wire body
+  // is unchanged from the prior implementation.
 
-  const [enabled, setEnabled] = useState<boolean>(props.instance.enabled);
+  const applyEnabled = useCallback(
+    async (next: boolean): Promise<boolean> => {
+      setEnabledCueState("saving");
+      try {
+        await fetchAdmin(`/api/admin/agent-instances/${props.instance.id}`, {
+          method: "PATCH",
+          body: { enabled: next },
+          ...opts,
+        });
+        if (mountedRef.current) {
+          setEnabledCueState("success");
+          props.onChanged();
+        }
+        return next;
+      } catch (err) {
+        if (mountedRef.current) setEnabledCueState("error");
+        throw err;
+      }
+    },
+    [props, opts],
+  );
+  const enabledOptimistic = useOptimisticPatch<boolean>(
+    props.instance.enabled,
+    applyEnabled,
+    { rollbackToast: fireRollbackToast },
+  );
+  const enabled = enabledOptimistic.value;
+
+  const toggleEnabledOptimistic = (): void => {
+    if (enabledOptimistic.saving) return;
+    enabledOptimistic.setValue(!enabled);
+  };
 
   // ── Schedule state ─────────────────────────────────────────────────────
 
@@ -325,33 +390,9 @@ export function AgentInstanceDetail(
     }
   };
 
-  const saveEnabled = async (): Promise<void> => {
-    if (busy || onCooldown()) return;
-    const next = !enabled;
-    setBusy(true);
-    try {
-      await fetchAdmin(`/api/admin/agent-instances/${props.instance.id}`, {
-        method: "PATCH",
-        body: { enabled: next },
-        ...opts,
-      });
-      if (!mountedRef.current) return;
-      setEnabled(next);
-      flashToast(
-        "healthy",
-        next
-          ? t("agentInstance.detail.enabledToggled.on")
-          : t("agentInstance.detail.enabledToggled.off"),
-      );
-      startCooldown();
-      props.onChanged();
-    } catch (err) {
-      if (!mountedRef.current) return;
-      flashToast("alert", mapErr(err, t("errors.bindOutputsFailed")));
-    } finally {
-      if (mountedRef.current) setBusy(false);
-    }
-  };
+  // Note: the `enabled` PATCH now flows through `useOptimisticPatch`
+  // — see `applyEnabled` + `toggleEnabledOptimistic` above (PR-B5).
+  // The toggle button's onClick calls `toggleEnabledOptimistic`.
 
   const saveSchedule = async (): Promise<void> => {
     if (busy || onCooldown() || !scheduleDirty) return;
@@ -775,9 +816,10 @@ export function AgentInstanceDetail(
           </div>
         </div>
 
-        {/* Enabled toggle */}
+        {/* Enabled toggle (optimistic, PR-B5) */}
         <h3 style={SECTION_HEADING_STYLE}>
           {t("agentInstance.detail.enabled")}
+          <SavingDot state={enabledCueState} />
         </h3>
         <div
           style={{
@@ -794,10 +836,8 @@ export function AgentInstanceDetail(
           </div>
           <Btn
             variant="ghost"
-            onClick={(): void => {
-              void saveEnabled();
-            }}
-            disabled={busy || onCooldown()}
+            onClick={toggleEnabledOptimistic}
+            disabled={busy || enabledOptimistic.saving}
           >
             {enabled
               ? t("agentInstance.detail.disable")

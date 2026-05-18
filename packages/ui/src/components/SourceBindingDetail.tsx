@@ -64,6 +64,14 @@ import {
 } from "../lib/api.js";
 import type { SourceBinding } from "../types.js";
 
+// PR-B5 (wave-16) follow-up — SourceBindingDetail's enable/disable
+// flow gates the PATCH behind a confirm modal that closes on
+// success, so `useOptimisticPatch` adds no visible benefit at the
+// enable/disable level. Notes + retention overrides have their own
+// inline panels (see RetentionOverridePanel + NotesPanel below) and
+// are good candidates for B5 wiring in a subsequent PR — left for a
+// dedicated pass to avoid churning ~2.5k LoC in a single change.
+
 export interface SourceBindingDetailProps {
   readonly binding: SourceBinding;
   /** Called when the operator dismisses the modal (Esc, backdrop,
