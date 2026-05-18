@@ -3,6 +3,18 @@
  * number / currency / date / relative-time helpers (PR-C3,
  * wave-16).
  *
+ * CI-coverage note (Copilot triage on PR #175): this suite lives
+ * under `packages/ui/` so it runs via
+ * `pnpm --filter @opencoo/ui test`, NOT via the root
+ * `pnpm test` shard that CI invokes (the root vitest config
+ * excludes `packages/ui/**` because its pool is node-env and the
+ * UI specs need jsdom). The load-bearing locale-bundle contract
+ * is pinned by `tools/i18n-check.test.ts` which DOES run in CI
+ * via the root vitest config; this file's behaviour-pinning runs
+ * on every local `pnpm --filter @opencoo/ui test`. Wiring a
+ * dedicated `ui` CI job is a separate follow-up (4 pre-existing
+ * UI test failures on main need triage first; not in scope here).
+ *
  * Pin matrix:
  *   1. `formatUsd` — preserves the wave-9 Cost-tab behavior:
  *      en → `$1,234.56`, pl → comma-as-decimal, negative amounts

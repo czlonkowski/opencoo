@@ -4,12 +4,18 @@
  *
  * Loads `packages/ui/src/locales/{en,pl}.json` and asserts:
  *   - every leaf key in `en.json` has a counterpart in `pl.json`
- *   - every leaf in `pl.json` is "Polish-shaped" OR is on an
- *     allowlist (proper nouns, short technical tokens, pure
- *     interpolation templates, glob/path fragments, the
- *     `_lint_translate_c3` marker)
+ *     (missing → reported)
+ *   - for every (key, plValue) where `plValue === enValue`, the
+ *     `plValue` must be "Polish-shaped" (Polish diacritic OR on
+ *     an allowlist: proper nouns, short technical tokens, pure
+ *     interpolation templates, glob/path fragments, cron patterns,
+ *     or the `_lint_translate_c3` marker). Identical-but-not-
+ *     shaped → untranslated. Non-identical values are not
+ *     re-checked: if the operator changed the string at all, we
+ *     trust they translated it.
  *   - nothing extra in `pl.json` that isn't in `en.json`
- *     (except metadata keys like `_comment`)
+ *     (except metadata keys like `_comment` and i18next plural
+ *     suffix keys whose base exists in en)
  *
  * Exits 1 on any failure; emits a list of offending keys to
  * stderr. Wired into the `lint` job of `.github/workflows/ci.yml`
