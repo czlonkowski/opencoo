@@ -60,6 +60,21 @@ void i18n.use(initReactI18next).init({
   interpolation: { escapeValue: false },
 });
 
+// PR-W18 — keep <html lang> in sync with the active locale so screen
+// readers pick the right pronunciation engine (a Polish UI under
+// lang="en" gets read with English phonemes). Catches every entry
+// point: boot detect, reconcileLocaleAtLogin at session hydrate, and
+// every LocaleSwitcher flip on PatEntryModal + TopBar. SSR-safe — the
+// `typeof document` guard mirrors the storage guard in detectLocale.
+i18n.on("languageChanged", (lng) => {
+  if (typeof document !== "undefined") {
+    document.documentElement.lang = lng;
+  }
+});
+if (typeof document !== "undefined") {
+  document.documentElement.lang = i18n.language;
+}
+
 /** Write the current operator-chosen locale to localStorage.
  *  Wrapped in try/catch because sandboxed/private contexts may
  *  throw SecurityError on storage writes (mirrors the read path

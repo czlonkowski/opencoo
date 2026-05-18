@@ -483,6 +483,10 @@ export interface AdminFixture {
 export interface AdminFixtureOptions {
   readonly adminTeamSlug?: string;
   readonly llmDebugLog?: boolean;
+  /** PR-W18 — operator-facing Gitea URL surfaced on the
+   *  unauthenticated /api/public/config endpoint. Undefined →
+   *  endpoint returns `{ giteaUrl: null }`. */
+  readonly giteaPublicUrl?: string;
   /** Phase-a appendix #4 PR-B — injected queue for pipelines-list tests. */
   readonly ingestionQueue?: {
     getJobCounts: (...states: string[]) => Promise<Record<string, number>>;
@@ -599,6 +603,10 @@ export async function makeAdminFixture(
       : {}),
     ...(opts.classifyJobEnqueuer !== undefined
       ? { classifyJobEnqueuer: opts.classifyJobEnqueuer }
+      : {}),
+    // PR-W18 (phase-a appendix #18)
+    ...(opts.giteaPublicUrl !== undefined
+      ? { giteaPublicUrl: opts.giteaPublicUrl }
       : {}),
   });
 

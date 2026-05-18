@@ -30,10 +30,12 @@
  *     </body>
  *   </Card>
  *
- * Why h3 for the title — the route already carries an <h1> at the
- * page header; the empty-state panel sits beneath it as a sectional
- * affordance, not a primary heading. Slots cleanly under A2's
- * landmark/h1 work.
+ * Why h2 for the title — the route already carries an <h1> at the
+ * page header; the empty-state panel sits beneath it at the next
+ * heading level. WCAG `heading-order` forbids skipping levels (h1 →
+ * h3 fails). PR-W18-followup darkened from h3 after axe walk against
+ * the partner deployment flagged the skip across every empty-state
+ * route. Slots cleanly under A2's landmark/h1 work.
  */
 import type { CSSProperties, ReactNode } from "react";
 
@@ -189,7 +191,7 @@ export function EmptyStatePanel(props: EmptyStatePanelProps): JSX.Element {
   return (
     <div data-empty-state-panel style={CARD_STYLE}>
       <div style={TITLE_BAND_STYLE}>
-        <h3 style={TITLE_STYLE}>{title}</h3>
+        <h2 style={TITLE_STYLE}>{title}</h2>
       </div>
       <div style={BODY_STYLE}>
         {body !== "" && body !== undefined && body !== null ? (

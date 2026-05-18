@@ -94,4 +94,72 @@ describe("PatEntryModal", () => {
     });
     resolveOuter?.();
   });
+
+  // PR-W18 — Gitea handoff block. The 3-step explanation always
+  // renders; the "Open Gitea" link renders only when the public
+  // config endpoint returns a non-null giteaUrl. The PatEntryModal
+  // fetches `/api/public/config` on mount; failure (4xx / 5xx /
+  // network) silently falls back to "explanation only, no link"
+  // because there's no toast region rendered pre-auth.
+  describe("Gitea handoff (PR-W18)", () => {
+    it("renders the 3-step explanation independent of config fetch", async () => {
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ giteaUrl: null }), { status: 200 }),
+        );
+      render(<PatEntryModal onSubmit={vi.fn()} />);
+      // Steps render synchronously from i18n — no fetch wait needed.
+      expect(screen.getByText(/Open your Gitea instance/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/Settings → Applications → Generate New Token/i),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/Grant the token admin scope/i)).toBeInTheDocument();
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+      fetchSpy.mockRestore();
+    });
+
+    it("renders the Open Gitea link when /api/public/config returns a URL", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ giteaUrl: "https://gitea.example.com/" }),
+          { status: 200 },
+        ),
+      );
+      render(<PatEntryModal onSubmit={vi.fn()} />);
+      const link = await screen.findByTestId("pat-entry-gitea-link");
+      expect(link.tagName).toBe("A");
+      expect(link).toHaveAttribute("href", "https://gitea.example.com/");
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link).toHaveAttribute("rel", "noopener noreferrer");
+      expect(link.textContent).toMatch(/Open Gitea/i);
+      fetchSpy.mockRestore();
+    });
+
+    it("hides the link when giteaUrl is null", async () => {
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ giteaUrl: null }), { status: 200 }),
+        );
+      render(<PatEntryModal onSubmit={vi.fn()} />);
+      // Let the fetch promise resolve so a defensive
+      // implementation that conditionally renders would update.
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+      expect(screen.queryByTestId("pat-entry-gitea-link")).toBeNull();
+      fetchSpy.mockRestore();
+    });
+
+    it("hides the link when /api/public/config fails (network or 5xx)", async () => {
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockRejectedValueOnce(new TypeError("network down"));
+      render(<PatEntryModal onSubmit={vi.fn()} />);
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+      expect(screen.queryByTestId("pat-entry-gitea-link")).toBeNull();
+      // The explanation is still present.
+      expect(screen.getByText(/Open your Gitea instance/i)).toBeInTheDocument();
+      fetchSpy.mockRestore();
+    });
+  });
 });

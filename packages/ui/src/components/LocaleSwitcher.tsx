@@ -43,8 +43,15 @@ export interface LocaleSwitcherProps {
    *  the in-session UX is unblocked even if the server is slow or
    *  unreachable. Resolves on success, rejects on failure — the
    *  switcher logs (B7 toast wiring lands later) but does not
-   *  regress local state. */
-  readonly onChange: (locale: SupportedLocale) => Promise<void>;
+   *  regress local state.
+   *
+   *  Optional (PR-W18): the LocaleSwitcher is also rendered on the
+   *  pre-auth PatEntryModal where there is no user row yet, so no
+   *  DB PATCH should fire. Omit `onChange` on that surface — the
+   *  flip still persists via localStorage, and
+   *  `reconcileLocaleAtLogin` carries the choice into the
+   *  authenticated session. */
+  readonly onChange?: (locale: SupportedLocale) => Promise<void>;
 }
 
 export function LocaleSwitcher(props: LocaleSwitcherProps): JSX.Element {
@@ -77,15 +84,24 @@ export function LocaleSwitcher(props: LocaleSwitcherProps): JSX.Element {
     //    wired we log to console; the next login's `/_csrf`
     //    hydrate will surface the divergence (DB still has the
     //    prior locale) for forensic review.
-    void props.onChange(next).catch((err: unknown) => {
-      // B7 toast wiring will replace this console.warn once the
-      // queue lands; until then the failure is observable via
-      // engine + browser logs only.
-      console.warn(
-        "LocaleSwitcher: PATCH /api/admin/users/me/locale failed; local state preserved",
-        err,
-      );
-    });
+    //
+    //    PR-W18: `onChange` is now optional — the pre-auth
+    //    PatEntryModal renders this component without it, since
+    //    there is no user row yet to PATCH. In that case the local
+    //    flip stands alone and reconcileLocaleAtLogin carries the
+    //    choice forward.
+    const onChange = props.onChange;
+    if (onChange !== undefined) {
+      void onChange(next).catch((err: unknown) => {
+        // B7 toast wiring will replace this console.warn once the
+        // queue lands; until then the failure is observable via
+        // engine + browser logs only.
+        console.warn(
+          "LocaleSwitcher: PATCH /api/admin/users/me/locale failed; local state preserved",
+          err,
+        );
+      });
+    }
   };
 
   return (

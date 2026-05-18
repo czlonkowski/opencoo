@@ -176,7 +176,12 @@ describe("EmptyStatePanel", () => {
     expect((card as HTMLElement).style.border).toContain("var(--rule)");
   });
 
-  it("renders title as an h3 (slots beneath the route's h1)", () => {
+  // PR-W18 — title is `<h2>`, NOT `<h3>`. The route's `<h1>` page
+  // header is the only level-1 heading; WCAG `heading-order` forbids
+  // skipping levels (h1 → h3 fails). Pre-W18 the title was `<h3>`
+  // and every route with an empty-state failed axe's heading-order
+  // rule (caught on Activity in the 0.1.0-a.15 QA walk).
+  it("renders title as an h2 (next level beneath the route's h1)", () => {
     render(
       <EmptyStatePanel
         title="No agent instances yet"
@@ -184,7 +189,11 @@ describe("EmptyStatePanel", () => {
       />,
     );
     expect(
-      screen.getByRole("heading", { level: 3, name: /no agent instances yet/i }),
+      screen.getByRole("heading", { level: 2, name: /no agent instances yet/i }),
     ).toBeInTheDocument();
+    // And explicitly NOT h3.
+    expect(
+      screen.queryByRole("heading", { level: 3 }),
+    ).not.toBeInTheDocument();
   });
 });

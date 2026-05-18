@@ -99,7 +99,16 @@
     "loadingUser": "Rozpoznawanie tożsamości…",
     "loginFailed": "Logowanie nieudane.",
     "forbidden": "Twoje konto nie należy do zespołu admin.",
-    "loggedInAs": "{{username}}"
+    "loggedInAs": "{{username}}",
+    "gitea": {
+      "intro": "Potrzebujesz tokenu Gitea? Wygeneruj go w instancji Gitea hostowanej razem z opencoo:",
+      "howToGenerate": {
+        "step1": "Otwórz swoją instancję Gitea.",
+        "step2": "Przejdź do Ustawienia → Aplikacje → Wygeneruj nowy token.",
+        "step3": "Nadaj tokenowi uprawnienia administratora, skopiuj go i wklej powyżej."
+      },
+      "linkLabel": "Otwórz Gitea"
+    }
   },
   "csrf": {
     "retrying": "Odświeżanie tokena CSRF i ponawianie…"

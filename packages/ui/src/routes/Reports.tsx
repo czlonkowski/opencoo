@@ -438,7 +438,7 @@ function HeartbeatCard(props: {
                       style={{
                         fontFamily: "var(--font-mono)",
                         fontSize: 10,
-                        color: "var(--wiki)",
+                        color: "var(--wiki-ink)",
                         background: "var(--paper)",
                         border: "1px solid var(--rule)",
                         borderRadius: 3,
