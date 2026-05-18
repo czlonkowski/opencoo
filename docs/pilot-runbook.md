@@ -14,7 +14,7 @@ Bring the deployment substrate up first. opencoo does not ship its own substrate
 
 - **PostgreSQL 16+** reachable on a TCP socket. one database per opencoo instance; no separate read-replica needed in v0.1.
 - **Redis 7+** reachable on a TCP socket. used as the BullMQ backing store; persistence settings are operator-owned (BullMQ recovers from `aof` on its own, but a snapshot loss costs in-flight ingestion jobs).
-- **Gitea** reachable from the opencoo host. any recent Gitea release works; pin by image digest in operator-owned compose. opencoo writes to one repo per knowledge domain via a service-account PAT.
+- **Gitea** reachable from the opencoo host **AND from the operator's browser**. any recent Gitea release works; pin by image digest in operator-owned compose. opencoo writes to one repo per knowledge domain via a service-account PAT. Gitea is the human-review surface for compiled wikis (architecture §10) — operators read, comment on, and merge agent-authored changes against it — so **a Gitea instance that is reachable only from the opencoo container is not a valid deployment**. The OSS-recommended pattern is to expose Gitea on a sub-domain (`gitea.<your-domain>`) via the same reverse proxy as opencoo; the alternative is a sub-path (`/gitea/*` on the opencoo host) with Gitea's `ROOT_URL` set to the same URL. See §13 "Expose Gitea publicly" below.
 - **Ports**: `8080` free on the opencoo host (the engine binds Fastify here); `5432` / `6379` / `3000` free if the operator runs Postgres / Redis / Gitea on the local-dev `compose.yml` shipped in the repo. all three are operator-overridable.
 
 ### Required env vars
@@ -34,6 +34,7 @@ opencoo's env-var allow-list is short by design (THREAT-MODEL §2 invariant 9 �
 | `GITEA_BASE_URL` | Gitea URL the admin-API uses for `/whoami`. | usually equal to `GITEA_URL` |
 | `MCP_BEARER_TOKEN` | Static bearer the engine uses to talk to the gitea-wiki-mcp-server (must match the server's own `MCP_BEARER_TOKEN`). When unset, scheduled Heartbeat / Lint / Surfacer agents do NOT fire — webhook → wiki path still works. | `openssl rand -hex 32` (same value the gitea-wiki-mcp-server is configured with) |
 | `MCP_BASE_URL` | Full URL of the gitea-wiki-mcp-server's `/mcp` endpoint. | optional; defaults to `http://localhost:3000/mcp` |
+| `GITEA_PUBLIC_URL` | **Operator-facing** Gitea URL (the one the operator pastes into their browser). Surfaced on the unauthenticated `/api/public/config` so the PAT-entry modal renders a clickable "Open Gitea" link. Distinct from `GITEA_URL` / `GITEA_BASE_URL` which are the engine's container-network paths. Set to e.g. `https://gitea.opencoo.example.com/` (sub-domain pattern) or `https://opencoo.example.com/gitea/` (sub-path). Optional in code — when unset, the PAT-entry modal renders only the 3-step explanation. SHOULD be set in production (per architecture §10: Gitea is the human-review surface for compiled wikis). | operator-owned |
 | `N8N_MCP_BEARER_TOKEN` | Static bearer the engine uses to talk to the [n8n-mcp](https://github.com/czlonkowski/n8n-mcp) MCP server (must match that server's own bearer). Surfacer's template catalog is sourced via this server's `search_templates` tool. **If absent, Surfacer uses the vendored ~3-template baseline** bundled with the `automation-n8n-mcp` adapter; absent does NOT break Heartbeat / Lint. | n8n-mcp's own bearer; see the n8n-mcp project README for setup |
 | `N8N_MCP_BASE_URL` | Full URL of the n8n-mcp server's `/mcp` endpoint. | optional alongside `N8N_MCP_BEARER_TOKEN`; both must be set together to activate the live template catalog |
 | `OPENROUTER_API_KEY` | OpenRouter API key. **Optional** — set when a domain's LLM policy picks `provider=openrouter` in the management UI's LLM-policy editor (Domains → llm policy → per-tier dropdown; PR-Q13 replaced the raw-JSON textarea with provider + model dropdowns + an "Other model…" custom-input fallback). The multi-provider dispatcher threads this into `createProvider("openrouter")` lazily; absent does NOT break boot. PR-Q4 (phase-a appendix #9) added the `openrouter` arm to the closed `PROVIDERS` tuple. | operator-owned (https://openrouter.ai/) |
@@ -473,3 +474,70 @@ Rotate the shared secret by editing the channel in the Outputs UI: open the chan
 - **HMAC mismatch in n8n** — the operator likely pasted a different secret on the two sides. Re-do steps 3 + 6's credential field. Validate by triggering a one-off agent run from the management UI's "Run now" button (§7.3) and watching the Activity tab.
 - **`output_deliveries.status = 'dlq'`** — terminal failure after the retry budget exhausted, OR an immediate 4xx/422 from n8n. Inspect `response_body_excerpt` (first 500 bytes) for the receiver's reason.
 - **`targetUrl` not reachable from the engine** — the engine container needs egress to the n8n host. For partner deployments where n8n is on a separate network, add the n8n DNS name to `extra_hosts:` in `compose.partner.yml` or use a routable URL.
+
+## 14. Expose Gitea publicly (wave-18)
+
+Gitea is the **human-review surface for compiled wikis** (architecture §10) AND the agent MCP target. Operators read, comment on, and merge agent-authored changes against it. A Gitea instance reachable only from the opencoo container is not a valid deployment — operators cannot do the review they need to do.
+
+The OSS-recommended pattern is a **dedicated sub-domain** (`gitea.<your-domain>`) behind the same reverse proxy as opencoo. Sub-path mounting (`/gitea/*` on the opencoo host) works too but has historically been finicky with Gitea's `ROOT_URL` + OAuth + clone URLs — only choose it when single-domain is a hard requirement.
+
+### Sub-domain pattern (recommended)
+
+For a partner host serving opencoo at `https://opencoo.example.com/`:
+
+1. **DNS** — add an A (or AAAA) record `gitea.opencoo.example.com → <host IP>`. This is operator-side; opencoo can't do it for you.
+2. **Caddy** — add a site block alongside the existing opencoo block:
+
+   ```
+   gitea.opencoo.example.com {
+       reverse_proxy gitea:3000
+   }
+   ```
+
+   Caddy auto-TLS provisions a Let's Encrypt cert on first hit.
+
+3. **Gitea container env** — set `GITEA__server__ROOT_URL=https://gitea.opencoo.example.com/` and `GITEA__server__DOMAIN=gitea.opencoo.example.com`. Existing PATs continue to work — they aren't URL-scoped.
+
+4. **opencoo env** — add `GITEA_PUBLIC_URL=https://gitea.opencoo.example.com/` to `/opt/opencoo/.env` (or the equivalent secrets file). The engine reads this on the unauthenticated `/api/public/config` endpoint so the PAT-entry modal can render a clickable "Open Gitea" link.
+
+5. **Recreate** — `docker compose up -d --force-recreate caddy gitea opencoo gitea-wiki-mcp-server`. (Force-recreate is needed because `restart` does NOT pick up `env_file` changes in compose v2.)
+
+6. **Verify** — `curl -s https://gitea.opencoo.example.com/api/v1/version` returns `{"version":"…"}`. The PAT-entry modal at `https://opencoo.example.com/` shows the "Open Gitea" link (open in incognito so the cached SPA bundle re-fetches `/api/public/config`).
+
+### Sub-path alternative (single-domain)
+
+For operators who must keep everything on one hostname:
+
+1. **Caddy** — handle `/gitea/*` ahead of the catch-all opencoo proxy:
+
+   ```
+   opencoo.example.com {
+       handle /gitea/* {
+           reverse_proxy gitea:3000
+       }
+       handle {
+           reverse_proxy opencoo:8080
+       }
+   }
+   ```
+
+2. **Gitea env** — `GITEA__server__ROOT_URL=https://opencoo.example.com/gitea/` and `GITEA__server__DOMAIN=opencoo.example.com`. Note the trailing slash on `ROOT_URL`.
+3. **opencoo env** — `GITEA_PUBLIC_URL=https://opencoo.example.com/gitea/`.
+4. **Recreate + verify** as above.
+
+Sub-path quirks to watch: some Gitea features (OAuth flows, clone URLs in repo headers) assume root mount. v0.1 doesn't depend on these — wiki-write uses the API which is sub-path-clean — but if you start using OAuth provider features later, sub-domain is the safer base.
+
+### What it changes in the UI
+
+Before wave-18: the PAT-entry modal had only `Paste your Gitea personal access token to continue.` Operators had to discover Gitea's URL through external channels.
+
+After wave-18: the modal renders a 3-step explanation (`Open your Gitea instance` → `Settings → Applications → Generate New Token` → `Grant the token admin scope, copy it, and paste it above`) + a clickable "Open Gitea" button (when `GITEA_PUBLIC_URL` is set). The locale switcher in the modal's top-right lets the operator flip Polski before authenticating.
+
+### Verifying the contract
+
+```
+$ curl -s https://opencoo.example.com/api/public/config
+{"giteaUrl":"https://gitea.opencoo.example.com/"}
+```
+
+The endpoint is **unauthenticated by design** — it returns only the env-derived URL, never PII or credentials. The payload shape is pinned by a unit test (`tests/admin-api/public-config.test.ts`).

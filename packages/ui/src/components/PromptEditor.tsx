@@ -86,7 +86,7 @@ const BASELINE_CHIP_STYLE: CSSProperties = {
   fontFamily: "var(--font-mono)",
   fontSize: "var(--fs-micro)",
   letterSpacing: "0.04em",
-  color: "var(--wiki)",
+  color: "var(--wiki-ink)",
   border: "1px solid var(--wiki)",
   background: "color-mix(in oklch, var(--wiki) 6%, var(--paper))",
   padding: "2px 8px",
@@ -236,7 +236,7 @@ export function PromptEditor(props: PromptEditorProps): JSX.Element {
     if (isOverride) {
       return {
         ...SOURCE_CHIP_BASE_STYLE,
-        color: "var(--wiki)",
+        color: "var(--wiki-ink)",
         borderColor: "var(--wiki)",
         background: "color-mix(in oklch, var(--wiki) 6%, var(--paper))",
       };

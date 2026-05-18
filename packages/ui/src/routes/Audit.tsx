@@ -489,6 +489,7 @@ function FilterBar(props: FilterBarProps): JSX.Element {
       <input
         data-testid="audit-filter-from"
         type="date"
+        aria-label={t("audit.filters.from")}
         value={props.filters.fromDate}
         onChange={(e): void =>
           props.onFiltersChange({ ...props.filters, fromDate: e.target.value })
@@ -507,6 +508,7 @@ function FilterBar(props: FilterBarProps): JSX.Element {
       <input
         data-testid="audit-filter-to"
         type="date"
+        aria-label={t("audit.filters.to")}
         value={props.filters.toDate}
         onChange={(e): void =>
           props.onFiltersChange({ ...props.filters, toDate: e.target.value })

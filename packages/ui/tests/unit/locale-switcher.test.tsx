@@ -142,6 +142,32 @@ describe("LocaleSwitcher (PR-C2)", () => {
     expect(labels).toEqual(["English", "Polski"]);
   });
 
+  // PR-W18 — onChange is optional. The PatEntryModal renders the
+  // switcher without it (no user row to PATCH pre-auth); the flip
+  // still propagates via i18n + localStorage, and reconcileLocaleAtLogin
+  // carries the choice into the authenticated session.
+  it("works with no onChange — flips i18n + localStorage, no errors", async () => {
+    await i18n.changeLanguage("en");
+    const changeLanguageSpy = vi.spyOn(i18n, "changeLanguage");
+    const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    render(<LocaleSwitcher />);
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "pl" } });
+
+    // Microtask tick — even though there's no PATCH, the change
+    // handler still runs synchronously; we wait to assert nothing
+    // landed in console.warn from a rogue catch path.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(changeLanguageSpy).toHaveBeenCalledWith("pl");
+    expect(window.localStorage.getItem(STORED_LOCALE_KEY)).toBe("pl");
+    expect(select.value).toBe("pl");
+    // The console.warn that the with-onChange path uses on PATCH
+    // failure must NOT fire when there's no onChange at all.
+    expect(consoleWarnSpy).not.toHaveBeenCalled();
+  });
+
   it("reflects an external i18n.changeLanguage (login reconciliation)", async () => {
     // Mirrors `reconcileLocaleAtLogin` flipping i18n from outside
     // the component — the controlled `value` MUST follow because

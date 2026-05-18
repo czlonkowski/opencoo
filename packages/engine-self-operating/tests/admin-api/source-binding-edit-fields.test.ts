@@ -346,6 +346,76 @@ describe("PATCH /api/admin/source-bindings/:id — notes (PR-W5)", () => {
     expect(res.statusCode).toBe(422);
   });
 
+  // PR-W18 — whitespace-only notes are rejected at the Zod boundary
+  // (the schema now `.trim()`s before `.min(1)`). Without this, the
+  // COALESCE display-label precedence in the list query treats a
+  // bare space as "present", and the Sources table briefly shows
+  // " " in place of the derived `adapter → domain` label.
+  it("422 — whitespace-only notes are rejected after trim", async () => {
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    const { id: domainId } = await seedDomain(f.raw);
+    const { bindingId } = await seedBinding(f.raw, domainId);
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+
+    for (const payload of [
+      { notes: " " },
+      { notes: "   " },
+      { notes: "\t\n " },
+    ]) {
+      const res = await f.app.inject({
+        method: "PATCH",
+        url: `/api/admin/source-bindings/${bindingId}`,
+        headers: {
+          authorization: `Bearer ${ADMIN_PAT}`,
+          "x-csrf-token": csrfToken,
+          cookie: `opencoo_csrf=${cookie}`,
+          "content-type": "application/json",
+        },
+        payload,
+      });
+      expect(res.statusCode).toBe(422);
+    }
+
+    // The binding's stored notes should be untouched after the
+    // rejected attempts (start state was null from seedBinding).
+    const row = await f.raw.query<{ notes: string | null }>(
+      `SELECT notes FROM sources_bindings WHERE id = $1::uuid`,
+      [bindingId],
+    );
+    expect(row.rows[0]?.notes).toBeNull();
+  });
+
+  // PR-W18 — non-empty notes with surrounding whitespace are
+  // accepted; the .trim() normalises them before storage so the
+  // stored value matches what the operator sees in the table.
+  it("200 — surrounding whitespace is trimmed before storage", async () => {
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    const { id: domainId } = await seedDomain(f.raw);
+    const { bindingId } = await seedBinding(f.raw, domainId);
+    const { csrfToken, cookie } = await getCsrf(f, ADMIN_PAT);
+    const res = await f.app.inject({
+      method: "PATCH",
+      url: `/api/admin/source-bindings/${bindingId}`,
+      headers: {
+        authorization: `Bearer ${ADMIN_PAT}`,
+        "x-csrf-token": csrfToken,
+        cookie: `opencoo_csrf=${cookie}`,
+        "content-type": "application/json",
+      },
+      payload: { notes: "  partner ops notes  " },
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await f.raw.query<{ notes: string | null }>(
+      `SELECT notes FROM sources_bindings WHERE id = $1::uuid`,
+      [bindingId],
+    );
+    expect(row.rows[0]?.notes).toBe("partner ops notes");
+  });
+
   it("404 — unknown binding id", async () => {
     const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
     cleanup = f.close;

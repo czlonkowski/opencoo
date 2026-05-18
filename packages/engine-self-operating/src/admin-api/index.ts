@@ -218,6 +218,12 @@ export interface RegisterAdminApiArgs {
    *  returns 503 (composition incomplete) — same boot-tolerance
    *  pattern as the other admin-API queues. */
   readonly worldviewQueue?: WorldviewCompileQueueLike;
+  /** PR-W18 (phase-a appendix #18) — operator-facing Gitea URL
+   *  surfaced on the unauthenticated `/api/public/config` endpoint.
+   *  Read from the `GITEA_PUBLIC_URL` env var by the composition
+   *  root. Undefined → endpoint returns `{ giteaUrl: null }` and
+   *  the PatEntryModal hides the "Open Gitea" link. */
+  readonly giteaPublicUrl?: string;
 }
 
 export async function registerAdminApi(
@@ -266,6 +272,18 @@ export async function registerAdminApi(
       });
     },
   );
+
+  // PR-W18 — unauthenticated public-config endpoint. Returns the
+  // operator-facing Gitea URL (env GITEA_PUBLIC_URL) so the
+  // PAT-entry modal can render a clickable "Open Gitea" link.
+  // Static read; no body; no PII; no audit. Mounted under
+  // /api/public/* so the namespace is explicit (NOT /api/admin/*).
+  // No verifyAdmin preHandler — the whole point is pre-auth reach.
+  args.app.get("/api/public/config", async (_req, reply) => {
+    return reply.code(200).send({
+      giteaUrl: args.giteaPublicUrl ?? null,
+    });
+  });
 
   // Wrap every route registrar with verifyAdmin so the auth
   // gate runs uniformly. Using addHook on the app would

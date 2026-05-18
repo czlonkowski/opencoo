@@ -145,10 +145,18 @@ const bindingRetentionOverridePatchSchema = z
  *  notes would mask the auto-generated `${adapter_slug} →
  *  ${domain_slug}` label. Operators clear via `null`, not `""`.
  *  The audit row records only `notes_changed: true` — the notes
- *  value itself never enters audit metadata per §3.13. */
+ *  value itself never enters audit metadata per §3.13.
+ *
+ *  PR-W18 — `.trim()` runs before `.min(1)` so whitespace-only
+ *  notes (e.g. a bare space) fail validation with the same 422 as
+ *  an empty string. Without trim, the Sources table briefly shows
+ *  " " in place of the derived `adapter → domain` label because
+ *  COALESCE treats whitespace as present (QA Phase-2 finding
+ *  against 0.1.0-a.15). Operators get a clean error via the
+ *  existing useOptimisticPatch rollback + toast pipe. */
 const bindingNotesPatchSchema = z
   .object({
-    notes: z.string().min(1).max(4096).nullable(),
+    notes: z.string().trim().min(1).max(4096).nullable(),
   })
   .strict();
 const bindingPatchSchema = z.union([

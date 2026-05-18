@@ -219,7 +219,7 @@ export function SurfacerCandidates(
                     padding: "10px 8px",
                     fontFamily: "var(--font-mono)",
                     fontSize: 11,
-                    color: "var(--wiki)",
+                    color: "var(--wiki-ink)",
                     maxWidth: 200,
                   }}
                 >

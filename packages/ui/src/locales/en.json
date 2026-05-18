@@ -98,7 +98,16 @@
     "loadingUser": "Resolving identity…",
     "loginFailed": "Sign-in failed.",
     "forbidden": "Your account is not in the admin team.",
-    "loggedInAs": "{{username}}"
+    "loggedInAs": "{{username}}",
+    "gitea": {
+      "intro": "Need a Gitea token? Generate one from your co-hosted Gitea instance:",
+      "howToGenerate": {
+        "step1": "Open your Gitea instance.",
+        "step2": "Go to Settings → Applications → Generate New Token.",
+        "step3": "Grant the token admin scope, copy it, and paste it above."
+      },
+      "linkLabel": "Open Gitea"
+    }
   },
   "csrf": {
     "retrying": "Refreshing CSRF token and retrying…"

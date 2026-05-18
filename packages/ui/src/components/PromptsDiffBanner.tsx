@@ -100,7 +100,7 @@ const COUNT_STYLE: CSSProperties = {
   fontFamily: "var(--font-mono)",
   fontWeight: 600,
   fontSize: "var(--fs-mono)",
-  color: "var(--wiki)",
+  color: "var(--wiki-ink)",
 };
 
 const LIST_STYLE: CSSProperties = {
@@ -131,14 +131,14 @@ const VERSION_CURRENT_STYLE: CSSProperties = {
 const ARROW_STYLE: CSSProperties = {
   fontFamily: "var(--font-mono)",
   fontSize: "var(--fs-micro)",
-  color: "var(--wiki)",
+  color: "var(--wiki-ink)",
 };
 
 const VERSION_DEFAULT_STYLE: CSSProperties = {
   fontFamily: "var(--font-mono)",
   fontWeight: 600,
   fontSize: "var(--fs-micro)",
-  color: "var(--wiki)",
+  color: "var(--wiki-ink)",
 };
 
 const ACK_LINK_STYLE: CSSProperties = {

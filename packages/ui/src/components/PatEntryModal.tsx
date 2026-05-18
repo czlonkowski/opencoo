@@ -47,10 +47,11 @@
  *     elevation).
  *   - NO emoji, NO Lucide icons, NO marketing voice.
  */
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Field } from "./Field.js";
+import { LocaleSwitcher } from "./LocaleSwitcher.js";
 import { Modal } from "./Modal.js";
 
 const INSTRUCTION_STYLE: CSSProperties = {
@@ -75,6 +76,52 @@ const PRIMARY_BTN_BASE_STYLE: CSSProperties = {
   width: "100%",
 };
 
+// PR-W18 — Gitea handoff styles. The explanation is sans-body
+// (operator-facing prose); the optional clickable link is a ghost
+// CTA (border + paper-2 bg + ink fg) opened in a new tab. No
+// shadow, no pills, no emoji — design-system hard-nos respected.
+const GITEA_BLOCK_STYLE: CSSProperties = {
+  marginTop: "var(--space-4)",
+  paddingTop: "var(--space-3)",
+  borderTop: "1px solid var(--rule)",
+  display: "flex",
+  flexDirection: "column",
+  gap: "var(--space-2)",
+};
+
+const GITEA_HOW_STYLE: CSSProperties = {
+  fontFamily: "var(--font-sans)",
+  fontSize: "var(--fs-small)",
+  lineHeight: "var(--lh-body)",
+  color: "var(--fg-3)",
+  margin: 0,
+  paddingLeft: "var(--space-4)",
+};
+
+const GITEA_LINK_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignSelf: "flex-start",
+  alignItems: "center",
+  gap: "var(--space-2)",
+  padding: "var(--space-2) var(--space-3)",
+  background: "var(--paper-2)",
+  color: "var(--ink)",
+  border: "1px solid var(--rule)",
+  borderRadius: "var(--radius-m)",
+  fontFamily: "var(--font-sans)",
+  fontWeight: 500,
+  fontSize: "var(--fs-small)",
+  textDecoration: "none",
+};
+
+// PR-W18 — locale switcher slot inside the modal header area.
+// Mirrors the TopBar's right-aligned chrome placement.
+const LOCALE_SLOT_STYLE: CSSProperties = {
+  display: "flex",
+  justifyContent: "flex-end",
+  marginBottom: "var(--space-2)",
+};
+
 export interface PatEntryModalProps {
   readonly onSubmit: (pat: string) => Promise<void> | void;
   readonly error?: string | null;
@@ -85,6 +132,30 @@ export function PatEntryModal(props: PatEntryModalProps): JSX.Element {
   const [pat, setPat] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [giteaUrl, setGiteaUrl] = useState<string | null>(null);
+
+  // PR-W18 — fetch the public config once on mount so we know
+  // whether to render the "Open Gitea" clickable link. Silent on
+  // failure (no toast region rendered pre-auth); the explanation
+  // paragraph stays even when the link is absent.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetch("/api/public/config", { signal: ctrl.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { giteaUrl?: string | null } | null) => {
+        if (
+          data &&
+          typeof data.giteaUrl === "string" &&
+          data.giteaUrl.length > 0
+        ) {
+          setGiteaUrl(data.giteaUrl);
+        }
+      })
+      .catch(() => {
+        // AbortError or network failure — leave giteaUrl null.
+      });
+    return (): void => ctrl.abort();
+  }, []);
 
   const submit = async (): Promise<void> => {
     if (pat.length === 0) {
@@ -125,6 +196,13 @@ export function PatEntryModal(props: PatEntryModalProps): JSX.Element {
       onClose={(): void => undefined}
       maxWidth={420}
     >
+      {/* PR-W18 — locale switcher rendered without `onChange` since
+          there is no user row to PATCH pre-auth. The flip persists
+          via localStorage and reconcileLocaleAtLogin carries the
+          choice into the authenticated session. */}
+      <div style={LOCALE_SLOT_STYLE}>
+        <LocaleSwitcher />
+      </div>
       <p style={INSTRUCTION_STYLE}>{t("auth.patPrompt")}</p>
       <Field
         name="pat"
@@ -149,6 +227,32 @@ export function PatEntryModal(props: PatEntryModalProps): JSX.Element {
       >
         {submitting ? t("auth.authenticating") : t("auth.patSubmit")}
       </button>
+      {/* PR-W18 — Gitea handoff. The 3-step explanation always
+          renders; the "Open Gitea" link renders only when the engine
+          publishes a non-null `giteaUrl` on /api/public/config (env
+          GITEA_PUBLIC_URL). Gitea is the human-review surface for
+          compiled wikis (architecture §10), so production deployments
+          must expose it reachably; this block helps the operator
+          find a PAT on first load. */}
+      <div style={GITEA_BLOCK_STYLE}>
+        <p style={INSTRUCTION_STYLE}>{t("auth.gitea.intro")}</p>
+        <ol style={GITEA_HOW_STYLE}>
+          <li>{t("auth.gitea.howToGenerate.step1")}</li>
+          <li>{t("auth.gitea.howToGenerate.step2")}</li>
+          <li>{t("auth.gitea.howToGenerate.step3")}</li>
+        </ol>
+        {giteaUrl !== null && (
+          <a
+            href={giteaUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={GITEA_LINK_STYLE}
+            data-testid="pat-entry-gitea-link"
+          >
+            {t("auth.gitea.linkLabel")}
+          </a>
+        )}
+      </div>
     </Modal>
   );
 }

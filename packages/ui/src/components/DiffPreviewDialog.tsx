@@ -422,7 +422,7 @@ export function DiffPreviewDialog(
                       : DIFF_LINE_BASE_STYLE;
                   const marker = entry.op === "add" ? "+ " : "  ";
                   const markerColor =
-                    entry.op === "add" ? "var(--wiki)" : "var(--fg-3)";
+                    entry.op === "add" ? "var(--wiki-ink)" : "var(--fg-3)";
                   return (
                     <div
                       key={`pro-${entry.op}-${idx}`}
@@ -438,7 +438,7 @@ export function DiffPreviewDialog(
                   <div key={`pro-${entry.path}-${idx}`}>
                     <div style={DIFF_PATH_STYLE}>{entry.path}</div>
                     <div style={addLineStyle}>
-                      <span style={{ color: "var(--wiki)" }}>{"+ "}</span>
+                      <span style={{ color: "var(--wiki-ink)" }}>{"+ "}</span>
                       <span>{formatValue(entry.after)}</span>
                     </div>
                   </div>

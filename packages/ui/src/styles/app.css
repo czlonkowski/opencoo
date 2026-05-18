@@ -114,6 +114,23 @@ dialog::backdrop {
   outline-offset: 2px;
 }
 
+/* PR-W18 — visually-hidden utility class for SR-only labels and
+   landmark headings (W3C-recommended clip-path pattern). Used by
+   the PAT-entry surface's <h1>opencoo</h1> so the unauthenticated
+   page passes axe's `page-has-heading-one` rule without changing
+   the visual design. */
+.opencoo-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* One-shot dialog enter — 180ms fade + 8px translate-up. Used
    by PatEntryModal + DiffPreviewDialog. NO exit motion (per
    the UX spec); when the consumer unmounts, the dialog

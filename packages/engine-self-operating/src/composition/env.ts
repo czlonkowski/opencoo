@@ -58,6 +58,16 @@ export interface AdminApiCompositionEnv {
    *  server's `MCP_BEARER_TOKEN`. Read with the standard
    *  `_FILE` precedence. Undefined → skip the ping. */
   readonly mcpBearerToken: string | undefined;
+  /** Phase-a appendix #18 — the operator-facing Gitea URL.
+   *  Surfaced on the unauthenticated `/api/public/config` so the
+   *  PAT-entry modal can render a clickable "Open Gitea" link
+   *  with on-screen instructions for generating a token. Gitea
+   *  is the human-review surface for compiled wikis
+   *  (architecture §10), so production deployments SHOULD expose
+   *  it reachably and set this var; when unset, the login surface
+   *  renders the explanation paragraph only (no link). Read with
+   *  the standard `_FILE` precedence. */
+  readonly giteaPublicUrl: string | undefined;
 }
 
 /**
@@ -125,6 +135,11 @@ export function loadAdminApiCompositionEnv(
   const giteaWikiMcpUrl = readWithFile(env, "GITEA_WIKI_MCP_URL");
   const mcpBearerToken = readWithFile(env, "MCP_BEARER_TOKEN");
 
+  // PR-W18 — operator-facing Gitea URL for the login-modal handoff.
+  // Optional: when unset, the unauth /api/public/config returns
+  // `{ giteaUrl: null }` and the PatEntryModal hides the link.
+  const giteaPublicUrl = readWithFile(env, "GITEA_PUBLIC_URL");
+
   return {
     adminTeamSlug,
     sessionHmacKey,
@@ -133,5 +148,6 @@ export function loadAdminApiCompositionEnv(
     giteaProvisionOrg,
     giteaWikiMcpUrl,
     mcpBearerToken,
+    giteaPublicUrl,
   };
 }

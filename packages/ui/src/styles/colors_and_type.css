@@ -27,7 +27,8 @@
   /* ---------- Accents (oklch, matched L/C) ---------- */
   --advisory:     oklch(0.74 0.13 70);   /* warm amber — agent/advisory layer */
   --advisory-ink: oklch(0.42 0.10 55);   /* deep amber — advisory text on paper */
-  --wiki:         oklch(0.55 0.08 180);  /* deep teal — compiled knowledge, citations */
+  --wiki:         oklch(0.55 0.08 180);  /* deep teal — compiled knowledge, badges/chips/chrome */
+  --wiki-ink:     oklch(0.42 0.08 180);  /* PR-W18 — deep teal for small text on paper; 5.4:1 against --paper, meets WCAG 1.4.3 normal-text. Mirror of --advisory-ink. Use for citation labels + wiki-path micro-labels at <14px. */
   --alert:        oklch(0.50 0.17 25);   /* red — only in dashboard alerts — meets 4.5:1 on the 8%-tint banner background (PR-A7) */
   --healthy:      oklch(0.45 0.11 150);  /* green — compiled/ok state — meets 4.5:1 on the 14%-tint ok-badge background (PR-A7) */
 

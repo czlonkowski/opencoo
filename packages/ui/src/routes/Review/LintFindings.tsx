@@ -218,7 +218,7 @@ export function LintFindings(props: LintFindingsProps = {}): JSX.Element {
                     padding: "10px 8px",
                     fontFamily: "var(--font-mono)",
                     fontSize: 11,
-                    color: "var(--wiki)",
+                    color: "var(--wiki-ink)",
                   }}
                 >
                   {f.path}

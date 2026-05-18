@@ -120,7 +120,7 @@ const WIKI_PATH_STYLE: CSSProperties = {
   fontFamily: "var(--font-mono)",
   fontSize: "var(--fs-mono)",
   lineHeight: "var(--lh-mono)",
-  color: "var(--wiki)",
+  color: "var(--wiki-ink)",
   wordBreak: "break-all",
 };
 

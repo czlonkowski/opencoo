@@ -297,6 +297,12 @@ export async function productionServerFactory(
             ),
         }
       : {}),
+    // PR-W18 — optional operator-facing Gitea URL surfaced on the
+    // unauthenticated /api/public/config endpoint so the PAT-entry
+    // modal can render a clickable handoff link.
+    ...(args.compositionEnv.giteaPublicUrl !== undefined
+      ? { giteaPublicUrl: args.compositionEnv.giteaPublicUrl }
+      : {}),
   });
 
   // 2. Static-UI LAST — its setNotFoundHandler catches unknown

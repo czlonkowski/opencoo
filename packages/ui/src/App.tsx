@@ -470,11 +470,22 @@ function AppInner(): JSX.Element {
   };
 
   if (!authed) {
+    // PR-W18 — anonymous-surface a11y baseline: <main> landmark +
+    // visually-hidden <h1> so the PAT-entry page passes axe's
+    // `page-has-heading-one` and `landmark-one-main` rules. The A2
+    // spec deliberately scoped these to authenticated routes; the
+    // partner-deployment QA walk found procurement-side axe runs
+    // flag the gap, so wave-18 closes it.
     return (
-      <PatEntryModal
-        onSubmit={onPatSubmit}
-        {...(authError !== null ? { error: authError } : {})}
-      />
+      <main aria-labelledby="opencoo-pat-h1">
+        <h1 id="opencoo-pat-h1" className="opencoo-visually-hidden">
+          opencoo
+        </h1>
+        <PatEntryModal
+          onSubmit={onPatSubmit}
+          {...(authError !== null ? { error: authError } : {})}
+        />
+      </main>
     );
   }
 
