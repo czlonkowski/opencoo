@@ -547,7 +547,10 @@ export function AgentInstanceDetail(
   /** Translate scope-specific 422 codes from `lastError` into the
    *  inline error slot. Each `useOptimisticPatch` cycle clears
    *  `lastError` on the next `setValue`, so this effect is idempotent
-   *  across multiple submissions. */
+   *  across multiple submissions. Also re-opens the chip editor on
+   *  error so the operator can see the inline error + the
+   *  pre-failure draft they tried to commit (Copilot triage:
+   *  closed-editor-on-422 hides the error slot otherwise). */
   useEffect((): void => {
     const err = scopeOptimistic.lastError;
     if (err === null) return;
@@ -557,12 +560,14 @@ export function AgentInstanceDetail(
         setScopeError(
           t("agentInstance.detail.errors.unknownScopeDomainIds"),
         );
+        setScopeEditing(true);
         return;
       }
       if (code === "duplicate_scope_domain_ids") {
         setScopeError(
           t("agentInstance.detail.errors.duplicateScopeDomainIds"),
         );
+        setScopeEditing(true);
         return;
       }
     }

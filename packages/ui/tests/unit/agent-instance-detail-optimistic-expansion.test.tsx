@@ -377,6 +377,17 @@ describe("AgentInstanceDetail — optimistic scope_domain_ids wire (PR-B5+, wave
       );
       expect(patch).toBeTruthy();
     });
+
+    // Copilot triage: pin the optimistic chip render on success.
+    // After Save the chip list should show both domains (the
+    // original + the speculative add).
+    await waitFor((): void => {
+      const chips = screen.getByTestId("scope-chips");
+      const ids = Array.from(
+        chips.querySelectorAll("[data-domain-id]"),
+      ).map((el) => el.getAttribute("data-domain-id"));
+      expect(ids.length).toBe(2);
+    });
   });
 
   it("synthetic 422 on scope PATCH: rollback (chips revert) + alert toast", async () => {
