@@ -139,6 +139,11 @@ const TECHNICAL_TOKENS = new Set([
   "ip:",
   "ua:",
   "daily-report",
+  // Literal Asana channel-config field name surfaced as a form
+  // label (PR-Asana, wave-17). The label is the JSON key operators
+  // edit; translating it would mislead a Polish-locale operator
+  // into thinking they should send a Polish key in the body.
+  "assignee_gid",
 ]);
 
 /** Keys in `pl.json` that have no en counterpart but are
