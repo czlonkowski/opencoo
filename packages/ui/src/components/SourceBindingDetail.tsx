@@ -325,19 +325,34 @@ const INTAKE_FAILED_ROW_ID_STYLE: CSSProperties = {
   flexShrink: 0,
 };
 
-/** Retry button — PR-W4 ships it DISABLED with a tooltip that
- *  references PR-W2 (the per-job retry endpoint). The operator sees
- *  the affordance and knows it lands soon; W2 wires it. */
+/** Retry button — PR-W4 originally shipped it disabled; PR-W4+
+ *  (wave-17) wires the click to the per-row retry route. Two
+ *  visual states:
+ *    `idle`     — operator-clickable, `--ink` border + `--paper-2`
+ *                 background (subtle-button parity with other
+ *                 inline actions in the modal).
+ *    `in-flight`→ same chrome but `cursor: progress` + `aria-busy`
+ *                 + `aria-disabled` on the host element. We don't
+ *                 spin a glyph (design system: exactly-one motion
+ *                 loop is the heartbeat pulse) — the `aria-busy`
+ *                 attribute is what screen readers announce and
+ *                 the cursor is what mouse operators see. */
 const INTAKE_RETRY_BTN_STYLE: CSSProperties = {
   background: "var(--paper-2)",
-  color: "var(--fg-3)",
+  color: "var(--ink)",
   border: "1px solid var(--rule)",
   borderRadius: "var(--radius-m)",
   padding: "var(--space-1) var(--space-3)",
   fontFamily: "var(--font-sans)",
   fontSize: "var(--fs-small)",
-  cursor: "not-allowed",
+  cursor: "pointer",
   flexShrink: 0,
+};
+
+const INTAKE_RETRY_BTN_IN_FLIGHT_STYLE: CSSProperties = {
+  ...INTAKE_RETRY_BTN_STYLE,
+  cursor: "progress",
+  color: "var(--fg-3)",
 };
 
 const ACTION_ROW_STYLE: CSSProperties = {
@@ -1537,11 +1552,18 @@ export function SourceBindingDetail(
 
         {/* PR-W4 (phase-a appendix #14) — Intake state panel. Renders
          *  the four per-status `intakeCounts` (defaulted to 0 for
-         *  back-compat) and the most-recent 3 `failed` rows. The
-         *  Retry button is intentionally disabled in W4 — the
-         *  per-job retry endpoint ships in PR-W2; the affordance
-         *  surfaces here so the operator sees the path forward. */}
-        <IntakeStatePanel binding={props.binding} />
+         *  back-compat) and the most-recent 3 `failed` rows.
+         *
+         *  PR-W4+ (wave-17, phase-a appendix #17) wired the per-row
+         *  Retry button to the `?intakeId=`-scoped variant of the
+         *  bulk retry route; on success the panel calls `onChanged`
+         *  so the binding refetches and the row drops from
+         *  `recentFailedIntake` on the next render. */}
+        <IntakeStatePanel
+          binding={props.binding}
+          onChanged={props.onChanged}
+          fetchImpl={props.fetchImpl}
+        />
 
         {actionError !== null ? (
           <p style={ERROR_TEXT_STYLE} role="alert">
@@ -2045,13 +2067,19 @@ const ZERO_INTAKE_COUNTS = {
 
 interface IntakeStatePanelProps {
   readonly binding: SourceBinding;
+  /** Parent re-fetch hook. PR-W4+ (wave-17) calls this after a
+   *  successful per-row retry so the binding row reloads and the
+   *  row's `intake_status` flips from `failed` → `pending`,
+   *  removing it from `recentFailedIntake` on the next render. */
+  readonly onChanged: () => void;
+  /** @internal Test seam threaded through to the row's POST. */
+  readonly fetchImpl?: typeof fetch | undefined;
 }
 
 /** "Intake state" panel — renders the four per-status counts from the
  *  GET response plus up to 3 most-recent failed-intake rows. Each
- *  failed row carries a Retry button parked in disabled state until
- *  PR-W2 ships the per-job retry endpoint; the tooltip names the PR
- *  so the operator can correlate the affordance with the roadmap. */
+ *  failed row carries a Retry button wired (PR-W4+, wave-17) to the
+ *  `?intakeId=<id>`-scoped variant of the bulk retry route. */
 function IntakeStatePanel(props: IntakeStatePanelProps): JSX.Element {
   const { t } = useTranslation();
   const counts = props.binding.intakeCounts ?? ZERO_INTAKE_COUNTS;
@@ -2086,7 +2114,13 @@ function IntakeStatePanel(props: IntakeStatePanelProps): JSX.Element {
           data-testid="intake-failed-list"
         >
           {recent.map((row) => (
-            <IntakeFailedRow key={row.id} row={row} />
+            <IntakeFailedRow
+              key={row.id}
+              row={row}
+              bindingId={props.binding.id}
+              onChanged={props.onChanged}
+              fetchImpl={props.fetchImpl}
+            />
           ))}
         </ul>
       ) : null}
@@ -2122,14 +2156,85 @@ interface IntakeFailedRowProps {
     readonly errorClass: string | null;
     readonly errorTextSnippet: string | null;
   };
+  readonly bindingId: string;
+  readonly onChanged: () => void;
+  readonly fetchImpl?: typeof fetch | undefined;
 }
 
 function IntakeFailedRow(props: IntakeFailedRowProps): JSX.Element {
   const { t } = useTranslation();
+  const toastApi = useToast();
+  const [inFlight, setInFlight] = useState(false);
+  const mountedRef = useRef(true);
+  useEffect((): (() => void) => {
+    mountedRef.current = true;
+    return (): void => {
+      mountedRef.current = false;
+    };
+  }, []);
   // Truncated 8-char prefix mirrors the Activity-feed DLQ row pattern
   // so the operator gets a stable affordance for "which intake row?"
   // across surfaces. The full UUID lives in the title for audit.
   const shortId = props.row.id.slice(0, 8);
+
+  /** PR-W4+ (wave-17) — per-row retry click handler.
+   *
+   *  The admin-API exposes the per-row variant as the bulk
+   *  `:id/retry-failed` route narrowed by an `intakeId` query param
+   *  (see `packages/engine-self-operating/src/admin-api/routes/
+   *  source-bindings.ts` — the route caps the param at 64 chars
+   *  and the audit row carries it under `metadata.intake_id`).
+   *
+   *  Threat-model invariants preserved:
+   *    - The route requires admin-team membership + CSRF (both
+   *      enforced server-side; `fetchAdmin` carries the cookie).
+   *    - The route writes an audit row BEFORE the BullMQ enqueue.
+   *    - The UI is purely a wire — we do not re-derive auth or
+   *      shortcut the server's validation.
+   *
+   *  UX:
+   *    - Round-trip (not optimistic) — a re-enqueue is a non-
+   *      trivial server action. `aria-busy` + `cursor: progress`
+   *      replace a spinning glyph (design-system: motion budget
+   *      reserved for the heartbeat pulse).
+   *    - Success → `useToast().success("Retry queued")` + parent
+   *      `onChanged()` re-fetches the binding so the row drops
+   *      from `recentFailedIntake` on the next render.
+   *    - Failure → `useToast().alert(...)` with `safeErrorMessage`
+   *      so a credential-shaped echo from the server cannot
+   *      surface verbatim in the toast body. */
+  const onRetryClick = async (): Promise<void> => {
+    if (inFlight) return;
+    setInFlight(true);
+    try {
+      // `encodeURIComponent` on a UUID is a no-op for the canonical
+      // 36-char form but is safety glass against any future intake-id
+      // schema that introduces reserved characters. The server caps
+      // the param at 64 chars regardless.
+      const url = `/api/admin/source-bindings/${props.bindingId}/retry-failed?intakeId=${encodeURIComponent(props.row.id)}`;
+      await fetchAdmin<{ retriedCount: number }>(url, {
+        method: "POST",
+        ...fetchOptsFor(props.fetchImpl),
+      });
+      if (!mountedRef.current) return;
+      toastApi.success({
+        message: t("sources.detail.intakeState.retrySuccess"),
+      });
+      // Re-fetch so the binding's `recentFailedIntake` excludes this
+      // row on the next render (its `intake_status` flipped to
+      // `pending`). The modal stays mounted; only the row data flips.
+      props.onChanged();
+    } catch (err) {
+      if (!mountedRef.current) return;
+      toastApi.alert({
+        message: t("sources.detail.intakeState.retryError"),
+        details: safeErrorMessage(err),
+      });
+    } finally {
+      if (mountedRef.current) setInFlight(false);
+    }
+  };
+
   return (
     <li
       style={INTAKE_FAILED_ROW_STYLE}
@@ -2146,19 +2251,34 @@ function IntakeFailedRow(props: IntakeFailedRowProps): JSX.Element {
       <p style={INTAKE_FAILED_ROW_SNIPPET_STYLE}>
         {props.row.errorTextSnippet ?? ""}
       </p>
-      {/* Retry — disabled in W4, wires up in W2. The tooltip names
-       *  PR-W2 so the operator knows why the affordance is parked
-       *  without reading docs. `aria-disabled` mirrors the prop so
-       *  screen readers announce the disabled state. */}
+      {/* Retry — wired in PR-W4+ to the `?intakeId=`-scoped retry
+       *  route. `aria-busy` is the screen-reader-observable in-flight
+       *  cue (design-system: no spinner glyph; the heartbeat pulse
+       *  owns the only motion loop). `aria-disabled` while in flight
+       *  defends against double-clicks; the host element stays
+       *  focusable so screen readers still announce the busy state. */}
       <button
         type="button"
-        disabled
-        aria-disabled
-        title={t("sources.detail.intakeState.retryDisabledTooltip")}
-        style={INTAKE_RETRY_BTN_STYLE}
+        onClick={(): void => {
+          void onRetryClick();
+        }}
+        aria-busy={inFlight}
+        aria-disabled={inFlight}
+        title={
+          inFlight
+            ? t("sources.detail.intakeState.retryInFlight")
+            : t("sources.detail.intakeState.retryTooltip")
+        }
+        style={
+          inFlight
+            ? INTAKE_RETRY_BTN_IN_FLIGHT_STYLE
+            : INTAKE_RETRY_BTN_STYLE
+        }
         data-testid={`intake-failed-row-retry-${props.row.id}`}
       >
-        {t("sources.detail.intakeState.retry")}
+        {inFlight
+          ? t("sources.detail.intakeState.retryInFlight")
+          : t("sources.detail.intakeState.retry")}
       </button>
     </li>
   );

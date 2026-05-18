@@ -345,7 +345,10 @@
         "skipped": "pominięte",
         "failed": "nieudane",
         "retry": "Ponów",
-        "retryDisabledTooltip": "Ponowienie pojedynczego zadania trafi w PR-W2."
+        "retryInFlight": "Ponawianie",
+        "retryTooltip": "Ponownie zakolejkuj nieudane przyjęcie.",
+        "retrySuccess": "Ponowienie dodane do kolejki",
+        "retryError": "Nie udało się dodać ponowienia. Spróbuj ponownie lub sprawdź dziennik audytu."
       },
       "errors": {
         "patchFailed": "Nie udało się zaktualizować powiązania. Spróbuj ponownie lub sprawdź dziennik audytu.",

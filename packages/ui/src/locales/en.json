@@ -344,7 +344,10 @@
         "skipped": "skipped",
         "failed": "failed",
         "retry": "Retry",
-        "retryDisabledTooltip": "Per-job retry ships in PR-W2."
+        "retryInFlight": "Retrying",
+        "retryTooltip": "Re-enqueue this failed intake job.",
+        "retrySuccess": "Retry queued",
+        "retryError": "Could not queue retry. Try again or check the audit log."
       },
       "errors": {
         "patchFailed": "Could not update the binding. Try again or check the audit log.",

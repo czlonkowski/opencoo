@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
 import { SourceBindingDetail } from "../../src/components/SourceBindingDetail.js";
+import { ToastProvider } from "../../src/components/Toast.js";
 import type { SourceBinding } from "../../src/types.js";
 
 const BINDING_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -37,6 +38,14 @@ function makeBinding(overrides: Partial<SourceBinding> = {}): SourceBinding {
     sigFailCount24h: 0,
     ...overrides,
   };
+}
+
+/** PR-W4+ (wave-17): `IntakeFailedRow` now calls `useToast` on every
+ *  render that has a failed row. Wrap the detail in a `ToastProvider`
+ *  so the hook resolves; the toast region itself isn't asserted here
+ *  (those assertions live in `intake-retry-button.test.tsx`). */
+function withToast(node: JSX.Element): JSX.Element {
+  return <ToastProvider>{node}</ToastProvider>;
 }
 
 describe("SourceBindingDetail — Intake state panel (PR-W4)", () => {
@@ -93,36 +102,38 @@ describe("SourceBindingDetail — Intake state panel (PR-W4)", () => {
   it("lists up to 3 recent failed intake rows with errorClass + snippet", () => {
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     render(
-      <SourceBindingDetail
-        binding={makeBinding({
-          intakeCounts: {
-            pending: 0,
-            classified: 0,
-            skipped: 0,
-            failed: 3,
-          },
-          recentFailedIntake: [
-            {
-              id: "intake-1-newest",
-              errorClass: "validation",
-              errorTextSnippet: "binding.allowed_paths is empty",
+      withToast(
+        <SourceBindingDetail
+          binding={makeBinding({
+            intakeCounts: {
+              pending: 0,
+              classified: 0,
+              skipped: 0,
+              failed: 3,
             },
-            {
-              id: "intake-2",
-              errorClass: "transient",
-              errorTextSnippet: "guard upstream timed out",
-            },
-            {
-              id: "intake-3-oldest",
-              errorClass: "upstream-quota",
-              errorTextSnippet: "rate limited",
-            },
-          ],
-        })}
-        onClose={() => undefined}
-        onChanged={() => undefined}
-        fetchImpl={fetchImpl}
-      />,
+            recentFailedIntake: [
+              {
+                id: "intake-1-newest",
+                errorClass: "validation",
+                errorTextSnippet: "binding.allowed_paths is empty",
+              },
+              {
+                id: "intake-2",
+                errorClass: "transient",
+                errorTextSnippet: "guard upstream timed out",
+              },
+              {
+                id: "intake-3-oldest",
+                errorClass: "upstream-quota",
+                errorTextSnippet: "rate limited",
+              },
+            ],
+          })}
+          onClose={() => undefined}
+          onChanged={() => undefined}
+          fetchImpl={fetchImpl}
+        />,
+      ),
     );
     const list = screen.getByTestId("intake-failed-list");
     expect(list).toBeInTheDocument();
@@ -140,39 +151,48 @@ describe("SourceBindingDetail — Intake state panel (PR-W4)", () => {
     expect(list.textContent).toMatch(/upstream-quota/);
   });
 
-  it("renders the Retry button disabled with a tooltip pointing at PR-W2", () => {
+  it("renders the per-row Retry button enabled (PR-W4+ wired the click handler)", () => {
+    // PR-W4 originally shipped the button parked in `disabled` state
+    // with a "wires in PR-W2" tooltip. PR-W2 added the
+    // `?intakeId=<id>`-scoped retry route; PR-W4+ (wave-17) wires
+    // the per-row click to it. The button is now active on every
+    // failed row; the tooltip carries the re-enqueue copy instead
+    // of the parked-pending one. Click behaviour itself is pinned
+    // in `intake-retry-button.test.tsx`; this test only asserts the
+    // affordance is enabled.
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     render(
-      <SourceBindingDetail
-        binding={makeBinding({
-          intakeCounts: {
-            pending: 0,
-            classified: 0,
-            skipped: 0,
-            failed: 1,
-          },
-          recentFailedIntake: [
-            {
-              id: "intake-disabled-retry",
-              errorClass: "validation",
-              errorTextSnippet: "test failure",
+      withToast(
+        <SourceBindingDetail
+          binding={makeBinding({
+            intakeCounts: {
+              pending: 0,
+              classified: 0,
+              skipped: 0,
+              failed: 1,
             },
-          ],
-        })}
-        onClose={() => undefined}
-        onChanged={() => undefined}
-        fetchImpl={fetchImpl}
-      />,
+            recentFailedIntake: [
+              {
+                id: "intake-enabled-retry",
+                errorClass: "validation",
+                errorTextSnippet: "test failure",
+              },
+            ],
+          })}
+          onClose={() => undefined}
+          onChanged={() => undefined}
+          fetchImpl={fetchImpl}
+        />,
+      ),
     );
     const retryBtn = screen.getByTestId(
-      "intake-failed-row-retry-intake-disabled-retry",
+      "intake-failed-row-retry-intake-enabled-retry",
     );
     expect(retryBtn).toBeInTheDocument();
-    expect(retryBtn).toBeDisabled();
-    // Tooltip / aria-description references PR-W2 so the operator can
-    // tell why the action is parked without reading docs.
+    expect(retryBtn).not.toBeDisabled();
+    // Tooltip carries the re-enqueue copy now that the action is live.
     const tip = retryBtn.getAttribute("title");
-    expect(tip).toMatch(/W2|PR-W2|retry/i);
+    expect(tip).toMatch(/re-enqueue|retry/i);
   });
 
   it("renders an empty failed-list section when no failures exist", () => {
