@@ -215,10 +215,16 @@ async function waitForRouteReady(
   tabLabel: string,
 ): Promise<void> {
   // The sidebar's `aria-current="page"` button is the canonical
-  // signal of "this tab is now active".
+  // signal of "this tab is now active" (Copilot triage on PR-A7).
+  // Every sidebar button is visible immediately, so a visibility
+  // wait is racy — we wait for the active state explicitly
+  // instead. The CSS-attribute selector matches the
+  // `aria-current` value the App.tsx sidebar sets on the active
+  // tab.
   await page
-    .getByRole("button", { name: tabLabel, exact: false })
-    .first()
+    .locator(
+      `button[aria-current="page"]:has-text("${tabLabel}")`,
+    )
     .waitFor({ state: "visible", timeout: 10_000 });
   // Network-idle is a strong settle signal: every `/api/admin/*`
   // request resolves synchronously from the page.route handler so

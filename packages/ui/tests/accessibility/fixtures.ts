@@ -423,16 +423,15 @@ export async function installAdminApiMocks(
     const method = req.method();
     const url = req.url();
 
-    // SSE: respond with an empty event stream so the EventSource
-    // opens then sits idle. Returning text/event-stream with a
-    // comment heartbeat keeps the connection open without firing
-    // events the UI would have to render.
+    // SSE: abort the request outright. The SPA's `openSseClient`
+    // treats a hard fetch failure as a transient disconnect and
+    // schedules a 500ms → 10s exponential-backoff reconnect; a
+    // 200 + finite body would instead EOF immediately and create
+    // a tighter reconnect loop (Copilot triage on PR-A7). axe-core
+    // is a sync DOM walk that doesn't depend on SSE state, so a
+    // suspended/retrying client doesn't shift the audited surface.
     if (url.includes("/api/admin/events")) {
-      await route.fulfill({
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-        body: ": keepalive\n\n",
-      });
+      await route.abort("blockedbyclient");
       return;
     }
 

@@ -19,14 +19,21 @@
  */
 import { defineConfig, devices } from "@playwright/test";
 
-// Test-only preview port. Hardcoded so this config does not
-// touch `process.env` — the `opencoo/no-feature-env-vars` rule
-// rejects new test-only env vars per the THREAT-MODEL §2
+// Test-only preview port + host. Hardcoded so this config does
+// not touch `process.env` — the `opencoo/no-feature-env-vars`
+// rule rejects new test-only env vars per the THREAT-MODEL §2
 // allow-list. 5174 sits above Vite's default `5173` so a
 // developer running `vite dev` for daily UI work can run the
 // axe walk in parallel without a port clash.
+//
+// `127.0.0.1` (not `localhost`) matches the host vite-preview
+// binds to in the webServer command below; on dual-stack
+// systems where `localhost` resolves to `::1`, Playwright would
+// otherwise dial v6 and never reach the v4-bound server
+// (Copilot triage on PR-A7).
 const PORT = 5174;
-const BASE_URL = `http://localhost:${PORT}`;
+const HOST = "127.0.0.1";
+const BASE_URL = `http://${HOST}:${PORT}`;
 
 export default defineConfig({
   // Both the legacy `tests/e2e/` placeholder and the new
@@ -51,7 +58,7 @@ export default defineConfig({
   // accessibility job in CI builds the bundle ahead of time so
   // every retry doesn't re-bundle.
   webServer: {
-    command: `pnpm exec vite preview --host 127.0.0.1 --port ${PORT}`,
+    command: `pnpm exec vite preview --host ${HOST} --port ${PORT}`,
     url: BASE_URL,
     reuseExistingServer: !process.env["CI"],
     timeout: 60_000,
