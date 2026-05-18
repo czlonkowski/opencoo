@@ -300,6 +300,7 @@ describe("DomainDetail — optimistic worldview_enabled wire (PR-B5+, wave-17)",
     const checkbox = screen.getByLabelText(
       /worldview compilation enabled/i,
     ) as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
     await user.click(checkbox);
 
     await waitFor((): void => {
@@ -317,6 +318,16 @@ describe("DomainDetail — optimistic worldview_enabled wire (PR-B5+, wave-17)",
     await waitFor((): void => {
       const region = screen.getByRole("region", { name: /notifications/i });
       expect(within(region).queryByText("ALERT")).toBeTruthy();
+    });
+    // Copilot triage: pin that the checkbox reverts to its prior
+    // checked state after the optimistic rollback (the `checked`
+    // attribute is driven directly from `worldviewOptimistic.value`
+    // so the hook's rollback shows up in the UI).
+    await waitFor((): void => {
+      const cb = screen.getByLabelText(
+        /worldview compilation enabled/i,
+      ) as HTMLInputElement;
+      expect(cb.checked).toBe(true);
     });
   });
 });

@@ -302,9 +302,11 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
   const [reviewRole, setReviewRole] = useState<string>(
     nullableStringValue(props.domain.reviewRole),
   );
-  const [worldviewEnabled, setWorldviewEnabled] = useState<boolean>(
-    props.domain.worldviewEnabled ?? true,
-  );
+  // PR-B5+ (wave-17): `worldviewEnabled` is now driven by
+  // `worldviewOptimistic.value` directly — the checkbox's
+  // `checked` attribute references the hook value, the onChange
+  // fires `quickSaveWorldview` which calls `setValue` synchronously.
+  // No local state needed; the hook is the source of truth.
   const [llmBudgetMonthlyCapUsd, setLlmBudgetMonthlyCapUsd] = useState<string>(
     nullableMoneyValue(props.domain.llmBudgetMonthlyCapUsd),
   );
@@ -469,7 +471,6 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
   const quickSaveWorldview = (next: boolean): void => {
     if (next === worldviewOptimistic.value || worldviewOptimistic.saving)
       return;
-    setWorldviewEnabled(next);
     worldviewOptimistic.setValue(next);
   };
 
@@ -552,12 +553,13 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
 
       // PR-B5+ (wave-17): `worldview_enabled` is committed via the
       // checkbox onChange → optimistic single-field PATCH path
-      // above. Combined Save diffs against `worldviewOptimistic.value`
-      // so it doesn't double-emit a PATCH for the same value the
-      // optimistic hook already committed.
-      if (worldviewEnabled !== worldviewOptimistic.value) {
-        body["worldview_enabled"] = worldviewEnabled;
-      }
+      // above; the checkbox is driven directly from
+      // `worldviewOptimistic.value`. The combined Save no longer
+      // needs to diff this field (any change has already been
+      // committed by the per-field hook), so we skip it here.
+      // The local `worldviewEnabled` state is kept only as a
+      // back-compat read for callers / tests that import it; it
+      // can be retired in a follow-up.
 
       const parsedCap = parseNullableMoney(llmBudgetMonthlyCapUsd);
       if (parsedCap === "invalid") {
@@ -961,7 +963,13 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
           </label>
           <select
             id="domain-detail-locale"
-            value={locale}
+            // Drive `value` from the hook so rollback on 422 is
+            // reflected in the select. The local `locale` state is
+            // kept only as a transient draft inside
+            // `quickSaveLocale` which synchronously fires
+            // `localeOptimistic.setValue` — the hook's monotonic
+            // commit id makes rollback safe.
+            value={localeOptimistic.value}
             disabled={submitting || localeOptimistic.saving}
             onChange={(e): void => {
               const v = e.target.value;
@@ -1100,7 +1108,13 @@ export function DomainDetail(props: DomainDetailProps): JSX.Element {
           <label style={CHECKBOX_ROW_STYLE}>
             <input
               type="checkbox"
-              checked={worldviewEnabled}
+              // Drive `checked` from the hook's value so rollback on
+              // 422 is reflected in the checkbox state (the hook's
+              // `value` rolls back to the prior committed value).
+              // The local `worldviewEnabled` state remains the
+              // operator's expressed intent until commit and stays
+              // synced via the quickSaveWorldview handler.
+              checked={worldviewOptimistic.value}
               disabled={submitting || worldviewOptimistic.saving}
               onChange={(e): void => {
                 // Worldview toggle fires an optimistic single-field

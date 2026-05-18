@@ -433,5 +433,20 @@ describe("AgentInstanceDetail — optimistic scope_domain_ids wire (PR-B5+, wave
       const region = screen.getByRole("region", { name: /notifications/i });
       expect(within(region).queryByText("ALERT")).toBeTruthy();
     });
+
+    // Copilot triage: pin the rollback by asserting the chip list
+    // reverts to the prior committed scope. The chips render with
+    // `data-domain-id` per scope_domain_id; on rollback only the
+    // original DOMAIN_A id should remain (the speculative DOMAIN_B
+    // selection rolled back).
+    await waitFor((): void => {
+      const chips = screen.getByTestId("scope-chips");
+      const domainIds = Array.from(
+        chips.querySelectorAll("[data-domain-id]"),
+      ).map((el) => el.getAttribute("data-domain-id"));
+      expect(domainIds).toEqual([
+        "aaaa1111-1111-4111-8111-111111111111",
+      ]);
+    });
   });
 });
