@@ -33,6 +33,10 @@ describe("model-catalog (PR-Q13)", () => {
     expect(MODEL_CATALOG.ollama).toEqual([]);
   });
 
+  it("azure arm is empty by design (deployment names are operator-specific)", () => {
+    expect(MODEL_CATALOG.azure).toEqual([]);
+  });
+
   it.each<ProviderName>(["openai", "anthropic", "google", "openrouter"])(
     "%s arm seeds 3-6 models",
     (provider) => {

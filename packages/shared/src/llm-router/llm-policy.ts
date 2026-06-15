@@ -6,6 +6,7 @@ export const PROVIDERS = [
   "google",
   "ollama",
   "openrouter",
+  "azure",
 ] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
 

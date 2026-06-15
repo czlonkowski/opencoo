@@ -1115,10 +1115,42 @@ const PROVIDER_ENV_OPTS: Readonly<
   openrouter: { envVar: "OPENROUTER_API_KEY", field: "apiKey" },
 };
 
-function providerOptsFromEnv(
+// Azure OpenAI needs several env vars (endpoint + Entra service-
+// principal triple, or a static api-key), so it can't use the simple
+// single-var `PROVIDER_ENV_OPTS` shape. Reads go through `readWithFile`
+// so the Entra client secret honours the `_FILE` Docker-secrets
+// convention. Exported for unit testing the env→opts mapping.
+export function providerOptsFromEnv(
   env: Record<string, string | undefined>,
   providerName: string,
-): { apiKey?: string; baseUrl?: string } {
+): {
+  apiKey?: string;
+  baseUrl?: string;
+  tenantId?: string;
+  clientId?: string;
+  clientSecret?: string;
+  scope?: string;
+} {
+  if (providerName === "azure") {
+    const pick = (key: string): string | undefined => {
+      const v = readWithFile(env, key);
+      return v !== undefined && v.length > 0 ? v : undefined;
+    };
+    const baseUrl = pick("AZURE_OPENAI_BASE_URL");
+    const tenantId = pick("AZURE_ENTRA_TENANT_ID");
+    const clientId = pick("AZURE_ENTRA_CLIENT_ID");
+    const clientSecret = pick("AZURE_ENTRA_CLIENT_SECRET");
+    const apiKey = pick("AZURE_OPENAI_API_KEY");
+    const scope = pick("AZURE_OPENAI_SCOPE");
+    return {
+      ...(baseUrl !== undefined ? { baseUrl } : {}),
+      ...(tenantId !== undefined ? { tenantId } : {}),
+      ...(clientId !== undefined ? { clientId } : {}),
+      ...(clientSecret !== undefined ? { clientSecret } : {}),
+      ...(apiKey !== undefined ? { apiKey } : {}),
+      ...(scope !== undefined ? { scope } : {}),
+    };
+  }
   const spec = PROVIDER_ENV_OPTS[providerName];
   if (spec === undefined) return {};
   const value = env[spec.envVar];
