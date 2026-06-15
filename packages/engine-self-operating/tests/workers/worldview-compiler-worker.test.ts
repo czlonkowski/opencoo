@@ -403,7 +403,8 @@ describe("runWorldviewCompile — safety-net fanout", () => {
       db: fixture.db as unknown as Parameters<typeof runWorldviewCompile>[0]["db"],
       resolveLocale: async () => "en",
       // listSafetyNetDomains + enqueueSafetyNetFanout deliberately
-      // omitted — the worker logs a warning and returns ok.
+      // omitted — with no enqueue hook the worker logs an ERROR
+      // (degraded daily backstop) and returns ok.
       job: {
         domainId: SAFETY_NET_FANOUT_SENTINEL,
         domainSlug: SAFETY_NET_FANOUT_SENTINEL,
@@ -411,6 +412,38 @@ describe("runWorldviewCompile — safety-net fanout", () => {
       },
     });
     expect(result.status).toBe("ok");
+  });
+
+  it("falls back to the DB domain list when listSafetyNetDomains is unwired but enqueue is present", async () => {
+    // A missing list hook (but wired enqueue) must NOT silently no-op
+    // the daily backstop — the worker queries the domains table
+    // directly (mirrors worldview-bundle.ts) so worldview-enabled
+    // domains still get recompiled.
+    const fixture = await freshAgentDb(); // seeds 'test-domain' (worldview_enabled=true)
+    const h = buildHarness();
+    const router = makeRouter(fakeProvider([{}]), fixture.db);
+    const enqueueCalls: WorldviewCompileJob[] = [];
+    const result = await runWorldviewCompile({
+      router,
+      wikiAdapter: h.wiki,
+      wikiDeps: h.wikiDeps,
+      author: h.author,
+      logger: h.logger,
+      db: fixture.db as unknown as Parameters<typeof runWorldviewCompile>[0]["db"],
+      resolveLocale: async () => "en",
+      // listSafetyNetDomains omitted → DB fallback; enqueue wired.
+      enqueueSafetyNetFanout: async (job) => {
+        enqueueCalls.push(job);
+      },
+      job: {
+        domainId: SAFETY_NET_FANOUT_SENTINEL,
+        domainSlug: SAFETY_NET_FANOUT_SENTINEL,
+        triggerType: "safety-net",
+      },
+    });
+    expect(result.status).toBe("ok");
+    expect(enqueueCalls.map((j) => j.domainSlug)).toContain("test-domain");
+    expect(enqueueCalls.every((j) => j.triggerType === "safety-net")).toBe(true);
   });
 });
 

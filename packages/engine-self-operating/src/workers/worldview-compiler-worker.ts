@@ -37,6 +37,7 @@ import {
   type WorkerOptions,
 } from "bullmq";
 
+import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 import type { DomainId, DomainSlug } from "@opencoo/shared/db";
@@ -277,29 +278,43 @@ async function runSafetyNetFanout(
   args: RunWorldviewCompileArgs,
   startedAt: number,
 ): Promise<WorldviewCompileResult> {
-  const list = args.listSafetyNetDomains;
+  const endedNow = (): number =>
+    args.clock !== undefined ? args.clock().getTime() : Date.now();
+  const listHook = args.listSafetyNetDomains;
   const enqueue = args.enqueueSafetyNetFanout;
-  if (list === undefined || enqueue === undefined) {
-    // Composition didn't wire the fanout — skip cleanly. The event-
-    // driven trigger pipeline + admin-API recompile route still
-    // work; only the daily safety-net is degraded.
-    args.logger.warn("worldview.safety_net_fanout_skipped", {
-      reason: "composition incomplete — no listSafetyNetDomains hook",
+
+  if (enqueue === undefined) {
+    // No way to enqueue per-domain recompiles — the daily backstop is
+    // genuinely degraded. ERROR (not WARN) so operators see it; the
+    // event-driven trigger + admin-API recompile route still work.
+    args.logger.error("worldview.safety_net_fanout_unavailable", {
+      reason:
+        "composition did not wire enqueueSafetyNetFanout — daily worldview backstop is degraded",
     });
-    const endedAt =
-      args.clock !== undefined ? args.clock().getTime() : Date.now();
-    return { status: "ok", latencyMs: endedAt - startedAt };
+    return { status: "ok", latencyMs: endedNow() - startedAt };
   }
+
+  // Resolve the domain list from the wired hook, else query the
+  // domains table directly (mirrors worldview-bundle.ts) so a missing
+  // listSafetyNetDomains hook does not silently no-op the backstop.
+  const usingDbFallback = listHook === undefined;
   let domains: ReadonlyArray<SafetyNetFanoutDomain>;
   try {
-    domains = await list();
+    domains = usingDbFallback
+      ? await listSafetyNetDomainsFromDb(args.db)
+      : await listHook();
   } catch (err) {
     args.logger.warn("worldview.safety_net_fanout_list_failed", {
       error: safeErrorMessage(err),
     });
-    const endedAt =
-      args.clock !== undefined ? args.clock().getTime() : Date.now();
-    return { status: "ok", latencyMs: endedAt - startedAt };
+    return { status: "ok", latencyMs: endedNow() - startedAt };
+  }
+  if (usingDbFallback) {
+    args.logger.error("worldview.safety_net_fanout_list_fallback", {
+      reason:
+        "listSafetyNetDomains hook missing — queried the domains table directly",
+      enumerated_count: domains.length,
+    });
   }
   let succeeded = 0;
   for (const d of domains) {
@@ -326,6 +341,23 @@ async function runSafetyNetFanout(
     latency_ms: endedAt - startedAt,
   });
   return { status: "ok", latencyMs: endedAt - startedAt };
+}
+
+/** DB fallback mirroring the wired `listSafetyNetDomains` in
+ *  worldview-bundle.ts — used when that composition hook is absent so
+ *  the daily backstop still enumerates every worldview-enabled,
+ *  non-disabled domain instead of silently no-op-ing. */
+async function listSafetyNetDomainsFromDb(
+  db: Db,
+): Promise<ReadonlyArray<SafetyNetFanoutDomain>> {
+  const result = (await db.execute(sql`
+    SELECT id::text AS id, slug
+    FROM domains
+    WHERE disabled_at IS NULL
+      AND worldview_enabled = true
+    ORDER BY slug ASC
+  `)) as unknown as { rows: Array<{ id: string; slug: string }> };
+  return result.rows.map((r) => ({ domainId: r.id, domainSlug: r.slug }));
 }
 
 async function safeResolveLocale(
