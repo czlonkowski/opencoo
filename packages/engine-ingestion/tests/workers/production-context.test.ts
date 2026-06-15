@@ -272,6 +272,26 @@ describe("composeProductionWorkerContext", () => {
     await ctx.closeProducers?.();
   });
 
+  it("classify queue retries transient failures (attempts + exponential backoff)", async () => {
+    // Without a retry policy, a job that throws (e.g. a transient
+    // LLM provider blip) fails on its single attempt and the intake
+    // row stays 'pending' forever — the production backlog symptom.
+    const fixture = await freshFixture();
+    const ctx = await composeProductionWorkerContext(buildArgs(fixture));
+    const opts = (
+      ctx.enqueue as unknown as {
+        opts?: {
+          defaultJobOptions?: { attempts?: number; backoff?: unknown };
+        };
+      }
+    ).opts;
+    expect(opts?.defaultJobOptions?.attempts).toBe(5);
+    expect(opts?.defaultJobOptions?.backoff).toMatchObject({
+      type: "exponential",
+    });
+    await ctx.closeProducers?.();
+  });
+
   // PR-Z3 (phase-a appendix #12) — scanner cron registration.
   // Closes G3 (polling adapters never tick automatically). The
   // composition root registers ONE repeat-job on the

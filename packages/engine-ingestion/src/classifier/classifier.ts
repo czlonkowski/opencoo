@@ -29,6 +29,7 @@
 
 import { loadPromptForScope, type PromptLocale, type ScopeResolverDb } from "@opencoo/shared/prompts";
 import type { LlmRouter } from "@opencoo/shared/llm-router";
+import type { Logger } from "@opencoo/shared/logger";
 import type { DomainId } from "@opencoo/shared/db";
 
 import { assertBindingNotWildcardOnly } from "./binding-guard.js";
@@ -56,6 +57,10 @@ export interface ClassifyArgs {
   readonly allowedDomains: readonly string[];
   readonly fetchedAt?: Date;
   readonly documentId?: string;
+  /** Optional — when present, the orchestrator emits a structured
+   *  `classifier.domain_default_applied` audit line on single-domain
+   *  slug coercion (see Layer 4). */
+  readonly logger?: Pick<Logger, "info">;
 }
 
 export async function classify(args: ClassifyArgs): Promise<ClassifierOutput> {
@@ -119,12 +124,37 @@ export async function classify(args: ClassifyArgs): Promise<ClassifierOutput> {
   // Layer 4 — orchestrator-level checks the schema can't express:
   //   - target_domains[].domain_slug ∈ allowedDomains
   //   - target_domains[].page_paths[*] passes the binding path guard
+  //
+  // Single-domain bindings: the destination is NOT an LLM decision.
+  // A worker model classifying a single-domain deployment routinely
+  // invents a topical slug from the document body ('ops', 'legal',
+  // 'it', …); DLQ-ing those silently drops legitimate documents. When
+  // exactly one domain is allowed we coerce any off-allowlist slug to
+  // that home domain. This CANNOT cross a domain boundary (there is
+  // only one) and `page_paths` are still validated by the path-guard
+  // below, so THREAT-MODEL §2 "no cross-domain writes" holds — in fact
+  // the LLM loses all influence over the destination domain. With more
+  // than one allowed domain the slug IS a real choice, and a foreign
+  // value is a genuine cross-domain violation → reject (DLQ).
   const allowedDomainSet = new Set(args.allowedDomains);
-  for (const td of wire.target_domains) {
-    if (!allowedDomainSet.has(td.domain_slug)) {
-      throw new ClassifierValidationError(
-        `classifier emitted domain_slug '${td.domain_slug}' not in allowedDomains ${JSON.stringify(args.allowedDomains)}`,
-      );
+  const homeDomain =
+    args.allowedDomains.length === 1 ? args.allowedDomains[0] : undefined;
+
+  const targetDomains = wire.target_domains.map((td) => {
+    let domainSlug = td.domain_slug;
+    if (!allowedDomainSet.has(domainSlug)) {
+      if (homeDomain !== undefined) {
+        args.logger?.info("classifier.domain_default_applied", {
+          emitted: td.domain_slug,
+          mapped_to: homeDomain,
+          source_ref: args.sourceRef,
+        });
+        domainSlug = homeDomain;
+      } else {
+        throw new ClassifierValidationError(
+          `classifier emitted domain_slug '${td.domain_slug}' not in allowedDomains ${JSON.stringify(args.allowedDomains)}`,
+        );
+      }
     }
     for (const pp of td.page_paths) {
       // Throws ClassifierPathError on failure — both shape-guard
@@ -133,18 +163,16 @@ export async function classify(args: ClassifyArgs): Promise<ClassifierOutput> {
       // caller routes path failures uniformly.
       validateAllowedPath(pp, args.allowedPaths);
     }
-  }
+    return { domainSlug, pagePaths: [...td.page_paths] };
+  });
 
   // Normalise wire shape (snake_case) to camelCase for the rest of
-  // the engine. Read-only `as const` casts keep the literal types.
+  // the engine.
   return {
     version: wire.version,
     language: wire.language,
     summary: wire.summary,
-    targetDomains: wire.target_domains.map((td) => ({
-      domainSlug: td.domain_slug,
-      pagePaths: [...td.page_paths],
-    })),
+    targetDomains,
     pipelines: [...wire.pipelines],
   };
 }

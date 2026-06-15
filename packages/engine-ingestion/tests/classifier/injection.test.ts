@@ -106,7 +106,13 @@ function silentLogger(): ConsoleLogger {
 }
 
 const ALLOWED_PATHS = ["strategy/**", "executive/**"];
-const ALLOWED_DOMAINS = ["test-domain"];
+// Multi-domain allowlist so the cross-domain-fake / system-tag fixtures
+// (which emit the foreign slug `wiki-finance-secrets`) exercise a REAL
+// cross-domain rejection. With a single allowed domain the classifier
+// coerces an off-allowlist slug to the sole home domain (it cannot
+// cross a boundary; see classifier.ts Layer 4) — a separate behaviour
+// covered by the unit suite, not the adversarial corpus.
+const ALLOWED_DOMAINS = ["test-domain", "wiki-secondary"];
 
 async function loadCorpus(): Promise<ExpectedFile[]> {
   const expectedDir = join(CORPUS_ROOT, "expected");
