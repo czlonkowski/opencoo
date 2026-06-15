@@ -40,6 +40,7 @@ import {
   compileAsanaProject,
   parseAsanaProjectSections,
   quoteYamlString,
+  resolveStableProjectGid,
   type AsanaProjectSnapshot,
 } from "../../src/compiler/asana-project.js";
 import { CompilerValidationError } from "../../src/compiler/errors.js";
@@ -49,6 +50,48 @@ import { freshCompilerDb } from "./_pglite-fixture.js";
 function silentLogger(): ConsoleLogger {
   return new ConsoleLogger({ stream: { write: (): boolean => true } });
 }
+
+describe("resolveStableProjectGid — page path keys off the pre-redaction sourceRef id", () => {
+  it("extracts the gid from an asana:project/<gid> sourceRef", () => {
+    expect(
+      resolveStableProjectGid("asana:project/1234567890123456", "ignored"),
+    ).toBe("1234567890123456");
+  });
+
+  it("ignores a redaction-corrupted snapshot gid when the sourceRef is clean", () => {
+    // The snapshot is parsed from guard-redacted content, so a pattern
+    // matching the numeric id (e.g. credit-card on a Luhn-valid id)
+    // corrupts snapshot.project_gid. The sourceRef is built pre-redaction.
+    expect(
+      resolveStableProjectGid(
+        "asana:project/1234567890123456",
+        "1234567[REDACTED:credit-card]",
+      ),
+    ).toBe("1234567890123456");
+  });
+
+  it("falls back to the digits of the snapshot gid when the sourceRef has no id", () => {
+    expect(resolveStableProjectGid("asana:project/", "9000000000000001")).toBe(
+      "9000000000000001",
+    );
+  });
+
+  it("falls back to 'unknown' when neither source yields digits", () => {
+    expect(resolveStableProjectGid("garbage", "[REDACTED:credit-card]")).toBe(
+      "unknown",
+    );
+  });
+
+  it("yields a shape-guard-valid page path even with a corrupted snapshot gid (regression)", () => {
+    const gid = resolveStableProjectGid(
+      "asana:project/1234567890123456",
+      "1234567[REDACTED:credit-card]",
+    );
+    const path = asanaProjectPagePath({ projectGid: gid, title: "EU Kaufland Pricing" });
+    expect(path).toBe("projects/eu-kaufland-pricing-1234567890123456.md");
+    expect(path).toMatch(/^[a-z0-9][a-z0-9/_-]*\.md$/);
+  });
+});
 
 const COMPILER_AUTHOR = {
   name: "opencoo-compiler",

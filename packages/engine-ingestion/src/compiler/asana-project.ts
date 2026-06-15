@@ -131,6 +131,30 @@ function slugifyTitle(title: string): string {
 }
 
 /**
+ * Resolve the STABLE project id used to key the wiki page path.
+ *
+ * `snapshot.project_gid` is parsed from guard-REDACTED content, so a
+ * redaction pattern that matches the numeric id (e.g. `credit-card` on
+ * a Luhn-valid 16-digit id, or `phone-pl` before its fix) corrupts it
+ * into something like `1212428[REDACTED:phone-pl]`, which then breaks
+ * the wiki shape guard. The `sourceRef` (`asana:project/<gid>`) is
+ * built by the source adapter BEFORE redaction, so prefer the trailing
+ * numeric id from it; fall back to the digits of the snapshot id, then
+ * to a stable sentinel.
+ */
+export function resolveStableProjectGid(
+  sourceRef: string,
+  snapshotGid: string,
+): string {
+  const fromSourceRef = /(?:^|[/:])(\d{6,})$/.exec(sourceRef);
+  if (fromSourceRef?.[1] !== undefined) {
+    return fromSourceRef[1];
+  }
+  const digits = snapshotGid.replace(/\D/g, "");
+  return digits.length > 0 ? digits : "unknown";
+}
+
+/**
  * Derive the wiki page path for an Asana project.
  * Format: `projects/<slug>-<gid>.md`
  */
@@ -405,7 +429,10 @@ export async function compileAsanaProject(
   const clock = args.clock ?? ((): Date => new Date());
   const compiledAt = clock();
   const pagePath = asanaProjectPagePath({
-    projectGid: args.snapshot.project_gid,
+    // Key the path off the pre-redaction sourceRef id, not the
+    // (possibly redaction-corrupted) snapshot gid — see
+    // resolveStableProjectGid.
+    projectGid: resolveStableProjectGid(args.sourceRef, args.snapshot.project_gid),
     title: args.title,
   });
 
