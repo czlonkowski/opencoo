@@ -488,6 +488,30 @@ describe("LlmRouter — repair-retry + transient classification", () => {
     expect(calls).toBe(3);
   });
 
+  it("treats a negative/non-finite maxRepairAttempts as zero repairs (one attempt, no crash)", async () => {
+    let calls = 0;
+    const provider: LlmProvider = {
+      async generate() {
+        calls += 1;
+        return {
+          text: JSON.stringify({ category: "doc", priority: 1 }),
+          tokensIn: 5,
+          tokensOut: 3,
+        };
+      },
+    };
+    const out = await routerWith(provider).generateObject({
+      domainId,
+      tier: "worker",
+      pipelineOrAgent: "classify",
+      prompt: "classify this",
+      schema,
+      maxRepairAttempts: -1,
+    });
+    expect(out.object).toEqual({ category: "doc", priority: 1 });
+    expect(calls).toBe(1);
+  });
+
   it("classifies a retryable provider failure as transient", async () => {
     const provider: LlmProvider = {
       async generate() {

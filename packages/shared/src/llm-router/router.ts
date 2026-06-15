@@ -171,7 +171,15 @@ export class LlmRouter {
   async generateObject<T>(
     opts: GenerateObjectOpts<T>,
   ): Promise<GenerateObjectResult<T>> {
-    const maxRepairs = opts.maxRepairAttempts ?? 2;
+    // Clamp to a safe non-negative integer: a negative or non-finite
+    // caller value would make the loop body never run, throwing with
+    // an unset lastError and skipping the provider call entirely
+    // (Copilot triage). 0 = one attempt, no repair.
+    const requestedRepairs = opts.maxRepairAttempts;
+    const maxRepairs =
+      typeof requestedRepairs === "number" && Number.isFinite(requestedRepairs)
+        ? Math.max(0, Math.floor(requestedRepairs))
+        : 2;
     let prompt = opts.prompt;
     let lastError: unknown;
 

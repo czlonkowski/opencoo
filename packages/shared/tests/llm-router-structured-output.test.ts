@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import {
   REPAIR_INSTRUCTION,
@@ -7,7 +8,6 @@ import {
   formatSchemaError,
   isRetryableProviderError,
 } from "../src/llm-router/structured-output.js";
-import { z } from "zod";
 
 describe("extractJsonCandidate", () => {
   it("returns plain JSON unchanged", () => {

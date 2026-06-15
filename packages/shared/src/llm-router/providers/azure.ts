@@ -163,7 +163,7 @@ export async function createAzureEntraProvider(
   const staticKey = opts.apiKey;
   if (tokenSource === null && !hasText(staticKey)) {
     throw new LlmProviderError(
-      "Azure provider requires Entra credentials (AZURE_ENTRA_TENANT_ID/CLIENT_ID/CLIENT_SECRET) or AZURE_OPENAI_API_KEY",
+      "Azure provider requires Entra credentials (AZURE_ENTRA_TENANT_ID, AZURE_ENTRA_CLIENT_ID, AZURE_ENTRA_CLIENT_SECRET) or AZURE_OPENAI_API_KEY",
     );
   }
 

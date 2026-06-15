@@ -20,11 +20,14 @@
  * worker can run multiple cross-domain jobs in parallel.
  */
 import {
+  UnrecoverableError,
   Worker,
   type ConnectionOptions,
   type Job,
   type WorkerOptions,
 } from "bullmq";
+
+import { isOpencooError } from "@opencoo/shared/errors";
 
 import { SCANNER_CLASSIFY_QUEUE_SLUG } from "../pipelines/scanner.js";
 import {
@@ -55,20 +58,40 @@ export interface CompileWorkerDeps {
  *  PR-W4 — `sseBus` is forwarded conditionally so an unset (undefined)
  *  property doesn't trip `exactOptionalPropertyTypes` at the
  *  RunCompilationWorkerArgs seam. */
+/** Gate which worker failures BullMQ retries. The classify queue runs
+ *  with `attempts: 5` so transient provider blips drain — but a
+ *  `validation`-class failure (malformed classifier output, shape-guard
+ *  reject) will never succeed on retry, so convert it to BullMQ's
+ *  `UnrecoverableError` to DLQ on the first attempt rather than burn
+ *  five. `transient` / `upstream-quota` (and bare errors, treated
+ *  transient) pass through to retry. The intake row + SSE failure event
+ *  were already recorded by `runCompilationWorker` before the throw. */
+export function mapWorkerError(err: unknown): unknown {
+  if (isOpencooError(err) && err.errorClass === "validation") {
+    return new UnrecoverableError(err.message);
+  }
+  return err;
+}
+
 export function buildCompilationHandler(
   deps: CompileWorkerDeps,
 ): (job: Job<ScannerClassifyJob>) => Promise<CompilationWorkerResult> {
-  return async (job) =>
-    runCompilationWorker({
-      db: deps.db,
-      logger: deps.logger,
-      router: deps.router,
-      wikiDeps: deps.wikiDeps,
-      author: deps.author,
-      guardAdapter: deps.guardAdapter,
-      ...(deps.sseBus !== undefined ? { sseBus: deps.sseBus } : {}),
-      job: job.data,
-    });
+  return async (job) => {
+    try {
+      return await runCompilationWorker({
+        db: deps.db,
+        logger: deps.logger,
+        router: deps.router,
+        wikiDeps: deps.wikiDeps,
+        author: deps.author,
+        guardAdapter: deps.guardAdapter,
+        ...(deps.sseBus !== undefined ? { sseBus: deps.sseBus } : {}),
+        job: job.data,
+      });
+    } catch (err) {
+      throw mapWorkerError(err);
+    }
+  };
 }
 
 export interface StartCompileWorkerArgs extends CompileWorkerDeps {
