@@ -16,6 +16,7 @@
  * still applies — the orchestrator can never re-write a row.
  */
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import { ConsoleLogger } from "@opencoo/shared/logger";
 import { LlmRouter, type LlmProvider } from "@opencoo/shared/llm-router";
@@ -92,6 +93,68 @@ describe("invokeAgent — happy path", () => {
     );
     expect(rows.rows[0]?.status).toBe("success");
     expect(rows.rows[0]?.output).toEqual({ summary: "ok", priority: 1 });
+  });
+});
+
+describe("invokeAgent — self-op usage attribution + cost aggregation", () => {
+  it("tags llm_usage self-op with run_id and aggregates tokens/cost into agent_runs", async () => {
+    const fixture = await freshAgentDb();
+    const { instanceId } = await seedAgentInstance(fixture, {
+      definitionSlug: "heartbeat",
+      memory: { type: "none" },
+    });
+    const definitions = new AgentDefinitionRegistry();
+    definitions.register(HEARTBEAT_DEF);
+    const mock = new MockLlmClient();
+    mock.register({
+      match: { model: "gpt-4o-mini", promptIncludes: "go" },
+      response: { text: JSON.stringify({ ok: true }), tokensIn: 40, tokensOut: 12 },
+    });
+    const router = makeRouter(mock, fixture.db);
+
+    const result = await invokeAgent({
+      definitions,
+      db: fixture.db as unknown as Parameters<typeof invokeAgent>[0]["db"],
+      router,
+      logger: silentLogger(),
+      instanceId,
+      trigger: "scheduled",
+      inputs: {},
+      run: (ctx) =>
+        ctx.router.generateObject({
+          domainId: fixture.domainId as unknown as Parameters<
+            typeof router.generateObject
+          >[0]["domainId"],
+          tier: "worker",
+          pipelineOrAgent: "heartbeat",
+          prompt: "go please",
+          schema: z.object({ ok: z.boolean() }),
+        }),
+    });
+
+    expect(result.status).toBe("success");
+
+    // The agent's LLM call is tagged self-op + stitched to this run.
+    const usage = await fixture.raw.query<{
+      engine: string;
+      run_id: string | null;
+    }>(`SELECT engine::text AS engine, run_id::text AS run_id FROM llm_usage`);
+    expect(usage.rows.length).toBeGreaterThan(0);
+    expect(usage.rows[0]?.engine).toBe("self-op");
+    expect(usage.rows[0]?.run_id).toBe(result.runId);
+
+    // agent_runs aggregates the run's tokens/cost (was hardcoded 0).
+    const run = await fixture.raw.query<{
+      tokens_in: number;
+      tokens_out: number;
+      cost: number;
+    }>(
+      `SELECT tokens_in, tokens_out, cost_usd::float8 AS cost FROM agent_runs WHERE id = $1`,
+      [result.runId],
+    );
+    expect(run.rows[0]?.tokens_in).toBe(40);
+    expect(run.rows[0]?.tokens_out).toBe(12);
+    expect(run.rows[0]?.cost).toBeGreaterThan(0);
   });
 });
 

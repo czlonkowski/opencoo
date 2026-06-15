@@ -530,3 +530,59 @@ describe("LlmRouter — repair-retry + transient classification", () => {
     expect((caught as OpencooError).errorClass).toBe("validation");
   });
 });
+
+describe("LlmRouter — usage attribution (engine + run_id)", () => {
+  let db: Db;
+  beforeEach(async () => {
+    db = await freshDb();
+    await seedDomain(db, {
+      llmPolicy: {
+        thinker: { provider: "openai", model: "gpt-4o" },
+        worker: { provider: "openai", model: "gpt-4o-mini" },
+        light: { provider: "openai", model: "gpt-4o-mini" },
+      },
+    });
+  });
+
+  it("records llm_usage with engine='self-op' and run_id when provided", async () => {
+    const mock = new MockLlmClient();
+    mock.register({
+      match: { model: "gpt-4o-mini", promptIncludes: "hi" },
+      response: { text: "ok", tokensIn: 7, tokensOut: 3 },
+    });
+    const { router } = newRouter(db, mock);
+    await router.generateText({
+      domainId,
+      tier: "worker",
+      pipelineOrAgent: "heartbeat",
+      prompt: "hi",
+      engine: "self-op",
+      runId: "22222222-2222-2222-2222-222222222222",
+    });
+    const rows = (await db.execute(sql`
+      SELECT engine, run_id::text AS run_id FROM llm_usage ORDER BY "timestamp" DESC LIMIT 1
+    `)) as unknown as { rows: Array<{ engine: string; run_id: string | null }> };
+    expect(rows.rows[0]?.engine).toBe("self-op");
+    expect(rows.rows[0]?.run_id).toBe("22222222-2222-2222-2222-222222222222");
+  });
+
+  it("defaults engine to 'ingestion' and run_id to null when omitted", async () => {
+    const mock = new MockLlmClient();
+    mock.register({
+      match: { model: "gpt-4o-mini", promptIncludes: "hi" },
+      response: { text: "ok", tokensIn: 7, tokensOut: 3 },
+    });
+    const { router } = newRouter(db, mock);
+    await router.generateText({
+      domainId,
+      tier: "worker",
+      pipelineOrAgent: "classify",
+      prompt: "hi",
+    });
+    const rows = (await db.execute(sql`
+      SELECT engine, run_id FROM llm_usage ORDER BY "timestamp" DESC LIMIT 1
+    `)) as unknown as { rows: Array<{ engine: string; run_id: string | null }> };
+    expect(rows.rows[0]?.engine).toBe("ingestion");
+    expect(rows.rows[0]?.run_id).toBeNull();
+  });
+});

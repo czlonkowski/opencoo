@@ -179,6 +179,9 @@ async function tryGenerate(args: {
       pipelineOrAgent: "worldview-company",
       prompt: args.prompt,
       schema: WORLDVIEW_OUTPUT_SCHEMA,
+      // See compile-domain.ts: the pipeline's own "compress further"
+      // retry handles overflow; opt out of generic repair-retry.
+      maxRepairAttempts: 0,
     });
     return { kind: "ok", value: result.object };
   } catch (err) {

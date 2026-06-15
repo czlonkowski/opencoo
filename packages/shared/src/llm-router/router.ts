@@ -146,20 +146,18 @@ export class LlmRouter {
   // conditional spread keeps `documentId` omitted under
   // `exactOptionalPropertyTypes` rather than set to `undefined`.
   private textOpts(opts: GenerateOpts, prompt: string): GenerateOpts {
-    return opts.documentId !== undefined
-      ? {
-          domainId: opts.domainId,
-          tier: opts.tier,
-          pipelineOrAgent: opts.pipelineOrAgent,
-          prompt,
-          documentId: opts.documentId,
-        }
-      : {
-          domainId: opts.domainId,
-          tier: opts.tier,
-          pipelineOrAgent: opts.pipelineOrAgent,
-          prompt,
-        };
+    // Carry through documentId AND the usage-attribution fields
+    // (engine/runId) — generateObject routes through here, so dropping
+    // them would lose the self-op tagging on every structured call.
+    return {
+      domainId: opts.domainId,
+      tier: opts.tier,
+      pipelineOrAgent: opts.pipelineOrAgent,
+      prompt,
+      ...(opts.documentId !== undefined ? { documentId: opts.documentId } : {}),
+      ...(opts.engine !== undefined ? { engine: opts.engine } : {}),
+      ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
+    };
   }
 
   // Extract → validate → repair-retry. Real models wrap JSON in
@@ -313,12 +311,13 @@ export class LlmRouter {
     await this.pauser.pauseDomainQueues(opts.domainId);
     await this.db.insert(llmUsage).values({
       timestamp: this.now(),
-      engine: "ingestion",
+      engine: opts.engine ?? "ingestion",
       tier: opts.tier,
       model,
       pipelineOrAgent: "budget-cap-breach",
       domainId: opts.domainId,
       documentId: opts.documentId ?? null,
+      runId: opts.runId ?? null,
       tokensIn: 0,
       tokensOut: 0,
       costUsd: "0",
@@ -361,12 +360,13 @@ export class LlmRouter {
       await tx.insert(llmUsage).values({
         id: sql`${usageId}::uuid`,
         timestamp: new Date(args.startedAt),
-        engine: "ingestion",
+        engine: args.opts.engine ?? "ingestion",
         tier: args.opts.tier,
         model: args.model,
         pipelineOrAgent: args.opts.pipelineOrAgent,
         domainId: args.opts.domainId,
         documentId: args.opts.documentId ?? null,
+        runId: args.opts.runId ?? null,
         tokensIn: args.tokensIn,
         tokensOut: args.tokensOut,
         costUsd: cost.toFixed(6),
