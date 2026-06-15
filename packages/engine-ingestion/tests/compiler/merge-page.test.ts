@@ -1,8 +1,9 @@
 /**
  * `mergePage` — wraps one LlmRouter.generateObject<MergedPageBody>
  * call. Builds the prompt (compiler body + spotlighted source +
- * existing-page envelope), invokes the router with tier:'thinker',
- * and returns the strict-Zod-parsed { merged_body, worldview_impact }.
+ * existing-page envelope), invokes the router with tier:'worker'
+ * (single-source page creation, §8.2), and returns the strict-Zod-
+ * parsed { merged_body, worldview_impact }.
  *
  * This is the unit boundary the compiler orchestrator composes —
  * separates "talk to the model" from "decide what to do with the
@@ -116,6 +117,43 @@ describe("mergePage — happy path", () => {
       locale: "en",
     });
     expect(result.worldviewImpact).toEqual([]);
+  });
+});
+
+describe("mergePage — tier selection", () => {
+  it("invokes the compiler on the WORKER tier (single-source page creation, §8.2)", async () => {
+    const mock = new MockLlmClient();
+    // Register ONLY the worker-tier model. If the compiler used the
+    // thinker tier, the router would resolve 'thinker-model' and the
+    // mock (no match) would throw — pinning compile to the worker tier
+    // so it doesn't run on the (pricey) strategic-synthesis model.
+    mock.register({
+      match: { model: "worker-model", promptIncludes: "opencoo Compiler" },
+      response: {
+        text: JSON.stringify({ merged_body: "# ok\n", worldview_impact: [] }),
+        tokensIn: 1,
+        tokensOut: 1,
+      },
+    });
+    const { router, domainId, db } = await makeFixture(mock);
+    await db.execute(sql`
+      UPDATE domains SET llm_policy = ${JSON.stringify({
+        thinker: { provider: "openai", model: "thinker-model" },
+        worker: { provider: "openai", model: "worker-model" },
+        light: { provider: "openai", model: "light-model" },
+      })}::jsonb WHERE id = ${domainId}::uuid
+    `);
+    const result = await mergePage({
+      router,
+      db: asResolverDb(db),
+      domainId: domainId as Parameters<typeof mergePage>[0]["domainId"],
+      sourceRef: "drive:doc-1",
+      sourceContent: "Q3 priorities: distribution.",
+      existingPageContent: "",
+      pagePath: "strategy/q3-2026.md",
+      locale: "en",
+    });
+    expect(result.mergedBody).toContain("ok");
   });
 });
 
