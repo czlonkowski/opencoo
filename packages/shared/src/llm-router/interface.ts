@@ -13,6 +13,11 @@ export interface GenerateOpts {
 
 export interface GenerateObjectOpts<T> extends GenerateOpts {
   readonly schema: z.ZodType<T>;
+  // Number of repair re-prompts allowed when the model's output fails
+  // JSON parse / schema validation. Total provider calls = 1 + this.
+  // Defaults to 2 (router-side) — only failing calls pay the extra
+  // cost, so the bound is on errors, not the happy path.
+  readonly maxRepairAttempts?: number;
 }
 
 export interface GenerateTextResult {

@@ -2,7 +2,15 @@ export {
   LlmBudgetExceededError,
   LlmPolicyViolationError,
   LlmProviderError,
+  LlmProviderTransientError,
 } from "./errors.js";
+export {
+  buildRepairPrompt,
+  extractJsonCandidate,
+  formatSchemaError,
+  isRetryableProviderError,
+  REPAIR_INSTRUCTION,
+} from "./structured-output.js";
 export {
   FALLBACK_POLICY,
   llmPolicySchema,
