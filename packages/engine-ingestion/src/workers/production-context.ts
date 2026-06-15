@@ -297,9 +297,25 @@ export async function composeProductionWorkerContext(
   //    pipelines/scanner.ts already documents. The Queue's `add`
   //    structurally satisfies the narrower `ScannerEnqueue` shape
   //    the scanner pipeline consumes.
+  // Retry policy for scanner / classify jobs. Without it a job that
+  // throws on its single attempt — e.g. a transient LLM provider blip
+  // (classed `transient` by the router) — fails permanently and the
+  // intake row stays 'pending' forever (the production backlog
+  // symptom). `attempts:5` + exponential backoff lets transient
+  // failures drain; genuine `validation` errors still DLQ on the
+  // worker side (the worker inspects errorClass before re-throwing).
+  const scannerJobOptions = {
+    attempts: 5,
+    backoff: { type: "exponential" as const, delay: 30_000 },
+    removeOnComplete: 100,
+    removeOnFail: 1000,
+  };
   const enqueueQueue = new Queue<ScannerClassifyJob>(
     SCANNER_CLASSIFY_QUEUE_SLUG,
-    { connection: args.redisConnection },
+    {
+      connection: args.redisConnection,
+      defaultJobOptions: scannerJobOptions,
+    },
   );
 
   // 4. Webhook receiver producer-side handles (round-2 fix,
@@ -311,6 +327,7 @@ export async function composeProductionWorkerContext(
   //    triage of malformed deliveries).
   const webhookScannerQueue = new Queue("ingestion.scanner", {
     connection: args.redisConnection,
+    defaultJobOptions: scannerJobOptions,
   });
   const webhookDlqQueue = new Queue("ingestion.intake.dlq", {
     connection: args.redisConnection,

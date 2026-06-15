@@ -18,12 +18,13 @@
 
 import { generateText as aiGenerateText } from "ai";
 
-import { LlmProviderError } from "../errors.js";
+import { LlmProviderError, LlmProviderTransientError } from "../errors.js";
 import type {
   LlmProvider,
   LlmProviderCall,
   LlmProviderResponse,
 } from "../interface.js";
+import { isRetryableProviderError } from "../structured-output.js";
 
 export interface OpenRouterProviderOptions {
   // `apiKey` is optional at the type level so the multi-provider
@@ -75,6 +76,12 @@ export async function createOpenRouterProvider(
           tokensOut: result.usage.outputTokens ?? 0,
         };
       } catch (err) {
+        if (isRetryableProviderError(err)) {
+          throw new LlmProviderTransientError(
+            "OpenRouter provider call failed",
+            { cause: err },
+          );
+        }
         throw new LlmProviderError("OpenRouter provider call failed", {
           cause: err,
         });

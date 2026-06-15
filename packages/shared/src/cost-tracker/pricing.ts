@@ -20,6 +20,11 @@ export const PRICING: Readonly<Record<string, PricingEntry>> = {
   // PR-W2: o1 listed in MODEL_CATALOG ($15/M in, $60/M out per OpenAI's
   // 2026 reasoning-tier price sheet).
   o1: { inputPerToken: 0.000015, outputPerToken: 0.00006 },
+  // Azure OpenAI deployments are keyed by the operator's *deployment
+  // name* (the id the domain's llm_policy targets), which is
+  // installation-specific and cannot be enumerated here — unknown
+  // models fall back to FALLBACK_PRICING (warn, not throw). Per-domain
+  // pricing override is a future operator-config concern.
   // Anthropic.
   "claude-3-5-sonnet-latest": {
     inputPerToken: 0.000003,

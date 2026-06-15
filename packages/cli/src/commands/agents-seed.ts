@@ -100,12 +100,13 @@ interface ExecResult {
 }
 
 type DomainResolution =
-  | { readonly ok: true; readonly domainId: string }
+  | { readonly ok: true; readonly domainId: string; readonly locale: string }
   | { readonly ok: false; readonly error: string };
 
 interface DomainRow {
   id: string;
   slug: string;
+  locale: string;
 }
 
 /** PR-Q8 — resolve the seed scope-domain id from the operator's
@@ -125,7 +126,7 @@ async function resolveScopeDomainId(
 ): Promise<DomainResolution> {
   if (domainSlug !== undefined) {
     const result = (await db.execute(sql`
-      SELECT id::text AS id, slug FROM domains WHERE slug = ${domainSlug} LIMIT 1
+      SELECT id::text AS id, slug, locale FROM domains WHERE slug = ${domainSlug} LIMIT 1
     `)) as unknown as { rows: DomainRow[] };
     const row = result.rows[0];
     if (row === undefined) {
@@ -134,11 +135,11 @@ async function resolveScopeDomainId(
         error: `--domain '${domainSlug}': no such domain (no row in domains table). Run \`opencoo agents seed\` after creating the domain via the management UI.`,
       };
     }
-    return { ok: true, domainId: row.id };
+    return { ok: true, domainId: row.id, locale: row.locale };
   }
   // No flag — discover available domains.
   const result = (await db.execute(sql`
-    SELECT id::text AS id, slug FROM domains ORDER BY slug
+    SELECT id::text AS id, slug, locale FROM domains ORDER BY slug
   `)) as unknown as { rows: DomainRow[] };
   const rows = result.rows;
   if (rows.length === 0) {
@@ -149,7 +150,7 @@ async function resolveScopeDomainId(
     };
   }
   if (rows.length === 1) {
-    return { ok: true, domainId: rows[0]!.id };
+    return { ok: true, domainId: rows[0]!.id, locale: rows[0]!.locale };
   }
   const slugList = rows.map((r) => r.slug).join(", ");
   return {
@@ -205,6 +206,10 @@ export async function runAgentsSeed(args: AgentsSeedArgs): Promise<void> {
       return exitRuntimeError();
     }
     const scopeDomainId = resolution.domainId;
+    // Inherit the domain's locale so a Polish-domain heartbeat seeds
+    // a `pl` instance (previously hardcoded 'en', which forced the
+    // English prompt regardless of the domain language).
+    const scopeLocale = resolution.locale;
 
     const rows = buildRows();
     let inserted = 0;
@@ -220,7 +225,7 @@ export async function runAgentsSeed(args: AgentsSeedArgs): Promise<void> {
           '[]'::jsonb,
           ${row.scheduleCron},
           '{"type":"none"}'::jsonb,
-          'en',
+          ${scopeLocale},
           true
         )
         ON CONFLICT (definition_slug, name) DO NOTHING

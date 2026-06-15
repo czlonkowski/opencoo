@@ -210,11 +210,12 @@ describe("loadPrompt — heartbeat prompts (PR 20)", () => {
     const body = en.body;
     // Reference to the spotlight envelope source.
     expect(body).toContain("system-health://");
-    // Branch trigger: page_count < 5 — the prompt has to name
-    // both the field path and the cutoff so the model knows
-    // when to flip kinds.
+    // Branch trigger: page_count is 0 (1.3.0 tightened the
+    // operational-IS-briefing branch from "fewer than 5" to a
+    // genuinely empty wiki) — the prompt names both the field path
+    // and the cutoff so the model knows when to flip kinds.
     expect(body).toContain("wiki_stats.page_count");
-    expect(body).toMatch(/fewer than 5|less than 5|under 5/i);
+    expect(body).toContain("is 0 (no content pages");
     // Anti-regurgitation directive — the most important new
     // rule; without it the model falls back to repeating the
     // worldview placeholder.

@@ -31,6 +31,10 @@ describe("PROVIDERS tuple — closed enum of supported provider names", () => {
     expect(PROVIDERS).toContain("google");
     expect(PROVIDERS).toContain("ollama");
   });
+
+  it("includes 'azure' so domain LLM policy can target Azure OpenAI", () => {
+    expect(PROVIDERS).toContain("azure");
+  });
 });
 
 describe("llmPolicySchema — accepts openrouter as a tier provider", () => {
@@ -73,6 +77,38 @@ describe("createProvider('openrouter', ...)", () => {
     await expect(
       createProvider("openrouter", { apiKey: "" }),
     ).rejects.toThrow(/OPENROUTER_API_KEY/);
+  });
+});
+
+describe("llmPolicySchema — accepts azure as a tier provider", () => {
+  it("parses a policy with provider='azure' for the thinker tier", () => {
+    const result = llmPolicySchema.safeParse({
+      thinker: { provider: "azure", model: "gpt55test" },
+      worker: { provider: "openrouter", model: "moonshotai/kimi-k2.6" },
+      light: { provider: "openrouter", model: "moonshotai/kimi-k2.6" },
+      local_only: false,
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("createProvider('azure', ...)", () => {
+  it("returns a provider with `.generate` when Entra creds + baseUrl supplied", async () => {
+    const provider = await createProvider("azure", {
+      baseUrl: "https://example.openai.azure.com/openai/v1",
+      tenantId: "t",
+      clientId: "c",
+      clientSecret: "s",
+    });
+    expect(typeof provider.generate).toBe("function");
+  });
+
+  it("throws LlmProviderError when no credentials are supplied", async () => {
+    await expect(
+      createProvider("azure", {
+        baseUrl: "https://example.openai.azure.com/openai/v1",
+      }),
+    ).rejects.toThrow(LlmProviderError);
   });
 });
 

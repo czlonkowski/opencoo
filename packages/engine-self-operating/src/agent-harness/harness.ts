@@ -25,10 +25,17 @@
  * → transient.
  */
 
-import type { LlmRouter } from "@opencoo/shared/llm-router";
+import type {
+  GenerateObjectOpts,
+  GenerateObjectResult,
+  GenerateOpts,
+  GenerateTextResult,
+  LlmRouter,
+} from "@opencoo/shared/llm-router";
 import type { Logger } from "@opencoo/shared/logger";
 import type { ToolCall } from "@opencoo/shared/db";
 import { spotlight } from "@opencoo/shared/spotlight";
+import { sql } from "drizzle-orm";
 
 import { assertToolAllowed } from "./deny-list.js";
 import { loadInstanceById, type AgentInstance } from "./instances.js";
@@ -89,6 +96,13 @@ export interface AgentInvocation {
    *  → sseBus.emitToken once the router exposes a per-token hook. */
   readonly sseBus?: SseBus;
 }
+
+/** The slice of the LLM router agent bodies use. The harness wraps
+ *  the real router so every call is attributed to the active run
+ *  (engine:'self-op' + run_id), letting llm_usage be aggregated per
+ *  agent run. Agents use `generateObject` today; `generateText` is
+ *  exposed for completeness. */
+export type AgentRouter = Pick<LlmRouter, "generateObject" | "generateText">;
 
 export interface AgentRunContext {
   readonly definition: AgentDefinition;
@@ -190,12 +204,34 @@ export async function invokeAgent(
 
   const toolCalls: ToolCall[] = [];
 
+  // Wrap the router so every LLM call the body makes is attributed to
+  // this agent run (engine:'self-op' + run_id). Without this, self-op
+  // agent spend was invisible — recorded as 'ingestion' with no run
+  // linkage — and agent_runs.cost stayed hardcoded 0.
+  const runScopedRouter: AgentRouter = {
+    generateObject<T>(
+      opts: GenerateObjectOpts<T>,
+    ): Promise<GenerateObjectResult<T>> {
+      return args.router.generateObject<T>({
+        ...opts,
+        engine: "self-op",
+        runId,
+      });
+    },
+    generateText(opts: GenerateOpts): Promise<GenerateTextResult> {
+      return args.router.generateText({ ...opts, engine: "self-op", runId });
+    },
+  };
+
   const ctx: AgentRunContext = {
     definition,
     instance,
     runId,
     spotlightedMemory,
-    router: args.router,
+    // The wrapper implements only the generate* surface agents use;
+    // cast to the full LlmRouter type the context exposes. (Agents and
+    // their helpers never touch the router's other members.)
+    router: runScopedRouter as unknown as LlmRouter,
     logger: args.logger,
     // Propagate verbatim. Only attach the key when the caller
     // supplied one — under exactOptionalPropertyTypes, an
@@ -261,6 +297,27 @@ export async function invokeAgent(
 
   const endedAt = clock();
   const latencyMs = endedAt.getTime() - startedAt.getTime();
+
+  // Aggregate this run's LLM usage. The run-scoped router recorded
+  // every call with `run_id = runId`, so summing llm_usage is the
+  // authoritative per-run token/cost total (covers multi-call bodies
+  // and structured-output repair retries). Resolves the prior
+  // hardcoded-0 placeholder (was TODO PR-B.1).
+  const usageAgg = (await args.db.execute(sql`
+    SELECT
+      COALESCE(SUM(tokens_in), 0)::int AS tokens_in,
+      COALESCE(SUM(tokens_out), 0)::int AS tokens_out,
+      COALESCE(SUM(cost_usd), 0)::numeric AS cost_usd
+    FROM llm_usage
+    WHERE run_id = ${runId}::uuid
+  `)) as unknown as {
+    rows: Array<{ tokens_in: number; tokens_out: number; cost_usd: string }>;
+  };
+  const usageRow = usageAgg.rows[0];
+  const tokensIn = usageRow ? Number(usageRow.tokens_in) : 0;
+  const tokensOut = usageRow ? Number(usageRow.tokens_out) : 0;
+  const costUsd = usageRow ? Number(usageRow.cost_usd) : 0;
+
   await completeRun({
     db: args.db,
     logger: args.logger,
@@ -268,16 +325,15 @@ export async function invokeAgent(
     status,
     output,
     toolCalls,
-    tokensIn: 0,
-    tokensOut: 0,
-    costUsd: 0,
+    tokensIn,
+    tokensOut,
+    costUsd,
     latencyMs,
     ...(errorClass !== undefined ? { errorClass } : {}),
     endedAt,
   });
 
   // Emit run-completion event so the Activity feed reflects the terminal state.
-  // costUsd is tracked in the LLM router (not yet surfaced here — TODO PR-B.1).
   args.sseBus?.emitRunEvent({
     runId,
     definitionSlug: instance.definitionSlug,

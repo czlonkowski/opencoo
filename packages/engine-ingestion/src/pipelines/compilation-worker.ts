@@ -276,6 +276,10 @@ export async function runCompilationWorker(
         allowedPaths: meta.allowedPaths,
         allowedDomains: meta.allowedDomains,
         fetchedAt,
+        // Emit the `classifier.domain_default_applied` audit line on
+        // single-domain slug coercion (Copilot triage: without this
+        // the audit event never fired in production).
+        logger: args.logger,
       });
       classifiedDomains = classified.targetDomains.length;
       for (const td of classified.targetDomains) {

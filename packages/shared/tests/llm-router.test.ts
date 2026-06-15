@@ -8,11 +8,13 @@ import * as schema from "../src/db/schema/index.js";
 import type { DomainId } from "../src/db/brands.js";
 import {
   InMemoryQueuePauser,
+  type LlmProvider,
   LlmPolicyViolationError,
   LlmProviderError,
   LlmRouter,
   MockLlmClient,
 } from "../src/llm-router/index.js";
+import { OpencooError } from "../src/errors.js";
 import { nullLogger } from "./helpers/null-logger.js";
 
 type Db = PgliteDatabase<typeof schema>;
@@ -388,5 +390,223 @@ describe("LlmRouter — generateObject round-trip", () => {
         schema: z.object({ category: z.string(), priority: z.number() }),
       }),
     ).rejects.toThrow(LlmProviderError);
+  });
+});
+
+describe("LlmRouter — repair-retry + transient classification", () => {
+  let db: Db;
+  beforeEach(async () => {
+    db = await freshDb();
+    await seedDomain(db, {
+      llmPolicy: {
+        thinker: { provider: "openai", model: "gpt-4o" },
+        worker: { provider: "openai", model: "gpt-4o-mini" },
+        light: { provider: "openai", model: "gpt-4o-mini" },
+      },
+    });
+  });
+
+  function routerWith(provider: LlmProvider): LlmRouter {
+    return new LlmRouter({
+      db,
+      env: {},
+      logger: nullLogger(),
+      pauser: new InMemoryQueuePauser(),
+      provider,
+    });
+  }
+
+  const schema = z.object({ category: z.string(), priority: z.number().int() });
+
+  it("repairs and succeeds after a schema-invalid first response", async () => {
+    let calls = 0;
+    const provider: LlmProvider = {
+      async generate() {
+        calls += 1;
+        return calls === 1
+          ? { text: JSON.stringify({ category: "doc" }), tokensIn: 5, tokensOut: 3 }
+          : {
+              text: JSON.stringify({ category: "doc", priority: 2 }),
+              tokensIn: 5,
+              tokensOut: 3,
+            };
+      },
+    };
+    const out = await routerWith(provider).generateObject({
+      domainId,
+      tier: "worker",
+      pipelineOrAgent: "classify",
+      prompt: "classify this",
+      schema,
+    });
+    expect(out.object).toEqual({ category: "doc", priority: 2 });
+    expect(calls).toBe(2);
+  });
+
+  it("extracts JSON wrapped in markdown fences on the first attempt", async () => {
+    let calls = 0;
+    const provider: LlmProvider = {
+      async generate() {
+        calls += 1;
+        return {
+          text: "```json\n" + JSON.stringify({ category: "doc", priority: 1 }) + "\n```",
+          tokensIn: 5,
+          tokensOut: 3,
+        };
+      },
+    };
+    const out = await routerWith(provider).generateObject({
+      domainId,
+      tier: "worker",
+      pipelineOrAgent: "classify",
+      prompt: "classify this",
+      schema,
+    });
+    expect(out.object).toEqual({ category: "doc", priority: 1 });
+    expect(calls).toBe(1);
+  });
+
+  it("gives up after exhausting repair attempts on persistent bad output", async () => {
+    let calls = 0;
+    const provider: LlmProvider = {
+      async generate() {
+        calls += 1;
+        return { text: JSON.stringify({ category: "doc" }), tokensIn: 5, tokensOut: 3 };
+      },
+    };
+    await expect(
+      routerWith(provider).generateObject({
+        domainId,
+        tier: "worker",
+        pipelineOrAgent: "classify",
+        prompt: "classify this",
+        schema,
+        maxRepairAttempts: 2,
+      }),
+    ).rejects.toThrow(LlmProviderError);
+    // initial attempt + 2 repairs
+    expect(calls).toBe(3);
+  });
+
+  it("treats a negative/non-finite maxRepairAttempts as zero repairs (one attempt, no crash)", async () => {
+    let calls = 0;
+    const provider: LlmProvider = {
+      async generate() {
+        calls += 1;
+        return {
+          text: JSON.stringify({ category: "doc", priority: 1 }),
+          tokensIn: 5,
+          tokensOut: 3,
+        };
+      },
+    };
+    const out = await routerWith(provider).generateObject({
+      domainId,
+      tier: "worker",
+      pipelineOrAgent: "classify",
+      prompt: "classify this",
+      schema,
+      maxRepairAttempts: -1,
+    });
+    expect(out.object).toEqual({ category: "doc", priority: 1 });
+    expect(calls).toBe(1);
+  });
+
+  it("classifies a retryable provider failure as transient", async () => {
+    const provider: LlmProvider = {
+      async generate() {
+        throw Object.assign(new Error("service unavailable"), { statusCode: 503 });
+      },
+    };
+    let caught: unknown;
+    try {
+      await routerWith(provider).generateText({
+        domainId,
+        tier: "worker",
+        pipelineOrAgent: "x",
+        prompt: "p",
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(OpencooError);
+    expect((caught as OpencooError).errorClass).toBe("transient");
+  });
+
+  it("classifies a non-retryable provider failure as validation", async () => {
+    const provider: LlmProvider = {
+      async generate() {
+        throw Object.assign(new Error("bad request"), { statusCode: 400 });
+      },
+    };
+    let caught: unknown;
+    try {
+      await routerWith(provider).generateText({
+        domainId,
+        tier: "worker",
+        pipelineOrAgent: "x",
+        prompt: "p",
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(LlmProviderError);
+    expect((caught as OpencooError).errorClass).toBe("validation");
+  });
+});
+
+describe("LlmRouter — usage attribution (engine + run_id)", () => {
+  let db: Db;
+  beforeEach(async () => {
+    db = await freshDb();
+    await seedDomain(db, {
+      llmPolicy: {
+        thinker: { provider: "openai", model: "gpt-4o" },
+        worker: { provider: "openai", model: "gpt-4o-mini" },
+        light: { provider: "openai", model: "gpt-4o-mini" },
+      },
+    });
+  });
+
+  it("records llm_usage with engine='self-op' and run_id when provided", async () => {
+    const mock = new MockLlmClient();
+    mock.register({
+      match: { model: "gpt-4o-mini", promptIncludes: "hi" },
+      response: { text: "ok", tokensIn: 7, tokensOut: 3 },
+    });
+    const { router } = newRouter(db, mock);
+    await router.generateText({
+      domainId,
+      tier: "worker",
+      pipelineOrAgent: "heartbeat",
+      prompt: "hi",
+      engine: "self-op",
+      runId: "22222222-2222-2222-2222-222222222222",
+    });
+    const rows = (await db.execute(sql`
+      SELECT engine, run_id::text AS run_id FROM llm_usage ORDER BY "timestamp" DESC LIMIT 1
+    `)) as unknown as { rows: Array<{ engine: string; run_id: string | null }> };
+    expect(rows.rows[0]?.engine).toBe("self-op");
+    expect(rows.rows[0]?.run_id).toBe("22222222-2222-2222-2222-222222222222");
+  });
+
+  it("defaults engine to 'ingestion' and run_id to null when omitted", async () => {
+    const mock = new MockLlmClient();
+    mock.register({
+      match: { model: "gpt-4o-mini", promptIncludes: "hi" },
+      response: { text: "ok", tokensIn: 7, tokensOut: 3 },
+    });
+    const { router } = newRouter(db, mock);
+    await router.generateText({
+      domainId,
+      tier: "worker",
+      pipelineOrAgent: "classify",
+      prompt: "hi",
+    });
+    const rows = (await db.execute(sql`
+      SELECT engine, run_id FROM llm_usage ORDER BY "timestamp" DESC LIMIT 1
+    `)) as unknown as { rows: Array<{ engine: string; run_id: string | null }> };
+    expect(rows.rows[0]?.engine).toBe("ingestion");
+    expect(rows.rows[0]?.run_id).toBeNull();
   });
 });

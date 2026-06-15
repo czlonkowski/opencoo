@@ -9,12 +9,20 @@ import type { DomainId } from "../db/brands.js";
 import { domains } from "../db/schema/domains.js";
 import { llmUsage } from "../db/schema/llm-usage.js";
 import { llmUsageDebug } from "../db/schema/llm-usage-debug.js";
+import { OpencooError } from "../errors.js";
 import type { Logger } from "../logger.js";
 import {
   LlmBudgetExceededError,
   LlmPolicyViolationError,
   LlmProviderError,
+  LlmProviderTransientError,
 } from "./errors.js";
+import {
+  buildRepairPrompt,
+  extractJsonCandidate,
+  formatSchemaError,
+  isRetryableProviderError,
+} from "./structured-output.js";
 import type {
   GenerateObjectOpts,
   GenerateObjectResult,
@@ -113,8 +121,17 @@ export class LlmRouter {
     }
 
     if (providerError !== null) {
-      if (providerError instanceof LlmProviderError) {
+      // Provider factories already classify their own failures
+      // (transient vs validation) — pass any OpencooError through
+      // untouched. Only a *bare* error reaching here needs the
+      // router to decide retryability.
+      if (providerError instanceof OpencooError) {
         throw providerError;
+      }
+      if (isRetryableProviderError(providerError)) {
+        throw new LlmProviderTransientError("provider call failed", {
+          cause: providerError,
+        });
       }
       throw new LlmProviderError("provider call failed", {
         cause: providerError,
@@ -124,25 +141,105 @@ export class LlmRouter {
     return { text, tokensIn, tokensOut, model };
   }
 
+  // Project a GenerateObjectOpts down to a GenerateOpts for a single
+  // text call, substituting the (possibly repaired) prompt. The
+  // conditional spread keeps `documentId` omitted under
+  // `exactOptionalPropertyTypes` rather than set to `undefined`.
+  private textOpts(opts: GenerateOpts, prompt: string): GenerateOpts {
+    // Carry through documentId AND the usage-attribution fields
+    // (engine/runId) — generateObject routes through here, so dropping
+    // them would lose the self-op tagging on every structured call.
+    return {
+      domainId: opts.domainId,
+      tier: opts.tier,
+      pipelineOrAgent: opts.pipelineOrAgent,
+      prompt,
+      ...(opts.documentId !== undefined ? { documentId: opts.documentId } : {}),
+      ...(opts.engine !== undefined ? { engine: opts.engine } : {}),
+      ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
+    };
+  }
+
+  // Extract → validate → repair-retry. Real models wrap JSON in
+  // markdown fences or prose and occasionally emit an off-schema
+  // shape; `extractJsonCandidate` recovers the payload and, on a
+  // parse/validation miss, we re-prompt with the precise error in
+  // context (up to `maxRepairAttempts`, default 2). Each attempt is a
+  // full `generateText` so usage/cost is recorded per call — only
+  // failing calls pay the extra cost. After exhausting attempts we
+  // throw `LlmProviderError` (validation → DLQ) as before.
   async generateObject<T>(
     opts: GenerateObjectOpts<T>,
   ): Promise<GenerateObjectResult<T>> {
-    const result = await this.generateText(opts);
-    let parsed: T;
-    try {
-      const raw = JSON.parse(result.text) as unknown;
-      parsed = opts.schema.parse(raw) as T;
-    } catch (err) {
-      throw new LlmProviderError("structured output failed schema validation", {
-        cause: err,
-      });
+    // Clamp to a safe non-negative integer: a negative or non-finite
+    // caller value would make the loop body never run, throwing with
+    // an unset lastError and skipping the provider call entirely
+    // (Copilot triage). 0 = one attempt, no repair.
+    const requestedRepairs = opts.maxRepairAttempts;
+    const maxRepairs =
+      typeof requestedRepairs === "number" && Number.isFinite(requestedRepairs)
+        ? Math.max(0, Math.floor(requestedRepairs))
+        : 2;
+    let prompt = opts.prompt;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= maxRepairs; attempt++) {
+      const result = await this.generateText(this.textOpts(opts, prompt));
+      const candidate = extractJsonCandidate(result.text);
+
+      let raw: unknown;
+      try {
+        raw = JSON.parse(candidate);
+      } catch (err) {
+        lastError = err;
+        if (attempt < maxRepairs) {
+          this.logger.warn("llm.structured_output.repair", {
+            attempt: attempt + 1,
+            reason: "json-parse",
+            tier: opts.tier,
+            pipeline_or_agent: opts.pipelineOrAgent,
+            domain_id: opts.domainId,
+          });
+          prompt = buildRepairPrompt(
+            opts.prompt,
+            result.text,
+            `Output was not valid JSON: ${formatSchemaError(err)}`,
+          );
+          continue;
+        }
+        break;
+      }
+
+      const validated = opts.schema.safeParse(raw);
+      if (validated.success) {
+        return {
+          object: validated.data,
+          tokensIn: result.tokensIn,
+          tokensOut: result.tokensOut,
+          model: result.model,
+        };
+      }
+
+      lastError = validated.error;
+      if (attempt < maxRepairs) {
+        this.logger.warn("llm.structured_output.repair", {
+          attempt: attempt + 1,
+          reason: "schema",
+          tier: opts.tier,
+          pipeline_or_agent: opts.pipelineOrAgent,
+          domain_id: opts.domainId,
+        });
+        prompt = buildRepairPrompt(
+          opts.prompt,
+          result.text,
+          formatSchemaError(validated.error),
+        );
+      }
     }
-    return {
-      object: parsed,
-      tokensIn: result.tokensIn,
-      tokensOut: result.tokensOut,
-      model: result.model,
-    };
+
+    throw new LlmProviderError("structured output failed schema validation", {
+      cause: lastError,
+    });
   }
 
   private async loadDomain(domainId: DomainId): Promise<DomainRow> {
@@ -222,12 +319,13 @@ export class LlmRouter {
     await this.pauser.pauseDomainQueues(opts.domainId);
     await this.db.insert(llmUsage).values({
       timestamp: this.now(),
-      engine: "ingestion",
+      engine: opts.engine ?? "ingestion",
       tier: opts.tier,
       model,
       pipelineOrAgent: "budget-cap-breach",
       domainId: opts.domainId,
       documentId: opts.documentId ?? null,
+      runId: opts.runId ?? null,
       tokensIn: 0,
       tokensOut: 0,
       costUsd: "0",
@@ -270,12 +368,13 @@ export class LlmRouter {
       await tx.insert(llmUsage).values({
         id: sql`${usageId}::uuid`,
         timestamp: new Date(args.startedAt),
-        engine: "ingestion",
+        engine: args.opts.engine ?? "ingestion",
         tier: args.opts.tier,
         model: args.model,
         pipelineOrAgent: args.opts.pipelineOrAgent,
         domainId: args.opts.domainId,
         documentId: args.opts.documentId ?? null,
+        runId: args.opts.runId ?? null,
         tokensIn: args.tokensIn,
         tokensOut: args.tokensOut,
         costUsd: cost.toFixed(6),

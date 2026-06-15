@@ -76,4 +76,11 @@ export const MODEL_CATALOG: Readonly<
     "google/gemini-2.0-flash",
     "deepseek/deepseek-r1",
   ],
+  // Azure OpenAI: the model id is the *deployment name* on the
+  // operator's resource (driven via the `/openai/v1` path with the
+  // model in the request body), not a vendor-global slug. Empty by
+  // design — like ollama, deployment names are installation-specific
+  // and cannot be enumerated in advance; the editor renders a
+  // custom-input field for this provider.
+  azure: [],
 } as const;

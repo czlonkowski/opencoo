@@ -9,10 +9,21 @@ export interface GenerateOpts {
   readonly pipelineOrAgent: string;
   readonly prompt: string;
   readonly documentId?: string;
+  // Usage attribution. `engine` defaults to "ingestion"; self-op
+  // agents pass "self-op" (the harness injects it) so llm_usage
+  // distinguishes engine spend. `runId` ties the row to an
+  // agent_runs row so per-run token/cost totals can be aggregated.
+  readonly engine?: "ingestion" | "self-op";
+  readonly runId?: string;
 }
 
 export interface GenerateObjectOpts<T> extends GenerateOpts {
   readonly schema: z.ZodType<T>;
+  // Number of repair re-prompts allowed when the model's output fails
+  // JSON parse / schema validation. Total provider calls = 1 + this.
+  // Defaults to 2 (router-side) — only failing calls pay the extra
+  // cost, so the bound is on errors, not the happy path.
+  readonly maxRepairAttempts?: number;
 }
 
 export interface GenerateTextResult {

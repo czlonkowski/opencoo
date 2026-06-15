@@ -169,6 +169,11 @@ async function tryGenerate(args: {
       pipelineOrAgent: args.pipelineOrAgent,
       prompt: args.prompt,
       schema: WORLDVIEW_OUTPUT_SCHEMA,
+      // Opt out of the router's generic repair-retry: an overflow is a
+      // size failure, not malformed JSON — re-prompting verbatim won't
+      // shrink it. The pipeline's own "compress further" retry below is
+      // the purpose-built handler, so let the overflow surface here.
+      maxRepairAttempts: 0,
     });
     return { kind: "ok", value: result.object };
   } catch (err) {

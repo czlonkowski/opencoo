@@ -23,6 +23,7 @@
 import type { Job, Queue, Worker } from "bullmq";
 import IORedisMock from "ioredis-mock";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { ConsoleLogger } from "@opencoo/shared/logger";
 
@@ -340,17 +341,31 @@ describe("AgentDispatcher dispatch handler", () => {
       scheduleCron: "0 8 * * *",
     });
 
-    // Sentinel router — only identity matters; never invoked.
+    // Stub router exposing generateObject — proves the constructor
+    // router is REACHED through the harness's run-scoped wrapper
+    // (which tags every call engine:'self-op' + run_id).
+    const generateObjectCalls: Array<{ engine?: string; runId?: string }> = [];
     const sentinelRouter = {
-      __sentinel: "router-identity-pin",
+      async generateObject(opts: { engine?: string; runId?: string }) {
+        generateObjectCalls.push({ engine: opts.engine, runId: opts.runId });
+        return { object: { ok: true }, tokensIn: 0, tokensOut: 0, model: "stub" };
+      },
     } as unknown as ConstructorParameters<typeof AgentDispatcher>[0]["router"];
 
-    const observed: Array<{ router: unknown }> = [];
     const runners: AgentRunnerRegistry = {
       get(slug: string) {
         if (slug !== TEST_DEFINITION.slug) return undefined;
         return async (ctx) => {
-          observed.push({ router: ctx.router });
+          await ctx.router.generateObject({
+            domainId:
+              "00000000-0000-0000-0000-000000000000" as unknown as Parameters<
+                typeof ctx.router.generateObject
+              >[0]["domainId"],
+            tier: "thinker",
+            pipelineOrAgent: "dispatcher-router-test",
+            prompt: "ping",
+            schema: z.object({ ok: z.boolean() }),
+          });
           return { ok: true };
         };
       },
@@ -375,12 +390,14 @@ describe("AgentDispatcher dispatch handler", () => {
 
     await handler(job);
 
-    expect(observed).toHaveLength(1);
-    // Identity comparison — a structural-equal clone would fail
-    // here. This is the load-bearing assertion; without it the
-    // dispatcher's empty-object cast survives + the prod runner
-    // crashes on the first LLM call.
-    expect(observed[0]?.router).toBe(sentinelRouter);
+    // The constructor router is reached (delegation through the
+    // harness's run-scoped wrapper) AND the wrapper tagged the call
+    // with self-op attribution. Without the real router threaded
+    // through, the call never lands on the stub; without the wrapper,
+    // engine/runId would be absent (the bug class this pins).
+    expect(generateObjectCalls).toHaveLength(1);
+    expect(generateObjectCalls[0]?.engine).toBe("self-op");
+    expect(typeof generateObjectCalls[0]?.runId).toBe("string");
   });
 
   it("propagates errors from the runner so BullMQ can apply its retry policy", async () => {

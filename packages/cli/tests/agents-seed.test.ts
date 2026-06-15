@@ -67,6 +67,7 @@ const TABLES_DDL = `
     id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
     slug text NOT NULL UNIQUE,
     name text NOT NULL DEFAULT '',
+    locale text NOT NULL DEFAULT 'en',
     created_at timestamp with time zone DEFAULT now() NOT NULL
   );
   CREATE TABLE agent_instances (
@@ -99,6 +100,8 @@ interface BuildSeedArgsOptions {
   readonly domains?: ReadonlyArray<string>;
   /** Optional `--domain <slug>` value passed to runAgentsSeed. */
   readonly domainSlug?: string;
+  /** Locale applied to every seeded domain row (default 'en'). */
+  readonly locale?: string;
 }
 
 async function buildSeedArgs(
@@ -109,9 +112,10 @@ async function buildSeedArgs(
   await pg.exec(TABLES_DDL);
   const db = drizzle(pg);
   const slugs = options.domains ?? ["wiki-pilot"];
+  const locale = options.locale ?? "en";
   for (const slug of slugs) {
     await db.execute(sql`
-      INSERT INTO domains (slug, name) VALUES (${slug}, ${slug})
+      INSERT INTO domains (slug, name, locale) VALUES (${slug}, ${slug}, ${locale})
     `);
   }
   const stdout = new CapturingStream();
@@ -184,6 +188,19 @@ describe("opencoo agents seed", () => {
     expect(result.rows[0]?.total).toBe(3);
     // The second-run stdout includes a "0 created" report.
     expect(stdout.buffer).toMatch(/0 created|already seeded|0 new/i);
+  });
+
+  it("inherits the domain's locale for seeded instances (pl, not hardcoded en)", async () => {
+    const { args, db } = await buildSeedArgs({ locale: "pl" });
+    captureExit();
+    await expect(runAgentsSeed(args)).rejects.toThrow(ExitSentinel);
+    const result = (await db.execute(sql`
+      SELECT definition_slug, locale FROM agent_instances ORDER BY definition_slug
+    `)) as unknown as { rows: Array<{ definition_slug: string; locale: string }> };
+    expect(result.rows).toHaveLength(3);
+    for (const row of result.rows) {
+      expect(row.locale).toBe("pl");
+    }
   });
 
   it("does NOT seed agents without a defaultScheduleCron (chat/builder)", async () => {

@@ -104,6 +104,43 @@ describe("classify — happy path", () => {
   });
 });
 
+describe("classify — single-domain default mapping", () => {
+  it("maps an off-allowlist slug to the home domain when only one is allowed", async () => {
+    // A worker model classifying a single-domain deployment routinely
+    // invents a topical slug ('ops', 'legal', ...) for a legitimate
+    // document. With exactly one allowed domain the destination is not
+    // an LLM choice — coerce to the home domain rather than DLQ.
+    const mock = new MockLlmClient();
+    mock.register({
+      match: { model: "gpt-4o-mini", promptIncludes: "Q3 priorities" },
+      response: {
+        text: JSON.stringify({
+          version: "v1",
+          language: "en",
+          summary: "ops doc",
+          target_domains: [{ domain_slug: "ops", page_paths: ["strategy/ops.md"] }],
+          pipelines: ["compile.single-source"],
+        }),
+        tokensIn: 10,
+        tokensOut: 5,
+      },
+    });
+    const { router, domainId, db } = await makeFixture(mock);
+    const result = await classify({
+      router,
+      db: asResolverDb(db),
+      domainId: domainId as Parameters<typeof classify>[0]["domainId"],
+      sourceRef: "drive:doc-1",
+      content: SOURCE_CONTENT,
+      locale: "en",
+      allowedPaths: ALLOWED_PATHS,
+      allowedDomains: ["test-domain"],
+    });
+    expect(result.targetDomains[0]?.domainSlug).toBe("test-domain");
+    expect(result.targetDomains[0]?.pagePaths).toEqual(["strategy/ops.md"]);
+  });
+});
+
 describe("classify — adversarial LLM defenses", () => {
   it("DLQs when the LLM emits a path outside allowed_paths (path-guard catch)", async () => {
     const mock = new MockLlmClient();
@@ -177,7 +214,10 @@ describe("classify — adversarial LLM defenses", () => {
         content: SOURCE_CONTENT,
         locale: "en",
         allowedPaths: ALLOWED_PATHS,
-        allowedDomains: ["test-domain"],
+        // Multi-domain binding: domain_slug is a real choice, so a
+        // foreign value is a genuine cross-domain violation → DLQ.
+        // (Single-domain coercion is covered by its own test above.)
+        allowedDomains: ["test-domain", "wiki-secondary"],
       }),
     ).rejects.toBeInstanceOf(ClassifierValidationError);
   });

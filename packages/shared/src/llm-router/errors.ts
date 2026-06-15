@@ -24,14 +24,27 @@ export class LlmBudgetExceededError extends OpencooError {
   }
 }
 
-// Provider-side failure: unregistered mock response, network, 5xx,
-// JSON shape mismatch on structured output. Routed as `validation`
-// so retry logic treats it as a DLQ candidate — the retry shape for
-// a genuine provider outage lands with the adapter-layer retry in
-// PR 11; this is the default.
+// Provider-side failure that is NOT worth retrying: unregistered mock
+// response, malformed/auth-rejected request (4xx), or structured
+// output that never satisfies the schema even after repair. Routed as
+// `validation` → immediate DLQ. For a genuinely transient upstream
+// blip (5xx/429/network) the provider throws `LlmProviderTransientError`
+// instead, which is classified by `isRetryableProviderError`.
 export class LlmProviderError extends OpencooError {
   constructor(message: string, options?: OpencooErrorOptions) {
     super(message, "validation", options);
     this.name = "LlmProviderError";
+  }
+}
+
+// Transient provider failure: 5xx / 429 / 408 / 409 / network error.
+// Routed as `transient` so the BullMQ retry policy re-attempts with
+// backoff instead of DLQ-ing on the first blip. Thrown by the provider
+// factories (and the router's bare-error fallback) when
+// `isRetryableProviderError` matches.
+export class LlmProviderTransientError extends OpencooError {
+  constructor(message: string, options?: OpencooErrorOptions) {
+    super(message, "transient", options);
+    this.name = "LlmProviderTransientError";
   }
 }

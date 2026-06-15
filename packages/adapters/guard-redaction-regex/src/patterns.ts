@@ -60,9 +60,12 @@ export const PATTERNS = [
     category: "phone-pl",
     // Polish phone: optional +48 / 0048 / 48 prefix, then 9 digits in
     // optional 3-3-3 separators. Bounded total length keeps ReDoS-safe.
-    // Word-boundary anchors stop adjacency to long digit runs which
-    // would otherwise match every PESEL prefix.
-    regex: /(?:\+48|0048|48)?[\s\-]?\d{3}[\s\-]?\d{3}[\s\-]?\d{3}\b/g,
+    // The leading `(?<!\d)` negative-lookbehind plus the trailing `\b`
+    // anchor BOTH ends against adjacent digits, so a 9-digit *suffix*
+    // of a longer run (e.g. a 16-digit upstream object id) no longer
+    // matches — such a suffix previously got redacted, corrupting wiki
+    // paths derived from the id and the ids inside links in page bodies.
+    regex: /(?<!\d)(?:\+48|0048|48)?[\s\-]?\d{3}[\s\-]?\d{3}[\s\-]?\d{3}\b/g,
     failMode: "transform",
     validate: (m) => {
       // Reject if the raw digit run is < 9 (filters phantom matches

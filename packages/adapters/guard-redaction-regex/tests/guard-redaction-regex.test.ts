@@ -165,6 +165,26 @@ describe("guard-redaction-regex — adapter-specific cases", () => {
     expect(events).toHaveLength(0);
   });
 
+  it("does NOT redact a 16-digit object id as a phone number (regression)", async () => {
+    // A 16-digit upstream object id's trailing 9 digits used to match
+    // phone-pl because the regex had no leading anchor — corrupting
+    // wiki paths derived from the id and ids in page bodies. The
+    // leading (?<!\d) guard prevents matching a suffix of a longer
+    // digit run. (Synthetic id; precise assertion avoids coupling to
+    // the credit-card pattern which may independently match 16 digits.)
+    const a = guardRedactionRegex();
+    const r = await a.classify({ text: "Object id 9000000123456789 is active" });
+    expect(r.events.filter((e) => e.category === "phone-pl")).toHaveLength(0);
+    expect(r.transformedText).not.toContain("[REDACTED:phone-pl]");
+  });
+
+  it("still redacts a standalone Polish phone number", async () => {
+    const a = guardRedactionRegex();
+    const r = await a.classify({ text: "Call 123 456 789 now" });
+    expect(r.events.some((e) => e.category === "phone-pl")).toBe(true);
+    expect(r.transformedText).toContain("[REDACTED:phone-pl]");
+  });
+
   it("100KiB perf canary — classify a hostile mixed-PII blob in under 500ms", async () => {
     const a = guardRedactionRegex();
     // Mix: prose padding + recurring email + PESEL + secret token.
