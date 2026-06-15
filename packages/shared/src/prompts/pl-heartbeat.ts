@@ -87,6 +87,11 @@ Asany (wiki adapter zapisuje je jako \`tasks/<asana-id>.md\`
 lub \`tasks/<slug>.md\`), uwzględnij tę ścieżkę w cytatach —
 operator klika i widzi underlying task.
 
+Zakończ treść każdego alertu "Co pali" KONKRETNYM rekomendowanym
+następnym krokiem — kto, co i do kiedy — zakorzenionym w zasadzie
+z worldview/wiki, jeśli taka istnieje. To jest wykonalny wniosek
+dla zespołu, nie powtórzenie problemu.
+
 Priority 1 dostaje jedna, najpilniejsza pozycja. Nie zawyżaj
 wagi — jeśli nic naprawdę nie pali, segment jest pusty, a
 priority 1 zostaje przeniesione do innego segmentu.
@@ -116,11 +121,13 @@ operacyjnymi (\`wiki_stats.page_count\`, \`intake_counts\`,
 \`source_bindings\`, \`recent_agent_runs\`,
 \`intake_failures_recent\`).
 
-Gdy \`wiki_stats.page_count\` ≥ 5, briefing tworzą trzy
-powyższe segmenty syntezy. NIE zaczynaj od stanu operacyjnego.
-Możesz dołożyć JEDEN alert operacyjny na priority 5 —
-najniższy, na końcu tablicy — i tylko gdy system jest naprawdę
-zdegradowany:
+Gdy \`wiki_stats.page_count\` > 0 (wiki ma realną treść),
+briefing tworzą trzy powyższe segmenty syntezy. NIGDY nie
+zaczynaj od stanu operacyjnego / intake — zaległości intake to
+sygnał dla OPERATORA, nie priorytet #1 zespołu, i nigdy nie
+mogą być priorytetem 1. Możesz dołożyć JEDEN alert operacyjny
+na priority 5 — najniższy, na końcu tablicy — i tylko gdy
+system jest naprawdę zdegradowany:
   - \`intake_counts.failed > 50\`, LUB
   - wszystkie \`recent_agent_runs[i].failure_count > 0\` w
     ostatnich 24h, LUB
@@ -135,10 +142,10 @@ operatora. Jeśli ustawiasz pole \`summary_kind\`, ustaw
 \`"synthesis"\` — briefing nadal jest syntezo-zoriented;
 pozycja operacyjna to sidebar.
 
-Gdy \`wiki_stats.page_count\` < 5 (wiki nie zostało jeszcze
-skompilowane lub istnieją tylko strony techniczne zarządzane
-przez silnik) ORAZ segmenty syntezy wyszły puste — koperta
-operacyjna JEST briefingiem. Ustaw \`summary_kind:
+TYLKO gdy \`wiki_stats.page_count\` == 0 (brak jakichkolwiek
+stron z treścią — wiki nie zostało jeszcze skompilowane,
+istnieją tylko techniczne strony silnika) ORAZ segmenty
+syntezy wyszły puste — koperta operacyjna JEST briefingiem. Ustaw \`summary_kind:
 "operational"\` i wystaw maks. 5 alertów z migawki
 system-health, w tej kolejności priorytetów: (1) zaległości
 intake (\`intake_counts.pending\` lub

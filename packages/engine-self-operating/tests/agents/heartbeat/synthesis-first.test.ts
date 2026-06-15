@@ -104,8 +104,8 @@ const ECHO_OUTPUT: HeartbeatOutput = {
 };
 
 describe("HEARTBEAT_PROMPT_VERSION — synthesis-first restructure (PR-Y10)", () => {
-  it("bumps to 1.2.0", () => {
-    expect(HEARTBEAT_PROMPT_VERSION).toBe("1.2.0");
+  it("bumps to 1.3.0", () => {
+    expect(HEARTBEAT_PROMPT_VERSION).toBe("1.3.0");
   });
 
   it("EN prompt names the three synthesis sections (On fire / Closing / To close)", () => {
@@ -143,6 +143,35 @@ describe("HEARTBEAT_PROMPT_VERSION — synthesis-first restructure (PR-Y10)", ()
 
   it("PL prompt cites tasks/<asana-id>.md as the canonical task-page citation shape", () => {
     expect(PL_HEARTBEAT_PROMPT).toContain("tasks/<asana-id>.md");
+  });
+});
+
+describe("HEARTBEAT 1.3.0 — operational demotion + recommendation (pilot)", () => {
+  it("EN: never leads operational when the wiki has content; operational-IS-briefing only at page_count 0", () => {
+    expect(EN_HEARTBEAT_PROMPT.toLowerCase()).toContain(
+      "never lead with operational",
+    );
+    expect(EN_HEARTBEAT_PROMPT.toLowerCase()).toContain("never be priority 1");
+    // The operational-IS-briefing branch is gated on a genuinely
+    // empty wiki, not "fewer than 5".
+    expect(EN_HEARTBEAT_PROMPT).toContain("is 0 (no content pages");
+  });
+
+  it("PL: never leads operational when the wiki has content; operational-IS-briefing only at page_count == 0", () => {
+    expect(PL_HEARTBEAT_PROMPT).toContain("NIGDY nie");
+    expect(PL_HEARTBEAT_PROMPT).toContain("priorytetem 1");
+    expect(PL_HEARTBEAT_PROMPT).toContain("== 0");
+  });
+
+  it("both prompts require a concrete recommended next step in the On fire / Co pali bucket", () => {
+    // Fragments chosen to sit within a single wrapped line of the
+    // prompt body (the full phrase spans a line break).
+    expect(EN_HEARTBEAT_PROMPT.toLowerCase()).toContain(
+      "concrete recommended next",
+    );
+    expect(PL_HEARTBEAT_PROMPT.toLowerCase()).toContain(
+      "konkretnym rekomendowanym",
+    );
   });
 });
 
