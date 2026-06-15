@@ -45,6 +45,7 @@ const TABLES_DDL = `
     retention_days integer,
     worldview_enabled boolean DEFAULT true NOT NULL,
     is_aggregator boolean DEFAULT false NOT NULL,
+    disabled_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
   );
