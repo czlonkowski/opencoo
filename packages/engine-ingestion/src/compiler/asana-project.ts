@@ -136,7 +136,7 @@ function slugifyTitle(title: string): string {
  * `snapshot.project_gid` is parsed from guard-REDACTED content, so a
  * redaction pattern that matches the numeric id (e.g. `credit-card` on
  * a Luhn-valid 16-digit id, or `phone-pl` before its fix) corrupts it
- * into something like `1212428[REDACTED:phone-pl]`, which then breaks
+ * into something like `1234567[REDACTED:phone-pl]`, which then breaks
  * the wiki shape guard. The `sourceRef` (`asana:project/<gid>`) is
  * built by the source adapter BEFORE redaction, so prefer the trailing
  * numeric id from it; fall back to the digits of the snapshot id, then
