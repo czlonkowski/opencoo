@@ -91,7 +91,12 @@ export async function mergePage(args: MergePageArgs): Promise<MergedPageBody> {
 
   const result = await args.router.generateObject({
     domainId: args.domainId,
-    tier: "thinker",
+    // Single-source page creation is Worker-tier work (architecture
+    // §8.2) — the Thinker tier is reserved for strategic synthesis
+    // (worldview, heartbeat). Routing compile to Worker keeps routine
+    // ingestion off the pricey strategic model; the structured-output
+    // repair-retry covers Worker-model reliability.
+    tier: "worker",
     pipelineOrAgent: "compiler",
     prompt: fullPrompt,
     schema: MERGED_PAGE_BODY_SCHEMA,
