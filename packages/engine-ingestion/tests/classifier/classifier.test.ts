@@ -12,6 +12,7 @@
  * the END-TO-END proof against the adversarial-LLM threat model.
  */
 import { describe, it, expect } from "vitest";
+import { sql } from "drizzle-orm";
 
 import { LlmRouter, type LlmProvider } from "@opencoo/shared/llm-router";
 import { MockLlmClient } from "@opencoo/shared/llm-router/testing";
@@ -101,6 +102,51 @@ describe("classify — happy path", () => {
     expect(result.targetDomains[0]?.domainSlug).toBe("test-domain");
     expect(result.targetDomains[0]?.pagePaths).toEqual(["strategy/q3-2026.md"]);
     expect(result.pipelines).toEqual(["compile.single-source"]);
+  });
+});
+
+describe("classify — tier selection", () => {
+  it("invokes the classifier on the THINKER tier (reasoning-heavy path selection)", async () => {
+    const mock = new MockLlmClient();
+    // Register ONLY the thinker-tier model. If classify ran on the
+    // worker tier, the router would resolve 'worker-model' and the
+    // mock (no match) would throw — pinning classify to Thinker so a
+    // weaker worker model can't mangle target page paths.
+    mock.register({
+      match: { model: "thinker-model", promptIncludes: "Q3 priorities" },
+      response: {
+        text: JSON.stringify({
+          version: "v1",
+          language: "en",
+          summary: "Q3 priorities — distribution.",
+          target_domains: [
+            { domain_slug: "test-domain", page_paths: ["strategy/q3-2026.md"] },
+          ],
+          pipelines: ["compile.single-source"],
+        }),
+        tokensIn: 10,
+        tokensOut: 5,
+      },
+    });
+    const { router, domainId, db } = await makeFixture(mock);
+    await db.execute(sql`
+      UPDATE domains SET llm_policy = ${JSON.stringify({
+        thinker: { provider: "openai", model: "thinker-model" },
+        worker: { provider: "openai", model: "worker-model" },
+        light: { provider: "openai", model: "light-model" },
+      })}::jsonb WHERE id = ${domainId}::uuid
+    `);
+    const result = await classify({
+      router,
+      db: asResolverDb(db),
+      domainId: domainId as Parameters<typeof classify>[0]["domainId"],
+      sourceRef: "drive:doc-1",
+      content: SOURCE_CONTENT,
+      locale: "en",
+      allowedPaths: ALLOWED_PATHS,
+      allowedDomains: ["test-domain"],
+    });
+    expect(result.targetDomains[0]?.pagePaths).toEqual(["strategy/q3-2026.md"]);
   });
 });
 
