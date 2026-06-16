@@ -112,7 +112,13 @@ export async function classify(args: ClassifyArgs): Promise<ClassifierOutput> {
   // which is the correct DLQ signal.
   const result = await args.router.generateObject({
     domainId: args.domainId,
-    tier: "worker",
+    // Classification is reasoning-heavy: it must read the document and
+    // select correct target pages/paths from the binding's allowed
+    // globs. Weaker (mini) models copy the allowed-path glob literally
+    // ('docs/**') or invent slugs, DLQ'ing legitimate docs — so route
+    // classify to the Thinker tier and keep the mechanical
+    // single-source merge on Worker.
+    tier: "thinker",
     pipelineOrAgent: "classifier",
     prompt: fullPrompt,
     schema: CLASSIFIER_OUTPUT_SCHEMA,
