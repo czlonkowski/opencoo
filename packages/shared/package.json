@@ -106,6 +106,10 @@
       "types": "./dist/scrub/index.d.ts",
       "default": "./dist/scrub/index.js"
     },
+    "./page-spec": {
+      "types": "./dist/page-spec/index.d.ts",
+      "default": "./dist/page-spec/index.js"
+    },
     "./forget": {
       "types": "./dist/forget/index.d.ts",
       "default": "./dist/forget/index.js"
@@ -134,6 +138,7 @@
     "drizzle-orm": "0.45.2",
     "drizzle-zod": "0.8.3",
     "fastify": "5.8.5",
+    "gray-matter": "^4.0.3",
     "ioredis": "5.10.1",
     "pg": "8.20.0",
     "zod": "4.3.6"
