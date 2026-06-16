@@ -111,6 +111,7 @@ Testable conditions. v0.1 is done when **all** hold on a fresh `docker-compose u
 | 11 | SkillMiner produces `catalog_candidate` rows from a fixture transcript set, honors `miner_suppressions`, and surfaces candidates in the Review Dashboard as a fifth item type | e2e test `miner-produces-candidates.test.ts` |
 | 12 | Marketplace live-fetch pulls a newer `n8n-skills` release, verifies SHA, writes a `marketplace_updates` row, and does **not** auto-activate | e2e test `marketplace-gates-accept.test.ts` |
 | 13 | Design-partner deployment runs opencoo and n8n in parallel; at least one pipeline is demonstrably cut over (n8n version paused, opencoo version live, output quality ≥ n8n baseline) | Partner sign-off; pilot cutover log |
+| 14 | Every wiki page opencoo writes is OKF v0.1-conformant — non-empty `type` + reserved-file rules (`@opencoo/shared/page-spec`); the `wikiWrite` gate enforces it and rejects a type-less page in `throw` mode | Use-case tests `page-spec` + `wiki-write` OKF gate; producer→validator oracle `okf-output-conformance.test.ts` |
 
 Criterion 13 is the true v0.1 done-signal — the design partner becoming the first opencoo customer. (`architecture.md` §17 Resolved "Pilot migration path")
 
