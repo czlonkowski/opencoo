@@ -1,4 +1,5 @@
 export {
+  OkfConformanceError,
   WikiPathError,
   WikiTransportError,
   WikiWriteCapExceededError,
@@ -33,6 +34,7 @@ export {
 } from "./queue.js";
 export {
   wikiWrite,
+  type OkfGateMode,
   type WikiWriteDeps,
   type WikiWriteResult,
 } from "./wiki-write.js";

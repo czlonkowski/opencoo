@@ -51,3 +51,15 @@ export class WikiWriteInputError extends OpencooError {
     this.name = "WikiWriteInputError";
   }
 }
+
+// A replace op's page content failed OKF v0.1 conformance (missing or
+// empty `type`, unparseable frontmatter, or a reserved-file structural
+// violation) while the wiki-write OKF gate is in 'throw' mode. Routed
+// `validation` — a non-conformant page is a producer bug; no retry will
+// fix it. In 'warn' mode the gate logs instead of throwing.
+export class OkfConformanceError extends OpencooError {
+  constructor(message: string, options?: OpencooErrorOptions) {
+    super(message, "validation", options);
+    this.name = "OkfConformanceError";
+  }
+}

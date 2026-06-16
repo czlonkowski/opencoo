@@ -160,6 +160,8 @@ export function buildCatalogWorkflowBody(
   const frontmatterLines = [
     "---",
     `title: "${args.workflow.name.replace(/"/g, '\\"')}"`,
+    // OKF v0.1 `type` (SPEC §4.1) — catalog-workflow pages are Workflows.
+    `type: "Workflow"`,
     `page_path: "${catalogPagePathForWorkflow({ id: args.workflow.id, name: args.workflow.name })}"`,
     `domain_slug: "${args.domainSlug}"`,
     `compiled_at: "${args.compiledAt.toISOString()}"`,
