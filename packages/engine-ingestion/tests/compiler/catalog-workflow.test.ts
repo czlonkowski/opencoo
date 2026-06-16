@@ -150,6 +150,16 @@ describe("buildCatalogWorkflowBody — fence + frontmatter shape", () => {
     expect(out.body).toMatch(/^tags:\s*\["catalog"\]/m);
   });
 
+  it("frontmatter contains type: Workflow (OKF v0.1 §4.1)", () => {
+    const wf = loadFixture("simple-linear");
+    const out = buildCatalogWorkflowBody({
+      workflow: wf,
+      domainSlug: "automations",
+      compiledAt: new Date("2026-04-25T12:00:00Z"),
+    });
+    expect(out.body).toContain('type: "Workflow"');
+  });
+
   it("body NEVER carries top-level updatedAt (compiler-side strip)", () => {
     const wf = loadFixture("simple-linear");
     const fenced = buildCatalogWorkflowBody({
