@@ -127,6 +127,15 @@ function stripFrontmatter(content: string): string {
   return content.slice(end + 5);
 }
 
+/**
+ * OKF `type` for document-compiled pages. The two-pass document path
+ * (content_kind 'document') always targets a knowledge-class domain
+ * and synthesises a multi-source wiki page, so a single constant is
+ * correct — catalog content_kinds are handled by their own templates
+ * (catalog-workflow.ts, asana-project.ts), each with its own type.
+ */
+const KNOWLEDGE_PAGE_TYPE = "Knowledge Page";
+
 /** Derive a default page title from the path's basename. The
  *  compiler's v0.1 contract (planner's plan §3 step 9) is that
  *  the title is the basename minus extension with the first
@@ -173,6 +182,7 @@ export async function compile(args: CompileArgs): Promise<CompileResult> {
     });
     const frontmatter = buildFrontmatter({
       title: deriveTitle(pagePath),
+      type: KNOWLEDGE_PAGE_TYPE,
       pagePath,
       domainSlug: args.domainSlug,
       compiledAt,

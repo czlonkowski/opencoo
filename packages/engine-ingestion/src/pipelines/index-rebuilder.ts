@@ -25,8 +25,15 @@ import {
   type WikiWriteDeps,
 } from "@opencoo/shared/wiki-write";
 import type { Logger } from "@opencoo/shared/logger";
+import { OKF_VERSION } from "@opencoo/shared/page-spec";
 
 const INDEX_PATH = "index.md";
+
+// OKF v0.1 §11: the bundle-root index.md is the one place frontmatter is
+// permitted in an index file, and only to declare `okf_version`. Prepended
+// at write time; `buildIndexBody` stays frontmatter-free so the skip-write
+// body comparison (against stripFrontmatter(existing)) is unaffected.
+const INDEX_OKF_FRONTMATTER = `---\nokf_version: "${OKF_VERSION}"\n---\n`;
 
 /**
  * Group a flat list of `*.md` paths by their top-level directory
@@ -127,7 +134,9 @@ export async function runIndexRebuilder(
     description: `rebuild index (${paths.length} page(s))`,
     author: args.author,
     caller: { kind: "engine" },
-    operations: [{ mode: "replace", path: INDEX_PATH, content: newBody }],
+    operations: [
+      { mode: "replace", path: INDEX_PATH, content: INDEX_OKF_FRONTMATTER + newBody },
+    ],
   });
   args.logger.info("index_rebuilder.committed", {
     domain_slug: args.domainSlug,

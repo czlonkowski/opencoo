@@ -50,6 +50,13 @@ function yamlQuoteIfNeeded(value: string): string {
 
 export interface BuildFrontmatterArgs {
   readonly title: string;
+  /**
+   * OKF v0.1 `type` — the concept kind (SPEC §4.1, the only required
+   * frontmatter field). For the document compiler this is always
+   * "Knowledge Page"; other producers (catalog templates) pass their
+   * own. Must be non-empty.
+   */
+  readonly type: string;
   readonly pagePath: string;
   readonly domainSlug: string;
   readonly compiledAt: Date;
@@ -67,16 +74,32 @@ export function buildFrontmatter(args: BuildFrontmatterArgs): string {
       "buildFrontmatter: title must not contain newline or carriage return",
     );
   }
+  if (args.type.trim().length === 0) {
+    throw new CompilerValidationError(
+      "buildFrontmatter: type must not be empty or blank (OKF §4.1 requires a non-empty type)",
+    );
+  }
+  if (/[\n\r]/.test(args.type)) {
+    throw new CompilerValidationError(
+      "buildFrontmatter: type must not contain newline or carriage return",
+    );
+  }
   // Every scalar value runs through yamlQuoteIfNeeded — defense in
   // depth so a future field whose value happens to be "1.0" or
   // "true" doesn't silently become a number/bool downstream.
   // (copilot #18, advisory broader fix)
+  const compiledAtIso = args.compiledAt.toISOString();
   const lines = [
     "---",
     `title: ${yamlQuoteIfNeeded(args.title)}`,
+    `type: ${yamlQuoteIfNeeded(args.type)}`,
     `page_path: ${yamlQuoteIfNeeded(args.pagePath)}`,
     `domain_slug: ${yamlQuoteIfNeeded(args.domainSlug)}`,
-    `compiled_at: ${yamlQuoteIfNeeded(args.compiledAt.toISOString())}`,
+    `compiled_at: ${yamlQuoteIfNeeded(compiledAtIso)}`,
+    // OKF v0.1 recommended `timestamp` (SPEC §4.1): last meaningful
+    // change. Mirrors compiled_at; `compiled_at` stays as the opencoo
+    // provenance extension key.
+    `timestamp: ${yamlQuoteIfNeeded(compiledAtIso)}`,
     `prompt_version: ${yamlQuoteIfNeeded(args.promptVersion)}`,
     `schema_version: ${yamlQuoteIfNeeded(SCHEMA_VERSION)}`,
     "---",

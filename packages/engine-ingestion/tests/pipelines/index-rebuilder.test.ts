@@ -108,6 +108,26 @@ describe("runIndexRebuilder — end-to-end", () => {
     expect(indexPage?.content).toContain("- executive/log.md");
   });
 
+  it("prepends OKF okf_version frontmatter to the bundle-root index.md", async () => {
+    const { wikiAdapter, wikiDeps } = harness();
+    wikiAdapter.inject(DOMAIN, "strategy/q3.md", "# Q3\n");
+    await runIndexRebuilder({
+      domainSlug: "test-domain",
+      wikiDeps,
+      wikiAdapter,
+      logger: silentLogger(),
+      author: REBUILDER_AUTHOR,
+    });
+    const indexPage = await wikiAdapter.readPage(DOMAIN, "index.md");
+    // OKF §11: the root index.md is the one place frontmatter is
+    // permitted in an index file, and only to declare okf_version.
+    expect(
+      indexPage?.content.startsWith('---\nokf_version: "0.1"\n---\n'),
+    ).toBe(true);
+    // The listing body still follows the frontmatter.
+    expect(indexPage?.content).toContain("- strategy/q3.md");
+  });
+
   it("is a no-op when the regenerated index equals the existing one", async () => {
     const { wikiAdapter, wikiDeps } = harness();
     wikiAdapter.inject(DOMAIN, "strategy/q3.md", "# Q3\n");

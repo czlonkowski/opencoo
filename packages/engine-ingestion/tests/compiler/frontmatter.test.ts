@@ -6,6 +6,10 @@
  * Q5: schema_version is hardcoded '1.0.0' in this PR. Promote
  * to @opencoo/shared/page-spec when Lint/Heartbeat (PR 17+)
  * also need to read it.
+ *
+ * OKF v0.1: every page carries a non-empty `type` (the spec's sole
+ * required field) plus a `timestamp` (recommended) mirroring
+ * `compiled_at`. See @opencoo/shared/page-spec.
  */
 import { describe, expect, it } from "vitest";
 
@@ -15,6 +19,7 @@ describe("buildFrontmatter — shape", () => {
   it("emits a fenced YAML block delimited by --- on its own lines", () => {
     const out = buildFrontmatter({
       title: "Q3 Strategy",
+      type: "Knowledge Page",
       pagePath: "strategy/q3-2026.md",
       domainSlug: "test-domain",
       compiledAt: new Date("2026-04-25T12:00:00Z"),
@@ -29,6 +34,7 @@ describe("buildFrontmatter — shape", () => {
   it("includes title, page_path, domain_slug, compiled_at, prompt_version, schema_version", () => {
     const out = buildFrontmatter({
       title: "Q3 Strategy",
+      type: "Knowledge Page",
       pagePath: "strategy/q3-2026.md",
       domainSlug: "test-domain",
       compiledAt: new Date("2026-04-25T12:00:00Z"),
@@ -49,6 +55,7 @@ describe("buildFrontmatter — shape", () => {
   it("YAML-quotes title strings that contain special characters", () => {
     const out = buildFrontmatter({
       title: "Q3: roadmap & priorities",
+      type: "Knowledge Page",
       pagePath: "strategy/x.md",
       domainSlug: "d",
       compiledAt: new Date(0),
@@ -62,6 +69,7 @@ describe("buildFrontmatter — shape", () => {
   it("escapes embedded double-quotes in title via backslash", () => {
     const out = buildFrontmatter({
       title: 'has "quotes" inside',
+      type: "Knowledge Page",
       pagePath: "strategy/x.md",
       domainSlug: "d",
       compiledAt: new Date(0),
@@ -74,6 +82,7 @@ describe("buildFrontmatter — shape", () => {
     expect(() =>
       buildFrontmatter({
         title: "",
+        type: "Knowledge Page",
         pagePath: "strategy/x.md",
         domainSlug: "d",
         compiledAt: new Date(0),
@@ -86,6 +95,7 @@ describe("buildFrontmatter — shape", () => {
     expect(() =>
       buildFrontmatter({
         title: "line one\nline two",
+        type: "Knowledge Page",
         pagePath: "strategy/x.md",
         domainSlug: "d",
         compiledAt: new Date(0),
@@ -95,10 +105,75 @@ describe("buildFrontmatter — shape", () => {
   });
 });
 
+describe("buildFrontmatter — OKF type + timestamp (OKF v0.1 §4.1)", () => {
+  it("emits a non-empty type line (OKF's sole required field)", () => {
+    const out = buildFrontmatter({
+      title: "x",
+      type: "Knowledge Page",
+      pagePath: "strategy/x.md",
+      domainSlug: "d",
+      compiledAt: new Date(0),
+      promptVersion: "1.0.0",
+    });
+    expect(out).toContain("type: Knowledge Page");
+  });
+
+  it("rejects an empty type (caller bug — OKF requires a non-empty type)", () => {
+    expect(() =>
+      buildFrontmatter({
+        title: "x",
+        type: "",
+        pagePath: "strategy/x.md",
+        domainSlug: "d",
+        compiledAt: new Date(0),
+        promptVersion: "1.0.0",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a whitespace-only type (matches the OKF gate's trim semantics)", () => {
+    expect(() =>
+      buildFrontmatter({
+        title: "x",
+        type: "   ",
+        pagePath: "strategy/x.md",
+        domainSlug: "d",
+        compiledAt: new Date(0),
+        promptVersion: "1.0.0",
+      }),
+    ).toThrow();
+  });
+
+  it("quotes a type that contains YAML-special characters", () => {
+    const out = buildFrontmatter({
+      title: "x",
+      type: "Report: Q3",
+      pagePath: "strategy/x.md",
+      domainSlug: "d",
+      compiledAt: new Date(0),
+      promptVersion: "1.0.0",
+    });
+    expect(out).toContain('type: "Report: Q3"');
+  });
+
+  it("emits an OKF `timestamp` mirroring compiled_at", () => {
+    const out = buildFrontmatter({
+      title: "x",
+      type: "Knowledge Page",
+      pagePath: "strategy/x.md",
+      domainSlug: "d",
+      compiledAt: new Date("2026-04-25T12:00:00Z"),
+      promptVersion: "1.0.0",
+    });
+    expect(out).toContain('timestamp: "2026-04-25T12:00:00.000Z"');
+  });
+});
+
 describe("buildFrontmatter — schema_version pin", () => {
   it("schema_version is '1.0.0' regardless of input (Q5: hardcoded for v0.1)", () => {
     const out = buildFrontmatter({
       title: "x",
+      type: "Knowledge Page",
       pagePath: "strategy/x.md",
       domainSlug: "d",
       compiledAt: new Date(0),
@@ -119,6 +194,7 @@ describe("buildFrontmatter — YAML implicit-typing safety (copilot #18)", () =>
   it("quotes a pure-digit title to keep it a string", () => {
     const out = buildFrontmatter({
       title: "2026",
+      type: "Knowledge Page",
       pagePath: "strategy/x.md",
       domainSlug: "d",
       compiledAt: new Date(0),
@@ -131,6 +207,7 @@ describe("buildFrontmatter — YAML implicit-typing safety (copilot #18)", () =>
   it("quotes a decimal-number title to keep it a string", () => {
     const out = buildFrontmatter({
       title: "3.14",
+      type: "Knowledge Page",
       pagePath: "strategy/x.md",
       domainSlug: "d",
       compiledAt: new Date(0),
@@ -143,6 +220,7 @@ describe("buildFrontmatter — YAML implicit-typing safety (copilot #18)", () =>
     for (const word of ["true", "TRUE", "false", "yes", "No", "on", "OFF"]) {
       const out = buildFrontmatter({
         title: word,
+        type: "Knowledge Page",
         pagePath: "strategy/x.md",
         domainSlug: "d",
         compiledAt: new Date(0),
@@ -156,6 +234,7 @@ describe("buildFrontmatter — YAML implicit-typing safety (copilot #18)", () =>
     for (const word of ["null", "NULL", "~"]) {
       const out = buildFrontmatter({
         title: word,
+        type: "Knowledge Page",
         pagePath: "strategy/x.md",
         domainSlug: "d",
         compiledAt: new Date(0),
@@ -168,6 +247,7 @@ describe("buildFrontmatter — YAML implicit-typing safety (copilot #18)", () =>
   it("quotes a date-shaped title to keep it a string", () => {
     const out = buildFrontmatter({
       title: "2026-04-25",
+      type: "Knowledge Page",
       pagePath: "strategy/x.md",
       domainSlug: "d",
       compiledAt: new Date(0),
@@ -179,6 +259,7 @@ describe("buildFrontmatter — YAML implicit-typing safety (copilot #18)", () =>
   it("does not double-quote a plain alphanumeric title (regression guard)", () => {
     const out = buildFrontmatter({
       title: "simple-title",
+      type: "Knowledge Page",
       pagePath: "strategy/x.md",
       domainSlug: "d",
       compiledAt: new Date(0),

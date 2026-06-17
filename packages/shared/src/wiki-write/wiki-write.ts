@@ -3,7 +3,12 @@ import { z } from "zod";
 import type { DomainSlug } from "../db/brands.js";
 import type { Logger } from "../logger.js";
 
-import { WikiWriteInputError, WikiWriteStaleError } from "./errors.js";
+import {
+  OkfConformanceError,
+  WikiWriteInputError,
+  WikiWriteStaleError,
+} from "./errors.js";
+import { validatePageConformance } from "../page-spec/validate.js";
 import type { DeleteCap } from "./daily-cap.js";
 import type {
   WikiAdapter,
@@ -16,6 +21,16 @@ import type { WikiWriteQueue } from "./queue.js";
 
 const MAX_STALE_RETRIES = 3;
 
+/**
+ * OKF conformance gate mode for the wiki-write path.
+ *   - 'off'   — skip the check.
+ *   - 'warn'  — log a `wiki.write.okf_nonconformant` warning, write anyway.
+ *   - 'throw' — reject the write with OkfConformanceError.
+ * Default is 'warn' (set in `wikiWrite`) so a partial rollout never blocks
+ * a production write; flip to 'throw' once every producer is conformant.
+ */
+export type OkfGateMode = "off" | "warn" | "throw";
+
 export interface WikiWriteDeps {
   readonly adapter: WikiAdapter;
   readonly queue: WikiWriteQueue;
@@ -23,6 +38,8 @@ export interface WikiWriteDeps {
   readonly logger: Logger;
   readonly clock: () => Date;
   readonly instanceId: string;
+  /** OKF conformance gate mode. Defaults to 'warn' when omitted. */
+  readonly okfConformance?: OkfGateMode;
 }
 
 export interface WikiWriteResult {
@@ -94,6 +111,35 @@ export async function wikiWrite(
   // fast and leave no queue slot or cap budget consumed.
   for (const op of input.operations) {
     validatePath(op.path);
+  }
+
+  // OKF conformance gate (OKF v0.1 §9). Validates REPLACE ops only —
+  // they carry the full page content (frontmatter + body). `append`
+  // writes fragments (e.g. log.md entries) and `delete` has no content,
+  // so neither can be judged as a complete page. Mode defaults to 'warn'
+  // so a partial rollout never blocks a production write; flip to 'throw'
+  // once every producer is conformant (see the OKF migration runbook).
+  const okfMode: OkfGateMode = deps.okfConformance ?? "warn";
+  if (okfMode !== "off") {
+    for (const op of input.operations) {
+      if (op.mode !== "replace") continue;
+      const conformance = validatePageConformance({
+        path: op.path,
+        content: op.content,
+      });
+      if (conformance.conformant) continue;
+      const rules = conformance.violations.map((v) => v.rule);
+      if (okfMode === "throw") {
+        throw new OkfConformanceError(
+          `wiki-write: ${op.path} is not OKF-conformant (${rules.join(", ")})`,
+        );
+      }
+      deps.logger.warn("wiki.write.okf_nonconformant", {
+        domain_slug: input.domainSlug,
+        page_path: op.path,
+        violations: rules,
+      });
+    }
   }
 
   // Delete-cap check also BEFORE the queue. Engine callers are

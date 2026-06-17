@@ -4,6 +4,7 @@ import type { DomainSlug } from "../src/db/brands.js";
 import {
   InMemoryDeleteCap,
   InMemoryWikiWriteQueue,
+  OkfConformanceError,
   WikiPathError,
   WikiWriteCapExceededError,
   WikiWriteInputError,
@@ -13,6 +14,7 @@ import {
   type WikiWriteInput,
 } from "../src/wiki-write/index.js";
 import { InMemoryWikiAdapter } from "../src/wiki-write/testing/in-memory-adapter.js";
+import type { Logger } from "../src/logger.js";
 import { nullLogger } from "./helpers/null-logger.js";
 
 const DOMAIN = "wiki-executive" as DomainSlug;
@@ -52,6 +54,118 @@ function baseInput(partial: Partial<WikiWriteInput> = {}): WikiWriteInput {
     ...partial,
   };
 }
+
+function capturingLogger(): { logger: Logger; warns: string[] } {
+  const warns: string[] = [];
+  const logger: Logger = {
+    debug: () => {},
+    info: () => {},
+    warn: (msg) => {
+      warns.push(msg);
+    },
+    error: () => {},
+    child: () => logger,
+  };
+  return { logger, warns };
+}
+
+describe("wikiWrite — OKF conformance gate", () => {
+  const CONFORMANT = "---\ntype: Knowledge Page\ntitle: X\n---\n# X\n";
+  const NON_CONFORMANT = "# X\n\nno frontmatter here\n";
+
+  it("defaults to warn: a non-conformant replace still writes but logs a warning", async () => {
+    const { logger, warns } = capturingLogger();
+    const { deps } = harness();
+    const result = await wikiWrite(
+      { ...deps, logger },
+      baseInput({
+        operations: [
+          { mode: "replace", path: "docs/x.md", content: NON_CONFORMANT },
+        ],
+      }),
+    );
+    expect(result.sha).toMatch(/^[0-9a-f]{8,}$/);
+    expect(warns).toContain("wiki.write.okf_nonconformant");
+  });
+
+  it("throw mode: rejects a non-conformant replace with OkfConformanceError", async () => {
+    const { deps } = harness();
+    await expect(
+      wikiWrite(
+        { ...deps, okfConformance: "throw" },
+        baseInput({
+          operations: [
+            { mode: "replace", path: "docs/x.md", content: NON_CONFORMANT },
+          ],
+        }),
+      ),
+    ).rejects.toBeInstanceOf(OkfConformanceError);
+  });
+
+  it("throw mode: accepts a conformant replace", async () => {
+    const { deps } = harness();
+    const result = await wikiWrite(
+      { ...deps, okfConformance: "throw" },
+      baseInput({
+        operations: [
+          { mode: "replace", path: "docs/x.md", content: CONFORMANT },
+        ],
+      }),
+    );
+    expect(result.sha).toMatch(/^[0-9a-f]{8,}$/);
+  });
+
+  it("off mode: skips the check (no throw, no warn)", async () => {
+    const { logger, warns } = capturingLogger();
+    const { deps } = harness();
+    const result = await wikiWrite(
+      { ...deps, logger, okfConformance: "off" },
+      baseInput({
+        operations: [
+          { mode: "replace", path: "docs/x.md", content: NON_CONFORMANT },
+        ],
+      }),
+    );
+    expect(result.sha).toMatch(/^[0-9a-f]{8,}$/);
+    expect(warns).toEqual([]);
+  });
+
+  it("throw mode: exempts append ops (fragments are not whole pages)", async () => {
+    const { deps, adapter } = harness();
+    adapter.inject(DOMAIN, "notes.md", CONFORMANT);
+    const result = await wikiWrite(
+      { ...deps, okfConformance: "throw" },
+      baseInput({
+        operations: [
+          {
+            mode: "append",
+            path: "notes.md",
+            content: "a fragment with no frontmatter\n",
+          },
+        ],
+      }),
+    );
+    expect(result.sha).toMatch(/^[0-9a-f]{8,}$/);
+  });
+
+  it("throw mode: accepts a reserved root index.md carrying only okf_version", async () => {
+    const { deps } = harness();
+    const result = await wikiWrite(
+      { ...deps, okfConformance: "throw" },
+      baseInput({
+        tag: "[index-rebuild]",
+        operations: [
+          {
+            mode: "replace",
+            path: "index.md",
+            content: '---\nokf_version: "0.1"\n---\n# Index\n',
+          },
+        ],
+      }),
+    );
+    expect(result.sha).toMatch(/^[0-9a-f]{8,}$/);
+  });
+});
 
 describe("wikiWrite — happy path", () => {
   it("writes a single replace op and returns a SHA", async () => {
