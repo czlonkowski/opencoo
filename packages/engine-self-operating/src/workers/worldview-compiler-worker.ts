@@ -178,7 +178,9 @@ function buildWorldviewFrontmatter(
       `title: "Worldview"`,
       `type: "Worldview"`,
       `page_path: "worldview.md"`,
-      `domain_slug: "${domainSlug.replace(/"/g, '\\"')}"`,
+      // Escape backslashes before quotes (mirrors yamlQuoteIfNeeded) so a
+      // slug containing `\` can't break the double-quoted YAML scalar.
+      `domain_slug: "${domainSlug.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`,
       `compiled_at: "${iso}"`,
       `timestamp: "${iso}"`,
       `schema_version: "1.0.0"`,
