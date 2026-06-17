@@ -27,6 +27,7 @@ import {
   type WriteAtomicArgs,
 } from "@opencoo/shared/wiki-write";
 import { InMemoryWikiAdapter } from "@opencoo/shared/wiki-write/testing";
+import { validatePageConformance } from "@opencoo/shared/page-spec";
 
 import {
   SAFETY_NET_FANOUT_SENTINEL,
@@ -142,6 +143,40 @@ describe("runWorldviewCompile — happy path", () => {
     expect(updated?.content).toContain("compiled worldview");
   });
 
+  it("writes OKF-conformant worldview.md frontmatter (type Worldview)", async () => {
+    const fixture = await freshAgentDb();
+    const h = buildHarness();
+    h.wiki.inject(SLUG, "p.md", "# page");
+    const router = makeRouter(
+      fakeProvider([{ version: "v1", body: "# compiled worldview\n\nbody" }]),
+      fixture.db,
+    );
+    await runWorldviewCompile({
+      router,
+      wikiAdapter: h.wiki,
+      wikiDeps: h.wikiDeps,
+      author: h.author,
+      logger: h.logger,
+      db: fixture.db as unknown as Parameters<typeof runWorldviewCompile>[0]["db"],
+      resolveLocale: async () => "en",
+      job: {
+        domainId: fixture.domainId,
+        domainSlug: SLUG,
+        triggerType: "manual",
+      },
+    });
+    const updated = await h.wiki.readPage(SLUG, "worldview.md");
+    const conformance = validatePageConformance({
+      path: "worldview.md",
+      content: updated?.content ?? "",
+    });
+    expect(conformance.violations).toEqual([]);
+    expect(conformance.conformant).toBe(true);
+    expect(updated?.content).toContain('type: "Worldview"');
+    // Compiled body is preserved below the frontmatter.
+    expect(updated?.content).toContain("# compiled worldview");
+  });
+
   it("emits commit with [worldview] tag + Worldview-Recompile trailer carrying triggerType", async () => {
     const fixture = await freshAgentDb();
     const h = buildHarness();
@@ -243,7 +278,11 @@ describe("runWorldviewCompile — happy path", () => {
     expect(op.path).toBe("worldview.md");
     // narrow for the union: replace + append carry `content`.
     if (op.mode === "delete") throw new Error("expected replace");
-    expect(op.content).toBe(compiledBody);
+    // op.content is the full page: OKF frontmatter (type: Worldview)
+    // prepended to the compiled body.
+    expect(op.content.startsWith("---\n")).toBe(true);
+    expect(op.content).toContain('type: "Worldview"');
+    expect(op.content).toContain(compiledBody);
 
     // 2. The commit message MUST NOT carry the compiled prose. It is
     //    metadata-only: subject line + trailers; the compiled body

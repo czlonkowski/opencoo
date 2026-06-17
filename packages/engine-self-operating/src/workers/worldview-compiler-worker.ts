@@ -160,6 +160,35 @@ export interface RunWorldviewCompileArgs extends WorldviewCompileHandlerDeps {
  *  `safety-net` recompile (via `enqueueSafetyNetFanout`). The cron
  *  job itself returns `{ status: 'ok', latencyMs }` without
  *  compiling — the per-domain jobs are what actually compile. */
+/**
+ * OKF v0.1 frontmatter for the compiled worldview page. Deterministic
+ * (no LLM): the worldview body is raw model output with no frontmatter,
+ * so the worker prepends a conformant block carrying the required
+ * `type` (OKF §4.1). Values are double-quoted for YAML safety — the ISO
+ * timestamps are date-shaped and would otherwise coerce to non-strings.
+ */
+function buildWorldviewFrontmatter(
+  domainSlug: string,
+  compiledAt: Date,
+): string {
+  const iso = compiledAt.toISOString();
+  return (
+    [
+      "---",
+      `title: "Worldview"`,
+      `type: "Worldview"`,
+      `page_path: "worldview.md"`,
+      // Escape backslashes before quotes (mirrors yamlQuoteIfNeeded) so a
+      // slug containing `\` can't break the double-quoted YAML scalar.
+      `domain_slug: "${domainSlug.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`,
+      `compiled_at: "${iso}"`,
+      `timestamp: "${iso}"`,
+      `schema_version: "1.0.0"`,
+      "---",
+    ].join("\n") + "\n"
+  );
+}
+
 export async function runWorldviewCompile(
   args: RunWorldviewCompileArgs,
 ): Promise<WorldviewCompileResult> {
@@ -245,7 +274,13 @@ export async function runWorldviewCompile(
       {
         mode: "replace",
         path: "worldview.md",
-        content: body,
+        // OKF v0.1: prepend deterministic frontmatter (type: Worldview)
+        // — the compiled body is raw model output with none. (PR-OKF2b)
+        content:
+          buildWorldviewFrontmatter(
+            domainSlug,
+            args.clock !== undefined ? args.clock() : new Date(),
+          ) + body,
       },
     ],
     worldviewRecompile: job.triggerType,
