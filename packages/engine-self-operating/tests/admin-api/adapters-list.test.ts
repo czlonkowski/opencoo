@@ -35,7 +35,7 @@ describe("admin-api adapters route (phase-a appendix #2)", () => {
     }
   });
 
-  it("returns the five wired SourceAdapter descriptors", async () => {
+  it("returns the six wired SourceAdapter descriptors", async () => {
     const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
     cleanup = f.close;
     await setupAdmin(f);
@@ -53,7 +53,42 @@ describe("admin-api adapters route (phase-a appendix #2)", () => {
       }>;
     };
     const slugs = body.adapters.map((a) => a.slug).sort();
-    expect(slugs).toEqual(["asana", "drive", "fireflies", "n8n", "webhook"]);
+    expect(slugs).toEqual([
+      "asana",
+      "drive",
+      "fireflies",
+      "n8n",
+      "okf",
+      "webhook",
+    ]);
+  });
+
+  it("surfaces the okf descriptor: polling, no-secret credential schema, bundlePath-required config (PR-OKF3b)", async () => {
+    const f = await makeAdminFixture({ adminTeamSlug: "opencoo-admins" });
+    cleanup = f.close;
+    await setupAdmin(f);
+    const res = await f.app.inject({
+      method: "GET",
+      url: "/api/admin/adapters",
+      headers: { authorization: "Bearer admin-pat" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as {
+      adapters: Array<{
+        slug: string;
+        mode: "polling" | "webhook";
+        credentialSchema: { properties: Record<string, unknown> };
+        bindingConfigSchema: { required: readonly string[] };
+        defaultAllowedPaths?: readonly string[];
+      }>;
+    };
+    const okf = body.adapters.find((a) => a.slug === "okf");
+    expect(okf).toBeDefined();
+    expect(okf!.mode).toBe("polling");
+    // A local OKF bundle has no secret — the credential schema is empty.
+    expect(Object.keys(okf!.credentialSchema.properties)).toEqual([]);
+    expect(okf!.bindingConfigSchema.required).toEqual(["bundlePath"]);
+    expect(okf!.defaultAllowedPaths).toEqual(["okf/**"]);
   });
 
   it("descriptors carry the `mode` discriminator + JSON-Schema credential shape", async () => {

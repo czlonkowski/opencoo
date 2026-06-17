@@ -231,6 +231,25 @@ importers:
         specifier: ^3.0.5
         version: 3.2.4(@types/node@22.19.17)(jsdom@25.0.1)(tsx@4.21.0)
 
+  packages/adapters/source-okf:
+    dependencies:
+      '@opencoo/shared':
+        specifier: workspace:*
+        version: link:../../shared
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.5
+        version: 22.19.17
+      typescript:
+        specifier: ~5.7.2
+        version: 5.7.3
+      vitest:
+        specifier: ^3.0.5
+        version: 3.2.4(@types/node@22.19.17)(jsdom@25.0.1)(tsx@4.21.0)
+
   packages/adapters/source-webhook:
     dependencies:
       '@opencoo/shared':
@@ -301,6 +320,9 @@ importers:
       '@opencoo/source-n8n':
         specifier: workspace:*
         version: link:../adapters/source-n8n
+      '@opencoo/source-okf':
+        specifier: workspace:*
+        version: link:../adapters/source-okf
       '@opencoo/source-webhook':
         specifier: workspace:*
         version: link:../adapters/source-webhook

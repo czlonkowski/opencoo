@@ -34,6 +34,7 @@ describe("SOURCE_ADAPTER_BINDING_CONFIG_SCHEMAS", () => {
     "n8n",
     "fireflies",
     "webhook",
+    "okf",
   ] as const satisfies readonly SourceAdapterSlug[];
 
   it("declares a binding-config entry for every wired SourceAdapter", () => {
@@ -95,6 +96,14 @@ describe("SOURCE_ADAPTER_BINDING_CONFIG_SCHEMAS", () => {
     const webhook = SOURCE_ADAPTER_BINDING_CONFIG_SCHEMAS["webhook"];
     expect(webhook.required).toContain("pathSegment");
     expect(webhook.required).toContain("eventIdField");
+  });
+
+  it("okf requires `bundlePath` and defaults contentKind to 'okf-bundle'", () => {
+    const okf = SOURCE_ADAPTER_BINDING_CONFIG_SCHEMAS["okf"];
+    expect(okf.required).toEqual(["bundlePath"]);
+    expect(okf.properties["bundlePath"]?.type).toBe("string");
+    expect(okf.properties["contentKind"]?.default).toBe("okf-bundle");
+    expect(okf.properties["contentKind"]?.enum).toContain("okf-bundle");
   });
 
   it("every required field has a corresponding `properties` entry", () => {

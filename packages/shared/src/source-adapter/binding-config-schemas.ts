@@ -1,5 +1,5 @@
 /**
- * Binding-config schema registry for the five wired SourceAdapters
+ * Binding-config schema registry for the six wired SourceAdapters
  * (architecture.md §13 — UI dynamic form rendering, §10 adapter
  * boundaries; PR-Q9 of phase-a appendix #9).
  *
@@ -271,6 +271,38 @@ const webhookBindingConfig: BindingConfigSchema = {
   required: ["pathSegment", "eventIdField"],
 };
 
+const okfBindingConfig: BindingConfigSchema = {
+  type: "object",
+  properties: {
+    bundlePath: {
+      type: "string",
+      description:
+        "Local filesystem path to the OKF v0.1 bundle root directory the adapter walks.",
+      minLength: 1,
+    },
+    subdir: {
+      type: "string",
+      description:
+        "Optional sub-directory within the bundle to scan. Concept ids are made relative to it.",
+    },
+    contentKind: {
+      type: "string",
+      description:
+        "Content kind for downstream routing. OKF bindings default to 'okf-bundle' (deterministic passthrough compile).",
+      enum: [
+        "document",
+        "n8n-workflow",
+        "asana-project",
+        "okf-bundle",
+        "skill-bundle",
+        "webhook-event",
+      ],
+      default: "okf-bundle",
+    },
+  },
+  required: ["bundlePath"],
+};
+
 export const SOURCE_ADAPTER_BINDING_CONFIG_SCHEMAS: Readonly<
   Record<SourceAdapterSlug, BindingConfigSchema>
 > = {
@@ -279,6 +311,7 @@ export const SOURCE_ADAPTER_BINDING_CONFIG_SCHEMAS: Readonly<
   n8n: n8nBindingConfig,
   fireflies: firefliesBindingConfig,
   webhook: webhookBindingConfig,
+  okf: okfBindingConfig,
 };
 
 export function getSourceAdapterBindingConfigSchema(

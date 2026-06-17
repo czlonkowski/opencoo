@@ -84,7 +84,7 @@ Six adapter interfaces. A new integration = one package implementing one interfa
 
 | Adapter | Responsibility | v0.1 examples |
 |---|---|---|
-| `SourceAdapter` | Fetch source bytes; emit `SourceEvent` | `source-drive`, `source-asana`, `source-fireflies`, `source-n8n`, `source-skill-bundle` |
+| `SourceAdapter` | Fetch source bytes; emit `SourceEvent` | `source-drive`, `source-asana`, `source-fireflies`, `source-n8n`, `source-okf` (local OKF v0.1 bundle reader → `okf-bundle` passthrough), `source-skill-bundle` |
 | `WikiAdapter` | Write compiled pages to the wiki backend | `wiki-gitea` (reference) |
 | `OutputAdapter` | Deliver agent outputs | `output-asana` (v0.1; `output-slack` deferred to v2); `output-webhook` — generic webhook OutputAdapter: signed POST to operator-configured `target_url` with HMAC + delivery-id idempotency; `output_deliveries` audit table per attempt (appendix #4 PR-J) |
 | `AutomationAdapter` | Platform-specific automation tools + `builderSkills` bundle + `credentialSchema`. **One active per deployment.** | `automation-n8n-mcp` (v0.1 default) |

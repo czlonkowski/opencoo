@@ -56,6 +56,11 @@ export const SOURCE_ADAPTER_DEFAULT_ALLOWED_PATHS: Readonly<
   // subtree is the sensible default. Keeps the registry exhaustive
   // (TypeScript blocks an omitted slug).
   webhook: ["webhook/**"],
+  // `okf` mirrors each concept to its bundle path verbatim, so
+  // allowed_paths is ADVISORY for okf-bundle bindings (the compile
+  // path does not gate on it). Bounded + non-wildcard so it passes the
+  // create-time guard; operators replace it per bundle layout.
+  okf: ["okf/**"],
 } as const;
 
 /** Type-narrowing helper. Returns `undefined` for unknown slugs

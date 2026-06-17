@@ -282,6 +282,46 @@ describe("compileOkfConcept — orchestration", () => {
     expect(writeSpy).toHaveBeenCalledTimes(1);
     expect(second.commitSha).toBeNull();
   });
+
+  it("fails SOFT — skips (no write, no throw) a concept whose path is not a legal wiki path", async () => {
+    const f = await freshCompilerDb();
+    const wikiAdapter = new InMemoryWikiAdapter();
+    const writeSpy = vi.spyOn(wikiAdapter, "writeAtomic");
+    // Uppercase concept id -> page path violates wiki path-guard
+    // (lowercase-ASCII). Must skip, not throw a non-retryable
+    // WikiPathError that would terminally DLQ the compile job.
+    const result = await compileOkfConcept({
+      db: f.db as unknown as Parameters<typeof compileOkfConcept>[0]["db"],
+      domainId: f.domainId as Parameters<typeof compileOkfConcept>[0]["domainId"],
+      domainSlug: "wiki-data",
+      bindingId: f.bindingId as Parameters<typeof compileOkfConcept>[0]["bindingId"],
+      sourceRef: "tables/Orders",
+      content: OKF_CONCEPT,
+      wikiDeps: makeWikiDeps(wikiAdapter),
+      author: AUTHOR,
+    });
+    expect(result.commitSha).toBeNull();
+    expect(result.pagePath).toBe("tables/Orders.md");
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
+  it("fails SOFT for a non-ASCII concept id (Polish-pilot realistic)", async () => {
+    const f = await freshCompilerDb();
+    const wikiAdapter = new InMemoryWikiAdapter();
+    const writeSpy = vi.spyOn(wikiAdapter, "writeAtomic");
+    const result = await compileOkfConcept({
+      db: f.db as unknown as Parameters<typeof compileOkfConcept>[0]["db"],
+      domainId: f.domainId as Parameters<typeof compileOkfConcept>[0]["domainId"],
+      domainSlug: "wiki-data",
+      bindingId: f.bindingId as Parameters<typeof compileOkfConcept>[0]["bindingId"],
+      sourceRef: "tabele/zamówienia",
+      content: OKF_CONCEPT,
+      wikiDeps: makeWikiDeps(wikiAdapter),
+      author: AUTHOR,
+    });
+    expect(result.commitSha).toBeNull();
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe("catalog-okf — deterministic (no LLM)", () => {

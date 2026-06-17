@@ -28,8 +28,9 @@ import type { CredentialId } from "../db/brands.js";
 import type { SourceAdapter } from "../source-adapter/index.js";
 
 /** v0.1 SourceAdapter slugs, mirroring `sources_bindings.adapter_slug`
- *  in the five shipped packages: drive / asana / n8n / fireflies /
- *  webhook (generic inbound webhook — PR-I).
+ *  in the six shipped packages: drive / asana / n8n / fireflies /
+ *  webhook (generic inbound webhook — PR-I) / okf (local Open Knowledge
+ *  Format bundle reader — PR-OKF3b).
  *  Output + Automation adapters live in their own packages and
  *  are NOT registered here — `source test` operates only on
  *  SourceAdapter bindings. */
@@ -39,6 +40,7 @@ export const SOURCE_ADAPTER_SLUGS = [
   "n8n",
   "fireflies",
   "webhook",
+  "okf",
 ] as const;
 
 export type SourceAdapterSlug = (typeof SOURCE_ADAPTER_SLUGS)[number];

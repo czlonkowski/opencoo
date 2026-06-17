@@ -1,0 +1,32 @@
+{
+  "name": "@opencoo/source-okf",
+  "version": "0.0.0",
+  "private": true,
+  "description": "SourceAdapter for Open Knowledge Format (OKF) v0.1 bundles — walks a local OKF bundle directory and emits each concept document (markdown + YAML frontmatter) as an 'okf-bundle' document. The engine routes these to the deterministic compileOkfConcept passthrough (no LLM); the markdown body round-trips byte-for-byte into the wiki.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:contract": "vitest run -t 'sourceAdapterContract'"
+  },
+  "dependencies": {
+    "@opencoo/shared": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "~5.7.2",
+    "vitest": "^3.0.5"
+  }
+}
