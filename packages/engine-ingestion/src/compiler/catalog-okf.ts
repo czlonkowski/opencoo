@@ -21,9 +21,24 @@
  * source-greps for that import as a regression guard (mirrors
  * catalog-workflow.ts).
  */
+import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
+
 import { parseFrontmatter } from "@opencoo/shared/page-spec";
+import type {
+  AgentRunId,
+  DomainId,
+  DomainSlug,
+  SourceBindingId,
+} from "@opencoo/shared/db";
+import {
+  wikiWrite,
+  type WikiAuthor,
+  type WikiWriteDeps,
+  type WikiWriteInput,
+} from "@opencoo/shared/wiki-write";
 
 import { yamlQuoteIfNeeded } from "./frontmatter.js";
+import { recordPageCitations } from "./page-citations.js";
 
 /** `prompt_version` sentinel for catalog-okf page_citations rows. */
 export const OKF_BUNDLE_PROMPT_VERSION = "catalog-okf:1.0";
@@ -120,4 +135,111 @@ export function buildOkfBundleBody(
     body: frontmatter + okfBody,
     bodyWithoutFrontmatter: okfBody,
   };
+}
+
+// ── Orchestrator ──────────────────────────────────────────────────
+
+type Db = PgDatabase<PgQueryResultHKT, Record<string, unknown>>;
+
+export interface CompileOkfConceptArgs {
+  readonly db: Db;
+  readonly domainId: DomainId;
+  readonly domainSlug: string;
+  readonly bindingId: SourceBindingId;
+  /** OKF concept id — the SourceEvent's sourceRef (path, no `.md`). */
+  readonly sourceRef: string;
+  /** Raw OKF concept markdown (frontmatter + body). */
+  readonly content: string;
+  readonly wikiDeps: WikiWriteDeps;
+  readonly author: WikiAuthor;
+  readonly compiledByRunId?: AgentRunId;
+  readonly clock?: () => Date;
+}
+
+export interface CompileOkfConceptResult {
+  readonly commitSha: string | null;
+  readonly pagePath: string;
+}
+
+/** Strip a leading YAML frontmatter block (mirrors compiler.ts —
+ *  duplicated to keep this module self-contained). */
+function stripFrontmatter(content: string): string {
+  if (!content.startsWith("---\n")) return content;
+  const end = content.indexOf("\n---\n", 4);
+  if (end === -1) return content;
+  return content.slice(end + 5);
+}
+
+export async function compileOkfConcept(
+  args: CompileOkfConceptArgs,
+): Promise<CompileOkfConceptResult> {
+  const clock = args.clock ?? ((): Date => new Date());
+  const compiledAt = clock();
+  const pagePath = catalogPagePathForOkfConcept(args.sourceRef);
+  const built = buildOkfBundleBody({
+    conceptId: args.sourceRef,
+    content: args.content,
+    domainSlug: args.domainSlug,
+    compiledAt,
+  });
+
+  // Skip-write (matches the document + catalog-workflow compilers):
+  // compare BODIES so a regenerated frontmatter timestamp doesn't
+  // false-trigger a write.
+  const existing = await args.wikiDeps.adapter.readPage(
+    args.domainSlug as DomainSlug,
+    pagePath,
+  );
+  if (
+    existing !== null &&
+    stripFrontmatter(existing.content) === built.bodyWithoutFrontmatter
+  ) {
+    args.wikiDeps.logger.info("compiler.catalog_okf.no-op", {
+      domain_slug: args.domainSlug,
+      page_path: pagePath,
+      source_ref: args.sourceRef,
+    });
+    await tryRecordCitation(args, pagePath);
+    return { commitSha: null, pagePath };
+  }
+
+  const writeInput: WikiWriteInput = {
+    domainSlug: args.domainSlug,
+    // Reuse the `[compiler]` tag — catalog-okf is a compiler-tier write
+    // (deterministic, no LLM), same as catalog-workflow.
+    tag: "[compiler]",
+    description: `compile ${args.sourceRef} → ${pagePath}`,
+    author: args.author,
+    caller: { kind: "engine" },
+    operations: [{ mode: "replace", path: pagePath, content: built.body }],
+  };
+  const result = await wikiWrite(args.wikiDeps, writeInput);
+  await tryRecordCitation(args, pagePath);
+  return { commitSha: result.sha, pagePath };
+}
+
+async function tryRecordCitation(
+  args: CompileOkfConceptArgs,
+  pagePath: string,
+): Promise<void> {
+  try {
+    await recordPageCitations({
+      db: args.db,
+      domainSlug: args.domainSlug,
+      pagePaths: [pagePath],
+      sourceBindingId: args.bindingId,
+      sourceRef: args.sourceRef,
+      promptVersion: OKF_BUNDLE_PROMPT_VERSION,
+      ...(args.compiledByRunId !== undefined
+        ? { compiledByRunId: args.compiledByRunId }
+        : {}),
+    });
+  } catch (err) {
+    args.wikiDeps.logger.error("compiler.catalog_okf.page_citations.failed", {
+      domain_slug: args.domainSlug,
+      page_path: pagePath,
+      source_ref: args.sourceRef,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }

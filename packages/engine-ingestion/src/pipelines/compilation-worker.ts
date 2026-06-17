@@ -61,6 +61,7 @@ import {
   compileAsanaProject,
   type AsanaProjectSnapshot,
 } from "../compiler/asana-project.js";
+import { compileOkfConcept } from "../compiler/catalog-okf.js";
 
 import type { ScannerClassifyJob } from "./scanner.js";
 import type {
@@ -256,6 +257,23 @@ export async function runCompilationWorker(
         title,
         wikiDeps: args.wikiDeps,
         router: args.router,
+        author: args.author,
+      });
+      classifiedDomains = 1;
+      if (result.commitSha !== null) commitsLanded = 1;
+    } else if (meta.contentKind === "okf-bundle") {
+      // Deterministic OKF passthrough (PR-OKF3): map the concept's
+      // frontmatter and commit its markdown body verbatim. No
+      // classifier, no LLM — `content` is the raw OKF concept doc and
+      // `sourceRef` is its concept id.
+      const result = await compileOkfConcept({
+        db: args.db,
+        domainId: meta.domainId as DomainId,
+        domainSlug: meta.domainSlug,
+        bindingId: meta.bindingId as SourceBindingId,
+        sourceRef: args.job.sourceRef,
+        content,
+        wikiDeps: args.wikiDeps,
         author: args.author,
       });
       classifiedDomains = 1;
