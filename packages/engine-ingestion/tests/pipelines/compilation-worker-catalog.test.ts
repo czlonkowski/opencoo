@@ -414,6 +414,104 @@ describe("runCompilationWorker — n8n-workflow contentKind dispatch (PR 26)", (
 });
 
 // ---------------------------------------------------------------------------
+// contentKind dispatch — okf-bundle path (deterministic passthrough, no LLM)
+// ---------------------------------------------------------------------------
+
+describe("runCompilationWorker — okf-bundle contentKind dispatch (PR-OKF3)", () => {
+  const OKF_CONCEPT_MD = [
+    "---",
+    "type: BigQuery Table",
+    "title: Orders",
+    "---",
+    "",
+    "# Schema",
+    "",
+    "Orders table.",
+    "",
+  ].join("\n");
+
+  function okfJob(f: { bindingId: string; intakeId: string }): ScannerClassifyJob {
+    return buildJob({
+      bindingId: f.bindingId,
+      intakeId: f.intakeId,
+      sourceRef: "tables/orders",
+      contentBase64: Buffer.from(OKF_CONCEPT_MD).toString("base64"),
+    });
+  }
+
+  it("routes contentKind='okf-bundle' to compileOkfConcept (no classifier call)", async () => {
+    const mock = new MockLlmClient(); // empty — fail loud if the classifier runs
+    const f = await makeFixture(mock);
+    await f.raw.query(
+      `UPDATE sources_bindings SET adapter_slug = 'okf', config = $1::jsonb WHERE id = $2`,
+      [JSON.stringify({ contentKind: "okf-bundle" }), f.bindingId],
+    );
+    const guard = passThroughGuard();
+    const result = await runCompilationWorker({
+      db: f.db as unknown as Parameters<typeof runCompilationWorker>[0]["db"],
+      logger: silentLogger(),
+      router: f.router,
+      wikiDeps: f.wikiDeps,
+      author: COMPILER_AUTHOR,
+      guardAdapter: guard,
+      job: okfJob(f),
+    });
+    expect(result.commitsLanded).toBe(1);
+    expect(result.classifiedDomains).toBe(1);
+    // Guard fires unconditionally, before dispatch.
+    expect(guard.callCount()).toBe(1);
+  });
+
+  it("mirrors the concept to its page path with mapped frontmatter + verbatim body", async () => {
+    const f = await makeFixture(new MockLlmClient());
+    await f.raw.query(
+      `UPDATE sources_bindings SET adapter_slug = 'okf', config = $1::jsonb WHERE id = $2`,
+      [JSON.stringify({ contentKind: "okf-bundle" }), f.bindingId],
+    );
+    await runCompilationWorker({
+      db: f.db as unknown as Parameters<typeof runCompilationWorker>[0]["db"],
+      logger: silentLogger(),
+      router: f.router,
+      wikiDeps: f.wikiDeps,
+      author: COMPILER_AUTHOR,
+      guardAdapter: passThroughGuard(),
+      job: okfJob(f),
+    });
+    const pages = await f.wikiAdapter.listMarkdown(
+      "test-domain" as Parameters<typeof f.wikiAdapter.listMarkdown>[0],
+    );
+    expect(pages).toContain("tables/orders.md");
+    const page = await f.wikiAdapter.readPage(
+      "test-domain" as Parameters<typeof f.wikiAdapter.readPage>[0],
+      "tables/orders.md",
+    );
+    expect(page?.content).toContain("type: BigQuery Table");
+    expect(page?.content).toContain("# Schema");
+  });
+
+  it("page_citations row carries prompt_version='catalog-okf:1.0'", async () => {
+    const f = await makeFixture(new MockLlmClient());
+    await f.raw.query(
+      `UPDATE sources_bindings SET adapter_slug = 'okf', config = $1::jsonb WHERE id = $2`,
+      [JSON.stringify({ contentKind: "okf-bundle" }), f.bindingId],
+    );
+    await runCompilationWorker({
+      db: f.db as unknown as Parameters<typeof runCompilationWorker>[0]["db"],
+      logger: silentLogger(),
+      router: f.router,
+      wikiDeps: f.wikiDeps,
+      author: COMPILER_AUTHOR,
+      guardAdapter: passThroughGuard(),
+      job: okfJob(f),
+    });
+    const rows = await f.raw.query<{ prompt_version: string }>(
+      `SELECT prompt_version FROM page_citations`,
+    );
+    expect(rows.rows[0]?.prompt_version).toBe("catalog-okf:1.0");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // asana-project ISO 8601 date validation (fix #3)
 // ---------------------------------------------------------------------------
 
