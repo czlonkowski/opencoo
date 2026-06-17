@@ -29,7 +29,7 @@ import {
 } from "../src/source-adapter/credential-schemas.js";
 
 describe("SOURCE_ADAPTER_CREDENTIAL_SCHEMAS", () => {
-  const ALL_SLUGS = ["drive", "asana", "n8n", "fireflies"] as const satisfies readonly SourceAdapterSlug[];
+  const ALL_SLUGS = ["drive", "asana", "n8n", "fireflies", "okf"] as const satisfies readonly SourceAdapterSlug[];
 
   it("declares an entry for every wired SourceAdapter", () => {
     for (const slug of ALL_SLUGS) {
@@ -60,6 +60,13 @@ describe("SOURCE_ADAPTER_CREDENTIAL_SCHEMAS", () => {
 
   it("fireflies is mode='webhook'", () => {
     expect(SOURCE_ADAPTER_CREDENTIAL_SCHEMAS.fireflies.mode).toBe("webhook");
+  });
+
+  it("okf is mode='polling' with an empty credential schema (a local OKF bundle has no secret)", () => {
+    const okf = SOURCE_ADAPTER_CREDENTIAL_SCHEMAS.okf;
+    expect(okf.mode).toBe("polling");
+    expect(Object.keys(okf.credentialSchema.properties)).toEqual([]);
+    expect(okf.credentialSchema.required).toEqual([]);
   });
 
   it("polling-mode credentialSchema is type='object' with non-empty `properties`", () => {

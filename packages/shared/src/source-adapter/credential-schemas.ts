@@ -1,5 +1,5 @@
 /**
- * Credential-schema registry for the four wired SourceAdapters
+ * Credential-schema registry for the six wired SourceAdapters
  * (architecture.md §13 — UI dynamic form rendering, §10 adapter
  * boundaries).
  *
@@ -29,14 +29,21 @@
  * No UI change.
  */
 
-/** Stable slug literal for the five adapters wired in v0.1 — must
+/** Stable slug literal for the six adapters wired in v0.1 — must
  *  stay in sync with the CLI's adapter-registry list
- *  (`packages/cli/src/bin.ts:95`). The TypeScript narrowness here
+ *  (`packages/cli/src/bin.ts`). The TypeScript narrowness here
  *  is intentional: a new adapter must touch this set AND the CLI
  *  wiring AND the UI in the same PR.
  *
- *  `webhook` is the generic inbound webhook adapter (PR-I). */
-export type SourceAdapterSlug = "drive" | "asana" | "n8n" | "fireflies" | "webhook";
+ *  `webhook` is the generic inbound webhook adapter (PR-I); `okf` is
+ *  the local Open Knowledge Format bundle reader (PR-OKF3b). */
+export type SourceAdapterSlug =
+  | "drive"
+  | "asana"
+  | "n8n"
+  | "fireflies"
+  | "webhook"
+  | "okf";
 
 /** JSON-Schema field shape — narrow subset matching the
  *  Management UI's CredentialForm expectations. Adding richer
@@ -214,6 +221,21 @@ const webhookDescriptor = {
   },
 } as const satisfies SourceAdapterCredentialDescriptor;
 
+/** OKF local-bundle reader (PR-OKF3b). A local OKF bundle has NO
+ *  secret — the credential schema is empty. The adapter never resolves
+ *  a credential; the (empty) descriptor exists only so the dynamic
+ *  binding form + admin-API validator stay schema-driven for every
+ *  slug (CLAUDE.md "the management UI renders the config form
+ *  dynamically from the schema"). */
+const okfDescriptor = {
+  mode: "polling",
+  credentialSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+  },
+} as const satisfies SourceAdapterCredentialDescriptor;
+
 export const SOURCE_ADAPTER_CREDENTIAL_SCHEMAS: Readonly<
   Record<SourceAdapterSlug, SourceAdapterCredentialDescriptor>
 > = {
@@ -222,6 +244,7 @@ export const SOURCE_ADAPTER_CREDENTIAL_SCHEMAS: Readonly<
   n8n: n8nDescriptor,
   fireflies: firefliesDescriptor,
   webhook: webhookDescriptor,
+  okf: okfDescriptor,
 };
 
 /** Type-narrowing helper. Returns `undefined` for unknown slugs

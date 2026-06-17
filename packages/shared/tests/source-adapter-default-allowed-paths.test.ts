@@ -76,5 +76,6 @@ describe("SOURCE_ADAPTER_DEFAULT_ALLOWED_PATHS", () => {
     ]);
     expect(getDefaultAllowedPaths("fireflies")).toEqual(["meetings/**"]);
     expect(getDefaultAllowedPaths("n8n")).toEqual(["workflows/**"]);
+    expect(getDefaultAllowedPaths("okf")).toEqual(["okf/**"]);
   });
 });

@@ -31,6 +31,7 @@ import type {
   SourceBindingId,
 } from "@opencoo/shared/db";
 import {
+  validatePath,
   wikiWrite,
   type WikiAuthor,
   type WikiWriteDeps,
@@ -55,6 +56,20 @@ export function catalogPagePathForOkfConcept(conceptId: string): string {
     .replace(/\/+$/, "")
     .replace(/\.md$/i, "");
   return `${id}.md`;
+}
+
+/** True when `pagePath` is a legal opencoo wiki path (so `wikiWrite`
+ *  won't reject it). OKF concept ids are arbitrary bundle paths, but
+ *  opencoo wiki paths are lowercase-ASCII (wiki-write `path-guard`). We
+ *  pre-check rather than let `wikiWrite` throw a non-retryable
+ *  `WikiPathError` that would terminally DLQ the compile job. */
+function isCompilablePagePath(pagePath: string): boolean {
+  try {
+    validatePath(pagePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function deriveTitleFromConceptId(conceptId: string): string {
@@ -191,6 +206,24 @@ export async function compileOkfConcept(
   const clock = args.clock ?? ((): Date => new Date());
   const compiledAt = clock();
   const pagePath = catalogPagePathForOkfConcept(args.sourceRef);
+
+  // OKF concept ids are arbitrary bundle paths, but opencoo wiki paths
+  // are lowercase-ASCII (wiki-write path-guard). A concept whose path
+  // can't be a legal wiki page (uppercase / spaces / non-ASCII) would
+  // throw a non-retryable WikiPathError inside wikiWrite → terminal DLQ.
+  // We can't slugify (that breaks OKF's lossless round-trip + the
+  // intra-bundle links in the verbatim body), so fail SOFT: log + skip
+  // this ONE concept; the rest of the bundle still ingests. Observable
+  // via the warning + the Execution Log.
+  if (!isCompilablePagePath(pagePath)) {
+    args.wikiDeps.logger.warn("compiler.catalog_okf.skipped_nonconformant_path", {
+      domain_slug: args.domainSlug,
+      page_path: pagePath,
+      source_ref: args.sourceRef,
+    });
+    return { commitSha: null, pagePath };
+  }
+
   const built = buildOkfBundleBody({
     conceptId: args.sourceRef,
     content: args.content,

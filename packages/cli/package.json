@@ -34,6 +34,7 @@
     "@opencoo/source-drive": "workspace:*",
     "@opencoo/source-fireflies": "workspace:*",
     "@opencoo/source-n8n": "workspace:*",
+    "@opencoo/source-okf": "workspace:*",
     "@opencoo/source-webhook": "workspace:*",
     "@opencoo/wiki-gitea": "workspace:*",
     "bullmq": "5.76.1",

@@ -37,7 +37,7 @@ const VERSION = typeof pkg.version === "string" ? pkg.version : "0.0.0";
  *  production-client requirement for drive + n8n — the CLI
  *  validates construction only (decision Q12 docs). */
 async function loadProductionFactory(
-  slug: "drive" | "asana" | "n8n" | "fireflies" | "webhook",
+  slug: "drive" | "asana" | "n8n" | "fireflies" | "webhook" | "okf",
 ): Promise<SourceAdapterFactory> {
   switch (slug) {
     case "drive": {
@@ -95,13 +95,31 @@ async function loadProductionFactory(
           config: a.config,
         });
     }
+    case "okf": {
+      // OKF reads a local bundle directory — no makeApi/makeDrive to
+      // wire, so this factory is fully operational under `source test`.
+      const mod = await import("@opencoo/source-okf");
+      return (a) =>
+        mod.createOkfSourceAdapter({
+          credentialStore: a.credentialStore,
+          credentialId: a.credentialId,
+          config: a.config,
+        });
+    }
   }
 }
 
 async function buildProductionRegistry(): Promise<
   ReturnType<typeof buildAdapterRegistry>
 > {
-  const slugs = ["drive", "asana", "n8n", "fireflies", "webhook"] as const;
+  const slugs = [
+    "drive",
+    "asana",
+    "n8n",
+    "fireflies",
+    "webhook",
+    "okf",
+  ] as const;
   const factories: Partial<
     Record<(typeof slugs)[number], SourceAdapterFactory>
   > = {};

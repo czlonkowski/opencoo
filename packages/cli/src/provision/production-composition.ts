@@ -1310,8 +1310,15 @@ async function tryLoadAdapter(
  *  (`makeDrive`, `makeApi`); v0.1 throws inside the produced
  *  adapter with a "production client not wired" message rather
  *  than silently returning a stub when the operator binds them
- *  via the UI. */
-async function loadSourceAdapterFactories(
+ *  via the UI.
+ *
+ *  INVARIANT: every slug in `SOURCE_ADAPTER_SLUGS` MUST be registered
+ *  here, or that adapter's bindings silently no-op in production (the
+ *  scanner logs `scanner.adapter_missing` and skips them). The map is
+ *  typed `Record<string, …>` so an omission is NOT a typecheck error —
+ *  `production-composition-adapters.test.ts` asserts the invariant
+ *  instead (exported for that purpose). */
+export async function loadSourceAdapterFactories(
   logger: Logger,
 ): Promise<Readonly<Record<string, ProductionSourceAdapterFactory>>> {
   const out: Partial<Record<string, ProductionSourceAdapterFactory>> = {};
@@ -1397,6 +1404,13 @@ async function loadSourceAdapterFactories(
           );
         },
       });
+  });
+  await tryLoadAdapter(out, logger, "okf", async () => {
+    // OKF reads a local bundle directory — no makeApi/makeDrive client
+    // to wire, so the production factory is fully operational (unlike
+    // drive/n8n which throw "not wired" until their client lands).
+    const mod = await import("@opencoo/source-okf");
+    return (a) => mod.createOkfSourceAdapter(a);
   });
   return out as Readonly<Record<string, ProductionSourceAdapterFactory>>;
 }
