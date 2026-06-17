@@ -34,7 +34,9 @@ const YAML_NUMERIC_RE = /^-?\d+(\.\d+)?$/;
 const YAML_BOOL_NULL_RE = /^(true|false|yes|no|on|off|null|~)$/i;
 const YAML_DATE_RE = /^\d{4}-\d{2}-\d{2}/;
 
-function yamlQuoteIfNeeded(value: string): string {
+/** Exported for reuse by sibling deterministic compilers (catalog-okf)
+ *  so the YAML-quoting + implicit-typing guards live in one place. */
+export function yamlQuoteIfNeeded(value: string): string {
   if (value === "") return '""';
   const needsQuoting =
     YAML_SPECIAL_RE.test(value) ||
