@@ -29,7 +29,7 @@ import {
 } from "../src/source-adapter/credential-schemas.js";
 
 describe("SOURCE_ADAPTER_CREDENTIAL_SCHEMAS", () => {
-  const ALL_SLUGS = ["drive", "asana", "n8n", "fireflies", "okf"] as const satisfies readonly SourceAdapterSlug[];
+  const ALL_SLUGS = ["drive", "asana", "n8n", "fireflies", "webhook", "okf"] as const satisfies readonly SourceAdapterSlug[];
 
   it("declares an entry for every wired SourceAdapter", () => {
     for (const slug of ALL_SLUGS) {

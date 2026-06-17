@@ -115,7 +115,10 @@ export function createOkfSourceAdapter(
       const concepts = await walkConcepts(scanRoot);
 
       const documents: SourceChangedDocument[] = [];
-      const nextCursorMap: Record<string, string> = {};
+      // null-prototype dictionary — keys are filesystem-derived concept
+      // ids; a concept named `__proto__`/`constructor` must be an inert
+      // data key, not a prototype mutation.
+      const nextCursorMap: Record<string, string> = Object.create(null);
       for (const { conceptId, absPath } of concepts) {
         const contentBytes = await readFile(absPath);
         // 1 MiB ceiling — drop oversize concepts entirely (and omit them
@@ -150,17 +153,21 @@ function sha256Prefix(bytes: Buffer): string {
  * cursor).
  */
 function parseCursor(cursor: string | null): Record<string, string> {
-  if (cursor === null || cursor.length === 0) return {};
+  const empty = (): Record<string, string> =>
+    Object.create(null) as Record<string, string>;
+  if (cursor === null || cursor.length === 0) return empty();
   let parsed: unknown;
   try {
     parsed = JSON.parse(cursor);
   } catch {
-    return {};
+    return empty();
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return {};
+    return empty();
   }
-  const out: Record<string, string> = {};
+  // null-prototype dictionary — the cursor is untrusted persisted JSON;
+  // a `__proto__`/`constructor` key must be an inert data key.
+  const out: Record<string, string> = empty();
   for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
     if (typeof v === "string") out[k] = v;
   }

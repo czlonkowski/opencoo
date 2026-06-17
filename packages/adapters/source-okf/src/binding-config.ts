@@ -47,8 +47,14 @@ export const okfBindingConfigSchema = z
       .refine(
         (s) =>
           s === undefined ||
-          (!s.split(/[/\\]/).includes("..") && !s.startsWith("/")),
-        { message: "subdir must not contain '..' segments or be absolute" },
+          (!s.split(/[/\\]/).includes("..") &&
+            // Platform-agnostic absolute-path reject: POSIX `/`, Windows
+            // drive `C:\`, and UNC `\\server` are all absolute.
+            !/^([/\\]|[a-zA-Z]:)/.test(s)),
+        {
+          message:
+            "subdir must not contain '..' segments or be an absolute path",
+        },
       ),
     /** Locked to `'okf-bundle'` for v0.1; accepts any CONTENT_KINDS
      *  value for forward-compat (mirrors source-n8n). */

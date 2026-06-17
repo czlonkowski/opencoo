@@ -64,10 +64,12 @@ describe("source-okf — binding-config schema", () => {
     ).toThrow();
   });
 
-  it("rejects an absolute subdir", () => {
-    expect(() =>
-      okfBindingConfigSchema.parse({ bundlePath: "/srv/okf", subdir: "/etc" }),
-    ).toThrow();
+  it("rejects an absolute subdir (POSIX, Windows drive, and UNC)", () => {
+    for (const subdir of ["/etc", "C:\\Windows", "\\\\server\\share"]) {
+      expect(() =>
+        okfBindingConfigSchema.parse({ bundlePath: "/srv/okf", subdir }),
+      ).toThrow();
+    }
   });
 
   it("accepts a non-default contentKind from the shared enum (forward-compat)", () => {
