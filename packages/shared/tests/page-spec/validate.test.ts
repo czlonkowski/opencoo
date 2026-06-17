@@ -103,6 +103,15 @@ describe("validatePageConformance — index.md (OKF §6/§11)", () => {
     expect(r.violations.map((v) => v.rule)).toContain("index-has-frontmatter");
   });
 
+  it("fails a nested index.md with an empty frontmatter fence (OKF §6 — index files carry no frontmatter)", () => {
+    const r = validatePageConformance({
+      path: "strategy/index.md",
+      content: "---\n---\n# Strategy\n",
+    });
+    expect(r.conformant).toBe(false);
+    expect(r.violations.map((v) => v.rule)).toContain("index-has-frontmatter");
+  });
+
   it("passes a nested index.md with no frontmatter", () => {
     const r = validatePageConformance({
       path: "strategy/index.md",

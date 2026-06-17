@@ -102,18 +102,18 @@ function validateIndex(
     });
     return;
   }
-  const keys = Object.keys(fm.data);
   if (!isBundleRootIndex(input.path)) {
-    if (keys.length > 0) {
-      out.push({
-        rule: "index-has-frontmatter",
-        message: `${input.path}: only the bundle-root index.md may carry frontmatter (OKF §6/§11)`,
-      });
-    }
+    // SPEC §6: index files contain NO frontmatter. The §11 okf_version
+    // carve-out is bundle-root only, so a nested index with any fence —
+    // even an empty `---\n---` — is non-conformant.
+    out.push({
+      rule: "index-has-frontmatter",
+      message: `${input.path}: only the bundle-root index.md may carry frontmatter (OKF §6/§11)`,
+    });
     return;
   }
   // Bundle-root index.md: only `okf_version` is permitted (SPEC §11).
-  const extra = keys.filter((k) => k !== "okf_version");
+  const extra = Object.keys(fm.data).filter((k) => k !== "okf_version");
   if (extra.length > 0) {
     out.push({
       rule: "index-frontmatter-not-okf-version",

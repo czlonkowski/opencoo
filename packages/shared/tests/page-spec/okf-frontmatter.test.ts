@@ -62,4 +62,23 @@ describe("okfFrontmatterSchema", () => {
       okfFrontmatterSchema.safeParse({ type: "X", tags: "sales" }).success,
     ).toBe(false);
   });
+
+  it("rejects a whitespace-only type (matches validator trim semantics)", () => {
+    expect(okfFrontmatterSchema.safeParse({ type: "   " }).success).toBe(false);
+  });
+
+  it("accepts an ISO 8601 timestamp with a UTC offset (OKF §4.1)", () => {
+    const r = okfFrontmatterSchema.safeParse({
+      type: "X",
+      timestamp: "2026-05-28T22:43:59+00:00",
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects a non-datetime timestamp", () => {
+    expect(
+      okfFrontmatterSchema.safeParse({ type: "X", timestamp: "last tuesday" })
+        .success,
+    ).toBe(false);
+  });
 });

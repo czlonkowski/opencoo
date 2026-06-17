@@ -15,13 +15,29 @@ import { z } from "zod";
 /** The OKF spec version this module targets. */
 export const OKF_VERSION = "0.1";
 
+// OKF §4.1: `timestamp` is an ISO 8601 datetime. Accept both the `Z`
+// (UTC) and `±HH:MM` offset forms — the reference bundles use offsets,
+// opencoo emits `Z`. A precise regex avoids zod-version API drift and
+// rejects clearly-non-datetime values.
+const ISO_DATETIME_RE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
 export const okfFrontmatterSchema = z.looseObject({
-  type: z.string().min(1, "OKF requires a non-empty `type` (SPEC §4.1)"),
+  // `.trim().min(1)` rejects a whitespace-only type, matching
+  // validatePageConformance's trim semantics (a producer that emits
+  // `type: "   "` would otherwise pass the schema but fail the gate).
+  type: z.string().trim().min(1, "OKF requires a non-empty `type` (SPEC §4.1)"),
   title: z.string().optional(),
   description: z.string().optional(),
   resource: z.string().optional(),
   tags: z.array(z.string()).optional(),
-  timestamp: z.string().optional(),
+  timestamp: z
+    .string()
+    .regex(
+      ISO_DATETIME_RE,
+      "OKF `timestamp` must be an ISO 8601 datetime (SPEC §4.1)",
+    )
+    .optional(),
 });
 
 export type OkfFrontmatter = z.infer<typeof okfFrontmatterSchema>;
