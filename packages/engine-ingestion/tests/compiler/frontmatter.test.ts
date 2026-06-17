@@ -131,6 +131,19 @@ describe("buildFrontmatter — OKF type + timestamp (OKF v0.1 §4.1)", () => {
     ).toThrow();
   });
 
+  it("rejects a whitespace-only type (matches the OKF gate's trim semantics)", () => {
+    expect(() =>
+      buildFrontmatter({
+        title: "x",
+        type: "   ",
+        pagePath: "strategy/x.md",
+        domainSlug: "d",
+        compiledAt: new Date(0),
+        promptVersion: "1.0.0",
+      }),
+    ).toThrow();
+  });
+
   it("quotes a type that contains YAML-special characters", () => {
     const out = buildFrontmatter({
       title: "x",

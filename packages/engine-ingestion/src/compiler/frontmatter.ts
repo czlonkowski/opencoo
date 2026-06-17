@@ -74,9 +74,9 @@ export function buildFrontmatter(args: BuildFrontmatterArgs): string {
       "buildFrontmatter: title must not contain newline or carriage return",
     );
   }
-  if (args.type.length === 0) {
+  if (args.type.trim().length === 0) {
     throw new CompilerValidationError(
-      "buildFrontmatter: type must not be empty (OKF §4.1 requires a non-empty type)",
+      "buildFrontmatter: type must not be empty or blank (OKF §4.1 requires a non-empty type)",
     );
   }
   if (/[\n\r]/.test(args.type)) {

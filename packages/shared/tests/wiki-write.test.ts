@@ -85,7 +85,7 @@ describe("wikiWrite — OKF conformance gate", () => {
       }),
     );
     expect(result.sha).toMatch(/^[0-9a-f]{8,}$/);
-    expect(warns).toContain("wiki_write.okf_nonconformant");
+    expect(warns).toContain("wiki.write.okf_nonconformant");
   });
 
   it("throw mode: rejects a non-conformant replace with OkfConformanceError", async () => {

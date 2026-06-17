@@ -24,7 +24,7 @@ const MAX_STALE_RETRIES = 3;
 /**
  * OKF conformance gate mode for the wiki-write path.
  *   - 'off'   — skip the check.
- *   - 'warn'  — log a `wiki_write.okf_nonconformant` warning, write anyway.
+ *   - 'warn'  — log a `wiki.write.okf_nonconformant` warning, write anyway.
  *   - 'throw' — reject the write with OkfConformanceError.
  * Default is 'warn' (set in `wikiWrite`) so a partial rollout never blocks
  * a production write; flip to 'throw' once every producer is conformant.
@@ -134,7 +134,7 @@ export async function wikiWrite(
           `wiki-write: ${op.path} is not OKF-conformant (${rules.join(", ")})`,
         );
       }
-      deps.logger.warn("wiki_write.okf_nonconformant", {
+      deps.logger.warn("wiki.write.okf_nonconformant", {
         domain_slug: input.domainSlug,
         page_path: op.path,
         violations: rules,
