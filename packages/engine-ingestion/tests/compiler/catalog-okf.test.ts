@@ -122,6 +122,29 @@ describe("buildOkfBundleBody — frontmatter mapping", () => {
     expect(body).toContain("schema_version: 1.0.0");
   });
 
+  it("preserves the source OKF timestamp (lossless), not the compile time", () => {
+    const { body } = buildOkfBundleBody({
+      conceptId: "tables/orders",
+      content: OKF_CONCEPT, // timestamp: 2026-05-28T00:00:00Z
+      domainSlug: "wiki-data",
+      compiledAt: COMPILED_AT, // 2026-04-25
+    });
+    expect(body).toContain('timestamp: "2026-05-28T00:00:00.000Z"');
+    // compiled_at still records OUR import time.
+    expect(body).toContain('compiled_at: "2026-04-25T12:00:00.000Z"');
+  });
+
+  it("falls back to compiled_at when the source has no timestamp", () => {
+    const noTs = "---\ntype: Note\ntitle: X\n---\n\nBody.\n";
+    const { body } = buildOkfBundleBody({
+      conceptId: "notes/x",
+      content: noTs,
+      domainSlug: "d",
+      compiledAt: COMPILED_AT,
+    });
+    expect(body).toContain('timestamp: "2026-04-25T12:00:00.000Z"');
+  });
+
   it("commits the markdown body verbatim below the frontmatter", () => {
     const { body, bodyWithoutFrontmatter } = buildOkfBundleBody({
       conceptId: "tables/orders",

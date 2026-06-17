@@ -72,6 +72,20 @@ function stringField(
   return typeof v === "string" && v.trim().length > 0 ? v : null;
 }
 
+/** Preserve the source OKF `timestamp` (OKF §4.1 "last meaningful change").
+ *  gray-matter yields a Date for an unquoted ISO value and a string for a
+ *  quoted one; both are normalised to ISO so the emitted page stays
+ *  conformant. Falls back to `fallbackIso` when missing or unparseable. */
+function resolveSourceTimestamp(raw: unknown, fallbackIso: string): string {
+  if (raw instanceof Date) {
+    if (!Number.isNaN(raw.getTime())) return raw.toISOString();
+  } else if (typeof raw === "string" && raw.trim().length > 0) {
+    const ms = Date.parse(raw);
+    if (!Number.isNaN(ms)) return new Date(ms).toISOString();
+  }
+  return fallbackIso;
+}
+
 export interface BuildOkfBundleBodyArgs {
   readonly conceptId: string;
   readonly content: string;
@@ -98,6 +112,7 @@ export function buildOkfBundleBody(
     deriveTitleFromConceptId(args.conceptId);
   const pagePath = catalogPagePathForOkfConcept(args.conceptId);
   const iso = args.compiledAt.toISOString();
+  const timestamp = resolveSourceTimestamp(data["timestamp"], iso);
 
   const lines: string[] = [
     "---",
@@ -106,7 +121,7 @@ export function buildOkfBundleBody(
     `page_path: ${yamlQuoteIfNeeded(pagePath)}`,
     `domain_slug: ${yamlQuoteIfNeeded(args.domainSlug)}`,
     `compiled_at: ${yamlQuoteIfNeeded(iso)}`,
-    `timestamp: ${yamlQuoteIfNeeded(iso)}`,
+    `timestamp: ${yamlQuoteIfNeeded(timestamp)}`,
     `prompt_version: ${yamlQuoteIfNeeded(OKF_BUNDLE_PROMPT_VERSION)}`,
     `schema_version: ${yamlQuoteIfNeeded(SCHEMA_VERSION)}`,
     `source_id: ${yamlQuoteIfNeeded(args.conceptId)}`,
